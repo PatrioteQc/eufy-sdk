@@ -33,6 +33,16 @@
 # package that does not exist yet. That was the only manual publish; everything since goes through
 # here.
 #
+# ── A failed release burns its version number, permanently ──────────────────────────────────────
+# Immutable releases are on. A tag that has ever belonged to a release cannot be reused, even after
+# the release and the tag are both deleted — GitHub answers `tag_name was used by an immutable
+# release` and there is no way back. The same feature is why a release tag cannot be pushed or moved
+# with git; it has to be created through the release flow.
+#
+# So a release that fails partway does not get retried on the same number: fix forward, bump, and cut
+# a new one. v0.0.2 was lost exactly this way. Cheap for a 0.0.x, expensive once the number means
+# something — which is why `npm run verify` runs in this job before anything is published.
+#
 # `--provenance` publishes a signed attestation linking the tarball to this workflow run and commit,
 # which npm shows on the package page. It needs the same `id-token: write`.
 #
