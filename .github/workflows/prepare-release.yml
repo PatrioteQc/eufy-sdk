@@ -1,18 +1,17 @@
 # Open the version-bump PR that precedes a release.
 #
-# Releasing is: run this → review and merge the PR → create the GitHub Release on tag vX.Y.Z. The tag
-# is what decides the published version (see release.yml), so this workflow does not control what
-# ships — it keeps the repo's own copy of the number honest, and gives the release a reviewable commit
-# to point at.
+# Releasing is: run this → open, review and merge the pull request it prepares → create the GitHub
+# Release on tag vX.Y.Z. The tag is what decides the published version (see release.yml), so this
+# workflow does not control what ships — it keeps the repo's own copy of the number honest, and gives
+# the release a reviewable commit to point at.
 #
-# ── Why a PR and not a direct commit ────────────────────────────────────────────────────────────
-# `main` requires a reviewed pull request, and the only bypass is an organization admin. GitHub
-# refuses to exempt the Actions app at repository level — it wants an organization ruleset, which
-# needs a paid plan — and the Actions bot holds the write role, not admin, so a repository-role bypass
-# would not apply to it either. The remaining ways to push straight to `main` all mean storing a
-# long-lived credential (a GitHub App's private key, or a PAT), which is exactly what the OIDC
-# publishing setup exists to avoid. A branch push plus a PR needs no bypass and no secret, so that is
-# what this does.
+# ── Why a branch and a review, and not a direct commit ──────────────────────────────────────────
+# `main` requires a reviewed pull request, and the only bypass is an organization admin. GitHub refuses
+# to exempt the Actions app at repository level — it wants an organization ruleset, which needs a paid
+# plan — and the Actions bot holds the write role, not admin, so a repository-role bypass would not
+# apply to it either. The remaining ways to push straight to `main` all mean storing a long-lived
+# credential (a GitHub App's private key, or a PAT), which is exactly what the OIDC publishing setup
+# exists to avoid. Pushing a branch needs neither a bypass nor a secret.
 #
 # ── Forgetting to run this is not an error ──────────────────────────────────────────────────────
 # release.yml takes the version from the tag regardless, so a release cut without this step still
@@ -29,10 +28,11 @@ on:
         required: true
         type: string
 
-# Enough to push a branch and open a pull request, and nothing else. `main` itself stays untouchable.
+# Enough to push a branch, and nothing else. `main` itself stays untouchable, and the pull request is
+# opened by a human — see the note at the end of the bump step for why that is deliberate rather than
+# a limitation worked around.
 permissions:
   contents: write
-  pull-requests: write
 
 concurrency:
   group: prepare-release
@@ -80,10 +80,9 @@ jobs:
             exit 1
           fi
 
-      - name: Bump and open the pull request
+      - name: Bump the version and push the branch
         env:
           VERSION: ${{ inputs.version }}
-          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           branch="release/v$VERSION"
@@ -105,15 +104,20 @@ jobs:
 
           git push --set-upstream origin "$branch"
 
-          gh pr create \
-            --base main \
-            --head "$branch" \
-            --title "chore(release): $VERSION" \
-            --body "Version bump ahead of \`v$VERSION\`. Opened by the \`prepare release\` workflow.
-
-          **After merging**, create the GitHub Release on tag \`v$VERSION\` targeting \`main\`. That is
-          what publishes: the tag decides the version, and the release job runs the full gate before
-          anything reaches npm.
-
-          Do not create the tag by hand — immutable releases are enabled, so a tag name is spent the
-          moment it belongs to a release, and \`git push\` of a release tag is refused outright."
+          # The pull request is opened by a human, on purpose. Actions cannot create one here — the
+          # organization disallows it — and the setting that would allow it is the same one that lets a
+          # workflow APPROVE a pull request. Turning it on would let a workflow satisfy `main`'s review
+          # requirement by itself, which is the protection this whole flow exists to respect. One click
+          # is a fair price.
+          {
+            echo "## Release $VERSION prepared"
+            echo
+            echo "**[Open the pull request](https://github.com/$GITHUB_REPOSITORY/compare/main...$branch?expand=1)** — branch \`$branch\`."
+            echo
+            echo "Once it is reviewed and merged, create the GitHub Release on tag \`v$VERSION\`"
+            echo "targeting \`main\`. That is what publishes: the tag decides the version, and the"
+            echo "release job runs the full gate before anything reaches npm."
+            echo
+            echo "Do not create the tag by hand. Immutable releases are enabled, so a tag name is spent"
+            echo "the moment it belongs to a release, and pushing a release tag with git is refused."
+          } >> "$GITHUB_STEP_SUMMARY"
