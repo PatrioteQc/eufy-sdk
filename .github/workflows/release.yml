@@ -88,9 +88,26 @@ jobs:
           cache: npm
           registry-url: "https://registry.npmjs.org"
 
-      # OIDC trusted publishing needs npm >= 11.5.1; the npm bundled with Node 24.5.0 predates it.
-      - name: Upgrade npm for OIDC support
-        run: npm install -g npm@latest
+      # OIDC trusted publishing needs npm >= 11.5.1. Node 24.5.0 already bundles exactly that, so this
+      # is about staying current within a major that still runs on it — NOT `npm@latest`, which is now
+      # npm 12 and requires Node ^22.22.2 || ^24.15.0 || >=26. Chasing latest here breaks the release
+      # the moment npm's floor moves ahead of the Node this repo pins, which is what it did.
+      #
+      # The assertion is the point of the step: if a future Node bump ships an npm below the OIDC
+      # floor, publishing fails as an authentication error several steps later, with nothing pointing
+      # at the cause. Fail here instead, saying so.
+      - name: Ensure npm can do OIDC
+        run: |
+          set -euo pipefail
+          npm install -g npm@^11
+          need=11.5.1
+          have="$(npm --version)"
+          # sort -V puts the lower version first; if that is not `need`, then have < need.
+          if [ "$(printf '%s\n%s\n' "$need" "$have" | sort -V | head -1)" != "$need" ]; then
+            echo "::error::npm $have is below the $need floor for OIDC trusted publishing"
+            exit 1
+          fi
+          echo "npm $have — OIDC capable"
 
       - name: Install dependencies
         run: npm ci
