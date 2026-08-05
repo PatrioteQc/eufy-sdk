@@ -1,0 +1,35 @@
+name: Feature request
+description: Something the SDK should do and does not
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A reminder on scope: this is an SDK, not an application. It carries device truth and returns
+        typed data or a typed reason — how a host renders that, what it polls, and which entity it
+        maps to is the caller's concern. A request shaped like "expose X so I can decide what to do
+        with it" fits; one shaped like "show X as Y" belongs with whoever built your integration.
+
+        Missing support for a specific device or control? Use the **Device or capability gap** form
+        instead.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to build, and where does the SDK stop you? Describe the need, not a proposed API.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you have in mind
+      description: Optional. If you have an API shape in mind, sketch it.
+      render: ts
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you tried instead
+      description: Workarounds you already have, and why they fall short.

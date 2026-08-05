@@ -1,0 +1,29 @@
+# The workflows pin every action to a full-length commit SHA, which trades automatic patch pickup for
+# immutability. This config is what buys the updates back: Dependabot rewrites the SHA and the
+# trailing `# vX.Y.Z` comment together, so an action bump arrives as a reviewable PR.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+
+  # The SDK runs on three runtime deps. Grouping the toolchain keeps a routine devDependency bump from
+  # burying a runtime one, which is the update that actually deserves a read.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      toolchain:
+        dependency-type: development
+
+  # The docs site is a self-contained project with its own lockfile, kept out of the SDK's dependency
+  # tree — so it needs its own entry.
+  - package-ecosystem: npm
+    directory: /docs
+    schedule:
+      interval: weekly
+    groups:
+      docs:
+        patterns: ["*"]

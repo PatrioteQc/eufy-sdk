@@ -1,0 +1,62 @@
+name: Bug report
+description: Something in the SDK behaves differently than documented
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Before you write anything else:** redact your device data. Serials, the P2P device id,
+        account and user ids, device names and IP addresses are credentials or PII, and an issue is
+        public and permanent. Replace them with placeholders — `T8000P0000000000`,
+        `XXXXXXX-000000-XXXXX`, `<cam-lan-ip>`. Logs paste raw; read yours before posting it.
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What happens
+      description: What you observed, and what you expected instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction
+      description: The smallest snippet that shows it. A capability call and its result beats a prose description.
+      render: ts
+    validations:
+      required: true
+
+  - type: input
+    id: device
+    attributes:
+      label: Device model
+      description: The model code (`Txxxxx`) — it is the globally unique id. Say whether it is standalone or attached to a HomeBase, since behaviour differs by topology.
+      placeholder: T8410, attached to a T8010
+    validations:
+      required: true
+
+  - type: input
+    id: versions
+    attributes:
+      label: SDK and Node versions
+      placeholder: "@mega-yfue/eufy-sdk 0.1.0, Node 24.5.0"
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Relevant output only, redacted.
+      render: shell
+
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: Before submitting
+      options:
+        - label: I removed every serial, device id, account id and IP address from this report
+          required: true
+        - label: This is about the SDK itself, not about an application built on it
+          required: true

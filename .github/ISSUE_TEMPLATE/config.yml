@@ -1,0 +1,16 @@
+# Most people who land on this repo are end users of something BUILT with the SDK, not developers
+# using it. Sending them to the integration's own maintainer first saves everyone a round trip — the
+# README says the same thing. Blank issues stay off, so every report arrives through a form.
+blank_issues_enabled: false
+contact_links:
+  - name: I installed something in a smart-home platform and it is broken
+    url: https://mega-yfue.github.io/
+    about: This repo is a developer SDK — there is no app, dashboard, or UI here. Whoever built the integration you installed owns what you see and click; open the issue with them.
+
+  - name: Question, or not sure it is a bug
+    url: https://discord.gg/5wjQ2asb64
+    about: Ask on Discord. Faster than an issue, and someone has probably hit it already.
+
+  - name: Security vulnerability
+    url: https://github.com/mega-yfue/eufy-sdk/security/advisories/new
+    about: Report privately, never as a public issue. See SECURITY.md.

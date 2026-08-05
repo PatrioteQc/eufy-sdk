@@ -1,0 +1,15 @@
+# Conventional Commits: feat|fix|docs|refactor|test|chore|ci(scope): summary
+#
+# Body: what changed and why. Call out anything unverified or deferred.
+#
+# Maintainer commits credit all three owners — delete the two that are not you.
+# These are the GitHub noreply forms on purpose: they resolve to the account
+# whatever its email-privacy setting is, and they keep personal addresses out of
+# a public history.
+
+Co-authored-by: max246 <1809444+max246@users.noreply.github.com>
+Co-authored-by: lenoxys <3996456+lenoxys@users.noreply.github.com>
+Co-authored-by: Martijn Poppen <7694138+martijnpoppen@users.noreply.github.com>
+
+# Enable once per clone:  git config commit.template .gitmessage
+# Sign your commits:      git config commit.gpgsign true

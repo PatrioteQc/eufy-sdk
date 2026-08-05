@@ -1,0 +1,24 @@
+{
+  "name": "eufy-sdk-docs",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Host-facing docs site for the eufy SDK (VitePress). Self-contained — kept out of the SDK's dependency tree.",
+  "scripts": {
+    "docs:api": "typedoc",
+    "guard:docs": "bash scripts/guard-docs.sh",
+    "dev": "npm run docs:api && vitepress dev",
+    "build": "npm run docs:api && npm run guard:docs && vitepress build",
+    "preview": "vitepress preview"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "devDependencies": {
+    "typedoc": "^0.28.20",
+    "typedoc-plugin-markdown": "^4.12.0",
+    "typedoc-vitepress-theme": "^1.1.3",
+    "typescript": "^6.0.3",
+    "vitepress": "^2.0.0-alpha.19"
+  }
+}

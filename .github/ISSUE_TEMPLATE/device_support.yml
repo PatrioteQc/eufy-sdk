@@ -1,0 +1,58 @@
+name: Device or capability gap
+description: A device resolves but a feature is missing, or a control is not exposed
+labels: [device-support]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Devices are classified **dynamically** from what your account reports, so there is no
+        per-model code to add — an unlisted device already resolves. What is usually missing is a
+        capability member: a parameter nobody has seen reported yet, or a write path that has never
+        been confirmed on hardware and therefore throws instead of guessing.
+
+        **Redact before posting.** Serials, the P2P device id, account ids, device names and IPs are
+        credentials or PII, and an issue is public and permanent.
+
+  - type: input
+    id: model
+    attributes:
+      label: Model code
+      description: The `Txxxxx` code — the globally unique id.
+      placeholder: T8410
+    validations:
+      required: true
+
+  - type: input
+    id: topology
+    attributes:
+      label: Topology
+      description: Standalone, or attached to which HomeBase model? Behaviour differs.
+      placeholder: attached to a T8010
+    validations:
+      required: true
+
+  - type: textarea
+    id: missing
+    attributes:
+      label: What is missing
+      description: The feature you expected, and what the SDK gives you instead — `undefined`, a throw, or a wrong value.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reported
+    attributes:
+      label: What the device reports
+      description: |
+        The most useful thing you can attach. Dump the device's resolved capabilities and reported
+        parameters and paste them here, **with the identifiers stripped**. A missing getter is
+        almost always a parameter the SDK has never seen a device report.
+      render: json
+
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: Before submitting
+      options:
+        - label: I removed every serial, device id, account id and IP address from this report
+          required: true

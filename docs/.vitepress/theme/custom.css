@@ -1,0 +1,188 @@
+/**
+ * eufy brand theming over the default VitePress theme.
+ *
+ * - Hero name (`eufy-mega`) uses the same VitePress gradient effect, tinted to eufy's teal→blue.
+ * - Brand accent (buttons, links, active nav) shifted to eufy teal for a cohesive look.
+ */
+
+:root {
+  /* eufy teal → cyan-blue */
+  --eufy-1: #06d6c4;
+  --eufy-2: #0aa2e0;
+  --eufy-3: #0a84c9;
+
+  --vp-c-brand-1: var(--eufy-3);
+  --vp-c-brand-2: var(--eufy-2);
+  --vp-c-brand-3: var(--eufy-1);
+  --vp-c-brand-soft: rgba(10, 162, 224, 0.14);
+
+  /* Hero title gradient — same effect as vitepress.dev, eufy colours. */
+  --vp-home-hero-name-color: transparent;
+  --vp-home-hero-name-background: -webkit-linear-gradient(120deg, var(--eufy-1) 30%, var(--eufy-2));
+
+  /**
+   * Glow behind the hero mark. The home hero serves the schemes inverted (see `index.md`), so the
+   * light page carries the WHITE glyph — it has no contrast of its own against the page and the halo
+   * is what makes it read. Hence the strong alpha and the tighter blur than dark mode: the glow has
+   * to stay dense right behind the mark instead of dissipating into the white.
+   */
+  --vp-home-hero-image-background-image: linear-gradient(
+    -45deg,
+    rgba(6, 214, 196, 0.85) 50%,
+    rgba(10, 162, 224, 0.85) 50%
+  );
+  --vp-home-hero-image-filter: blur(52px);
+}
+
+.dark {
+  --vp-c-brand-1: var(--eufy-1);
+  --vp-c-brand-2: var(--eufy-2);
+  --vp-c-brand-3: var(--eufy-3);
+
+  --vp-home-hero-image-background-image: linear-gradient(-45deg, var(--eufy-1) 50%, var(--eufy-2) 50%);
+  --vp-home-hero-image-filter: blur(44px);
+}
+
+/**
+ * The halo behind the hero mark breathes like a voice: a fundamental (size / brightness / hue) with
+ * two overtones riding on it (the `::before` / `::after` rings), each on its own period so the shape
+ * never repeats on a beat the eye can lock onto.
+ *
+ * Every period is deliberately coprime-ish — 18 / 7.3 / 26 s on the fundamental, 11 / 19 and 5.2 / 13
+ * on the overtones — so the combined figure only returns to its start after minutes. Equal or
+ * harmonic periods would collapse it back into an obvious loop.
+ *
+ * `hue-rotate` only ever moves POSITIVE from the teal base (`--eufy-1` #06d6c4, hue ~172°), so the
+ * sweep runs teal → cyan → blue and stays on-brand; a negative rotation would drag it into green.
+ * The overtones add at most another 14°, putting the far end at ~204° — the hue of `--eufy-3`, the
+ * darkest brand blue, and the edge of the palette.
+ *
+ * The blur comes from `--vp-home-hero-image-filter` (64px light / 44px dark), so the keyframes
+ * re-state that variable rather than hard-coding a radius — the animation inherits whichever mode is
+ * active.
+ */
+@keyframes hero-halo-breathe {
+  0%,
+  100% {
+    scale: 1;
+    filter: var(--vp-home-hero-image-filter) hue-rotate(0deg);
+    opacity: 0.85;
+  }
+  35% {
+    scale: 1.09;
+    filter: var(--vp-home-hero-image-filter) hue-rotate(11deg);
+    opacity: 1;
+  }
+  70% {
+    scale: 0.95;
+    filter: var(--vp-home-hero-image-filter) hue-rotate(18deg);
+    opacity: 0.9;
+  }
+}
+
+/**
+ * Organic deformation of the disc. Amplitude is kept inside 40–60% on purpose: the halo is blurred
+ * 44–64px, so a 10% radius swing already moves the visible edge ~30px. Anything wider stops reading
+ * as a glow and starts reading as a wobbling puddle.
+ */
+@keyframes hero-halo-morph {
+  0%,
+  100% {
+    border-radius: 46% 54% 52% 48% / 50% 46% 54% 50%;
+  }
+  33% {
+    border-radius: 58% 42% 44% 56% / 44% 58% 42% 56%;
+  }
+  66% {
+    border-radius: 42% 58% 60% 40% / 56% 44% 56% 44%;
+  }
+}
+
+@keyframes hero-halo-morph-alt {
+  0%,
+  100% {
+    border-radius: 54% 46% 42% 58% / 56% 52% 48% 44%;
+  }
+  40% {
+    border-radius: 44% 56% 58% 42% / 42% 46% 54% 58%;
+  }
+  75% {
+    border-radius: 60% 40% 50% 50% / 52% 60% 40% 48%;
+  }
+}
+
+/**
+ * Carries the lobes around the circle so the deformation travels instead of pulsing in place. Linear
+ * — an eased spin would betray the loop point.
+ */
+@keyframes hero-halo-orbit {
+  from {
+    rotate: 0deg;
+  }
+  to {
+    rotate: 360deg;
+  }
+}
+
+/**
+ * VitePress centres this element with `transform: translate(-50%, -50%)`, which cannot survive here:
+ * the individual transform properties compose as translate → rotate → scale → `transform`, so a
+ * centring offset inside `transform` is applied in the already-rotated frame and the orbit swings the
+ * halo out from behind the mark on a ~226px radius — on the light page that leaves the WHITE glyph
+ * with nothing behind it and the wordmark disappears into the background.
+ *
+ * The centring is therefore geometric, not a transform at all: `inset: 0` + `margin: auto` on a
+ * fixed-size absolutely-positioned box centres it in the container, leaving `transform`/`rotate`/
+ * `scale` free for the animation. The `translate` property is deliberately NOT used either — it
+ * composes correctly in the browser, but the production CSS minifier collapses
+ * `transform: none` + `translate: -50% -50%` back into `transform: translate(-50%, -50%)`, which
+ * reintroduces exactly the swing above in the built site while dev mode looks fine.
+ */
+.VPHero .image-bg {
+  inset: 0;
+  margin: auto;
+  transform: none;
+  animation:
+    hero-halo-breathe 18s ease-in-out infinite,
+    hero-halo-morph 7.3s ease-in-out infinite,
+    hero-halo-orbit 26s linear infinite;
+  will-change: scale, rotate, border-radius, filter, opacity;
+}
+
+/**
+ * The two overtones. They sit inside the fundamental and inherit its gradient, so they read as
+ * denser cores rather than separate objects; the parent's blur applies to the whole subtree, so they
+ * need no filter of their own beyond a small extra hue push.
+ */
+.VPHero .image-bg::before,
+.VPHero .image-bg::after {
+  content: "";
+  position: absolute;
+  background-image: inherit;
+}
+
+.VPHero .image-bg::before {
+  inset: 8%;
+  opacity: 0.55;
+  filter: hue-rotate(8deg);
+  animation:
+    hero-halo-morph-alt 11s ease-in-out infinite,
+    hero-halo-orbit 19s linear infinite reverse;
+}
+
+.VPHero .image-bg::after {
+  inset: 19%;
+  opacity: 0.4;
+  filter: hue-rotate(14deg);
+  animation:
+    hero-halo-morph 5.2s ease-in-out infinite,
+    hero-halo-orbit 13s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .VPHero .image-bg,
+  .VPHero .image-bg::before,
+  .VPHero .image-bg::after {
+    animation: none;
+  }
+}

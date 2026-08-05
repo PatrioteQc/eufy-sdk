@@ -1,0 +1,69 @@
+# Validate that the host-facing docs site (docs/, VitePress) still builds.
+#
+# This does NOT publish. The site is built and deployed by the repo that owns the domain, which checks
+# this repo out and builds it there — so nothing here needs Pages permissions or a deploy job.
+#
+# The site's own deps live in docs/package.json; the build additionally generates the API reference
+# from the library's PUBLIC JSDoc via TypeDoc, which must resolve the source's imports and types — so
+# the root deps are installed too.
+#
+# This runs on pull requests because `guard:docs` (the publication guard that keeps wire/crypto detail
+# off the public API reference) lives in this build and nowhere else — it is deliberately not part of
+# `npm run verify`, which must stay runnable from the root deps alone. The publishing repo only ever
+# builds the default branch, so without a PR trigger a leaking JSDoc comment passes CI green and is
+# caught only once merged and already publishable. `ignoreDeadLinks` catches a renamed page the same way.
+name: docs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - "src/**" # the API reference is generated from source JSDoc
+      - "tsconfig.json"
+      - ".github/workflows/docs.yml"
+  pull_request:
+    paths:
+      - "docs/**"
+      - "src/**"
+      - "tsconfig.json"
+      - ".github/workflows/docs.yml"
+  workflow_dispatch:
+
+# Read-only: this workflow validates, it never publishes.
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # Per-ref. A superseded push to the same ref cancels the stale build — safe, it produces nothing.
+    concurrency:
+      group: docs-build-${{ github.ref }}
+      cancel-in-progress: true
+    defaults:
+      run:
+        working-directory: docs
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.5.0
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            docs/package-lock.json
+
+      # The API reference is generated from the library source, so TypeDoc needs the SDK's deps
+      # (mqtt/protobufjs/werift + @types) resolvable. Install them at the repo root first.
+      - name: Install SDK deps (for TypeDoc source resolution)
+        working-directory: ${{ github.workspace }}
+        run: npm ci
+
+      - name: Install docs deps
+        run: npm ci
+
+      - name: Build docs (TypeDoc API reference → guard:docs → VitePress)
+        run: npm run build

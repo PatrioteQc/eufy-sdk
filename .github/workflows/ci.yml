@@ -1,0 +1,34 @@
+# Actions are pinned to full-length commit SHAs. A tag is mutable — whoever owns the action can move
+# `v7` onto different code and this workflow would run it without a character changing here. A SHA
+# makes an update a reviewable diff; Dependabot rewrites the SHA and the trailing `# vX.Y.Z` comment
+# together (see dependabot.yml, which is what keeps these fresh).
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.5.0
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # The full gate, single source of truth: format:check → typecheck → the guards → build → ESM
+      # load smoke → typecheck:examples → test. The definition lives in package.json (`verify`) so a
+      # contributor reproduces CI exactly with one command — see CONTRIBUTING.md.
+      - name: Verify (npm run verify)
+        run: npm run verify
