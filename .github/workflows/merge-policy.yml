@@ -1,0 +1,67 @@
+# Only a `beta-X.Y.Z` branch may merge into `main`.
+#
+# Everything reaches `main` through a prerelease that was actually published and installed first:
+#
+#   feature / fix  ──PR──▶  beta-1.2.0  ──every push──▶  npm 1.2.0-beta.N
+#   beta-1.2.0     ──PR──▶  main        ──tag v1.2.0──▶  npm 1.2.0
+#
+# So the code behind a stable release is never code that shipped for the first time at that moment.
+# The tag is still what sets the published version (see release.yml); this only governs how commits
+# get onto the branch a tag can point at.
+#
+# ── Why a status check and not a rule ───────────────────────────────────────────────────────────
+# Rulesets can restrict who pushes where and demand a reviewed pull request, but nothing in them
+# looks at where a pull request came FROM. This job is the missing predicate, and it is worth making
+# a REQUIRED check in the `default` ruleset — otherwise it reports and nobody is stopped.
+#
+# ── Dependabot is exempt, deliberately ──────────────────────────────────────────────────────────
+# Dependabot opens against the repository's default branch and its target is static configuration,
+# not something that can follow whichever beta branch happens to be open this cycle. Without the
+# exemption every dependency update — including the security ones — would sit blocked until someone
+# rewrote .github/dependabot.yml, which is exactly when nobody does. The exemption is narrow: the
+# branch prefix Dependabot owns, and it cannot push to it by hand because only Dependabot writes there.
+name: merge policy
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, edited]
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  source-branch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check where this pull request comes from
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          set -euo pipefail
+
+          case "$HEAD_REF" in
+            dependabot/*)
+              echo "$HEAD_REF is Dependabot — exempt."
+              exit 0
+              ;;
+          esac
+
+          if printf '%s' "$HEAD_REF" | grep -qE '^beta-(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'; then
+            echo "$HEAD_REF is a beta branch — allowed."
+            exit 0
+          fi
+
+          {
+            echo "## Wrong source branch"
+            echo
+            echo "\`$HEAD_REF\` cannot merge into \`main\`. Only a \`beta-X.Y.Z\` branch can."
+            echo
+            echo "Retarget this pull request at the beta branch for the release you are aiming at,"
+            echo "creating it from \`main\` if it does not exist yet. Every push to it publishes a"
+            echo "\`X.Y.Z-beta.N\` prerelease; when the release is ready, that branch is what opens a"
+            echo "pull request against \`main\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "::error::'$HEAD_REF' cannot merge into main — only beta-X.Y.Z branches can. Retarget this pull request at the current beta branch."
+          exit 1
