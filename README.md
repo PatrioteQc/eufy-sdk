@@ -19,9 +19,9 @@
 ---
 
 > [!IMPORTANT]
-> **Not released yet.** This repository is being set up: the scaffold, the CI gate and the docs
-> pipeline are in place, the library source lands next. Nothing is published to npm — `npm install`
-> will not find this package until the first release.
+> **Not usable yet.** This repository is being set up: the scaffold, the CI gate and the docs pipeline
+> are in place, the library source lands next. `0.0.1` exists on npm only to prove the release
+> pipeline works — it is an empty package. Wait for `0.1.0`.
 
 ## What it is
 
