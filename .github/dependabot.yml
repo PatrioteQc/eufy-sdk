@@ -27,3 +27,10 @@ updates:
     groups:
       docs:
         patterns: ["*"]
+    ignore:
+      # The docs toolchain is deliberately a TypeScript major behind the SDK. TypeDoc reads the
+      # compiler through its JS API to generate the API reference, and TypeScript 7 is the Go
+      # compiler — there is no JS API to read. The bump doesn't merely fail at runtime, it fails
+      # `npm ci` on TypeDoc's peer range. Drop this entry once TypeDoc supports 7.
+      - dependency-name: typescript
+        versions: [">=7"]
