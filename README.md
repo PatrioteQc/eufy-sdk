@@ -1,8 +1,13 @@
 <div align="center">
 
+<!--
+  The suffix names the MODE, not the ink: logo-dark.svg is the white glyph for a dark background,
+  logo.svg the near-black one for a light background. The fallback <img> must be the light-mode file,
+  since that is what any renderer without prefers-color-scheme support will show.
+-->
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/mega-yfue/eufy-sdk/main/docs/public/logo.svg">
-  <img src="https://raw.githubusercontent.com/mega-yfue/eufy-sdk/main/docs/public/logo-dark.svg" alt="eufy-sdk" height="72">
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/mega-yfue/eufy-sdk/main/docs/public/logo-dark.svg">
+  <img src="https://raw.githubusercontent.com/mega-yfue/eufy-sdk/main/docs/public/logo.svg" alt="eufy-sdk" height="72">
 </picture>
 
 **One typed client for the whole eufy ecosystem — devices, realtime events, and live media.**

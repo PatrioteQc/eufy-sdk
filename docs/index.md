@@ -4,9 +4,11 @@ hero:
   name: eufy-sdk
   text: One client for every eufy device
   tagline: One typed client for the whole eufy ecosystem — devices, realtime events, and live media.
+  # The suffix names the MODE, not the ink: logo-dark.svg is the white glyph, for a dark background.
+  # Same mapping as themeConfig.logo in .vitepress/config.ts — they must agree.
   image:
-    light: /logo-dark.svg
-    dark: /logo.svg
+    light: /logo.svg
+    dark: /logo-dark.svg
     alt: eufy-sdk
   actions:
     - theme: brand
