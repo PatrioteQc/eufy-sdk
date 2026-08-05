@@ -90,18 +90,28 @@ exemption; its target branch is static configuration and cannot follow whichever
 
 ## Releasing
 
-Maintainers only. On `main`, once the version bump has been merged:
+Maintainers only. `npm run release` does one of two things, chosen by the branch:
 
 ```bash
-npm version minor --no-git-tag-version   # patch | minor | major | an explicit 1.2.3
-                                         # on the beta branch, so it arrives with the merge
-npm run release                          # reads the version, confirms, creates the GitHub Release
+# on beta-1.2.0 — bump the version where the work already is
+npm run release minor        # patch | minor | major | an explicit 1.2.3
+                             # bumps, commits, pushes; that push publishes 1.2.0-beta.N
+
+# ...open the pull request against main, review, merge, then:
+
+# on main — cut the release for the version that arrived with the merge
+npm run release
 ```
 
-`npm run release` never asks you to type the version — it reads `package.json` and cuts the matching
-tag. Typing it a second time is how a tag ends up disagreeing with the file it came from, and since
-the tag is what publishes, that disagreement ships silently. It refuses to run off `main`, on a dirty
-tree, when `main` is out of sync with the remote, or when the tag already exists.
+The bump lives on the beta branch because that branch is what carries it to `main`, through the same
+reviewed pull request as everything else — nothing writes to `main` outside a review. It refuses to
+bump anywhere else, and refuses a bump that would leave the branch name no longer naming the version
+it builds.
+
+You never type the version twice: the bump computes it, and the tag is read back from `package.json`.
+Typing it again is how a tag ends up disagreeing with the file it came from, and since the tag is what
+publishes, that disagreement ships silently. Cutting a release also refuses a dirty tree, a `main` out
+of sync with the remote, and a tag that already exists.
 
 It opens an editor for the notes rather than generating them: the release notes **are** the changelog
 — [CHANGELOG.md](./CHANGELOG.md) only points at them.
