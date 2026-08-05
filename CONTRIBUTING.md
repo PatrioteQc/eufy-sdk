@@ -72,6 +72,32 @@ synthetic fixtures. Add tests for new wire logic and capability behaviour.
 - **Live testing is read-only by default.** Never run write commands against a real device without
   explicit confirmation — the unverified-write rule exists for a reason.
 
+## Releasing
+
+Maintainers only.
+
+```bash
+npm version 1.2.3 --no-git-tag-version   # bump package.json + the lockfile
+# commit it in a PR, review, merge, then:
+gh release create v1.2.3 --target main --notes "..."
+```
+
+The release notes **are** the changelog — [CHANGELOG.md](./CHANGELOG.md) only points here — so writing
+them is the release, not paperwork around it. Publishing to npm happens from
+`.github/workflows/release.yml`, which pauses for a maintainer's approval, runs the full gate, and
+publishes with provenance.
+
+Three things worth knowing before you cut one:
+
+- **The tag decides the version, not `package.json`.** `v1.2.3` publishes 1.2.3 whatever the file
+  says. The bump commit is bookkeeping — it can ride along in the PR that finishes the work, and
+  forgetting it costs nothing but a stale number in git.
+- **A failed release burns its number, permanently.** Immutable releases mean a tag that has ever
+  belonged to a release can never be reused, even after deleting both. Never retry a release on the
+  same version — fix forward and bump.
+- **Prereleases come from a branch**, not a tag: push `beta-1.2.3` or `alpha-1.2.3` and each push
+  publishes `1.2.3-beta.N` on that dist-tag, with N continuing from the registry.
+
 ## Working with AI agents
 
 An AI agent is welcome here — most tools load [AGENTS.md](./AGENTS.md) on their own, which is where
