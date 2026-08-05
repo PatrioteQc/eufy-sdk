@@ -6,10 +6,17 @@
 #   beta    — a push to a `beta-X.Y.Z` branch
 #   alpha   — a push to an `alpha-X.Y.Z` branch
 #
-# A prerelease branch sets the base version from its OWN NAME and appends a prerelease suffix
+# A prerelease branch takes the base version from its OWN NAME and appends a prerelease suffix
 # (`beta-1.2.3` → 1.2.3-beta.0, .1, … on each push). Nothing is committed back — the bump is local to
 # the runner, so the branch name stays the single source of the base version and cannot drift from
 # package.json the way a committed bump would.
+#
+# The counter therefore has to come from somewhere, and the registry is the only place that knows it:
+# nothing is committed, so package.json still says the base version on every run. Deriving the suffix
+# locally would republish `-beta.0` forever and every push after the first would 403 on an
+# already-published version. So the step below asks npm what is on the channel's dist-tag and
+# increments THAT — the registry is the state, which is also what makes a re-run of a failed job
+# correct rather than a duplicate.
 #
 # ── Credentials: npm OIDC trusted publishing, NOT a token ───────────────────────────────────────
 # There is no NPM_TOKEN. The runner mints a short-lived OIDC identity that npm verifies against the
@@ -84,14 +91,33 @@ jobs:
             *)                  echo "tag=latest" >> "$GITHUB_OUTPUT" ;;
           esac
 
-      # `beta-1.2.3` → set 1.2.3, then append the prerelease suffix (1.2.3-beta.0). --no-git-tag-version
-      # keeps it local to the runner: nothing is committed or tagged.
+      # `beta-1.2.3` → 1.2.3-beta.N, where N continues from whatever is on the `beta` dist-tag rather
+      # than restarting at 0 on every push (see the header). `npm version pre` is the right verb, not
+      # `prerelease`: on 1.2.3 the latter bumps the patch first and yields 1.2.3-beta.0 → 1.2.4-beta.0,
+      # silently releasing a version ahead of the branch it came from.
+      #
+      # --no-git-tag-version keeps all of it local to the runner: nothing is committed or tagged.
       - name: Apply the prerelease version
         if: steps.channel.outputs.tag != 'latest'
+        env:
+          TAG: ${{ steps.channel.outputs.tag }}
         run: |
+          set -euo pipefail
           base="${GITHUB_REF_NAME#*-}"
-          npm version "$base" --no-git-tag-version --allow-same-version
-          npm version pre --preid="${{ steps.channel.outputs.tag }}" --no-git-tag-version
+          # A brand-new package, or a channel with nothing on it yet, prints an empty string here
+          # rather than failing — hence the `|| true` and the emptiness check.
+          published="$(npm view "$(npm pkg get name --workspaces=false | tr -d '"')@$TAG" version 2>/dev/null || true)"
+
+          if [ -n "$published" ] && [ "${published%%-*}" = "$base" ]; then
+            # Same base still in flight on this channel: continue its counter.
+            npm version "$published" --no-git-tag-version --allow-same-version
+            npm version pre --preid="$TAG" --no-git-tag-version
+          else
+            # First prerelease of this base, or the branch moved on to a new base version.
+            npm version "$base" --no-git-tag-version --allow-same-version
+            npm version pre --preid="$TAG" --no-git-tag-version
+          fi
+          echo "publishing $(npm pkg get version | tr -d '"') to the $TAG channel"
 
       # Inspect what actually ships before it ships — `files` is dist/ only, so a stray path in the
       # tarball listing is the signal that something leaked into the package.
