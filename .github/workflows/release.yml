@@ -21,9 +21,17 @@
 # ── Credentials: npm OIDC trusted publishing, NOT a token ───────────────────────────────────────
 # There is no NPM_TOKEN. The runner mints a short-lived OIDC identity that npm verifies against the
 # trusted publisher configured on the package (npmjs.com → the package → Settings → Trusted
-# publishers: this repository + this workflow filename). Nothing long-lived is stored in this repo, so
-# there is no token to leak, rotate, or expire. It requires npm ≥ 11.5.1, which is why the toolchain
-# npm is upgraded below, and `id-token: write` in the permissions block.
+# publishers), which pins three things that must all keep matching: this repository, this workflow's
+# FILENAME, and the `release` environment. Rename this file or drop the `environment:` key below and
+# publishing stops working — the failure looks like an auth error, not a config error.
+#
+# Nothing long-lived is stored in this repo, so there is no token to leak, rotate, or expire. It
+# requires npm ≥ 11.5.1, which is why the toolchain npm is upgraded below, and `id-token: write` in
+# the permissions block.
+#
+# 0.0.1 was published by hand, because npm has no way to pre-register a trusted publisher for a
+# package that does not exist yet. That was the only manual publish; everything since goes through
+# here.
 #
 # `--provenance` publishes a signed attestation linking the tarball to this workflow run and commit,
 # which npm shows on the package page. It needs the same `id-token: write`.
@@ -60,6 +68,16 @@ jobs:
       github.repository == 'mega-yfue/eufy-sdk'
       && !(github.event_name == 'release' && github.event.release.prerelease)
     runs-on: ubuntu-latest
+    # REQUIRED, not decorative: the npm trusted publisher is configured with the environment name, so
+    # the OIDC token has to carry a matching `environment` claim or npm rejects the publish. Removing
+    # this line does not loosen the workflow, it breaks it.
+    #
+    # It also gates the publish on a human: the environment requires a review from one of the three
+    # maintainers, and self-review is disabled — whoever cuts the release is not the one who approves
+    # it. The job pauses at this step until someone else clicks approve.
+    environment:
+      name: release
+      url: https://www.npmjs.com/package/@mega-yfue/eufy-sdk
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
