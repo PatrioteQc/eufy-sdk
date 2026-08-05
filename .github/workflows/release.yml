@@ -1,10 +1,20 @@
 # Publish @mega-yfue/eufy-sdk to npm.
 #
 # Three channels, one job:
-#   latest  — a published GitHub Release on tag vX.Y.Z. The version is whatever package.json says;
-#             the tag is documentation, not the source of the number.
+#   latest  — a published GitHub Release on tag vX.Y.Z
 #   beta    — a push to a `beta-X.Y.Z` branch
 #   alpha   — a push to an `alpha-X.Y.Z` branch
+#
+# ── The REF names the version, on all three channels ────────────────────────────────────────────
+# The tag `v1.2.3` publishes 1.2.3; the branch `beta-1.2.3` publishes 1.2.3-beta.N. package.json's
+# committed version is never what ships and is not consulted — releasing is `git tag`, never a bump
+# commit.
+#
+# The alternative, publishing whatever package.json holds, needs the bump committed BEFORE the tag
+# and has nothing tying the two together: tag v0.1.0 with package.json still on 0.0.5 and 0.0.5 ships,
+# silently, under a release page that says 0.1.0. That is not a mistake worth being able to make here,
+# because immutable releases (below) mean it costs two version numbers — the tag's and the one
+# published by accident. Deriving from the ref removes the failure instead of checking for it.
 #
 # A prerelease branch takes the base version from its OWN NAME and appends a prerelease suffix
 # (`beta-1.2.3` → 1.2.3-beta.0, .1, … on each push). Nothing is committed back — the bump is local to
@@ -163,6 +173,28 @@ jobs:
             npm version pre --preid="$TAG" --no-git-tag-version
           fi
           echo "publishing $(npm pkg get version | tr -d '"') to the $TAG channel"
+
+      # `v1.2.3` → publish 1.2.3. The tag is the version, so a release is a tag and nothing else — no
+      # bump commit to remember, and no way for the number on the release page to disagree with the
+      # number on npm.
+      #
+      # The regex is a gate, not decoration: the tag names a version that can never be withdrawn, and
+      # `npm version` accepts plenty of strings that are not the release you meant. A tag that is not
+      # exactly vX.Y.Z stops here.
+      - name: Take the version from the tag
+        if: steps.channel.outputs.tag == 'latest'
+        run: |
+          set -euo pipefail
+          # Anchored on the whole tag, so the `v` is required rather than merely tolerated, and each
+          # component rejects a leading zero — `v01.2.3` is not semver, but `npm version` takes it and
+          # publishes something nobody can install by the name they expect.
+          if ! printf '%s' "$GITHUB_REF_NAME" | grep -qE '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'; then
+            echo "::error::tag $GITHUB_REF_NAME is not vX.Y.Z — a stable release takes its version from the tag"
+            exit 1
+          fi
+          v="${GITHUB_REF_NAME#v}"
+          npm version "$v" --no-git-tag-version --allow-same-version
+          echo "publishing $v to the latest channel"
 
       # Inspect what actually ships before it ships — `files` is dist/ only, so a stray path in the
       # tarball listing is the signal that something leaked into the package.
