@@ -77,9 +77,18 @@ synthetic fixtures. Add tests for new wire logic and capability behaviour.
 Maintainers only.
 
 ```bash
-npm version 1.2.3 --no-git-tag-version   # bump package.json + the lockfile
+v=$(npm version minor --no-git-tag-version)   # patch | minor | major | an explicit 1.2.3
+                                              # bumps package.json + the lockfile, prints vX.Y.Z
 # commit it in a PR, review, merge, then:
-gh release create v1.2.3 --target main --notes "..."
+gh release create "$v" --target main --notes "..."
+```
+
+`npm version` computes the next number from **`package.json`**, so `patch` on a file that drifted
+behind the registry gives a version that is already taken. Every release bumps the file, so it does not
+drift in normal use — but if you have reason to doubt it, reset from what is actually published first:
+
+```bash
+npm pkg set version="$(npm view @mega-yfue/eufy-sdk version)"
 ```
 
 The release notes **are** the changelog — [CHANGELOG.md](./CHANGELOG.md) only points here — so writing
