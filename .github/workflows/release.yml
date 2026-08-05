@@ -39,9 +39,9 @@
 # requires npm ≥ 11.5.1, which is why the toolchain npm is upgraded below, and `id-token: write` in
 # the permissions block.
 #
-# 0.0.1 was published by hand, because npm has no way to pre-register a trusted publisher for a
-# package that does not exist yet. That was the only manual publish; everything since goes through
-# here.
+# A package's very first publish cannot use this path: npm has no way to pre-register a trusted
+# publisher for a name that does not exist yet, so the trust is configured against an existing
+# package.
 #
 # ── A failed release burns its version number, permanently ──────────────────────────────────────
 # Immutable releases are on. A tag that has ever belonged to a release cannot be reused, even after
@@ -49,9 +49,9 @@
 # release` and there is no way back. The same feature is why a release tag cannot be pushed or moved
 # with git; it has to be created through the release flow.
 #
-# So a release that fails partway does not get retried on the same number: fix forward, bump, and cut
-# a new one. v0.0.2 was lost exactly this way. Cheap for a 0.0.x, expensive once the number means
-# something — which is why `npm run verify` runs in this job before anything is published.
+# So a release that fails partway is never retried on the same number: fix forward, bump, and cut a
+# new one. That is what makes running `npm run verify` in this job worth the duplication with CI — a
+# gate failing here costs a version number, and there is no second attempt at it.
 #
 # `--provenance` publishes a signed attestation linking the tarball to this workflow run and commit,
 # which npm shows on the package page. It needs the same `id-token: write`.
@@ -108,14 +108,13 @@ jobs:
           cache: npm
           registry-url: "https://registry.npmjs.org"
 
-      # OIDC trusted publishing needs npm >= 11.5.1. Node 24.5.0 already bundles exactly that, so this
-      # is about staying current within a major that still runs on it — NOT `npm@latest`, which is now
-      # npm 12 and requires Node ^22.22.2 || ^24.15.0 || >=26. Chasing latest here breaks the release
-      # the moment npm's floor moves ahead of the Node this repo pins, which is what it did.
+      # OIDC trusted publishing needs npm >= 11.5.1, which Node 24.5.0 already bundles. The major is
+      # pinned rather than tracking `npm@latest`, because npm's own Node floor moves independently of
+      # the Node version pinned here: npm 12 requires ^22.22.2 || ^24.15.0 || >=26 and will not
+      # install on this runtime.
       #
-      # The assertion is the point of the step: if a future Node bump ships an npm below the OIDC
-      # floor, publishing fails as an authentication error several steps later, with nothing pointing
-      # at the cause. Fail here instead, saying so.
+      # The assertion is the point of the step. An npm below the floor fails publishing as an
+      # authentication error several steps later, with nothing pointing at the cause; this names it.
       - name: Ensure npm can do OIDC
         run: |
           set -euo pipefail

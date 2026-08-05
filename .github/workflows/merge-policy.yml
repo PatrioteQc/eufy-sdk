@@ -9,17 +9,16 @@
 # The tag is still what sets the published version (see release.yml); this only governs how commits
 # get onto the branch a tag can point at.
 #
-# ── Why a status check and not a rule ───────────────────────────────────────────────────────────
-# Rulesets can restrict who pushes where and demand a reviewed pull request, but nothing in them
-# looks at where a pull request came FROM. This job is the missing predicate, and it is worth making
-# a REQUIRED check in the `default` ruleset — otherwise it reports and nobody is stopped.
+# ── A status check, because no rule can express this ────────────────────────────────────────────
+# Rulesets restrict who pushes where and demand a reviewed pull request; none of them looks at where
+# a pull request came FROM. This job supplies that predicate, and is registered as a REQUIRED check
+# in the `default` ruleset. Unregistered, it reports and blocks nothing.
 #
-# ── Dependabot is exempt, deliberately ──────────────────────────────────────────────────────────
-# Dependabot opens against the repository's default branch and its target is static configuration,
-# not something that can follow whichever beta branch happens to be open this cycle. Without the
-# exemption every dependency update — including the security ones — would sit blocked until someone
-# rewrote .github/dependabot.yml, which is exactly when nobody does. The exemption is narrow: the
-# branch prefix Dependabot owns, and it cannot push to it by hand because only Dependabot writes there.
+# ── Dependabot is exempt ────────────────────────────────────────────────────────────────────────
+# Dependabot opens against the repository's default branch, and its target is static configuration
+# that cannot follow whichever beta branch is open this cycle. Without the exemption every dependency
+# update, security ones included, blocks until someone edits .github/dependabot.yml. The exemption
+# covers one branch prefix, which only Dependabot writes to.
 name: merge policy
 
 on:

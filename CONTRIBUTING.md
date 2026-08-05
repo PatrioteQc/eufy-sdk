@@ -72,35 +72,50 @@ synthetic fixtures. Add tests for new wire logic and capability behaviour.
 - **Live testing is read-only by default.** Never run write commands against a real device without
   explicit confirmation — the unverified-write rule exists for a reason.
 
+## Where your branch goes
+
+**`main` only accepts pull requests from a `beta-X.Y.Z` branch.** A CI check enforces it, so a pull
+request opened against `main` from anywhere else is refused before review. Work targets the beta
+branch of the release it belongs to:
+
+```
+your branch  ──PR──▶  beta-1.2.0  ──every push──▶  npm 1.2.0-beta.N
+                      beta-1.2.0  ──PR──▶  main  ──tag v1.2.0──▶  npm 1.2.0
+```
+
+Nothing reaches a stable release without having been published as a prerelease and installable first.
+If the beta branch for your target release does not exist yet, create it from `main` — but note that
+**every push to it publishes**, so it is a staging branch, not a scratchpad. Dependabot is the one
+exemption; its target branch is static configuration and cannot follow whichever beta is open.
+
 ## Releasing
 
-Maintainers only.
+Maintainers only. On `main`, once the version bump has been merged:
 
 ```bash
-v=$(npm version minor --no-git-tag-version)   # patch | minor | major | an explicit 1.2.3
-                                              # bumps package.json + the lockfile, prints vX.Y.Z
-# commit it in a PR, review, merge, then:
-gh release create "$v" --target main --notes "..."
+npm version minor --no-git-tag-version   # patch | minor | major | an explicit 1.2.3
+                                         # on the beta branch, so it arrives with the merge
+npm run release                          # reads the version, confirms, creates the GitHub Release
 ```
 
-`npm version` computes the next number from **`package.json`**, so `patch` on a file that drifted
-behind the registry gives a version that is already taken. Every release bumps the file, so it does not
-drift in normal use — but if you have reason to doubt it, reset from what is actually published first:
+`npm run release` never asks you to type the version — it reads `package.json` and cuts the matching
+tag. Typing it a second time is how a tag ends up disagreeing with the file it came from, and since
+the tag is what publishes, that disagreement ships silently. It refuses to run off `main`, on a dirty
+tree, when `main` is out of sync with the remote, or when the tag already exists.
 
-```bash
-npm pkg set version="$(npm view @mega-yfue/eufy-sdk version)"
-```
+It opens an editor for the notes rather than generating them: the release notes **are** the changelog
+— [CHANGELOG.md](./CHANGELOG.md) only points at them.
 
-The release notes **are** the changelog — [CHANGELOG.md](./CHANGELOG.md) only points here — so writing
-them is the release, not paperwork around it. Publishing to npm happens from
-`.github/workflows/release.yml`, which pauses for a maintainer's approval, runs the full gate, and
-publishes with provenance.
+Creating the release is the whole job. `.github/workflows/release.yml` takes over: it pauses for a
+maintainer's approval, runs the full gate, and publishes with provenance. No npm token exists anywhere
+in this repository — the runner authenticates with a short-lived OIDC identity.
 
 Three things worth knowing before you cut one:
 
 - **The tag decides the version, not `package.json`.** `v1.2.3` publishes 1.2.3 whatever the file
-  says. The bump commit is bookkeeping — it can ride along in the PR that finishes the work, and
-  forgetting it costs nothing but a stale number in git.
+  says. `npm version` computes the next number from the file, though, so `patch` on a file that
+  drifted behind the registry gives a version that is already taken. If you doubt it, resync first
+  with `npm pkg set version="$(npm view @mega-yfue/eufy-sdk version)"`.
 - **A failed release burns its number, permanently.** Immutable releases mean a tag that has ever
   belonged to a release can never be reused, even after deleting both. Never retry a release on the
   same version — fix forward and bump.

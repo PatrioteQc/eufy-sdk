@@ -41,8 +41,8 @@ if [ -n "$(git status --porcelain)" ]; then
 fi
 
 # Immutable releases mean a tag name is spent the moment it belongs to a release, and stays spent
-# after the release is deleted. Catching an existing tag here is cheap; the ledger of already-burned
-# names is not exposed anywhere, so a clean result means "not obviously taken", not "available".
+# after the release is deleted. This sees tags that exist; the ledger of names burned by a deleted
+# release is not exposed anywhere, so a clean result means "not obviously taken", not "available".
 if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
   echo "error: $tag already exists — a released version number can never be reused" >&2
   exit 1
