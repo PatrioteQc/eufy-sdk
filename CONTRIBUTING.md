@@ -83,14 +83,22 @@ your branch  ──PR──▶  beta-1.2.0  ──every push──▶  npm 1.2.0
                       beta-1.2.0  ──PR──▶  main  ──tag v1.2.0──▶  npm 1.2.0
 ```
 
-Nothing reaches a stable release without having been published as a prerelease and installable first.
-If the beta branch for your target release does not exist yet, create it from `main` — but note that
-**every push to it publishes**, so it is a staging branch, not a scratchpad. Dependabot is the one
-exemption; its target branch is static configuration and cannot follow whichever beta is open.
+The intent is that code ships as an installable prerelease before it ships as a stable one. If the
+beta branch for your target release does not exist yet, create it from `main` — but note that **every
+push to it triggers a publish**, so it is a staging branch, not a scratchpad. Each of those publishes
+waits for a maintainer to approve the deployment, so nothing leaves for npm unattended; a run sitting
+at "waiting" is that, not a stuck job.
+
+`alpha-X.Y.Z` branches work the same way and publish to the `alpha` dist-tag, but they cannot merge
+into `main` — they are for trying something out, not for staging a release.
+
+Dependabot is the one exemption from the branch rule; its target branch is static configuration and
+cannot follow whichever beta is open.
 
 ## Releasing
 
-Maintainers only. `npm run release` does one of two things, chosen by the branch:
+`npm run release` does one of two things, chosen by the branch. Cutting the stable release is
+maintainers only; the bump is ordinary work on a beta branch.
 
 ```bash
 # on beta-1.2.0 — bump the version where the work already is
@@ -117,8 +125,11 @@ It opens an editor for the notes rather than generating them: the release notes 
 — [CHANGELOG.md](./CHANGELOG.md) only points at them.
 
 Creating the release is the whole job. `.github/workflows/release.yml` takes over: it pauses for a
-maintainer's approval, runs the full gate, and publishes with provenance. No npm token exists anywhere
-in this repository — the runner authenticates with a short-lived OIDC identity.
+maintainer's approval, runs the full gate again, and publishes with provenance. The gate runs twice on
+the same commit on purpose — a failure there costs a version number, since a tag that has belonged to
+a release can never be reused. No npm token exists anywhere in this repository; the runner
+authenticates with a short-lived OIDC identity tied to this workflow's filename and the `release`
+environment.
 
 Three things worth knowing before you cut one:
 
