@@ -56,11 +56,15 @@ jobs:
             echo
             echo "\`$HEAD_REF\` cannot merge into \`main\`. Only a \`beta-X.Y.Z\` branch can."
             echo
-            echo "Retarget this pull request at the beta branch for the release you are aiming at,"
-            echo "creating it from \`main\` if it does not exist yet. Every push to it publishes a"
-            echo "\`X.Y.Z-beta.N\` prerelease; when the release is ready, that branch is what opens a"
-            echo "pull request against \`main\`."
+            echo "Change the base branch to the beta branch for the release you are aiming at —"
+            echo "**Edit** next to the title, then the base dropdown. Nothing is lost: the commits,"
+            echo "the discussion and any reviews stay on this pull request, so there is no need to"
+            echo "close it and open another."
+            echo
+            echo "Create the beta branch from \`main\` if it does not exist yet. Every push to it"
+            echo "publishes a \`X.Y.Z-beta.N\` prerelease, and when the release is ready that branch"
+            echo "is what opens a pull request against \`main\`."
           } >> "$GITHUB_STEP_SUMMARY"
 
-          echo "::error::'$HEAD_REF' cannot merge into main — only beta-X.Y.Z branches can. Retarget this pull request at the current beta branch."
+          echo "::error::'$HEAD_REF' cannot merge into main — only beta-X.Y.Z branches can. Change this pull request's base branch to the current beta; it keeps its commits and discussion."
           exit 1

@@ -1,6 +1,10 @@
 <!--
 Keep it dev-to-dev. What changed and why; skip the ceremony.
 The rules this PR is reviewed against are in AGENTS.md.
+
+BASE BRANCH: `main` only takes pull requests from `beta-X.Y.Z`. If this one targets main from
+anywhere else, a check will block it — change the base with the dropdown above rather than opening
+a new pull request; this one keeps its commits and its discussion. See CONTRIBUTING.md.
 -->
 
 ## What changed
