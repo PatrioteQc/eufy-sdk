@@ -63,7 +63,8 @@
     "guard:lines": "bash scripts/ci/guard-lines.sh",
     "guard:seal": "bash scripts/ci/guard-seal.sh",
     "check:esm": "node -e \"import('./dist/index.js').then(m=>console.log('ESM OK:',Object.keys(m).length,'exports'))\"",
-    "verify": "npm run format:check && npm run typecheck && npm run guard:decorrelation && npm run guard:lines && npm run guard:docrefs && npm run guard:consumer-agnostic && npm run build && npm run guard:seal && npm run check:esm && npm run typecheck:examples && npm test"
+    "verify": "npm run format:check && npm run typecheck && npm run guard:decorrelation && npm run guard:lines && npm run guard:docrefs && npm run guard:consumer-agnostic && npm run build && npm run guard:seal && npm run check:esm && npm run typecheck:examples && npm test",
+    "release": "bash scripts/release.sh"
   },
   "engines": {
     "node": ">=24.5.0"
