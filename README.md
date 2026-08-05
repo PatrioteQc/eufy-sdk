@@ -12,6 +12,11 @@
 
 **One typed client for the whole eufy ecosystem — devices, realtime events, and live media.**
 
+[![npm](https://img.shields.io/npm/v/@mega-yfue/eufy-sdk?logo=npm&color=cb3837)](https://www.npmjs.com/package/@mega-yfue/eufy-sdk)
+[![CI](https://github.com/mega-yfue/eufy-sdk/actions/workflows/ci.yml/badge.svg)](https://github.com/mega-yfue/eufy-sdk/actions/workflows/ci.yml)
+[![node](https://img.shields.io/node/v/@mega-yfue/eufy-sdk?logo=nodedotjs)](./.nvmrc)
+[![license](https://img.shields.io/npm/l/@mega-yfue/eufy-sdk)](./LICENSE)
+
 [Documentation](https://mega-yfue.github.io/) · [Contributing](./CONTRIBUTING.md) · [Changelog](./CHANGELOG.md)
 
 </div>
