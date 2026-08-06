@@ -166,10 +166,18 @@ jobs:
       # Written once, before anything reads or writes a registry. setup-node's .npmrc binds
       # NODE_AUTH_TOKEN to `//registry.npmjs.org/` alone, so a different host needs its own line — and
       # this repository is private, which means even READING its package needs the token.
+      #
+      # It has to go in the file npm ACTUALLY reads. setup-node points NPM_CONFIG_USERCONFIG at a temp
+      # .npmrc, and that supersedes ~/.npmrc — appending to the home file looks right, changes nothing,
+      # and fails as ENEEDAUTH at the publish step.
       - name: Authenticate to GitHub Packages
         env:
           GH_PACKAGES_TOKEN: ${{ github.token }}
-        run: echo "//npm.pkg.github.com/:_authToken=${GH_PACKAGES_TOKEN}" >> ~/.npmrc
+        run: |
+          set -euo pipefail
+          npmrc="${NPM_CONFIG_USERCONFIG:-$HOME/.npmrc}"
+          echo "//npm.pkg.github.com/:_authToken=${GH_PACKAGES_TOKEN}" >> "$npmrc"
+          echo "auth written to $npmrc"
 
       # `beta-1.2.3` → 1.2.3-beta.N, where N continues from whatever is on the `beta` dist-tag rather
       # than restarting at 0 on every push (see the header). `npm version pre` is the right verb, not
