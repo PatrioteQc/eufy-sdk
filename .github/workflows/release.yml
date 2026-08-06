@@ -176,8 +176,11 @@ jobs:
         run: |
           set -euo pipefail
           npmrc="${NPM_CONFIG_USERCONFIG:-$HOME/.npmrc}"
-          echo "//npm.pkg.github.com/:_authToken=${GH_PACKAGES_TOKEN}" >> "$npmrc"
-          echo "auth written to $npmrc"
+          # A leading newline, because `>>` does not add one: setup-node's file may not end in a
+          # newline, and the line would then be glued onto the previous entry and silently ignored.
+          printf '\n//npm.pkg.github.com/:_authToken=%s\n' "$GH_PACKAGES_TOKEN" >> "$npmrc"
+          echo "auth written to $npmrc; entries now:"
+          sed 's/=.*/=<redacted>/' "$npmrc"
 
       # `beta-1.2.3` → 1.2.3-beta.N, where N continues from whatever is on the `beta` dist-tag rather
       # than restarting at 0 on every push (see the header). `npm version pre` is the right verb, not
