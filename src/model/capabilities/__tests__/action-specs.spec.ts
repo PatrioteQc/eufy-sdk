@@ -91,13 +91,17 @@ const installedActions = (obj: CapabilityActions): [string, unknown][] =>
     .filter(([, d]) => typeof d.value === "function")
     .map(([name, d]) => [name, d.value]);
 
-/** Every described `(module, action)` pair in the catalogue, labelled for a readable failure. */
-const specs: { label: string; mod: CapabilityModule; name: string; spec: ActionSpec }[] = MODULES.flatMap((mod) =>
-  installedActions(built(mod)).flatMap(([name, fn]) => {
-    const spec = actionSpecOf(fn);
-    return spec ? [{ label: `${mod.capability}.${name}`, mod, name, spec }] : [];
-  }),
-);
+/**
+ * Every described `(module, action)` pair in the catalogue, labelled for a readable failure. The built
+ * function is carried along because its arity is what "takes no arguments" is checked against.
+ */
+const specs: { label: string; mod: CapabilityModule; name: string; spec: ActionSpec; arity: number }[] =
+  MODULES.flatMap((mod) =>
+    installedActions(built(mod)).flatMap(([name, fn]) => {
+      const spec = actionSpecOf(fn);
+      return spec ? [{ label: `${mod.capability}.${name}`, mod, name, spec, arity: (fn as () => void).length }] : [];
+    }),
+  );
 
 /** Every described `(module, action, argument)` triple, so an argument failure names the argument. */
 const args: { label: string; mod: CapabilityModule; spec: ActionSpec; arg: ActionArgSpec }[] = specs.flatMap(
@@ -115,6 +119,14 @@ const reflected = (
   const member = mod.members?.[spec.reflects];
   if (member && "param" in member) return { property: member.property ?? spec.reflects, values: member.decodedValues };
   return undefined;
+};
+
+/** Every value the reflected read can report — its decoded set, or the property schema's own labels. */
+const readDomain = (mod: CapabilityModule, spec: ActionSpec): readonly (string | number)[] | undefined => {
+  const read = reflected(mod, spec);
+  if (read?.values) return read.values;
+  const property = mod.properties.find((p) => p.name === read?.property);
+  return property?.enumValues && Object.keys(property.enumValues).map(Number);
 };
 
 /**
@@ -209,11 +221,69 @@ describe("described actions — arguments a caller can solicit a value for", () 
    * omits its own copy rather than shipping a second one that can drift.
    */
   it.each(args.filter(({ arg }) => arg.kind === "enum"))("$label has a domain to offer", ({ mod, spec, arg }) => {
-    const read = reflected(mod, spec);
-    const property = mod.properties.find((p) => p.name === read?.property);
-    const domain = arg.values?.length || read?.values?.length || Object.keys(property?.enumValues ?? {}).length;
+    const domain = arg.values?.length || readDomain(mod, spec)?.length;
     expect(domain).toBeGreaterThan(0);
   });
+
+  /**
+   * An argument that states its own `values` beside a read that publishes a set is narrowing that set, not
+   * replacing it — `arming` reads eight guard modes and can set the three whose wire was captured. Offering
+   * a value the read cannot report would be the inverse mistake, and a worse one: a picker entry for a state
+   * the device will never show back.
+   */
+  it.each(args.filter(({ arg, spec }) => arg.values && spec.reflects))(
+    "$label offers a subset of what its read reports",
+    ({ mod, spec, arg }) => {
+      const domain = readDomain(mod, spec);
+      if (domain) expect(domain).toEqual(expect.arrayContaining([...arg.values!]));
+    },
+  );
+
+  /**
+   * An EMPTY argument list means "takes none" and absent means "not stated" — the distinction a caller
+   * needs to tell an offerable button from a method nobody has described yet. Arity is what keeps the two
+   * honest, and it is the reason a stated list is checked against it in BOTH directions: a required
+   * argument added to a nullary method makes the derived `[]` a lie, and one removed makes a stated
+   * argument point at nothing.
+   *
+   * Optional arguments are excluded from the count because a default parameter is invisible to
+   * `Function.length` — which is exactly why a method with one has to name it (`locate`).
+   */
+  it.each(specs.filter(({ spec }) => spec.args))(
+    "$label states as many required arguments as it takes",
+    ({ spec, arity }) => {
+      expect(spec.args!.filter((a) => !a.optional)).toHaveLength(arity);
+    },
+  );
+
+  /**
+   * A member that ANSWERS rather than acts takes no arguments without being a control — `ptz.preset()`
+   * hands back the namespace its verbs live on, `lock.getAutoLockState()` a snapshot. Deriving `[]` for
+   * those would render a button that calls them and discards the result, so they stay unstated, which is
+   * the same signal every other un-offerable method gives.
+   */
+  const answering = (mod: CapabilityModule, name: string): boolean =>
+    (mod.members?.[name] as { answers?: true } | undefined)?.answers === true;
+
+  it.each(specs.filter(({ mod, name }) => answering(mod, name)))(
+    "$label states no arguments — it answers",
+    ({ spec }) => {
+      expect(spec.args).toBeUndefined();
+    },
+  );
+
+  /**
+   * Every OTHER action taking no required argument says so: it takes none at all (the derived `[]`) or
+   * every argument it takes is one a default hides from arity, and it names them. Silence there is the
+   * ambiguity this closes — a caller could not tell `lock()` from a method awaiting a description.
+   */
+  it.each(specs.filter(({ arity, mod, name }) => arity === 0 && !answering(mod, name)))(
+    "$label states what it takes, rather than staying silent",
+    ({ spec }) => {
+      expect(spec.args).toBeDefined();
+      expect(spec.args!.every((a) => a.optional)).toBe(true);
+    },
+  );
 });
 
 describe("described actions — nothing is gated on being described", () => {

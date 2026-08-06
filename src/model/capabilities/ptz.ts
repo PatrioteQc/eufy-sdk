@@ -427,29 +427,35 @@ export const PTZ_MEMBERS = {
    * request/reply and exist only when bound to a media provider — the transport stays
    * capability-agnostic (it runs a generic control-payload query and resolves the correlated notify)
    * while this module owns the sub-command id and the reply parsing.
+   *
+   * `answers` because calling it performs nothing: it hands back the namespace the verbs live on. Offering
+   * it as a control would render a button that returns an object and does nothing.
    */
-  preset: method(
-    ({ ctx, sink, media }) =>
-      (): PtzPresetActions => {
-        const p: PtzPresetActions = {
-          goto: (id: number) => sink.dispatch(gotoPresetCommand(id, ctx)),
-          preview: (id: number) => sink.dispatch(previewPresetCommand(id, ctx)),
-          save: async (id: number) => {
-            for (const cmd of savePresetCommand(id, ctx)) await sink.dispatch(cmd);
-          },
-          setDefault: (id: number) => sink.dispatch(setDefaultPositionCommand(id, ctx)),
-          delete: (id: number) => sink.dispatch(deletePresetCommand(id, ctx)),
-        };
-        if (media?.p2pControlQuery) {
-          p.list = async (opts) =>
-            parsePresetPoints(await media.p2pControlQuery!(PTZ_CMD.PTZ_PRESET_QUERY, { value: 0 }, opts));
-          p.image = async (id, opts) =>
-            parsePresetImage(await media.p2pControlQuery!(PTZ_CMD.PTZ_PRESET_PIC, { value: id }, opts));
-        }
-        return p;
-      },
-    "The preset sub-API: goto/preview/save/setDefault/delete, plus list/image when bound.",
-  ),
+  preset: {
+    ...method(
+      ({ ctx, sink, media }) =>
+        (): PtzPresetActions => {
+          const p: PtzPresetActions = {
+            goto: (id: number) => sink.dispatch(gotoPresetCommand(id, ctx)),
+            preview: (id: number) => sink.dispatch(previewPresetCommand(id, ctx)),
+            save: async (id: number) => {
+              for (const cmd of savePresetCommand(id, ctx)) await sink.dispatch(cmd);
+            },
+            setDefault: (id: number) => sink.dispatch(setDefaultPositionCommand(id, ctx)),
+            delete: (id: number) => sink.dispatch(deletePresetCommand(id, ctx)),
+          };
+          if (media?.p2pControlQuery) {
+            p.list = async (opts) =>
+              parsePresetPoints(await media.p2pControlQuery!(PTZ_CMD.PTZ_PRESET_QUERY, { value: 0 }, opts));
+            p.image = async (id, opts) =>
+              parsePresetImage(await media.p2pControlQuery!(PTZ_CMD.PTZ_PRESET_PIC, { value: id }, opts));
+          }
+          return p;
+        },
+      "The preset sub-API: goto/preview/save/setDefault/delete, plus list/image when bound.",
+    ),
+    answers: true,
+  },
 } as const satisfies Members;
 
 export const PTZ: CapabilityModule = {

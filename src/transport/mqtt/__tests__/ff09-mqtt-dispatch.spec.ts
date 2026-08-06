@@ -47,10 +47,15 @@ function makeRouter() {
 }
 
 describe("MqttCommandRouter.claimsDevice", () => {
-  it("claims a device with no p2p_did endpoint (MQTT-only lock/garage), declines a P2P one", () => {
-    expect(MqttCommandRouter.claimsDevice({ p2pDid: "" } as EufyDevice)).toBe(true);
-    expect(MqttCommandRouter.claimsDevice({} as EufyDevice)).toBe(true);
-    expect(MqttCommandRouter.claimsDevice({ p2pDid: "DID-XYZ" } as EufyDevice)).toBe(false);
+  it("claims a eufy-cloud device with no p2p_did endpoint (MQTT-only lock/garage), declines a P2P one", () => {
+    expect(MqttCommandRouter.claimsDevice({ api: "mega", p2pDid: "" } as EufyDevice)).toBe(true);
+    expect(MqttCommandRouter.claimsDevice({ api: "mega" } as EufyDevice)).toBe(true);
+    expect(MqttCommandRouter.claimsDevice({ api: "mega", p2pDid: "DID-XYZ" } as EufyDevice)).toBe(false);
+  });
+
+  it("does NOT claim a device on another cloud — a printer isn't swept onto the eufy MQTT plane", () => {
+    // api "ankermake" (a printer): no P2P endpoint, but not this stack's plane → neither router claims it.
+    expect(MqttCommandRouter.claimsDevice({ api: "ankermake", p2pDid: "" } as EufyDevice)).toBe(false);
   });
 });
 

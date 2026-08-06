@@ -45,13 +45,16 @@ async function main(): Promise<void> {
       // `stateful` means the action changes a value you can read back — `reflects` names that read, so
       // a control can show its own position. `momentary` has no state to show.
       //
-      // No `args` means the signature is not STATED, not that the method takes nothing — offer those
-      // from your own code rather than generating a control for them.
+      // An EMPTY `args` means the method takes nothing — a plain button. No `args` at all means the
+      // signature is not STATED, which is different: offer those from your own code rather than
+      // generating a control for them. An argument's own `values` is what it ACCEPTS, which can be
+      // narrower than the `values` on the read it reflects (what the device can report).
       const args = a.args
         ? a.args
             .map((arg) => {
               const range = arg.min !== undefined && arg.max !== undefined ? ` ${arg.min}..${arg.max}` : "";
-              return `${arg.name}: ${arg.kind}${range}${arg.optional ? "?" : ""}`;
+              const domain = arg.values ? ` [${arg.values.join(", ")}]` : "";
+              return `${arg.name}: ${arg.kind}${range}${domain}${arg.optional ? "?" : ""}`;
             })
             .join(", ")
         : "…";

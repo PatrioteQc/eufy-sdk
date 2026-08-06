@@ -233,6 +233,19 @@ export class MegaHttpClient {
   }
 
   /**
+   * The account-credential headers every authed call carries — `x-auth-token` + `gtoken` (`md5(userId)`).
+   * One place so the signed path, the key-exchange and the bearer path can't drift on what "authed" means.
+   */
+  private authTokenHeaders(): Record<string, string> {
+    if (!this.auth_) return {};
+    return {
+      "x-auth-token": this.auth_.authToken,
+      authorization: this.auth_.authToken,
+      gtoken: gtoken(this.auth_.userId),
+    };
+  }
+
+  /**
    * POST returning an axios-shaped `{status, data}` — `data` is JSON-parsed when possible, else the
    * raw text. Never throws on HTTP status (the callers classify the envelope themselves). 20s timeout.
    */
@@ -293,19 +306,13 @@ export class MegaHttpClient {
     const host = isEufylife ? targetHost! : (this.bootstrapDomain ?? `app-openapi-${this.region}.eufy.com`);
     const kxPath = isEufylife ? "/v3/openapi/oauth/key/exchange" : "/openapi/oauth/key/exchange";
     const prep = prepareKeyExchange(isEufylife ? EUFYLIFE_LOCAL_KEY_HEX : undefined);
-    const authHeaders: Record<string, string> = {};
-    if (this.auth_) {
-      authHeaders["x-auth-token"] = this.auth_.authToken;
-      authHeaders["authorization"] = this.auth_.authToken;
-      authHeaders["gtoken"] = gtoken(this.auth_.userId);
-    }
     const res = await this.httpPost(
       `https://${host}${kxPath}`,
       { client_public_key: prep.encryptedClientPublicKey },
       {
         ...this.baseHeaders(),
         ...prep.headers,
-        ...authHeaders,
+        ...this.authTokenHeaders(),
         "content-type": "application/json",
       },
     );
@@ -364,11 +371,7 @@ export class MegaHttpClient {
         // MQTT cert on an existing eufy_mega session — see EufyMega.getUserMqttInfo).
         ...headerOverrides,
       };
-      if (authed && this.auth_) {
-        headers["x-auth-token"] = this.auth_.authToken;
-        headers["authorization"] = this.auth_.authToken;
-        headers["gtoken"] = gtoken(this.auth_.userId);
-      }
+      if (authed) Object.assign(headers, this.authTokenHeaders());
       const res = await this.httpPost(`https://${host}${path}`, encBody, headers);
       const env = res.data as ApiEnvelope<unknown>;
       if (res.status === 200 && env?.code === 0) {

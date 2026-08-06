@@ -33,6 +33,9 @@
 
 import type { Codec, CloudRecord } from "./types.js";
 import { DeviceType } from "./device-types.js";
+// The printer-category matcher is defined in core/ so the transport-side classifier and this codec
+// classifier can't drift on what "a printer" is (sharing is only open in this direction).
+import { PRINTER_CATEGORY_RE } from "../core/types.js";
 
 /* -------------------------------------------------------------------------- */
 /*  DeviceType groups (numeric ground truth)                                  */
@@ -249,6 +252,13 @@ export function classify(rec: CloudRecord): Codec {
   // FIRST from category/model — otherwise `codecForType`'s camera-residual bucket could swallow a
   // RoboVac whose `device_type` happens to fall in the security range. (`device_type` is not a
   // reliable vacuum signal; category + the T2 model code are.)
+  // 3D printers are their own ecosystem (ankermake cloud) — decided from the device `category`, before
+  // the security DeviceType bucket below could swallow one. Category is the CANDIDATE signal, pending a
+  // bound printer: no printer was on the account during the capture, so these strings are inferred (from
+  // the ankermake brand/hosts), not an observed device category — a better inference than a model code,
+  // not a confirmed one. A wrong guess here costs a misclassification, never a bad frame.
+  if (rec.category && PRINTER_CATEGORY_RE.test(rec.category)) return "printer";
+
   // Mowers are their own family — decide from the (globally-unique) model code first, before the
   // clean/vacuum category rules below could claim them.
   if (codecFromModel(rec.model) === "mower") return "mower";

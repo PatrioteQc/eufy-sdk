@@ -1,4 +1,4 @@
-import { ARMING, ARMING_CMD, ArmingMode, AlarmDelaySeconds, type ArmingActions } from "../arming.js";
+import { ARMING, ARMING_CMD, ARMING_MEMBERS, ArmingMode, AlarmDelaySeconds, type ArmingActions } from "../arming.js";
 import { buildCommand } from "../index.js";
 import { bind } from "./bind.js";
 import type { CommandContext } from "../types.js";
@@ -52,10 +52,10 @@ describe("arming capability module", () => {
     });
 
     it("buildCommand mirrors the same intent for the low-level setProperty path", () => {
-      expect(buildCommand("armingMode", "schedule", ctx)).toEqual({
+      expect(buildCommand("armingMode", "away", ctx)).toEqual({
         kind: "set-payload",
         cmd: 1224,
-        payload: { mode_type: 2, user_name: "someone+tag" },
+        payload: { mode_type: 0, user_name: "someone+tag" },
         channel: 0,
         mValue3: 0,
       });
@@ -64,8 +64,50 @@ describe("arming capability module", () => {
     it("buildCommand returns undefined for an unrelated action, and throws for an unknown mode name", () => {
       expect(buildCommand("nope", "home", ctx)).toBeUndefined();
       expect(() => buildCommand("armingMode", "not-a-mode", ctx)).toThrow(
-        /mode: "not-a-mode" is not a valid value \(must be one of 0\/1\/2\/3\/4\/5\/47\/63\)/,
+        /mode: "not-a-mode" is not a valid value \(must be one of 0\/1\/63\)/,
       );
+    });
+
+    /**
+     * The six uncaptured modes are the whole reason the write domain is narrower than the read one. A
+     * mode the station reports must still READ (it has a label), and the same value must refuse on the way
+     * back out — by naming the three that work, not by reporting the capability as missing.
+     *
+     * Both entry points are checked: the fluent setter and the intent path share one domain check, and it
+     * was them disagreeing that put a guessed `mode_type` on a fire-and-forget wire in the first place.
+     */
+    it.each([
+      ["schedule", 2],
+      ["custom1", 3],
+      ["custom2", 4],
+      ["custom3", 5],
+      ["off", 6],
+      ["geo", 47],
+    ])("refuses %s (mode_type %i) — reportable, never sent", async (name, wire) => {
+      const readCtx: CommandContext = { ...ctx, paramIds: new Set([ARMING_CMD.SET_ARMING]) };
+      const { acts, sent } = bind<ArmingActions>("arming", readCtx, {
+        read: (p) => (p === "armingMode" ? { value: wire } : undefined),
+      });
+      expect(acts.mode).toBe(wire);
+      await expect(acts.setMode(acts.mode! as never)).rejects.toThrow(/must be one of 0\/1\/63/);
+      expect(() => buildCommand("armingMode", name, ctx)).toThrow(/must be one of 0\/1\/63/);
+      expect(sent).toEqual([]);
+    });
+
+    it("names every reportable mode, and offers only the settable ones", () => {
+      const mode = ARMING_MEMBERS.mode;
+      expect(Object.values(mode.enumValues)).toEqual([
+        "away",
+        "home",
+        "schedule",
+        "custom1",
+        "custom2",
+        "custom3",
+        "off",
+        "geo",
+        "disarmed",
+      ]);
+      expect(mode.args[0].values).toEqual([0, 1, 63]);
     });
 
     it("setMode round-trips the wire integer the mode getter answers", async () => {

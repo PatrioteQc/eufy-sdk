@@ -119,6 +119,7 @@ const CLASS_BY_CODEC: Record<Codec, DeviceClass> = {
   lock: "other",
   keypad: "other",
   light: "light",
+  printer: "printer",
 };
 
 /**
@@ -307,9 +308,10 @@ export class DeviceRegistry {
     return { params, added, removed, reported };
   }
 
-  /** Devices driven over MQTT (transport ≠ p2p). */
+  /** Devices driven over eufy secure-MQTT — named positively (not "everything that isn't P2P"), so a
+   * device on another realtime plane (e.g. a printer's `ankermake-mqtt`) is not swept onto this one. */
   mqttDevices(): EufyDevice[] {
-    return this.devices.filter((d) => d.realtime !== "p2p");
+    return this.devices.filter((d) => d.realtime === "smqtt");
   }
 
   /** Devices that require P2P (cameras/HomeBases). */

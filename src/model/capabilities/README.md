@@ -207,6 +207,12 @@ property: a lock's `setAutoLock(enabled, delaySeconds?)` is neither a getter ove
 momentary command. `provided()` takes its signature FROM the injected provider and lands **optional**,
 because an unbound device genuinely does not have it (`dev.lock()?.getAutoLockState`).
 
+A method owning its signature cannot have its arguments derived, with one exception: **taking none is
+derived from arity**, so `lock()` describes as `args: []` ("takes nothing", offerable as a plain button)
+rather than staying silent, which means "not stated". A DEFAULT parameter is invisible to
+`Function.length`, so a method with one names it (`args` beside `method()`, as `locate` does) instead of
+being derived as nullary; `action-specs.spec.ts` holds every stated required argument against that arity.
+
 A `ValueMember`'s key is the **accessor**; `property` renames it in the device's flat property namespace
 when the key would collide there (`battery`'s `level` → property `battery`, since `level` is also
 `suction`'s). Default is the key, which is right for the majority that do not collide.
@@ -266,6 +272,11 @@ when the key would collide there (`battery`'s `level` → property `battery`, si
   a single edit once a capture lands.
 - `min`/`max`/`enumValues`/`decodedValues` are the PUBLISHED domain, enforced once in `memberWrite` for
   both entry points and named in the generated rejection message, so it cannot go stale as the set grows.
+- **A write domain narrower than the read's** is stated as the first `args` entry's `values`, which then
+  becomes the set the check, the rejection message and the offered control all use. `arming` is the case:
+  a station REPORTS nine guard modes (all nine are `enumValues`, so a reported one has a name) and can be
+  SET to the three whose write was captured. Reach for this only for that asymmetry — a member whose two
+  sides agree declares `enumValues` alone and the argument derives from it.
 - `aliases` route extra intent verbs to the same write with the value each stands for; `intentNames`
   route a second property name to it (one setting another capability publishes under its own name);
   `accepts<T>()` widens the setter past what the getter answers (a resolution NAME for a tier stored as

@@ -58,7 +58,7 @@ export interface DetectionSpec {
  *
  * `any` is for the handful of capabilities that are genuinely line-independent (device identity).
  */
-export type ProductLine = "security" | "life" | "clean" | "any";
+export type ProductLine = "security" | "life" | "clean" | "print" | "any";
 
 /**
  * A structural subset of a P2P frame. Deliberately NOT `import`ed from `p2p/*` — keeping it

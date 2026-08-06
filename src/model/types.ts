@@ -27,7 +27,7 @@
  * own secure-MQTT "DP" TLV wire, decoded by its own transport codec. Named distinctly
  * from the camera-floodlight `light` *capability* so the two never collide as bare `"light"`.
  */
-export type Codec = "station" | "camera" | "sensor" | "lock" | "keypad" | "vacuum" | "mower" | "light";
+export type Codec = "station" | "camera" | "sensor" | "lock" | "keypad" | "vacuum" | "mower" | "light" | "printer";
 
 /**
  * Capability identifiers (axis A). A capability is a composable feature a device exposes;

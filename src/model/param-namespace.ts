@@ -16,12 +16,16 @@ import { SECURITY_PARAMS, CLEAN_PARAMS, type ParamDef } from "./param-dictionary
 import { LIFE_PARAMS } from "./life-params.js";
 
 /** The param id spaces this SDK models. */
-export type ParamNamespace = "security" | "clean" | "life";
+export type ParamNamespace = "security" | "clean" | "life" | "print";
 
 const TABLES: Record<ParamNamespace, Record<number, ParamDef>> = {
   security: SECURITY_PARAMS,
   clean: CLEAN_PARAMS,
   life: LIFE_PARAMS,
+  // 3D-printer (ankermake) id space — empty until a live capture confirms the param↔semantic map
+  // (printer-support plan Stage 3). Present so the printer codec resolves to its OWN namespace rather
+  // than falling through to `security` and decoding another line's dictionary.
+  print: {},
 };
 
 /** Look up a param def in the given namespace. */
@@ -48,6 +52,7 @@ const NAMESPACE_BY_CODEC: Record<Codec, ParamNamespace> = {
   vacuum: "clean",
   mower: "clean",
   light: "life",
+  printer: "print",
 };
 
 /** The param namespace a device's ids live in, from its codec, via the module-local `NAMESPACE_BY_CODEC` table. */

@@ -21,6 +21,7 @@ const EXPECTED_LINE: Record<Codec, string> = {
   vacuum: "clean",
   mower: "clean",
   light: "life",
+  printer: "print",
 };
 
 /** A name stuffed with trigger words from every line at once — the adversarial case. */
@@ -89,7 +90,7 @@ describe("product-line partition", () => {
     expect(CAPABILITY_MODULES.locate.line).toBe("clean");
     expect(CAPABILITY_MODULES.info.line).toBe("any");
     for (const cap of Object.keys(CAPABILITY_MODULES) as Capability[]) {
-      expect(["security", "life", "clean", "any"]).toContain(lineOf(cap));
+      expect(["security", "life", "clean", "print", "any"]).toContain(lineOf(cap));
     }
   });
 });

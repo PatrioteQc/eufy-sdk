@@ -258,13 +258,15 @@ export class MqttCommandRouter {
   }
 
   /**
-   * Whether this transport stack drives `dev`'s `ff09-*` commands — true when the device has NO usable
-   * P2P endpoint (empty `p2p_did`): a standalone lock/garage (T85D0), an appliance, and so on. The
-   * complement of {@link P2PCommandRouter.claimsDevice} (see there for why the endpoint, not the
-   * `realtime` category tag, is the routing fact). The command sink asks each stack this in order.
+   * Whether this transport stack drives `dev`'s `ff09-*` commands — a **eufy-cloud device**
+   * (`api === "mega"`) with NO usable P2P endpoint (empty `p2p_did`): a standalone lock/garage (T85D0),
+   * an appliance, and so on. Named positively by the plane it drives rather than "anything without a
+   * P2P id", so a device on another cloud (a printer, `api === "ankermake"`) is claimed by NEITHER this
+   * stack nor {@link P2PCommandRouter.claimsDevice} instead of falling onto the eufy MQTT plane. (See
+   * P2P's `claimsDevice` for why the endpoint, not the `realtime` tag, is the routing fact.)
    */
   static claimsDevice(dev: EufyDevice): boolean {
-    return !(typeof dev.p2pDid === "string" && dev.p2pDid.length > 0);
+    return dev.api === "mega" && !(typeof dev.p2pDid === "string" && dev.p2pDid.length > 0);
   }
 
   /**

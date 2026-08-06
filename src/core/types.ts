@@ -23,14 +23,21 @@
  * Names the wire backends a device is reachable on — transport vocabulary, not a host concern.
  * @internal
  */
-export type ApiBackend = "mega" | "legacy";
-export type RealtimeKind = "smqtt" | "p2p";
+export type ApiBackend = "mega" | "legacy" | "ankermake";
+export type RealtimeKind = "smqtt" | "p2p" | "ankermake-mqtt";
+
+/**
+ * The device `category` strings that mark a 3D printer (ankermake plane). Defined once here — the model
+ * layer's codec classifier reads THIS rather than restating the literal, so widening it can't leave the
+ * two deciders disagreeing (the dependency rule only allows sharing in this direction).
+ */
+export const PRINTER_CATEGORY_RE = /ankermake|eufymake|fdm|3d_?print/i;
 /**
  * The coarse grouping a host buckets devices by. Every value is one the SDK can actually DERIVE from a
  * resolved codec — anything the codec space doesn't confidently name lands in `"other"` rather than a
  * guess. Intentionally coarse: a host needing the precise kind reads the capabilities.
  */
-export type DeviceClass = "camera" | "homebase" | "vacuum" | "mower" | "sensor" | "light" | "other";
+export type DeviceClass = "camera" | "homebase" | "vacuum" | "mower" | "sensor" | "light" | "printer" | "other";
 
 /** Normalised device record, regardless of which API produced it. */
 export interface EufyDevice {
@@ -128,5 +135,10 @@ export function classifyDevice(
   const category = raw.category ?? "";
   const hasP2p = typeof raw.p2p_did === "string" && raw.p2p_did.length > 0;
   if (category === "eufy_security" || hasP2p) return { category, api: "mega", realtime: "p2p" };
+  // 3D printers hang off the SAME account but a different device plane — their own cloud and a
+  // self-hosted realtime broker. Keyed on the category string only (the printer app's `get_devs_list`
+  // category), before the generic secure-MQTT fallback, so a printer isn't classified as a `smqtt`
+  // appliance. The camera's built-in P2P stream is handled by the `p2p` branch above when present.
+  if (PRINTER_CATEGORY_RE.test(category)) return { category, api: "ankermake", realtime: "ankermake-mqtt" };
   return { category, api: "mega", realtime: "smqtt" };
 }

@@ -40,14 +40,21 @@ export const LOCATE_MEMBERS = {
    * is what makes this a `method`: a bare `locate()` is the call that matters, and a derived setter
    * always demands its value. Present on any bound robot, since DP 160 belongs to the shared clean-line
    * DP schema rather than to one model.
+   *
+   * That default is also why the argument is named here: it is absent from the function's arity, so the
+   * description would otherwise derive as taking NO arguments and a caller would never learn the beep can
+   * be cancelled.
    */
-  locate: method(
-    ({ sink }) =>
-      (on = true): Promise<void> =>
-        sink.dispatch(aiotDp(LOCATE_DP, on)),
-    "Trigger the find-robot beep; pass false to cancel one in progress.",
-    isAiotVacuum,
-  ),
+  locate: {
+    ...method(
+      ({ sink }) =>
+        (on = true): Promise<void> =>
+          sink.dispatch(aiotDp(LOCATE_DP, on)),
+      "Trigger the find-robot beep; pass false to cancel one in progress.",
+      isAiotVacuum,
+    ),
+    args: [{ name: "on", kind: "boolean", optional: true, description: "False cancels a beep in progress." }],
+  },
 } as const satisfies Members;
 
 /**

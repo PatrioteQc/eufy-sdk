@@ -201,6 +201,7 @@ const CODEC_LINE: Record<Codec, ProductLine> = {
   vacuum: "clean",
   mower: "clean",
   light: "life",
+  printer: "print",
 };
 
 /**
@@ -879,6 +880,17 @@ export { CapabilityNotSupportedError } from "./types.js";
  */
 export type { DeviceManifest, CapabilityDescriptor, ReadDescriptor, ActionDescriptor } from "./manifest.js";
 export type { ActionSpec } from "./types.js";
+/**
+ * Ask ONE method what it accepts, without walking a whole manifest.
+ *
+ * `Device.describe()` is the discovery entry point and stays the one a caller building a control surface
+ * uses. This is the same answer for a method already in hand — a caller that resolved
+ * `dev.camera()?.setNightVision` from a manifest, and wants its argument at the point of the call, would
+ * otherwise have to carry the descriptor alongside the function or re-describe the device. Every member
+ * kind is wrapped, so it answers for a derived setter, a momentary action and a method alike, and
+ * `undefined` for an action nothing describes.
+ */
+export { actionSpecOf } from "./access.js";
 
 // The per-capability typed action objects + the fluent-accessor projection.
 export type {

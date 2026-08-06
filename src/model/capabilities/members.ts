@@ -213,6 +213,25 @@ export interface MethodMember<F> {
   description: string;
   /** Install only where this holds — see {@link ValueMember.available}. */
   available?: (ctx: CommandContext) => boolean;
+  /**
+   * What the method accepts, for a signature whose arity does not state it: a parameter with a DEFAULT is
+   * absent from `Function.length`, so `locate(on = true)` would otherwise be described as taking nothing
+   * at all. Naming it is also the better description — a caller learns the beep can be cancelled.
+   *
+   * Only needed for that case. A method taking its arguments plainly is described as existing with its
+   * arguments unstated, and a nullary one has them derived (see `describe`).
+   */
+  args?: readonly ActionArgSpec[];
+  /**
+   * This member ANSWERS rather than ACTS: a sub-API namespace (`ptz.preset()`) or a live query whose
+   * returned value is the whole point (`lock.getAutoLockState()`).
+   *
+   * Both take no arguments, but that arity says nothing about a control — offering one as a button calls it
+   * and throws the answer away. So the empty argument list is NOT derived here, leaving the arguments
+   * unstated, which is exactly what keeps a caller from auto-offering it. It stays described, and callable,
+   * for code that reaches it deliberately.
+   */
+  answers?: true;
 }
 
 /**
@@ -253,6 +272,8 @@ export interface ProvidedMember<P extends keyof Providers, F> {
   needs: P;
   provided: (provider: Providers[P], deps: MemberDeps) => F;
   description: string;
+  /** This member ANSWERS rather than ACTS — see {@link MethodMember.answers}. */
+  answers?: true;
 }
 
 /**
@@ -281,6 +302,7 @@ export type AnyProvidedMember = {
   needs: keyof Providers;
   provided: (provider: never, deps: MemberDeps) => unknown;
   description: string;
+  answers?: true;
 };
 
 export type Member = ValueMember | ActionMember | MethodMember<unknown> | AnyProvidedMember;
@@ -462,6 +484,22 @@ export function memberWrite(
 }
 
 /**
+ * The option set the WRITE accepts, which is not always the one the READ reports.
+ *
+ * Three declarations can state it, checked in narrowing order. A member's own {@link ValueMember.args}
+ * wins, because the only reason to state an argument's `values` beside an `enumValues` that already
+ * publishes the read's set is that the two DIFFER: `arming` reports eight guard modes and can set only the
+ * three whose wire was captured. Then {@link ValueMember.decodedValues}, for a getter whose set the
+ * property schema cannot express, and last the schema's own `enumValues`.
+ *
+ * One source for all three consumers — the check, the generated refusal, and the argument a caller is
+ * offered — so a caller is never shown a value it will then be refused for sending.
+ */
+function writeDomain(m: ValueMember): readonly (string | number)[] | undefined {
+  return m.args?.[0]?.values ?? m.decodedValues ?? (m.enumValues && Object.keys(m.enumValues).map(Number));
+}
+
+/**
  * Whether a value falls in the domain the member PUBLISHES — the set {@link rejection} names.
  *
  * Enforced here rather than in each `write`, because a domain declared for the description and enforced
@@ -480,24 +518,23 @@ export function memberWrite(
 function inDomain(m: ValueMember, value: unknown): boolean {
   if (m.type === "bool") return BOOL_VALUES.has(typeof value === "string" ? value.toLowerCase() : value);
   if (typeof value === "number") {
-    if (m.enumValues && !(value in m.enumValues)) return false;
     if (m.min !== undefined && value < m.min) return false;
     if (m.max !== undefined && value > m.max) return false;
   }
-  const decoded = m.decodedValues?.filter((v) => typeof v === typeof value);
-  return !decoded?.length || decoded.includes(value as string | number);
+  const domain = writeDomain(m)?.filter((v) => typeof v === typeof value);
+  return !domain?.length || domain.includes(value as string | number);
 }
 
 /**
  * Why a member refused a value, naming the set it had to come from when the schema publishes one.
  *
  * Generated rather than written per member: a hand-written message is one more copy of the domain, and
- * the copy is what goes stale when the set grows. `decodedValues` counts as the set too — a member whose
- * getter DECODES an enum out of a payload publishes its domain there rather than in `enumValues`, and a
- * caller still has to pick from it.
+ * the copy is what goes stale when the set grows. It names the {@link writeDomain} rather than the read's
+ * own set, so a mode the device reports but cannot be set is refused by naming the three that can — the
+ * message and the offered argument answer from one declaration.
  */
 function rejection(name: string, m: ValueMember, value: unknown): string {
-  const options = m.enumValues ? Object.keys(m.enumValues) : m.decodedValues;
+  const options = writeDomain(m);
   const domain = options?.length
     ? `one of ${options.join("/")}`
     : m.min !== undefined && m.max !== undefined
@@ -521,6 +558,11 @@ function rejection(name: string, m: ValueMember, value: unknown): string {
  * describe themselves with nothing declared. A member that names its own {@link ValueMember.args}
  * OVERRIDES only what it states — the derived domain survives underneath, which is what keeps
  * `videoQuality`'s tier set from vanishing when it renames its argument.
+ *
+ * The derived argument carries `decodedValues` but NOT `enumValues`, which the reflected read already
+ * publishes; a second copy on the argument could only drift from it. So a caller offers the argument's own
+ * set where it has one and the read's otherwise — the same precedence {@link writeDomain} enforces with,
+ * which is what makes a stated `values` a NARROWING of the read rather than an unrelated second list.
  */
 function describeWrite(name: string, m: ValueMember, reported: boolean): ActionSpec {
   const stateful = !m.writeOnly && reported;
@@ -548,9 +590,23 @@ function describeWrite(name: string, m: ValueMember, reported: boolean): ActionS
  * and what it does. `momentary` is the honest form for both: neither reflects a read this table knows of.
  * Without this, `description` was required at 29 call sites and read at none, so a contributor writing
  * one believed they had described a method that reported itself undescribed.
+ *
+ * **An EMPTY argument list is derived from the function's arity**, which is the one thing the table can
+ * read off a signature it did not write. Absent arguments only ever meant "not stated", so a caller could
+ * not tell `lock()` — which genuinely takes none and is offerable as a plain button — from a method whose
+ * arguments nobody has described yet. A function declaring no parameters says the former, and it cannot
+ * drift, because the function IS the declaration.
+ *
+ * Two members are excluded from that derivation, each for its own reason. A DEFAULT parameter is invisible
+ * to `length`, so a method that accepts one names it (see {@link MethodMember.args}) rather than being
+ * derived as nullary. And a member that ANSWERS instead of acting ({@link MethodMember.answers}) takes no
+ * arguments without being a control at all. Both leave the arguments unstated;
+ * `action-specs.spec.ts` holds every stated required argument against the same arity.
  */
-function describe(description: string, fn: unknown): unknown {
-  return describedAction({ form: "momentary", description }, fn as (...a: never[]) => unknown);
+function describe(description: string, fn: unknown, m: { args?: readonly ActionArgSpec[]; answers?: true }): unknown {
+  const built = fn as (...a: never[]) => unknown;
+  const args = m.args ?? (built.length || m.answers ? undefined : []);
+  return describedAction({ form: "momentary", description, args }, built);
 }
 
 /** Whether the device reported any of the params a member requires; `undefined` requires nothing. */
@@ -641,16 +697,16 @@ export function bindMembers<M extends Members>(
       const provider = m.needs === "media" ? media : ff09Settings;
       if (!provider) continue;
       const built = (m.provided as (p: unknown, d: MemberDeps) => unknown)(provider, deps);
-      if (typeof built === "function") out[name] = describe(m.description, built);
+      if (typeof built === "function") out[name] = describe(m.description, built, m);
       else if (built) out[name] = built;
       continue;
     }
     if ("method" in m) {
-      if (installs(m, ctx)) out[name] = describe(m.description, m.method(deps));
+      if (installs(m, ctx)) out[name] = describe(m.description, m.method(deps), m);
       continue;
     }
     if ("action" in m) {
-      if (installs(m, ctx)) out[name] = describe(m.description, () => sink.dispatch(m.action(ctx)));
+      if (installs(m, ctx)) out[name] = describe(m.description, () => sink.dispatch(m.action(ctx)), {});
       continue;
     }
     const prop = m.property ?? name;

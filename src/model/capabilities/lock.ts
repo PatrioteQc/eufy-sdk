@@ -303,12 +303,18 @@ export const LOCK_MEMBERS = {
    * Read the device's current auto-lock settings via a live `GET_SETTINGS` round-trip — the SAME read
    * `setAutoLock` does internally, exposed standalone with no write attached. Works over BOTH transports.
    * A genuine request/reply query, not a passive property, so it always talks to the device.
+   *
+   * `answers` for that reason: the returned snapshot IS the point, so it is not a control to offer even
+   * though it takes no arguments — a button here would run a round-trip and discard the answer.
    */
-  getAutoLockState: provided(
-    "ff09Settings",
-    (f) => (): Promise<AutoLockSnapshot> => f.getAutoLockState(),
-    "Read the current auto-lock settings via a live round-trip.",
-  ),
+  getAutoLockState: {
+    ...provided(
+      "ff09Settings",
+      (f) => (): Promise<AutoLockSnapshot> => f.getAutoLockState(),
+      "Read the current auto-lock settings via a live round-trip.",
+    ),
+    answers: true,
+  },
 } as const satisfies Members;
 
 /**

@@ -168,6 +168,8 @@ export const MODEL_REGISTRY: Readonly<Record<string, RegistryEntry>> = {
   T8L20: { codec: "light", name: "Outdoor Spotlights E10" },
   T8L30: { codec: "light", name: "Outdoor Pathway Lights E10" },
   T8L40: { codec: "light", name: "Indoor Floor Lamp E10" },
+  // 3D printers (eufyMake/AnkerMake) classify from `category` alone — no curated model-code rows, since
+  // no printer has been observed on a code yet (rows would guess; the category path already resolves one).
 };
 
 /** Deduplicate a capability list, preserving first-seen order (precedence). */
