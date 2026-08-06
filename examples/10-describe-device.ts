@@ -28,7 +28,8 @@ async function main(): Promise<void> {
   const dev = await eufy.getDevice(sn);
 
   const manifest = dev.describe();
-  console.log(`${manifest.name} — ${manifest.codec}, resolved by ${manifest.source}, bound=${manifest.bound}`);
+  const product = [manifest.modelName, manifest.model].filter(Boolean).join(" ");
+  console.log(`${manifest.name} (${product}) — ${manifest.codec}, by ${manifest.source}, bound=${manifest.bound}`);
   console.log(`capabilities: ${manifest.capabilities.join(", ")}\n`);
 
   for (const cap of manifest.details) {

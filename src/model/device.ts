@@ -120,8 +120,16 @@ export class Device {
   capabilities!: readonly Capability[];
   /** Merged property schema (one entry per known property this device exposes). */
   properties!: readonly PropertySpec[];
-  /** Display name. */
+  /**
+   * What the user named this device in the app (`device_name`), falling back to {@link modelName} when
+   * the record carries none — the name a host shows, since two units of the same product are otherwise
+   * indistinguishable to the person reading the list.
+   */
   name!: string;
+  /** Model / T-code from the record ("T8410"), when known. */
+  model?: string;
+  /** The model's display name ("Indoor Cam Pan & Tilt") — the product this unit is one of. */
+  modelName!: string;
   /** Which resolver tier produced the codec/caps. */
   source!: ResolvedDevice["source"];
 
@@ -137,6 +145,8 @@ export class Device {
   private specByParam!: ReadonlyMap<number, { spec: PropertySpec; invert: boolean }>;
   /** Which param namespace this device's ids live in (clean DPs vs security P2P). */
   private namespace!: ParamNamespace;
+  /** The record's `device_name` as stated, before the {@link modelName} fallback is applied. */
+  private deviceName?: string;
   /** Live property values, keyed by property name (or `unknown_<pt>`). */
   private readonly state = new Map<string, PropertyValue>();
   /**
@@ -187,7 +197,8 @@ export class Device {
     this.codec = resolved.codec;
     this.capabilities = resolved.capabilities;
     this.properties = resolved.properties;
-    this.name = resolved.name;
+    this.modelName = resolved.name;
+    this.name = this.deviceName ?? resolved.name;
     this.source = resolved.source;
     this.capSet = new Set(resolved.capabilities);
     this.specByName = new Map(resolved.properties.map((p) => [p.name, p]));
@@ -219,6 +230,7 @@ export class Device {
    * Returns the capabilities gained, empty when nothing changed — so a caller can skip re-binding.
    */
   reresolve(rec: CloudRecord): Capability[] {
+    this.adoptIdentity(rec);
     const next = resolveDevice(rec);
     const gained = next.capabilities.filter((c) => !this.capSet.has(c));
     if (!gained.length) return [];
@@ -268,8 +280,26 @@ export class Device {
   /** Build a Device from a raw cloud record (runs the 3-tier resolver). */
   static fromRecord(sn: string, rec: CloudRecord, logger: Logger = noopLogger): Device {
     const dev = new Device(sn, resolveDevice(rec), logger);
+    dev.adoptIdentity(rec);
     if (rec.params) dev.applyParams(rec.params);
     return dev;
+  }
+
+  /**
+   * Take the unit's own identity — its name and model code — from the record.
+   *
+   * Separate from {@link resolveInto} because the resolver answers about the PRODUCT: it has no
+   * `device_name` to give, and re-running it must not replace "Dining room" with "Indoor Cam Pan &
+   * Tilt". Re-applied on every {@link reresolve} so a rename in the app lands on the next refresh.
+   *
+   * A record that omits a field is silent about it rather than asserting it went away — the same
+   * reasoning that keeps {@link reresolve} from retracting a capability — so an omission keeps the last
+   * known value and only a stated one replaces it.
+   */
+  private adoptIdentity(rec: CloudRecord): void {
+    this.model = rec.model ?? this.model;
+    this.deviceName = rec.name ?? this.deviceName;
+    this.name = this.deviceName ?? this.modelName;
   }
 
   /** Does this device have the given capability? */
@@ -403,6 +433,8 @@ export class Device {
     return {
       sn: this.sn,
       name: this.name,
+      model: this.model,
+      modelName: this.modelName,
       codec: this.codec,
       source: this.source,
       bound: this.bound,
