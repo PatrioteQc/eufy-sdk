@@ -77,8 +77,12 @@ jobs:
         uses: actions/ai-inference@a7805884c80886efc241e94a5351df715968a0ad # v2.1.1
         with:
           model: openai/gpt-4o
-          max-tokens: 700
+          # Not `max-tokens`: deprecated, and its default of 200 would cut a summary mid-sentence.
+          max-completion-tokens: 700
           prompt-file: prompt.txt
+          # `endpoint` is left at the default. The action's README suggests an org-specific Models
+          # endpoint for repositories inside an organisation — if this step starts failing to reach
+          # the service, that is the first thing to set.
           system-prompt: |
             You summarise pull requests for the maintainers of a TypeScript SDK. Your reader is
             deciding whether this pull request is worth their review time.
@@ -107,18 +111,22 @@ jobs:
             Be brief and specific. If the change is small and clean, say so in one sentence and stop —
             padding costs the reader the time this is meant to save. Never approve or reject.
 
+      # The model's answer is read from `response-file`, never from the `response` output. Two reasons,
+      # and the second is the one that matters: a response can exceed the Actions output limit, and —
+      # since it is derived from an untrusted diff — routing it through `${{ }}` would interpolate
+      # steerable text into an Actions expression. A file is inert.
       - name: Post the summary
         env:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
-          SUMMARY: ${{ steps.ai.outputs.response }}
+          RESPONSE_FILE: ${{ steps.ai.outputs.response-file }}
         run: |
           set -euo pipefail
           {
             echo "### What this pull request does"
             echo
-            echo "$SUMMARY"
+            cat "$RESPONSE_FILE"
             echo
             echo "---"
             echo "<sub>Written from the diff by a language model, as reading triage — not a review and"
