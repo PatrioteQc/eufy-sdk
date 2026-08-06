@@ -1,7 +1,48 @@
 /**
- * Device domain: the `Device` record, its capabilities, classification, events and parameters.
+ * Device model — public barrel.
  *
- * Describes what a device MEANS, never how it is spoken to. It never imports `transport/` or a wire
- * library.
+ * Data-driven, capability-based device model: one {@link Device} class, behaviour resolved from
+ * a {@link CloudRecord} via the 3-tier {@link resolveDevice} (model row → codec → inference).
+ *
+ * @module model
  */
-export {};
+
+export * from "./types.js";
+export { classify, codecForType, codecFromModel } from "./classify.js";
+export { inferName } from "./infer.js";
+export { MODEL_REGISTRY, resolveDevice } from "./registry.js";
+export { Device, UNKNOWN_PARAM_PREFIX, type RawParams } from "./device.js";
+export { SECURITY_PARAMS, CLEAN_PARAMS, type ParamDef } from "./param-dictionary.js";
+export { LIFE_PARAMS } from "./life-params.js";
+export { paramDef, namespaceForCodec, type ParamNamespace } from "./param-namespace.js";
+export { inspectParams, formatInspection, type ParamInspection, type DeviceInspection } from "./inspect.js";
+// The capability surface: the typed `dev.<cap>()` objects, the member tables they derive from, and the
+// module registry. A caller has to be able to NAME what an accessor returns, and each `XActions` alias
+// is `Surface<typeof X_MEMBERS>`, so the table is part of that type rather than a detail behind it.
+export * from "./capabilities/index.js";
+/**
+ * The evidence a family gate reads, published because a member table's `available` predicate names it —
+ * `AUDIO_MEMBERS.alarmTone` gates on being a HomeBase, and that gate's parameter type is this. The
+ * DeviceType sets and the predicates themselves stay internal to `device-family.ts`.
+ */
+export type { FamilyContext } from "./device-family.js";
+// Push-event semantics + the id→name mapper — the one shared model wire file (several capabilities
+// match on the same event codes, and the client enriches `eventName`). Disjoint from the transport-side
+// `P2P_ENVELOPE` / `MessageTag`, which stay internal to their own layer.
+export {
+  CusPushEvent,
+  CusPushAlarmType,
+  CusPushMode,
+  ServerPushEvent,
+  DoorbellPushEvent,
+  IndoorPushEvent,
+  HB3PairedDevicePushEvent,
+  LockPushEvent,
+  GarageDoorPushEvent,
+  SmartSafeEvent,
+  SmartDropPushEvent,
+  NotificationStyle,
+  HB3PairedDeviceMessageType,
+  detectionName,
+  type PushDeviceKind,
+} from "./push-events.js";

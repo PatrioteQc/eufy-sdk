@@ -1,7 +1,10 @@
-/**
- * Wire layer: HTTP, MQTT, P2P, push and WebRTC.
- *
- * Owns framing in both directions and every wire identifier. It never imports `model/` — a
- * capability's vocabulary stops at the contract boundary in `core/`.
- */
-export {};
+export type { FfmpegLevel } from "./ffmpeg.js";
+/** The level list `FfmpegLevel` is taken from — published because the union names it. */
+export { FFMPEG_LEVELS } from "./ffmpeg.js";
+export * from "./http/index.js";
+export * from "./mqtt/index.js";
+export * from "./p2p/index.js";
+export * from "./push/index.js";
+export * as tuya from "./tuya/index.js";
+// webrtc exports generic names (crypto/params/protocol) → namespaced barrel.
+export * as webrtc from "./webrtc/index.js";

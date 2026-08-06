@@ -4,16 +4,19 @@ hero:
   name: eufy-sdk
   text: One client for every eufy device
   tagline: One typed client for the whole eufy ecosystem — devices, realtime events, and live media.
-  # The suffix names the MODE, not the ink: logo-dark.svg is the white glyph, for a dark background.
-  # Same mapping as themeConfig.logo in .vitepress/config.ts — they must agree.
+  # The suffix names the MODE, not the ink: logo-dark.svg is the white glyph, for a dark
+  # background. Same mapping as themeConfig.logo in .vitepress/config.ts — they must agree.
   image:
     light: /logo.svg
     dark: /logo-dark.svg
     alt: eufy-sdk
   actions:
     - theme: brand
-      text: API reference
-      link: /api/
+      text: Get started
+      link: /getting-started
+    - theme: sponsor
+      text: 📸 Device compatibility
+      link: /devices-gallery
     - theme: alt
       text: View on GitHub
       link: https://github.com/mega-yfue/eufy-sdk
@@ -28,11 +31,6 @@ features:
 
 These guides cover **how to use** the SDK.
 
-::: warning Under construction
-The repository is being set up. The guides land with the first source release — for now there is only
-the generated [API reference](/api/).
-:::
-
 ## An SDK, not an app
 
 eufy-sdk is a building block for developers. There is no UI, no dashboard, and nothing here to
@@ -43,7 +41,8 @@ right first stop. They own what you actually see and click, they chose how to us
 they're the ones who can tell whether a problem is theirs or ours. Coming here first usually costs
 you a round trip.
 
-Building that integration yourself? Then you're in the right place.
+Building that integration yourself? Then you're in the right place — start with
+[Install & log in](/getting-started).
 
 ## Independent project
 
@@ -55,4 +54,4 @@ service commitment here comes from them.
 their respective owners. They appear here only to identify the hardware this SDK talks to.
 
 Use it with devices on your own account. Rapid or failed logins can trigger a captcha or a temporary
-cooldown.
+cooldown — see [Troubleshooting](/troubleshooting).
