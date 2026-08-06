@@ -1,9 +1,17 @@
 # Publish @mega-yfue/eufy-sdk to npm.
 #
-# Three channels, one job:
-#   latest  — a published GitHub Release on tag vX.Y.Z
-#   beta    — a push to a `beta-X.Y.Z` branch
-#   alpha   — a push to an `alpha-X.Y.Z` branch
+# Publishing happens on one trigger: a published GitHub Release on tag vX.Y.Z, which ships to the
+# `latest` dist-tag.
+#
+# ── Prerelease channels exist in this file but are not wired up ─────────────────────────────────
+# The `beta` and `alpha` machinery below is complete and tested, but the `push:` triggers that fed it
+# are commented out. While the library is being assembled, `beta-X.Y.Z` is a staging branch that
+# merges into main (see merge-policy.yml) and nothing more — a publish on every push would spend
+# prerelease numbers on work in progress, and the consumer that would install them reads the source
+# tree directly rather than the registry.
+#
+# Re-enable by uncommenting the two branch patterns under `push:`. Everything downstream already
+# handles them: the channel resolver, the registry-continued -beta.N counter, the dist-tag.
 #
 # ── The REF names the version, on all three channels ────────────────────────────────────────────
 # The tag `v1.2.3` publishes 1.2.3; the branch `beta-1.2.3` publishes 1.2.3-beta.N. package.json's
@@ -65,10 +73,11 @@ name: Release
 on:
   release:
     types: [published]
-  push:
-    branches:
-      - beta-*.*.*
-      - alpha-*.*.*
+  # Prerelease publishing, suspended. Uncomment to ship a X.Y.Z-beta.N on every push to the branch.
+  # push:
+  #   branches:
+  #     - beta-*.*.*
+  #     - alpha-*.*.*
 
 # `contents: read` — the release notes are written by hand on the GitHub Release, not generated here.
 permissions:
