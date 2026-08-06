@@ -1,7 +1,16 @@
-# Publish @mega-yfue/eufy-sdk to npm.
+# Publish @mega-yfue/eufy-sdk.
 #
 # Publishing happens on one trigger: a published GitHub Release on tag vX.Y.Z, which ships to the
 # `latest` dist-tag.
+#
+# ── Two registries, one of them conditional ─────────────────────────────────────────────────────
+# GitHub Packages every time. It grants read to whoever can already read the repository, so while this
+# repository is private that is an authenticated registry with no credential to manage — the job's own
+# GITHUB_TOKEN is the whole auth story.
+#
+# npmjs only while the repository is PUBLIC, decided by the event payload rather than a switch someone
+# has to remember to flip. Publishing a private repository's build to a public registry would undo the
+# reason it is private.
 #
 # ── Prerelease channels exist in this file but are not wired up ─────────────────────────────────
 # The `beta` and `alpha` machinery below is complete and tested, but the `push:` triggers that fed it
@@ -80,9 +89,11 @@ on:
   #     - alpha-*.*.*
 
 # `contents: read` — the release notes are written by hand on the GitHub Release, not generated here.
+# `packages: write` is what lets GITHUB_TOKEN push to GitHub Packages; `id-token: write` is npm's OIDC.
 permissions:
   id-token: write
   contents: read
+  packages: write
 
 # Never cancel an in-flight publish: a killed job can leave the registry half-updated.
 concurrency:
@@ -209,5 +220,32 @@ jobs:
       - name: Inspect the tarball
         run: npm pack --dry-run
 
-      - name: Publish to npm
+      # GitHub Packages, always. It serves whoever can already read the repository, so a private
+      # repository gets an authenticated registry for free — no trusted publisher to configure, no
+      # long-lived credential, just the job's own GITHUB_TOKEN. The scope has to equal the repository
+      # owner, which `@mega-yfue/eufy-sdk` already does.
+      #
+      # `--registry` on the command line rather than `publishConfig.registry` in package.json: the
+      # latter would redirect the npmjs publish below to the same place.
+      #
+      # The auth line is written here rather than passed as NODE_AUTH_TOKEN, because setup-node's
+      # .npmrc binds that variable to `//registry.npmjs.org/` specifically — it does not authenticate
+      # a different host, and the publish would fail 401 at the one moment that costs a version number.
+      - name: Publish to GitHub Packages
+        env:
+          GH_PACKAGES_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          echo "//npm.pkg.github.com/:_authToken=${GH_PACKAGES_TOKEN}" >> ~/.npmrc
+          npm publish --tag ${{ steps.channel.outputs.tag }} --registry=https://npm.pkg.github.com
+
+      # npmjs, only once the repository is public. Publishing there while the source is private would
+      # put the built library on a public registry with nothing to read it against — the opposite of
+      # the reason the repository was made private.
+      #
+      # The condition reads the repository's CURRENT visibility from the event payload, so flipping the
+      # repository public is all it takes. There is no second switch to remember here, which is the
+      # point: a manual re-enable is a step that gets skipped, and the failure would be silent.
+      - name: Publish to npmjs
+        if: github.event.repository.private == false
         run: npm publish --tag ${{ steps.channel.outputs.tag }} --provenance --access public
