@@ -7,6 +7,14 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    ignore:
+      # actions/ai-inference stays on v2. v3 dropped the GitHub Models provider for the Copilot CLI,
+      # which needs `npm install -g @github/copilot` on the runner and a fine-grained PAT in a secret
+      # — unpinned third-party code plus a long-lived credential, in the job that comments on pull
+      # requests. Merging this bump would break pr-summary.yml and make adding that PAT look like the
+      # fix. Patch and minor updates still come through.
+      - dependency-name: actions/ai-inference
+        update-types: [version-update:semver-major]
 
   # The SDK runs on three runtime deps. Grouping the toolchain keeps a routine devDependency bump from
   # burying a runtime one, which is the update that actually deserves a read.
