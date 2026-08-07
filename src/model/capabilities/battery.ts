@@ -197,11 +197,16 @@ export const BATTERY_MEMBERS = {
       ),
   },
   /**
-   * A DEVICE-SPECIFIC index: the app maps value→mode through a per-model config (Hermes
-   * `doValueConvertToUIIndex` + a per-device `mappingConfigObject`), NOT a universal enum, so no labels
-   * are published. Confirmed live that the maps genuinely differ — a 3-mode camera (T8170/T8124) uses
-   * identity 0/1/2, while the 4-mode T8214 doorbell adds "Balance Surveillance" at 0 and shifts Optimal
-   * Battery Life to 3. Name one with {@link resolveWorkingMode}.
+   * A DEVICE-SPECIFIC mode index: the app maps value→mode through a per-model config (Hermes
+   * `doValueConvertToUIIndex` + a per-device `mappingConfigObject`), NOT a universal enum. The domain
+   * is resolved per device by {@link publishedWorkingModeDomain}: a confirmed model publishes its
+   * {index → label} set (the 3-mode identity map for battery cameras, the 4-mode map for the T8214
+   * doorbell), and a model with no confirmed set publishes none. Name a value with {@link
+   * resolveWorkingMode}.
+   *
+   * The static `kind` stays `"scalar"`: a member with no static `enumValues` cannot declare `kind:
+   * "enum"` (the value-kinds guard). `enumValuesFor` supplies the per-device domain, and the resolver
+   * stamps the RESOLVED spec/read as an enum so the published surface is self-consistent.
    *
    * The write is DIRECT-BINARY, outer-cmd 1246, `[channel][value=mode][account_id]`. A mode NAME the
    * model does not offer resolves to nothing, which is what makes the setter refuse rather than send a
@@ -210,9 +215,6 @@ export const BATTERY_MEMBERS = {
   workingMode: {
     param: BATTERY_PARAM.WORKING_MODE,
     type: "number",
-    // kind stays "scalar" on the STATIC member (it has no set to ship — the value-kinds guard wants
-    // one for kind:"enum"). `enumValuesFor` resolves the per-device domain, and the resolver marks the
-    // resolved spec/read as an enum so the published surface is self-consistent.
     kind: "scalar",
     enumValuesFor: publishedWorkingModeDomain,
     provenance: "verified",
@@ -424,9 +426,9 @@ export function resolveWorkingMode(model: string | undefined, value: number): st
 }
 
 /**
- * The working-mode {index → label} map for a device model — its own {@link WORKING_MODE_MAPS} entry
- * (matched by T-code prefix) or the 3-mode camera `DEFAULT`. This is the per-device enum a host shows
- * as a dropdown; `workingMode`'s `enumValuesFor` stamps it onto the manifest.
+ * Return the working-mode {index → label} map for a device model — its own {@link WORKING_MODE_MAPS}
+ * entry when one matches by T-code prefix, otherwise the 3-mode `DEFAULT`. Always returns a map (used
+ * for name↔index resolution), unlike {@link publishedWorkingModeDomain} which may return `undefined`.
  */
 export function workingModeMap(model: string | undefined): Readonly<Record<number, string>> {
   const m = (model ?? "").toUpperCase();
@@ -435,18 +437,23 @@ export function workingModeMap(model: string | undefined): Readonly<Record<numbe
 }
 
 /**
- * The working-mode domain to PUBLISH for a device (the manifest/describe enum), as distinct from the
- * write-side {@link workingModeMap} which always has a best-effort `DEFAULT` for name↔index. Publishing
- * a domain is a capability claim, so it is only made where the labels are trustworthy: an explicit
- * per-model map, or the 3-mode `DEFAULT` for the battery-CAMERA family (the documented family default,
- * and the property only appears with the battery capability). An unknown non-camera gets no domain,
- * rather than an unverified set a host could offer as real options.
+ * Battery-camera models confirmed on owned hardware to use the 3-mode `DEFAULT` working-mode domain,
+ * matched by T-code prefix: the eufyCam (T8114) and SoloCam (T8124/T8170/T8171) families.
+ */
+const WORKING_MODE_DEFAULT_MODELS = ["T8114", "T8124", "T8170", "T8171"] as const;
+
+/**
+ * Return the working-mode {index → label} domain to publish for a device, or `undefined` when the
+ * device has no confirmed domain. Returns a model's own {@link WORKING_MODE_MAPS} entry when one
+ * matches by T-code prefix, else the 3-mode `DEFAULT` for a {@link WORKING_MODE_DEFAULT_MODELS} model,
+ * else `undefined` — so a camera that merely reports the param without a confirmed set (e.g. the mains
+ * Indoor Cam T8419) publishes no domain rather than an unverified one.
  */
 function publishedWorkingModeDomain(ctx: AvailabilityContext): Readonly<Record<number, string>> | undefined {
   const m = (ctx.model ?? "").toUpperCase();
   const key = Object.keys(WORKING_MODE_MAPS).find((k) => k !== "DEFAULT" && m.startsWith(k));
   if (key) return WORKING_MODE_MAPS[key];
-  return ctx.codec === "camera" ? WORKING_MODE_MAPS.DEFAULT : undefined;
+  return WORKING_MODE_DEFAULT_MODELS.some((p) => m.startsWith(p)) ? WORKING_MODE_MAPS.DEFAULT : undefined;
 }
 
 /**

@@ -348,24 +348,63 @@ describe("mergeProperties — shared props dedupe across capabilities", () => {
     }
   });
 
-  it("stamps per-model workingMode options through resolveDevice", () => {
-    const workingMode = (model: string) =>
-      resolveDevice({ deviceType: 9, model, params: { 1246: "0", 1101: "50" } }).properties.find(
-        (p) => p.name === "workingMode",
-      )?.enumValues;
+  const workingModeSpec = (model: string) =>
+    resolveDevice({ deviceType: 9, model, params: { 1246: "0", 1101: "50" } }).properties.find(
+      (p) => p.name === "workingMode",
+    );
+  const workingModeRead = (model: string) => {
+    const dev = Device.fromRecord(`${model}P0000000000`, { model, params: { 1246: "0", 1101: "50" } });
+    // describe()'s read descriptors come from the BOUND capability objects — bind so battery's reads exist.
+    dev.bindActions(
+      { channel: 0, codec: "camera", model, deviceType: 9, paramIds: new Set([1246, 1101]) },
+      {
+        dispatch: async () => {},
+      },
+    );
+    return dev
+      .describe()
+      .details.flatMap((c) => c.reads)
+      .find((r) => r.accessor === "workingMode");
+  };
 
-    expect(workingMode("T8114")).toEqual({
-      0: "Optimal Battery Life",
-      1: "Optimal Surveillance",
-      2: "Customize Recording",
-    });
-    // The doorbell numbers its modes differently and adds a fourth.
-    expect(workingMode("T8214")).toEqual({
+  const THREE_MODE = { 0: "Optimal Battery Life", 1: "Optimal Surveillance", 2: "Customize Recording" };
+
+  it("stamps the 3-mode battery-camera domain for a confirmed model (T8114)", () => {
+    expect(workingModeSpec("T8114")?.enumValues).toEqual(THREE_MODE);
+    expect(workingModeSpec("T8114")?.kind).toBe("enum");
+  });
+
+  it("stamps the 4-mode doorbell domain, which numbers its modes differently (T8214)", () => {
+    expect(workingModeSpec("T8214")?.enumValues).toEqual({
       0: "Balance Surveillance",
       1: "Optimal Surveillance",
       2: "Customize Recording",
       3: "Optimal Battery Life",
     });
+  });
+
+  it("publishes no workingMode domain for a model with no confirmed set (mains T8419)", () => {
+    const spec = workingModeSpec("T8419");
+    expect(spec).toBeDefined();
+    expect(spec?.enumValues).toBeUndefined();
+    expect(spec?.kind).not.toBe("enum");
+  });
+
+  it("describe() reports the same per-model workingMode domain as the property schema", () => {
+    const read = workingModeRead("T8114");
+    expect(read?.kind).toBe("enum");
+    expect(read?.labels).toEqual({
+      "0": "Optimal Battery Life",
+      "1": "Optimal Surveillance",
+      "2": "Customize Recording",
+    });
+  });
+
+  it("describe() publishes no workingMode domain for an unverified model (T8419)", () => {
+    const read = workingModeRead("T8419");
+    expect(read).toBeDefined();
+    expect(read?.kind).not.toBe("enum");
+    expect(read?.labels).toBeUndefined();
   });
 
   it("reresolve adopts a changed manifest even when no capability was gained", () => {

@@ -22,7 +22,7 @@
  */
 import type { Capability, Codec, PropertyValueType, ResolvedDevice, ValueKind } from "../types.js";
 import { actionSpecOf, camelCase } from "./access.js";
-import { resolveEnumValues, type ValueMember } from "./members.js";
+import { resolvedEnum, type ValueMember } from "./members.js";
 import type { ActionSpec, AvailabilityContext, CapabilityModule } from "./types.js";
 
 /** One read installed on a bound capability object — a value the device reports, and what it means. */
@@ -150,7 +150,8 @@ export function describeBound(
  *
  * The DECODED kind and option set win where a member declares them: a decode IS the value handed over,
  * so describing the payload it came out of would mis-describe exactly the reads a caller most wants to
- * render.
+ * render. Absent a decode, a context-resolved enum domain ({@link resolvedEnum}) is reported with enum
+ * `kind`; otherwise the member's stored kind and static options stand.
  */
 function readDescriptor(
   name: string,
@@ -159,16 +160,12 @@ function readDescriptor(
   ctx?: AvailabilityContext,
 ): ReadDescriptor {
   const setter = m.writeAs ?? `set${name[0].toUpperCase()}${name.slice(1)}`;
-  // Resolve the device's enum options through the ONE shared resolver, so describe() agrees with the
-  // property schema and the setter. A context-resolved enum is described as an enum, not the member's
-  // stored scalar kind.
-  const dynamicEnum = ctx ? m.enumValuesFor?.(ctx) : undefined;
-  const enumValues = resolveEnumValues(m, ctx);
+  const { values: enumValues, dynamic } = resolvedEnum(m, ctx);
   return {
     accessor: name,
     property: m.property ?? name,
     type: m.type,
-    kind: m.decodedKind ?? (dynamicEnum ? "enum" : m.kind),
+    kind: m.decodedKind ?? (dynamic ? "enum" : m.kind),
     unit: m.unit,
     values: m.decodedValues ?? (enumValues && Object.keys(enumValues).map(Number)),
     labels: enumValues && Object.fromEntries(Object.entries(enumValues)),
