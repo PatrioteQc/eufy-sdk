@@ -1,7 +1,7 @@
 import { CusPushEvent } from "../push-events.js";
 import { asBool } from "../../core/util.js";
 import { setStationScalar, setPayload, setScalar } from "./access.js";
-import type { CapabilityModule, CommandContext } from "./types.js";
+import type { AvailabilityContext, CapabilityModule, CommandContext } from "./types.js";
 import { accepts, propertiesOf, type Members, type Surface } from "./members.js";
 import type { Command } from "../../core/contracts.js";
 
@@ -210,11 +210,11 @@ export const BATTERY_MEMBERS = {
   workingMode: {
     param: BATTERY_PARAM.WORKING_MODE,
     type: "number",
-    // kind stays "scalar": the static spec has no enum set to ship (the value-kinds guard requires
-    // one for kind:"enum"). The per-model options are stamped on at resolve time via enumValuesFor,
-    // and a host renders a select from the resulting `enumValues` regardless of kind.
+    // kind stays "scalar" on the STATIC member (it has no set to ship — the value-kinds guard wants
+    // one for kind:"enum"). `enumValuesFor` resolves the per-device domain, and the resolver marks the
+    // resolved spec/read as an enum so the published surface is self-consistent.
     kind: "scalar",
-    enumValuesFor: (ctx) => workingModeMap(ctx.model),
+    enumValuesFor: publishedWorkingModeDomain,
     provenance: "verified",
     requires: [BATTERY_PARAM.WORKING_MODE],
     min: 0,
@@ -432,6 +432,21 @@ export function workingModeMap(model: string | undefined): Readonly<Record<numbe
   const m = (model ?? "").toUpperCase();
   const key = Object.keys(WORKING_MODE_MAPS).find((k) => k !== "DEFAULT" && m.startsWith(k));
   return (key && WORKING_MODE_MAPS[key]) || WORKING_MODE_MAPS.DEFAULT;
+}
+
+/**
+ * The working-mode domain to PUBLISH for a device (the manifest/describe enum), as distinct from the
+ * write-side {@link workingModeMap} which always has a best-effort `DEFAULT` for name↔index. Publishing
+ * a domain is a capability claim, so it is only made where the labels are trustworthy: an explicit
+ * per-model map, or the 3-mode `DEFAULT` for the battery-CAMERA family (the documented family default,
+ * and the property only appears with the battery capability). An unknown non-camera gets no domain,
+ * rather than an unverified set a host could offer as real options.
+ */
+function publishedWorkingModeDomain(ctx: AvailabilityContext): Readonly<Record<number, string>> | undefined {
+  const m = (ctx.model ?? "").toUpperCase();
+  const key = Object.keys(WORKING_MODE_MAPS).find((k) => k !== "DEFAULT" && m.startsWith(k));
+  if (key) return WORKING_MODE_MAPS[key];
+  return ctx.codec === "camera" ? WORKING_MODE_MAPS.DEFAULT : undefined;
 }
 
 /**

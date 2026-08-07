@@ -22,8 +22,8 @@
  */
 import type { Capability, Codec, PropertyValueType, ResolvedDevice, ValueKind } from "../types.js";
 import { actionSpecOf, camelCase } from "./access.js";
-import type { ValueMember } from "./members.js";
-import type { ActionSpec, CapabilityModule } from "./types.js";
+import { resolveEnumValues, type ValueMember } from "./members.js";
+import type { ActionSpec, AvailabilityContext, CapabilityModule } from "./types.js";
 
 /** One read installed on a bound capability object — a value the device reports, and what it means. */
 export interface ReadDescriptor {
@@ -116,6 +116,7 @@ export interface DeviceManifest {
 export function describeBound(
   modules: readonly CapabilityModule[],
   bound: Readonly<Record<string, unknown>>,
+  ctx?: AvailabilityContext,
 ): CapabilityDescriptor[] {
   const out: CapabilityDescriptor[] = [];
   for (const m of modules) {
@@ -131,7 +132,7 @@ export function describeBound(
         // A getter the member table doesn't declare has no semantics to publish; `manifest.spec.ts`
         // cross-checks the two sets, so a hand-written getter fails there rather than shipping bare.
         const member = m.members?.[name];
-        if (member && "type" in member) reads.push(readDescriptor(name, member, descriptors));
+        if (member && "type" in member) reads.push(readDescriptor(name, member, descriptors, ctx));
         continue;
       }
       if (typeof d.value !== "function") continue;
@@ -151,16 +152,26 @@ export function describeBound(
  * so describing the payload it came out of would mis-describe exactly the reads a caller most wants to
  * render.
  */
-function readDescriptor(name: string, m: ValueMember, descriptors: Record<string, PropertyDescriptor>): ReadDescriptor {
+function readDescriptor(
+  name: string,
+  m: ValueMember,
+  descriptors: Record<string, PropertyDescriptor>,
+  ctx?: AvailabilityContext,
+): ReadDescriptor {
   const setter = m.writeAs ?? `set${name[0].toUpperCase()}${name.slice(1)}`;
+  // Resolve the device's enum options through the ONE shared resolver, so describe() agrees with the
+  // property schema and the setter. A context-resolved enum is described as an enum, not the member's
+  // stored scalar kind.
+  const dynamicEnum = ctx ? m.enumValuesFor?.(ctx) : undefined;
+  const enumValues = resolveEnumValues(m, ctx);
   return {
     accessor: name,
     property: m.property ?? name,
     type: m.type,
-    kind: m.decodedKind ?? m.kind,
+    kind: m.decodedKind ?? (dynamicEnum ? "enum" : m.kind),
     unit: m.unit,
-    values: m.decodedValues ?? (m.enumValues && Object.keys(m.enumValues).map(Number)),
-    labels: m.enumValues && Object.fromEntries(Object.entries(m.enumValues)),
+    values: m.decodedValues ?? (enumValues && Object.keys(enumValues).map(Number)),
+    labels: enumValues && Object.fromEntries(Object.entries(enumValues)),
     writable: typeof descriptors[setter]?.value === "function",
     description: m.description,
   };

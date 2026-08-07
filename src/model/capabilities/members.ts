@@ -442,6 +442,17 @@ export type Surface<M extends Members> = {
 // ── the derived RUNTIME ─────────────────────────────────────────────────────────────────────────
 
 /**
+ * The enum option set for a member on THIS device — the single source every surface reads (the
+ * property schema, `describe()`'s read descriptors, and the setter's argument), so they never
+ * disagree. A member's `enumValuesFor(ctx)` resolves a per-device domain (e.g. `workingMode`, whose
+ * index→label mapping varies by model); absent that (or with no context) the static `enumValues`
+ * stands. A member with neither has no enum domain.
+ */
+export function resolveEnumValues(m: ValueMember, ctx?: AvailabilityContext): Record<number, string> | undefined {
+  return (ctx && m.enumValuesFor?.(ctx)) ?? m.enumValues;
+}
+
+/**
  * The property schema the rest of the model consumes, derived from the same table.
  *
  * A write-only member contributes nothing: the schema describes what a device REPORTS, and a setting it
@@ -455,15 +466,18 @@ export function propertiesOf(members: Members, ctx?: AvailabilityContext): Prope
     // do — one decision per member, so a family-gated value (a hub's `microphone`) never appears on a
     // device that can't use it. A throwing gate propagates, same as on the command path.
     if (ctx && m.available && !m.available(ctx)) return [];
-    // A per-model enum (e.g. workingMode) is resolved from the context here — the only place that
-    // knows the device — and overrides any static enumValues.
-    const enumValues = (ctx && m.enumValuesFor?.(ctx)) || m.enumValues;
+    // A per-model enum (workingMode) is resolved from the context via the ONE shared resolver, so the
+    // resolved spec agrees with describe() / the setter. When the resolved set came from the device
+    // (enumValuesFor), the spec is described consistently as an enum rather than the member's stored
+    // scalar kind.
+    const dynamicEnum = ctx ? m.enumValuesFor?.(ctx) : undefined;
+    const enumValues = resolveEnumValues(m, ctx);
     return [
       {
         name: m.property ?? name,
         paramType: m.param,
         type: m.type,
-        kind: m.kind,
+        kind: dynamicEnum ? "enum" : m.kind,
         unit: m.unit,
         enumValues,
         provenance: m.provenance,
