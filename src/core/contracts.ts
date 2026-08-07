@@ -235,6 +235,18 @@ export interface MediaFragment {
 }
 
 /**
+ * A fragmented-MP4 recording owned by the caller. It remains an async iterable for direct `for await`
+ * consumption, while exposing the shared source's battery budget and an explicit stop for callers
+ * whose recording lifetime is not naturally scoped by an iterator.
+ */
+export interface FragmentRecordingHandle extends AsyncIterable<MediaFragment> {
+  /** Battery budget elapsed; call `notice.extend()` to keep the shared media session alive. */
+  on(event: "budget", listener: (notice: StreamBudgetNotice) => void): this;
+  /** End this recording and release its shared-source consumer. Idempotent. */
+  stop(): void;
+}
+
+/**
  * Battery-budget notice for a live stream. Battery/solar cameras drain while streaming, so the source
  * bounds a continuous stream to a budget; when it elapses this fires and the host decides: call
  * {@link extend} to keep streaming (re-pushes the budget), or do nothing and the source auto-stops
@@ -374,21 +386,26 @@ export interface MediaProvider {
   /** Record `seconds` of video → an mp4/h264 buffer. */
   record(seconds: number, opts?: { timeoutMs?: number; skipKeyframes?: number }): Promise<Buffer>;
   /**
-   * Open a `node:stream` Readable of the live feed over a shared source consumer — raw Annex-B bytes
-   * (default) or `objectMode` {@link LiveVideoFrame}s. In-process egress; the caller pipes it and owns
-   * its lifetime (destroying it releases the shared pull). Optional (unbound model has no client).
+   * Open a video-only `node:stream` Readable over a shared source consumer — raw Annex-B bytes
+   * (default) or `objectMode` {@link LiveVideoFrame}s. Audio is available separately through
+   * {@link live} or muxed through {@link recordFragments}; it is never interleaved into raw video.
+   * The caller owns the Readable's lifetime, and destroying it releases the shared pull.
    */
   openReadable?(opts?: {
     objectMode?: boolean;
-    audio?: boolean;
     powered?: "wired" | "battery";
   }): Promise<import("node:stream").Readable>;
   /**
-   * Continuously record the live feed as fragmented-MP4 (CMAF) — an async iterable of
-   * {@link MediaFragment} (init segment first, then a fragment per keyframe boundary), muxed
-   * dependency-free. `break`/`return` releases the shared pull. Optional.
+   * Continuously record the live feed as fragmented-MP4 (CMAF). The caller-owned
+   * {@link FragmentRecordingHandle} yields an init segment then keyframe-bounded media fragments,
+   * emits battery-budget notices, and releases the shared pull on `stop`, `break`, or `return`.
    */
-  recordFragments?(opts?: { fragmentSeconds?: number; powered?: "wired" | "battery" }): AsyncIterable<MediaFragment>;
+  recordFragments?(opts?: {
+    fragmentSeconds?: number;
+    /** Drain this much retained media before live frames; capped by the source's configured window. */
+    preBufferSeconds?: number;
+    powered?: "wired" | "battery";
+  }): FragmentRecordingHandle;
   /**
    * Open the camera's **talkback** path — audio travelling from the host TO the device, the opposite
    * direction to everything else here. See {@link TalkbackHandle} for the accepted audio. Optional (an

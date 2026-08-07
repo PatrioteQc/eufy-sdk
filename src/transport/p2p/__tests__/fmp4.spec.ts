@@ -1,5 +1,5 @@
 import { Fmp4Muxer } from "../fmp4.js";
-import type { LiveVideoFrame, VideoCodec } from "../../../core/contracts.js";
+import type { LiveAudioFrame, LiveVideoFrame, VideoCodec } from "../../../core/contracts.js";
 
 const SC4 = Buffer.from([0, 0, 0, 1]);
 function annexb(...nals: Buffer[]): Buffer {
@@ -52,6 +52,49 @@ function findBox(buf: Buffer, type: string): Buffer | undefined {
   const start = idx - 4;
   const size = buf.readUInt32BE(start);
   return buf.subarray(start, start + size);
+}
+
+function countType(buf: Buffer, type: string): number {
+  const needle = Buffer.from(type, "ascii");
+  let count = 0;
+  let offset = 0;
+  while ((offset = buf.indexOf(needle, offset)) >= 0) {
+    count++;
+    offset += needle.length;
+  }
+  return count;
+}
+
+function boxesOfType(buf: Buffer, type: string): Buffer[] {
+  const found: Buffer[] = [];
+  const needle = Buffer.from(type, "ascii");
+  let offset = 0;
+  while ((offset = buf.indexOf(needle, offset)) >= 4) {
+    const start = offset - 4;
+    found.push(buf.subarray(start, start + buf.readUInt32BE(start)));
+    offset += needle.length;
+  }
+  return found;
+}
+
+function adts(payload: Buffer): Buffer {
+  const length = payload.length + 7;
+  return Buffer.concat([
+    Buffer.from([
+      0xff,
+      0xf1,
+      0x60,
+      0x40 | ((length >> 11) & 0x03),
+      (length >> 3) & 0xff,
+      ((length & 0x07) << 5) | 0x1f,
+      0xfc,
+    ]),
+    payload,
+  ]);
+}
+
+function audio(codec: LiveAudioFrame["codec"], payload: Buffer): LiveAudioFrame {
+  return { codec, data: adts(payload) };
 }
 
 describe("Fmp4Muxer H.264", () => {
@@ -108,5 +151,75 @@ describe("Fmp4Muxer H.265", () => {
     expect(hvcc.includes(H265_VPS)).toBe(true);
     expect(hvcc.includes(H265_SPS)).toBe(true);
     expect(hvcc.includes(H265_PPS)).toBe(true);
+  });
+});
+
+describe("Fmp4Muxer audio", () => {
+  it("adds an AAC-LC mp4a/esds track and strips ADTS framing from media samples", () => {
+    const mux = new Fmp4Muxer({ audio: true, fragmentSeconds: 0 });
+    const payload = Buffer.from([0x11, 0x22, 0x33, 0x44]);
+    expect(mux.push(kf("h264"), 1000)).toBeUndefined();
+    const init = mux.pushAudio(audio("aac-lc", payload), 1000);
+    expect(findBox(init!.init!, "mp4a")).toBeDefined();
+    expect(findBox(init!.init!, "esds")).toBeDefined();
+
+    mux.push(delta("h264"), 1067);
+    expect(mux.pushAudio(audio("aac-lc", Buffer.from([0x55, 0x66])), 1064)).toBeUndefined();
+    const out = mux.push(kf("h264"), 1134)!;
+    expect(countType(out.data, "traf")).toBe(2);
+    const mdat = findBox(out.data, "mdat")!;
+    expect(mdat.includes(payload)).toBe(true);
+    expect(mdat.includes(Buffer.from([0x55, 0x66]))).toBe(true);
+    expect(mdat.includes(Buffer.from([0xff, 0xf1]))).toBe(false);
+  });
+
+  it("describes AAC-ELD as MPEG-4 audio object type 39", () => {
+    const mux = new Fmp4Muxer({ audio: true });
+    mux.push(kf("h264"), 1000);
+    const init = mux.pushAudio(audio("aac-eld", Buffer.from([1, 2, 3])), 1000)!;
+    expect(findBox(init.init!, "mp4a")).toBeDefined();
+    expect(findBox(init.init!, "esds")!.includes(Buffer.from([0xf8, 0xf0, 0x20]))).toBe(true);
+  });
+
+  it("falls back to a video-only init when the source codec cannot be represented as mp4a", () => {
+    const mux = new Fmp4Muxer({ audio: true });
+    mux.pushAudio({ codec: "g711a", data: Buffer.from([1, 2, 3]) }, 1000);
+    const init = mux.push(kf("h264"), 1000)!;
+    expect(init.init).toBeDefined();
+    expect(findBox(init.init!, "mp4a")).toBeUndefined();
+  });
+
+  it("uses capture timestamps rather than synchronous push time for video durations", () => {
+    const mux = new Fmp4Muxer({ fragmentSeconds: 0 });
+    mux.push(kf("h264"), 1000);
+    mux.push(delta("h264"), 1100);
+    const out = mux.push(kf("h264"), 1200)!;
+    const trun = findBox(out.data, "trun")!;
+    expect(trun.readUInt32BE(20)).toBe(9000);
+    expect(trun.readUInt32BE(32)).toBe(9000);
+  });
+
+  it("aligns audio decode time and preserves a missing-frame gap from capture timestamps", () => {
+    const mux = new Fmp4Muxer({ audio: true, fragmentSeconds: 0 });
+    mux.push(kf("h264"), 1000);
+    mux.pushAudio(audio("aac-lc", Buffer.from([1])), 1064);
+    mux.pushAudio(audio("aac-lc", Buffer.from([2])), 1192);
+    const out = mux.push(kf("h264"), 1256)!;
+    const decodeTimes = boxesOfType(out.data, "tfdt");
+    expect(decodeTimes[1].readBigUInt64BE(12)).toBe(1024n);
+    const runs = boxesOfType(out.data, "trun");
+    expect(runs[1].readUInt32BE(20)).toBe(2048);
+    expect(runs[1].readUInt32BE(32)).toBe(1024);
+  });
+
+  it("realigns the first audio sample after a fragment boundary", () => {
+    const mux = new Fmp4Muxer({ audio: true, fragmentSeconds: 0 });
+    mux.push(kf("h264"), 1000);
+    mux.pushAudio(audio("aac-lc", Buffer.from([1])), 1000);
+    mux.push(kf("h264"), 1100);
+    mux.pushAudio(audio("aac-lc", Buffer.from([2])), 1300);
+    const out = mux.push(kf("h264"), 1400)!;
+    const decodeTimes = boxesOfType(out.data, "tfdt");
+    expect(decodeTimes[1].readBigUInt64BE(12)).toBe(4800n);
   });
 });

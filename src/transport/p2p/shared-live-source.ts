@@ -109,6 +109,11 @@ export interface Consumer extends LiveStreamHandle {
 
 type Item = { kind: "video"; frame: LiveVideoFrame } | { kind: "audio"; frame: LiveAudioFrame };
 
+/** One media frame retained with its transport-arrival time for prebuffer continuity. */
+export type TimedMediaFrame =
+  | { kind: "video"; frame: LiveVideoFrame; timestampMs: number }
+  | { kind: "audio"; frame: LiveAudioFrame; timestampMs: number };
+
 /** Internal per-consumer state + delivery. Exposed to callers only through the {@link Consumer} view. */
 class ConsumerImpl extends EventEmitter implements Consumer {
   private queue: Item[] = [];
@@ -219,12 +224,6 @@ class ConsumerImpl extends EventEmitter implements Consumer {
   }
 }
 
-/** A time-stamped frame retained in the rolling pre-buffer. */
-interface Stamped {
-  frame: LiveVideoFrame;
-  t: number;
-}
-
 export class SharedLiveSource {
   private stream?: LiveStreamHandle;
   private readonly consumers = new Set<ConsumerImpl>();
@@ -236,7 +235,7 @@ export class SharedLiveSource {
   /** Last keyframe access unit seen — replayed to a joining consumer (keyframe-prime). */
   private lastKeyframe?: LiveVideoFrame;
   /** Rolling pre-buffer (V5), keyframe-alignable on drain. */
-  private ring: Stamped[] = [];
+  private ring: TimedMediaFrame[] = [];
 
   /** Warm-up start-retry ticker (interval) + single-shot deadline; cleared once the first frame arrives. */
   private warmRetryTimer?: ReturnType<typeof setInterval>;
@@ -286,6 +285,20 @@ export class SharedLiveSource {
    * and reuses the warm stream), then replays the cached keyframe so the consumer can decode at once.
    */
   attach(): Consumer {
+    return this.attachConsumer(true);
+  }
+
+  /**
+   * Attach at the same instant a keyframe-aligned prebuffer snapshot is taken. The returned consumer
+   * is not separately keyframe-primed, so replaying `buffered` followed by its live events neither
+   * duplicates the newest IDR nor leaves a gap at the handoff.
+   */
+  attachWithPrebuffer(seconds: number): { consumer: Consumer; buffered: TimedMediaFrame[] } {
+    const consumer = this.attachConsumer(false);
+    return { consumer, buffered: this.bufferedMedia(seconds) };
+  }
+
+  private attachConsumer(prime: boolean): Consumer {
     if (this.disposed) throw new Error("SharedLiveSource is disposed");
     const wasEmpty = this.consumers.size === 0;
     const consumer = new ConsumerImpl((c) => this.onDetach(c), this.maxQueue);
@@ -305,7 +318,7 @@ export class SharedLiveSource {
 
     // Keyframe-prime: stage the last IDR so a joining consumer decodes without a full GOP wait. The
     // consumer replays it the moment a "video" listener subscribes (live() is async — see prime()).
-    if (this.lastKeyframe) consumer.prime(this.lastKeyframe);
+    if (prime && this.lastKeyframe) consumer.prime(this.lastKeyframe);
     return consumer;
   }
 
@@ -391,28 +404,28 @@ export class SharedLiveSource {
       this.lastKeyframe = frame;
       if (this._state === "warming") this._state = "live";
     }
-    this.pushRing(frame);
+    this.pushRing({ kind: "video", frame, timestampMs: Date.now() });
     for (const c of this.consumers) c.deliverVideo(frame);
   }
 
   private onAudio(frame: LiveAudioFrame): void {
+    this.pushRing({ kind: "audio", frame, timestampMs: Date.now() });
     for (const c of this.consumers) c.deliverAudio(frame);
   }
 
-  private pushRing(frame: LiveVideoFrame): void {
+  private pushRing(item: TimedMediaFrame): void {
     if (this.preBufferMs <= 0) return;
-    const now = Date.now();
-    this.ring.push({ frame, t: now });
-    const cutoff = now - this.preBufferMs;
+    this.ring.push(item);
+    const cutoff = item.timestampMs - this.preBufferMs;
     // Trim expired frames, but keep the window keyframe-aligned: never drop past the newest keyframe
     // that still lets the oldest retained frame be an IDR, so a drain is decodable.
     let firstKeep = 0;
     for (let i = 0; i < this.ring.length; i++) {
-      if (this.ring[i].t >= cutoff && this.ring[i].frame.keyframe) {
+      if (this.ring[i].timestampMs >= cutoff && this.isKeyframe(this.ring[i])) {
         firstKeep = i;
         break;
       }
-      if (this.ring[i].t >= cutoff) {
+      if (this.ring[i].timestampMs >= cutoff) {
         // in-window but not a keyframe — keep scanning for the aligned start unless none exists
         firstKeep = i;
       }
@@ -420,7 +433,7 @@ export class SharedLiveSource {
     // Prefer to start at a keyframe at or before firstKeep so the buffer opens decodable.
     let align = firstKeep;
     for (let i = firstKeep; i >= 0; i--) {
-      if (this.ring[i].frame.keyframe) {
+      if (this.isKeyframe(this.ring[i])) {
         align = i;
         break;
       }
@@ -434,12 +447,21 @@ export class SharedLiveSource {
    * decides when to drain (e.g. on a motion event) and where to send it.
    */
   ringBuffer(seconds: number): LiveVideoFrame[] {
+    return this.bufferedMedia(seconds)
+      .filter((item): item is Extract<TimedMediaFrame, { kind: "video" }> => item.kind === "video")
+      .map((item) => item.frame);
+  }
+
+  private bufferedMedia(seconds: number): TimedMediaFrame[] {
     if (this.preBufferMs <= 0 || !this.ring.length) return [];
     const cutoff = Date.now() - Math.min(seconds * 1000, this.preBufferMs);
-    let start = this.ring.findIndex((s) => s.t >= cutoff && s.frame.keyframe);
-    if (start < 0) start = this.ring.findIndex((s) => s.frame.keyframe); // fall back to the oldest keyframe
-    if (start < 0) return [];
-    return this.ring.slice(start).map((s) => s.frame);
+    let start = this.ring.findIndex((item) => item.timestampMs >= cutoff && this.isKeyframe(item));
+    if (start < 0) start = this.ring.findIndex((item) => this.isKeyframe(item));
+    return start < 0 ? [] : this.ring.slice(start);
+  }
+
+  private isKeyframe(item: TimedMediaFrame): boolean {
+    return item.kind === "video" && item.frame.keyframe;
   }
 
   /**

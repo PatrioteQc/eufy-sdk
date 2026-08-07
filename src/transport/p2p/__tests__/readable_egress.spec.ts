@@ -76,3 +76,6 @@ describe("openReadableFromConsumer", () => {
     expect(ended).toBe(true);
   });
 });
+
+type ReadableOptions = NonNullable<Parameters<typeof openReadableFromConsumer>[1]>;
+const _audioIsNotAReadableOption: "audio" extends keyof ReadableOptions ? never : true = true;

@@ -121,17 +121,17 @@ describe("LiveStream", () => {
     expect(audio.map((f) => f.codec)).toEqual(["aac-lc", "aac-eld", "g711a"]);
   });
 
-  it("inherits the last known codec for an unknown id, and drops when none is known yet", () => {
+  it("drops every frame whose codec id the station did not declare", () => {
     const { session, live } = mk();
     const audio: any[] = [];
     live.on("audio", (f) => audio.push(f));
     live.start();
     const p = Buffer.from([1]);
-    session.push(audioFrame(9, p) as any); // nothing known yet — nothing to label it with
+    session.push(audioFrame(9, p) as any);
     expect(audio).toHaveLength(0);
     session.push(audioFrame(7, p) as any);
     session.push(audioFrame(9, p) as any);
-    expect(audio.map((f) => f.codec)).toEqual(["aac-eld", "aac-eld"]);
+    expect(audio.map((f) => f.codec)).toEqual(["aac-eld"]);
   });
 
   it("starts the requested camera channel and does NOT filter inbound frames by it", () => {

@@ -25,7 +25,8 @@ const CMD_VIDEO_FRAME = 1300;
 const CMD_AUDIO_FRAME = 1301;
 const VIDEO_HEADER_LEN = 0x16; // 22-byte CMD_VIDEO_FRAME header before the Annex-B payload
 const AUDIO_HEADER_LEN = 0x10; // 16-byte CMD_AUDIO_FRAME header before the audio payload
-const AUDIO_TYPE_OFFSET = 0x05; // u8 codec id, between the u32 size @0x00 and the u16 frame number @0x06
+/** Byte offset of the codec id between the frame-size and frame-number fields. */
+const AUDIO_TYPE_OFFSET = 0x05;
 const SC4 = Buffer.from([0, 0, 0, 1]);
 const SC3 = Buffer.from([0, 0, 1]);
 
@@ -93,8 +94,6 @@ export class LiveStream extends EventEmitter {
   private kaTimer?: ReturnType<typeof setInterval>;
   /** Last codec sniffed off a keyframe; delta frames (no config NAL) inherit it. Default h264. */
   private lastCodec: VideoCodec = "h264";
-  /** Last codec the station declared for audio. Unset until a frame declares a known one. */
-  private lastAudioCodec?: AudioCodec;
   private readonly handler = (f: P2PFrame) => this.onFrame(f);
   private readonly logger: Logger;
 
@@ -196,17 +195,11 @@ export class LiveStream extends EventEmitter {
       } else if (f.commandId === CMD_AUDIO_FRAME) {
         const audio = f.data.length > AUDIO_HEADER_LEN ? f.data.subarray(AUDIO_HEADER_LEN) : f.data;
         if (audio.length) {
-          // Read the codec on EVERY frame, as the app does — it reconfigures its decoder per frame
-          // rather than trusting the first one. An id outside the known set inherits the last known
-          // codec (a stream does not silently change format mid-flight); with none yet known there is
-          // nothing to label the bytes with, so the frame is dropped rather than mislabelled.
-          const declared =
-            f.data.length > AUDIO_TYPE_OFFSET ? AUDIO_CODECS[f.data.readUInt8(AUDIO_TYPE_OFFSET)] : undefined;
-          const codec = declared ?? this.lastAudioCodec;
+          const codecId = f.data.length > AUDIO_TYPE_OFFSET ? f.data.readUInt8(AUDIO_TYPE_OFFSET) : undefined;
+          const codec = codecId === undefined ? undefined : AUDIO_CODECS[codecId];
           if (!codec) {
-            this.logger.debug(`[live] dropping audio frame: unknown codec id ${f.data.readUInt8(AUDIO_TYPE_OFFSET)}`);
+            this.logger.debug(`[live] dropping audio frame: unknown codec id ${codecId ?? "missing"}`);
           } else {
-            this.lastAudioCodec = codec;
             this.emit("audio", { codec, data: audio });
           }
         }
