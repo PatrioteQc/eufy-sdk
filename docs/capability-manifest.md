@@ -25,7 +25,10 @@ See `examples/10-describe-device.ts` for the runnable version, which also reads 
 
 ```ts
 {
-  sn, name, codec, source,
+  sn, codec, source,
+  name: "Dining room",             // what the user named it; the model's name when unnamed
+  model: "T8410",                  // T-code, when the record states one
+  modelName: "Indoor Cam Pan & Tilt",
   bound: true,                     // false until the device is wired to a live client
   capabilities: ["camera", "motion", "battery", …],
   details: [

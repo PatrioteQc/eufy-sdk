@@ -286,6 +286,12 @@ export interface CloudRecord {
   /** Anker category string, e.g. "eufy_security". */
   category?: string;
   /**
+   * What the user named this device in the app (`device_name`), when the record carries one. Not a
+   * classification signal — carried so a device answers with the name its owner sees, which is the one
+   * a host registers it under.
+   */
+  name?: string;
+  /**
    * The parent HomeBase's serial when this device hangs off one (`parent_sn` ≠ own sn); absent when
    * the device stands alone. A topology signal, not a param — used by {@link resolveDevice} to withhold
    * station-scoped capabilities (guard-mode `arming`) from a camera behind a HomeBase, where the

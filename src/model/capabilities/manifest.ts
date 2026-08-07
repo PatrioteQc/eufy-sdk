@@ -92,7 +92,12 @@ export interface CapabilityDescriptor {
  */
 export interface DeviceManifest {
   sn: string;
+  /** What the user named the device in the app; falls back to {@link modelName} when unnamed. */
   name: string;
+  /** Model / T-code ("T8410"), when the record states one. */
+  model?: string;
+  /** The model's own display name ("Indoor Cam Pan & Tilt") — the product, not this unit. */
+  modelName: string;
   codec: Codec;
   source: ResolvedDevice["source"];
   bound: boolean;

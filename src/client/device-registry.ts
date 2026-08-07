@@ -16,6 +16,8 @@ export interface DeviceRecord {
   deviceType?: number;
   model?: string;
   category?: string;
+  /** The app-shown device name (`device_name`); see {@link CloudRecord.name}. */
+  name?: string;
   /** Parent HomeBase serial when attached (topology signal; see {@link CloudRecord.parentSn}). */
   parentSn?: string;
   params: Record<number, string>;
@@ -361,6 +363,7 @@ export class DeviceRegistry {
       deviceType,
       model: dev.model,
       category: dev.category,
+      name: dev.name,
       parentSn: station === sn ? undefined : station,
       params,
       paramUpdatedAt,

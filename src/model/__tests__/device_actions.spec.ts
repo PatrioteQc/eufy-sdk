@@ -106,4 +106,33 @@ describe("Device.reresolve — a capability discovered after the device was buil
     expect(dev.getProperty("battery")?.value).toBe(88); // state survives
     expect(dev.camera?.()).toBeDefined(); // previously-bound accessor still bound
   });
+
+  it("keeps the user's device name across the widening, and takes a rename from the record", () => {
+    const dev = Device.fromRecord("T8000P0000000000", { ...bare(), name: "Dining room" });
+    expect(dev.name).toBe("Dining room");
+
+    dev.reresolve(bare({ 1101: "88" }));
+    expect(dev.name).toBe("Dining room");
+
+    dev.reresolve({ ...bare(), name: "Kitchen" });
+    expect(dev.name).toBe("Kitchen");
+  });
+});
+
+describe("device identity — the unit's name vs the product's", () => {
+  const rec: CloudRecord = { model: "T8410", category: "eufy_security", deviceType: 7 };
+
+  it("answers with the app-shown name, and states the model beside it", () => {
+    const dev = Device.fromRecord("T8410P0000000000", { ...rec, name: "Dining room" });
+    expect(dev.name).toBe("Dining room");
+    expect(dev.model).toBe("T8410");
+    expect(dev.modelName).toBe("Indoor Cam Pan & Tilt");
+    expect(dev.describe()).toMatchObject({ name: "Dining room", model: "T8410", modelName: "Indoor Cam Pan & Tilt" });
+  });
+
+  it("falls back to the model's display name when the record carries no device name", () => {
+    const dev = Device.fromRecord("T8410P0000000000", rec);
+    expect(dev.name).toBe("Indoor Cam Pan & Tilt");
+    expect(dev.modelName).toBe("Indoor Cam Pan & Tilt");
+  });
 });
