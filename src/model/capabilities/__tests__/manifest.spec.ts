@@ -50,6 +50,9 @@ const tableReads = (m: CapabilityModule, paramIds: Set<number>): string[] =>
     .filter(([, member]) => "type" in member && !member.writeOnly && !member.unexposed)
     .filter(([, member]) => {
       const v = member as ValueMember;
+      // A getter installs only where the member is available for this device — the same one
+      // availability decision the manifest and setter apply (here the ctx is a plain camera).
+      if (v.available && !v.available(ctxWith(paramIds))) return false;
       return (
         v.realtime === true ||
         (v.param !== undefined && paramIds.has(v.param)) ||

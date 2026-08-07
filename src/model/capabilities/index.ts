@@ -7,7 +7,7 @@
  */
 
 import type { Capability, CloudRecord, Codec, PropertySpec } from "../types.js";
-import { bindMembers, installs, memberWrite } from "./members.js";
+import { bindMembers, installs, memberWrite, propertiesOf } from "./members.js";
 import { camelCase } from "./access.js";
 import { describeBound, type CapabilityDescriptor } from "./manifest.js";
 import type {
@@ -20,6 +20,7 @@ import type {
   CapabilityActions,
   CapabilityStateReader,
   CommandContext,
+  AvailabilityContext,
 } from "./types.js";
 import type { Command, CommandSink, MediaProvider, Ff09SettingsReader, RawDpCodec } from "../../core/contracts.js";
 
@@ -158,13 +159,18 @@ export const CAPABILITY_MODULES = Object.fromEntries(MODULES.map((m) => [m.capab
  * @returns the union of all contributed `PropertySpec`s, unique by `name`.
  * @internal
  */
-export function mergeProperties(caps: Capability[]): PropertySpec[] {
+export function mergeProperties(caps: Capability[], ctx?: AvailabilityContext): PropertySpec[] {
   const seen = new Set<string>();
   const merged: PropertySpec[] = [];
   for (const cap of caps) {
     const module = getCapabilityModule(cap);
     if (!module) continue;
-    for (const spec of module.properties) {
+    // With a device context, re-derive the property list from the SAME `propertiesOf` the module's
+    // static list comes from — now applying that device's `available` gates and per-model enums. This
+    // keeps one interpreter of the members table (getter, setter and manifest agree); without a
+    // context the precomputed static list is used unchanged.
+    const props = ctx && module.members ? propertiesOf(module.members, ctx) : module.properties;
+    for (const spec of props) {
       if (seen.has(spec.name)) continue;
       seen.add(spec.name);
       merged.push(spec);

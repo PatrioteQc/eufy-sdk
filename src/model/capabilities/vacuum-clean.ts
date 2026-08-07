@@ -1,6 +1,6 @@
 import type { RawDpCodec } from "../../core/contracts.js";
 import type { ParamValue } from "../types.js";
-import type { CapabilityModule } from "./types.js";
+import type { AvailabilityContext, CapabilityModule } from "./types.js";
 import { asBool } from "../../core/util.js";
 import { pickDpParams, aiotDp } from "./access.js";
 import { method, propertiesOf, type Members, type Surface } from "./members.js";
@@ -241,7 +241,7 @@ export const VACUUM_CLEAN_MEMBERS = {
     provenance: "mega",
     description: "Power on/off (DP 151 power switch, cloud get_product_data_point).",
     write: (v, _ctx) => aiotDp(VACUUM_DP.POWER, asBool(v)),
-    available: (ctx) => isAiotVacuum(ctx),
+    available: (ctx: AvailabilityContext) => isAiotVacuum(ctx),
   },
   /** Stored as the raw structured payload; the activity is decoded out of it at read time. */
   activity: {

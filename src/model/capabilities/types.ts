@@ -165,11 +165,36 @@ export interface DecodedState {
  * so a capability can resolve the right command **variant** for THIS device — the same evidence
  * `detection` keys on. Namespace-agnostic: `paramIds` holds security param ids OR vacuum Tuya DPs.
  */
-export interface CommandContext {
+/**
+ * The device facts an availability / per-model gate reads. A truthful subset a {@link CloudRecord}
+ * can populate at resolve time — before a live session exists — without fabricating the transport
+ * fields ({@link CommandContext.channel}, {@link CommandContext.paramIds}) a real command carries.
+ * Every {@link CommandContext} is one structurally, so a gate written against this runs unchanged on
+ * the manifest path and the command path.
+ */
+export interface AvailabilityContext {
+  /** Resolved codec/family. */
+  codec: Codec;
+  /** eufy DeviceType, when known. */
+  deviceType?: number;
+  /** Model / T-code, when known. */
+  model?: string;
+  /** API category string, when known. */
+  category?: string;
+  /** The device's resolved capability set, when known. */
+  capabilities?: ReadonlySet<Capability>;
+  /**
+   * Whether the device is reachable over P2P — a live-transport fact, so it is absent on the pure
+   * resolve-time (manifest) path and present only when a command context is built. Availability gates
+   * that read it (a lock's P2P-only writes) are all `writeOnly`, which the manifest never lists, so
+   * its absence there changes nothing.
+   */
+  hasP2p?: boolean;
+}
+
+export interface CommandContext extends AvailabilityContext {
   /** Device channel (0 for standalone, `device_channel` on a HomeBase). */
   channel: number;
-  /** Resolved codec/family — lets a cross-family capability branch on transport. */
-  codec: Codec;
   /** eufy DeviceType, when known. */
   deviceType?: number;
   /** Model / T-code, when known. */

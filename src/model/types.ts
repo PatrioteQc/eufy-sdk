@@ -254,6 +254,7 @@ export type {
   CapabilityFrame,
   CapabilityEvent,
   CommandContext,
+  AvailabilityContext,
   CapabilityActions,
 } from "./capabilities/types.js";
 
