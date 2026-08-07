@@ -1,11 +1,8 @@
 /**
  * Shared live source — one underlying {@link LiveStream} (one PPCS pull) fanned out to N consumers.
  *
- * The shipping code opens a fresh `CMD_START_REALTIME_MEDIA` pull per `live()`/`record()`/
- * `snapshotLive()` call, so N consumers of one camera = N redundant sessions, hitting the HomeBase
- * concurrent-stream cap early. `SharedLiveSource` collapses them: the FIRST consumer warms one stream,
- * every later consumer rides it, and the pull is torn down only after the LAST consumer leaves (plus a
- * linger grace, so the motion-thumbnail → notification-tap flow reuses a still-warm session).
+ * The first consumer warms one stream, every later consumer shares it, and the pull is torn down only
+ * after the last consumer leaves plus a linger grace.
  *
  * State machine (per `${parentSn}:${channel}`):
  *
@@ -46,7 +43,7 @@ export interface SharedLiveSourceOptions {
   lingerMs?: number;
   /** Per-consumer bounded queue depth; overflow → drop-to-keyframe (default 900 ≈ 30s @ 30fps). */
   maxQueue?: number;
-  /** Rolling pre-buffer window in seconds (V5), 0 = off (default 0). */
+  /** Rolling prebuffer window in seconds, 0 = off (default 0). */
   preBufferSeconds?: number;
   /** Advisory HomeBase concurrent-stream cap, surfaced for observability only. */
   concurrentCap?: number;
@@ -234,7 +231,7 @@ export class SharedLiveSource {
 
   /** Last keyframe access unit seen — replayed to a joining consumer (keyframe-prime). */
   private lastKeyframe?: LiveVideoFrame;
-  /** Rolling pre-buffer (V5), keyframe-alignable on drain. */
+  /** Rolling prebuffer, keyframe-alignable on drain. */
   private ring: TimedMediaFrame[] = [];
 
   /** Warm-up start-retry ticker (interval) + single-shot deadline; cleared once the first frame arrives. */
@@ -442,7 +439,7 @@ export class SharedLiveSource {
   }
 
   /**
-   * Drain the rolling pre-buffer (V5): the retained frames within `seconds` (capped at
+   * Drain the rolling prebuffer: the retained frames within `seconds` (capped at
    * `preBufferSeconds`), trimmed to open on a keyframe so the returned run is decodable. The host
    * decides when to drain (e.g. on a motion event) and where to send it.
    */

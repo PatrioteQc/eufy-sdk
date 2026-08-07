@@ -1,9 +1,8 @@
 /**
  * Native fragmented-MP4 (fMP4 / CMAF) muxer — pure Node, ZERO dependency (only `node:buffer`).
  *
- * The shipping `recordClip` shells out to ffmpeg for a one-shot buffer. This muxer produces the same
- * CMAF shape (`ftyp`+`moov` init segment, then `moof`+`mdat` media fragments) as a continuous,
- * dependency-free stream so a host can serve fMP4 (MSE / HLS-fMP4 / DASH) without ffmpeg on PATH.
+ * Produces a continuous, dependency-free CMAF stream: an `ftyp`+`moov` init segment followed by
+ * `moof`+`mdat` media fragments.
  *
  * Feed it {@link LiveVideoFrame}s (Annex-B) and optional station-declared AAC frames. It emits the
  * `init` segment once the video parameter sets and requested audio configuration are known, then a
@@ -12,7 +11,7 @@
  *
  * H.265 note: the `hvcC` NAL arrays (VPS/SPS/PPS) are exact; the profile/tier/level header fields use
  * safe Main-profile defaults (decoders re-read the SPS from the arrays), and picture size comes from
- * {@link LiveVideoFrame}. This matches the plan's H265 fallback.
+ * {@link LiveVideoFrame}.
  *
  * @module p2p/fmp4
  */

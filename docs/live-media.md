@@ -43,8 +43,7 @@ stream.on("video", (frame) => {
   // frame.keyframe  true on an IDR (a valid resync/segment boundary)
 });
 stream.on("audio", (frame) => {
-  // frame.data   audio payload (ADTS-framed for the two AAC profiles)
-  // frame.codec  "aac-lc" | "aac-eld" | "g711a"
+  consumeAudio(frame.codec, frame.data);
 });
 stream.on("start", () => {});
 stream.on("stop", () => {}); // upstream ended, or you called stop()
