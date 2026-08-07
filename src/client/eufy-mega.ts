@@ -753,6 +753,24 @@ export class EufyMega extends EventEmitter {
     });
   }
 
+  /** The effective cloud poll interval in ms — the configured {@link EufyMegaOptions.pollMs} or the default. */
+  get pollIntervalMs(): number {
+    return this.opts.pollMs ?? DEFAULT_POLL_MS;
+  }
+
+  /**
+   * Change the cloud poll interval at runtime; `ms` is the gap between polls, `0` disables polling.
+   *
+   * Takes effect immediately: the pending tick is cancelled and the loop re-armed at the new interval
+   * (or left cancelled for `0`). Unlike the constructor {@link EufyMegaOptions.pollMs}, this can be
+   * changed after login — a host exposing a "how often to poll" setting calls this when the user edits it.
+   */
+  setPollInterval(ms: number): void {
+    this.opts.pollMs = ms;
+    this.pollTimer.cancel();
+    this.schedulePoll();
+  }
+
   /**
    * One poll pass: re-read the device list and emit a semantic event for every param that changed
    * value since the last pass.
