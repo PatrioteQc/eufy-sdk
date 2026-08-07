@@ -1,7 +1,7 @@
 import { CusPushEvent } from "../push-events.js";
 import { asBool } from "../../core/util.js";
 import { setStationScalar, setPayload, setScalar } from "./access.js";
-import type { CapabilityModule, CommandContext } from "./types.js";
+import type { AvailabilityContext, CapabilityModule, CommandContext } from "./types.js";
 import { accepts, propertiesOf, type Members, type Surface } from "./members.js";
 import type { Command } from "../../core/contracts.js";
 
@@ -197,11 +197,16 @@ export const BATTERY_MEMBERS = {
       ),
   },
   /**
-   * A DEVICE-SPECIFIC index: the app maps value→mode through a per-model config (Hermes
-   * `doValueConvertToUIIndex` + a per-device `mappingConfigObject`), NOT a universal enum, so no labels
-   * are published. Confirmed live that the maps genuinely differ — a 3-mode camera (T8170/T8124) uses
-   * identity 0/1/2, while the 4-mode T8214 doorbell adds "Balance Surveillance" at 0 and shifts Optimal
-   * Battery Life to 3. Name one with {@link resolveWorkingMode}.
+   * A DEVICE-SPECIFIC mode index: the app maps value→mode through a per-model config (Hermes
+   * `doValueConvertToUIIndex` + a per-device `mappingConfigObject`), NOT a universal enum. The domain
+   * is resolved per device by {@link publishedWorkingModeDomain}: a confirmed model publishes its
+   * {index → label} set (the 3-mode identity map for battery cameras, the 4-mode map for the T8214
+   * doorbell), and a model with no confirmed set publishes none. Name a value with {@link
+   * resolveWorkingMode}.
+   *
+   * The static `kind` stays `"scalar"`: a member with no static `enumValues` cannot declare `kind:
+   * "enum"` (the value-kinds guard). `enumValuesFor` supplies the per-device domain, and the resolver
+   * stamps the RESOLVED spec/read as an enum so the published surface is self-consistent.
    *
    * The write is DIRECT-BINARY, outer-cmd 1246, `[channel][value=mode][account_id]`. A mode NAME the
    * model does not offer resolves to nothing, which is what makes the setter refuse rather than send a
@@ -211,6 +216,7 @@ export const BATTERY_MEMBERS = {
     param: BATTERY_PARAM.WORKING_MODE,
     type: "number",
     kind: "scalar",
+    enumValuesFor: publishedWorkingModeDomain,
     provenance: "verified",
     requires: [BATTERY_PARAM.WORKING_MODE],
     min: 0,
@@ -416,10 +422,38 @@ export const WORKING_MODE_MAPS: Readonly<Record<string, Readonly<Record<number, 
  * by T-code prefix, falling back to the 3-mode camera `DEFAULT`.
  */
 export function resolveWorkingMode(model: string | undefined, value: number): string | undefined {
+  return workingModeMap(model)[value];
+}
+
+/**
+ * Return the working-mode {index → label} map for a device model — its own {@link WORKING_MODE_MAPS}
+ * entry when one matches by T-code prefix, otherwise the 3-mode `DEFAULT`. Always returns a map (used
+ * for name↔index resolution), unlike {@link publishedWorkingModeDomain} which may return `undefined`.
+ */
+export function workingModeMap(model: string | undefined): Readonly<Record<number, string>> {
   const m = (model ?? "").toUpperCase();
   const key = Object.keys(WORKING_MODE_MAPS).find((k) => k !== "DEFAULT" && m.startsWith(k));
-  const map = (key && WORKING_MODE_MAPS[key]) || WORKING_MODE_MAPS.DEFAULT;
-  return map[value];
+  return (key && WORKING_MODE_MAPS[key]) || WORKING_MODE_MAPS.DEFAULT;
+}
+
+/**
+ * Battery-camera models confirmed on owned hardware to use the 3-mode `DEFAULT` working-mode domain,
+ * matched by T-code prefix: the eufyCam (T8114) and SoloCam (T8124/T8170/T8171) families.
+ */
+const WORKING_MODE_DEFAULT_MODELS = ["T8114", "T8124", "T8170", "T8171"] as const;
+
+/**
+ * Return the working-mode {index → label} domain to publish for a device, or `undefined` when the
+ * device has no confirmed domain. Returns a model's own {@link WORKING_MODE_MAPS} entry when one
+ * matches by T-code prefix, else the 3-mode `DEFAULT` for a {@link WORKING_MODE_DEFAULT_MODELS} model,
+ * else `undefined` — so a camera that merely reports the param without a confirmed set (e.g. the mains
+ * Indoor Cam T8419) publishes no domain rather than an unverified one.
+ */
+function publishedWorkingModeDomain(ctx: AvailabilityContext): Readonly<Record<number, string>> | undefined {
+  const m = (ctx.model ?? "").toUpperCase();
+  const key = Object.keys(WORKING_MODE_MAPS).find((k) => k !== "DEFAULT" && m.startsWith(k));
+  if (key) return WORKING_MODE_MAPS[key];
+  return WORKING_MODE_DEFAULT_MODELS.some((p) => m.startsWith(p)) ? WORKING_MODE_MAPS.DEFAULT : undefined;
 }
 
 /**
@@ -427,9 +461,7 @@ export function resolveWorkingMode(model: string | undefined, value: number): st
  * `undefined` if that model doesn't offer the named mode. Used to let `setWorkingMode` take names.
  */
 export function resolveWorkingModeValue(model: string | undefined, name: string): number | undefined {
-  const m = (model ?? "").toUpperCase();
-  const key = Object.keys(WORKING_MODE_MAPS).find((k) => k !== "DEFAULT" && m.startsWith(k));
-  const map = (key && WORKING_MODE_MAPS[key]) || WORKING_MODE_MAPS.DEFAULT;
+  const map = workingModeMap(model);
   const hit = Object.entries(map).find(([, label]) => label.toLowerCase() === name.trim().toLowerCase());
   return hit ? Number(hit[0]) : undefined;
 }

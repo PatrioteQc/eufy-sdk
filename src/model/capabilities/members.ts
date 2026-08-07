@@ -41,6 +41,14 @@ export interface ValueMember {
   kind?: ValueKind;
   unit?: string;
   enumValues?: Record<number, string>;
+  /**
+   * A per-device enum resolved at manifest time from the device context — for a value whose options
+   * are real but vary by model, so a single static {@link enumValues} cannot state them (e.g.
+   * `workingMode`, whose indices number differently per camera). `mergeProperties` calls this with the
+   * device context and stamps the result onto that device's spec. Returning `undefined` leaves the
+   * static `enumValues` (or none) in place.
+   */
+  enumValuesFor?: (ctx: AvailabilityContext) => Record<number, string> | undefined;
   provenance?: PropertySpec["provenance"];
   invert?: boolean;
   description: string;
@@ -434,27 +442,45 @@ export type Surface<M extends Members> = {
 // ── the derived RUNTIME ─────────────────────────────────────────────────────────────────────────
 
 /**
+ * Resolve a member's enum options for a device, evaluating `enumValuesFor` at most once. Returns the
+ * options and whether they came from the device context (`dynamic`), so a caller derives both the
+ * option set and the enum `kind` from a single result. A context domain (`enumValuesFor(ctx)`) is
+ * returned when present; absent that (or with no context) the static `enumValues`; a member with
+ * neither yields no options.
+ */
+export function resolvedEnum(
+  m: ValueMember,
+  ctx?: AvailabilityContext,
+): { values?: Record<number, string>; dynamic: boolean } {
+  const dynamic = ctx ? m.enumValuesFor?.(ctx) : undefined;
+  return dynamic ? { values: dynamic, dynamic: true } : { values: m.enumValues, dynamic: false };
+}
+
+/**
  * The property schema the rest of the model consumes, derived from the same table.
  *
  * A write-only member contributes nothing: the schema describes what a device REPORTS, and a setting it
  * accepts but never reports back has no state to publish. Its wire still reaches `setProperty` through
  * the member's own `write`.
+ *
+ * When `ctx` is given, a member's availability gate is applied (a gated-out member contributes no spec)
+ * and its enum options are resolved for the device via {@link resolvedEnum}; a context-resolved domain
+ * makes the spec's `kind` `"enum"` rather than the member's stored scalar kind. A throwing gate
+ * propagates.
  */
 export function propertiesOf(members: Members, ctx?: AvailabilityContext): PropertySpec[] {
   return Object.entries(members).flatMap(([name, m]) => {
     if (!("type" in m) || m.param === undefined || m.writeOnly) return [];
-    // The manifest applies the SAME availability gate the setter (installs) and getter (bindMembers)
-    // do — one decision per member, so a family-gated value (a hub's `microphone`) never appears on a
-    // device that can't use it. A throwing gate propagates, same as on the command path.
     if (ctx && m.available && !m.available(ctx)) return [];
+    const { values: enumValues, dynamic } = resolvedEnum(m, ctx);
     return [
       {
         name: m.property ?? name,
         paramType: m.param,
         type: m.type,
-        kind: m.kind,
+        kind: dynamic ? "enum" : m.kind,
         unit: m.unit,
-        enumValues: m.enumValues,
+        enumValues,
         provenance: m.provenance,
         invert: m.invert,
         decode: m.coerce,

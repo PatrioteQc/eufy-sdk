@@ -782,8 +782,11 @@ export function buildActions(
  * over the bound objects it holds and gets back what each exposes, without naming a capability.
  * @internal
  */
-export function describeCapabilities(bound: Partial<DeviceActionMap>): CapabilityDescriptor[] {
-  return describeBound(MODULES, bound as Record<string, unknown>);
+export function describeCapabilities(
+  bound: Partial<DeviceActionMap>,
+  ctx?: AvailabilityContext,
+): CapabilityDescriptor[] {
+  return describeBound(MODULES, bound as Record<string, unknown>, ctx);
 }
 
 /**
