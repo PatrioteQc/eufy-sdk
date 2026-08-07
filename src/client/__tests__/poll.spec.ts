@@ -175,6 +175,57 @@ describe("cloud-param poll loop", () => {
   });
 });
 
+describe("setPollInterval (runtime poll-interval change)", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.useFakeTimers();
+  });
+  afterEach(() => vi.useRealTimers());
+
+  it("reports the configured interval, and the default when unset", () => {
+    expect(makeClient({ pollMs: 1234 }).pollIntervalMs).toBe(1234);
+    expect(makeClient().pollIntervalMs).toBe(600_000); // DEFAULT_POLL_MS
+  });
+
+  it("updates the effective interval", () => {
+    const eufy = makeClient({ pollMs: 1000 });
+    eufy.setPollInterval(5000);
+    expect(eufy.pollIntervalMs).toBe(5000);
+  });
+
+  it("re-arms a running loop at the new interval immediately", async () => {
+    const eufy = makeClient({ pollMs: 1000 });
+    const poll = vi
+      .spyOn((eufy as any).registry, "pollChanges")
+      .mockResolvedValue({ params: [], added: [], removed: [], reported: [] });
+
+    (eufy as any).schedulePoll();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(poll).toHaveBeenCalledTimes(1); // old 1s cadence
+
+    eufy.setPollInterval(5000);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(poll).toHaveBeenCalledTimes(1); // the old 1s tick no longer fires
+    await vi.advanceTimersByTimeAsync(4000);
+    expect(poll).toHaveBeenCalledTimes(2); // fires at the new 5s cadence
+  });
+
+  it("setPollInterval(0) stops a running loop", async () => {
+    const eufy = makeClient({ pollMs: 1000 });
+    const poll = vi
+      .spyOn((eufy as any).registry, "pollChanges")
+      .mockResolvedValue({ params: [], added: [], removed: [], reported: [] });
+
+    (eufy as any).schedulePoll();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(poll).toHaveBeenCalledTimes(1);
+
+    eufy.setPollInterval(0);
+    await vi.advanceTimersByTimeAsync(60 * 60 * 1000);
+    expect(poll).toHaveBeenCalledTimes(1); // disabled — no further polls
+  });
+});
+
 describe("device hot-plug events", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
