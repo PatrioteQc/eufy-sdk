@@ -446,7 +446,9 @@ export class Device {
    * The reads and actions are the ones this device actually installed, so a caller can offer everything
    * listed: a write the device gave no evidence for, or one whose wire is not confirmed, is absent
    * rather than described. An unbound device (no live client) has nothing bound to enumerate and answers
-   * `bound: false` with empty `details`.
+   * `bound: false` with empty `details`. `details` is resolved against this device's own facts (codec,
+   * model, capabilities), so a per-device enum domain (e.g. `workingMode`) carries the same options the
+   * property schema does.
    */
   describe(): DeviceManifest {
     return {
@@ -458,8 +460,6 @@ export class Device {
       source: this.source,
       bound: this.bound,
       capabilities: [...this.capabilities],
-      // Resolve per-device enum domains (e.g. workingMode) against this device's own facts, so the
-      // read descriptors carry the same options the property schema does.
       details: describeCapabilities(this.actionMap, {
         codec: this.codec,
         model: this.model,
