@@ -17,7 +17,7 @@
  */
 import type { Command, CommandSink, Ff09SettingsReader, MediaProvider, RawDpCodec } from "../../core/contracts.js";
 import { describedAction, readBool, readNum, readStr } from "./access.js";
-import type { ActionArgSpec, ActionSpec, CapabilityStateReader, CommandContext } from "./types.js";
+import type { ActionArgSpec, ActionSpec, AvailabilityContext, CapabilityStateReader, CommandContext } from "./types.js";
 import type { PropertySpec, PropertyValueType, ValueKind } from "../types.js";
 
 // ── the contract ────────────────────────────────────────────────────────────────────────────────
@@ -82,8 +82,12 @@ export interface ValueMember {
    * a reported param. Audio's controls split the same way on device FAMILY — a HomeBase has an alarm
    * volume, a camera has a microphone, and neither reports the other's params. Like `requires`, a member
    * that declares this lands OPTIONAL on the surface, because whether it exists is a runtime fact.
+   *
+   * Takes an {@link AvailabilityContext} (not a full CommandContext): the manifest applies the same
+   * gate at resolve time, before a live session exists, so it must read only device facts a record
+   * carries — never `channel`/`paramIds`.
    */
-  available?: (ctx: CommandContext) => boolean;
+  available?: (ctx: AvailabilityContext) => boolean;
   /**
    * The write wire is NOT confirmed on a real device.
    *
@@ -436,27 +440,30 @@ export type Surface<M extends Members> = {
  * accepts but never reports back has no state to publish. Its wire still reaches `setProperty` through
  * the member's own `write`.
  */
-export function propertiesOf(members: Members): PropertySpec[] {
-  return Object.entries(members).flatMap(([name, m]) =>
-    !("type" in m) || m.param === undefined || m.writeOnly
-      ? []
-      : [
-          {
-            name: m.property ?? name,
-            paramType: m.param,
-            type: m.type,
-            kind: m.kind,
-            unit: m.unit,
-            enumValues: m.enumValues,
-            provenance: m.provenance,
-            invert: m.invert,
-            decode: m.coerce,
-            readAliases: m.readAliases,
-            writable: m.write !== undefined || m.writtenElsewhere === true,
-            description: m.description,
-          },
-        ],
-  );
+export function propertiesOf(members: Members, ctx?: AvailabilityContext): PropertySpec[] {
+  return Object.entries(members).flatMap(([name, m]) => {
+    if (!("type" in m) || m.param === undefined || m.writeOnly) return [];
+    // The manifest applies the SAME availability gate the setter (installs) and getter (bindMembers)
+    // do — one decision per member, so a family-gated value (a hub's `microphone`) never appears on a
+    // device that can't use it. A throwing gate propagates, same as on the command path.
+    if (ctx && m.available && !m.available(ctx)) return [];
+    return [
+      {
+        name: m.property ?? name,
+        paramType: m.param,
+        type: m.type,
+        kind: m.kind,
+        unit: m.unit,
+        enumValues: m.enumValues,
+        provenance: m.provenance,
+        invert: m.invert,
+        decode: m.coerce,
+        readAliases: m.readAliases,
+        writable: m.write !== undefined || m.writtenElsewhere === true,
+        description: m.description,
+      },
+    ];
+  });
 }
 
 /** What `asBool` gives meaning to — every other value would silently read as `false`. */
@@ -710,7 +717,10 @@ export function bindMembers<M extends Members>(
       continue;
     }
     const prop = m.property ?? name;
-    const reported = reads(m, ctx);
+    // One availability decision across getter, setter and manifest: a member gated off by `available`
+    // for this device is not exposed as a getter either (the manifest already omits it).
+    const available = !m.available || m.available(ctx);
+    const reported = available && reads(m, ctx);
     if (reported && !m.writeOnly && !m.unexposed) {
       const decode = m.decode;
       const get = decode ? () => decode(read(prop)?.value, rawDp, ctx) : () => narrow(m.type, read, prop);

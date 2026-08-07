@@ -1,4 +1,4 @@
-import type { CapabilityModule, CapabilityActions, CommandContext } from "./types.js";
+import type { AvailabilityContext, CapabilityModule, CapabilityActions, CommandContext } from "./types.js";
 import { asBool, enumLabels } from "../../core/util.js";
 import { pickDpParams, aiotDp } from "./access.js";
 import { propertiesOf, type Members, type Surface } from "./members.js";
@@ -115,7 +115,7 @@ export const SUCTION_MEMBERS = {
     decodedValues: ALL_SUCTION_LEVELS,
     write: (v) => aiotDp(SUCTION_DP.SUCTION, v as number),
     writeAs: "setSuctionLevel",
-    available: (ctx) => isAiotVacuum(ctx),
+    available: (ctx: AvailabilityContext) => isAiotVacuum(ctx),
     description:
       "Suction level (DP 158, raw int per the fixed SuctionEnum). The labels name the WHOLE scale, " +
       "not this robot's menu: the SuctionEnum meaning is global (see SuctionLevel) while WHICH levels " +
@@ -136,7 +136,7 @@ export const SUCTION_MEMBERS = {
     provenance: "mega",
     description: "BoostIQ auto-suction (DP 159, Bool).",
     write: (v) => aiotDp(SUCTION_DP.BOOST_IQ, asBool(v)),
-    available: (ctx) => isAiotVacuum(ctx),
+    available: (ctx: AvailabilityContext) => isAiotVacuum(ctx),
   },
 } as const satisfies Members;
 

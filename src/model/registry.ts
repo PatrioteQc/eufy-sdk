@@ -26,7 +26,7 @@
  * @module model/registry
  */
 
-import type { CloudRecord, RegistryEntry, ResolvedDevice, Capability } from "./types.js";
+import type { CloudRecord, RegistryEntry, ResolvedDevice, Capability, Codec, PropertySpec } from "./types.js";
 import { classify, codecForType, codecFromModel } from "./classify.js";
 import {
   mergeProperties,
@@ -210,7 +210,7 @@ export function resolveDevice(rec: CloudRecord): ResolvedDevice {
     ...detectCapabilities(rec, codec),
   ]).filter((c) => !(attached && STATION_OWNED_CAPABILITIES.has(c)));
 
-  const properties = mergeProperties(capabilities);
+  const properties = resolveProperties(rec, codec, capabilities);
 
   // Name: curated → inferred clean T-code → raw model → "unknown".
   const name = row?.name ?? inferName(rec) ?? rec.model ?? "unknown";
@@ -222,4 +222,21 @@ export function resolveDevice(rec: CloudRecord): ResolvedDevice {
   const source: ResolvedDevice["source"] = row ? "model" : classifiedByCategory ? "category" : "inferred";
 
   return { codec, capabilities, properties, name, source };
+}
+
+/**
+ * The property manifest for a device, from its capabilities and the record's facts. The single place
+ * an {@link AvailabilityContext} is built — so a family-gate (`available`) and a per-model enum
+ * (`enumValuesFor`) are decided from the same truthful, session-free view on every path (initial
+ * resolve and {@link Device.reresolve}). Populated only from what a record carries, never transport
+ * fields a live session hasn't produced.
+ */
+export function resolveProperties(rec: CloudRecord, codec: Codec, capabilities: Capability[]): PropertySpec[] {
+  return mergeProperties(capabilities, {
+    codec,
+    deviceType: rec.deviceType,
+    model: rec.model,
+    category: rec.category,
+    capabilities: new Set(capabilities),
+  });
 }

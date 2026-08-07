@@ -1,5 +1,5 @@
 import type { Capability } from "../types.js";
-import type { ActionSpec, CommandContext, CapabilityStateReader } from "./types.js";
+import type { ActionSpec, AvailabilityContext, CommandContext, CapabilityStateReader } from "./types.js";
 import type { Command, ScalarForm } from "../../core/contracts.js";
 
 /**
@@ -102,17 +102,17 @@ export function describeDevice(ctx: CommandContext): string {
 // ── shared family / capability gates (used by capability modules to route commands per device) ──
 
 /** True for a camera-codec device (a camera or a doorbell) — the video / two-way-audio family. */
-export function isCameraCodec(ctx: CommandContext): boolean {
+export function isCameraCodec(ctx: AvailabilityContext): boolean {
   return ctx.codec === "camera";
 }
 
 /** True for a station/hub codec (a HomeBase OR an NVR — use `isHomeBase` from device-family to exclude NVRs). */
-export function isStationCodec(ctx: CommandContext): boolean {
+export function isStationCodec(ctx: AvailabilityContext): boolean {
   return ctx.codec === "station";
 }
 
 /** True when the device's RESOLVED capability set includes `cap` — the same gate `buildCommand` authorizes on. */
-export function hasCapability(ctx: CommandContext, cap: Capability): boolean {
+export function hasCapability(ctx: AvailabilityContext, cap: Capability): boolean {
   return ctx.capabilities?.has(cap) === true;
 }
 

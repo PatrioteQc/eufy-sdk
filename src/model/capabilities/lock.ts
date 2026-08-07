@@ -1,7 +1,7 @@
 import { asBool } from "../../core/util.js";
 import { describeDevice } from "./access.js";
 import { method, propertiesOf, provided, type Members, type Surface } from "./members.js";
-import type { CapabilityModule, CommandContext } from "./types.js";
+import type { AvailabilityContext, CapabilityModule, CommandContext } from "./types.js";
 import type { Command, CommandSink, AutoLockSnapshot } from "../../core/contracts.js";
 
 /**
@@ -86,7 +86,7 @@ function settingToggle(settingId: number, name: string, enabled: boolean, ctx: C
  * The compact toggles are only known on the P2P video lock; the MQTT garage door does not expose them in
  * the app, so offering them there would guess a frame shape that likely does not exist.
  */
-const overP2p = (ctx: CommandContext): boolean => ctx.hasP2p === true;
+const overP2p = (ctx: AvailabilityContext): boolean => ctx.hasP2p === true;
 
 /**
  * Every `lock` feature, declared once.

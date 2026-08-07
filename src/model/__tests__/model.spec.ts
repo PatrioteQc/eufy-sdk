@@ -331,4 +331,32 @@ describe("mergeProperties — shared props dedupe across capabilities", () => {
     expect(detectCapabilities({ params: { 1550: "1" } }, "sensor")).not.toContain("video");
     expect(detectCapabilities({ model: "cam" }, "camera")).toContain("video");
   });
+
+  it("honours per-member `available` through resolveDevice — a hub omits camera-only audio props", () => {
+    // A camera reporting the mic/speaker params, and a HomeBase — both resolve the shared `audio`
+    // capability, but each keeps only the members its family speaks.
+    const camNames = resolveDevice({ deviceType: 9, model: "T8114", params: { 1240: "1", 1241: "1" } }).properties.map(
+      (p) => p.name,
+    );
+    expect(camNames).toEqual(expect.arrayContaining(["microphone", "speaker", "speakerVolume", "audioRecording"]));
+    expect(camNames).not.toContain("hubAlarmTone");
+
+    const hubNames = resolveDevice({ model: "T8030", deviceType: 0 }).properties.map((p) => p.name);
+    expect(hubNames).toContain("hubAlarmTone");
+    for (const cameraOnly of ["microphone", "speaker", "speakerVolume", "audioRecording"]) {
+      expect(hubNames).not.toContain(cameraOnly);
+    }
+  });
+
+  it("reresolve adopts a changed manifest even when no capability was gained", () => {
+    // A vacuum's AIoT-only members are gated on category, but the vacuum capabilities are the same
+    // either way — so switching category changes the manifest without changing the capability set.
+    const dev = Device.fromRecord("VAC", { model: "T2351", category: "eufy_home_tuya", params: {} });
+    expect(dev.properties.map((p) => p.name)).not.toContain("power");
+
+    const gained = dev.reresolve({ model: "T2351", category: "eufy_clean", params: {} });
+
+    expect(gained).toEqual([]); // capability set unchanged…
+    expect(dev.properties.map((p) => p.name)).toContain("power"); // …but the manifest was still adopted
+  });
 });
