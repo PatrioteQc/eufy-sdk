@@ -348,6 +348,26 @@ describe("mergeProperties — shared props dedupe across capabilities", () => {
     }
   });
 
+  it("stamps per-model workingMode options through resolveDevice", () => {
+    const workingMode = (model: string) =>
+      resolveDevice({ deviceType: 9, model, params: { 1246: "0", 1101: "50" } }).properties.find(
+        (p) => p.name === "workingMode",
+      )?.enumValues;
+
+    expect(workingMode("T8114")).toEqual({
+      0: "Optimal Battery Life",
+      1: "Optimal Surveillance",
+      2: "Customize Recording",
+    });
+    // The doorbell numbers its modes differently and adds a fourth.
+    expect(workingMode("T8214")).toEqual({
+      0: "Balance Surveillance",
+      1: "Optimal Surveillance",
+      2: "Customize Recording",
+      3: "Optimal Battery Life",
+    });
+  });
+
   it("reresolve adopts a changed manifest even when no capability was gained", () => {
     // A vacuum's AIoT-only members are gated on category, but the vacuum capabilities are the same
     // either way — so switching category changes the manifest without changing the capability set.

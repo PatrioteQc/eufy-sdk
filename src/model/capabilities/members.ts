@@ -41,6 +41,14 @@ export interface ValueMember {
   kind?: ValueKind;
   unit?: string;
   enumValues?: Record<number, string>;
+  /**
+   * A per-device enum resolved at manifest time from the device context — for a value whose options
+   * are real but vary by model, so a single static {@link enumValues} cannot state them (e.g.
+   * `workingMode`, whose indices number differently per camera). `mergeProperties` calls this with the
+   * device context and stamps the result onto that device's spec. Returning `undefined` leaves the
+   * static `enumValues` (or none) in place.
+   */
+  enumValuesFor?: (ctx: AvailabilityContext) => Record<number, string> | undefined;
   provenance?: PropertySpec["provenance"];
   invert?: boolean;
   description: string;
@@ -447,6 +455,9 @@ export function propertiesOf(members: Members, ctx?: AvailabilityContext): Prope
     // do — one decision per member, so a family-gated value (a hub's `microphone`) never appears on a
     // device that can't use it. A throwing gate propagates, same as on the command path.
     if (ctx && m.available && !m.available(ctx)) return [];
+    // A per-model enum (e.g. workingMode) is resolved from the context here — the only place that
+    // knows the device — and overrides any static enumValues.
+    const enumValues = (ctx && m.enumValuesFor?.(ctx)) || m.enumValues;
     return [
       {
         name: m.property ?? name,
@@ -454,7 +465,7 @@ export function propertiesOf(members: Members, ctx?: AvailabilityContext): Prope
         type: m.type,
         kind: m.kind,
         unit: m.unit,
-        enumValues: m.enumValues,
+        enumValues,
         provenance: m.provenance,
         invert: m.invert,
         decode: m.coerce,
