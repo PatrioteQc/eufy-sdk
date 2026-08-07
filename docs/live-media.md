@@ -42,8 +42,9 @@ stream.on("video", (frame) => {
   // frame.width, frame.height
   // frame.keyframe  true on an IDR (a valid resync/segment boundary)
 });
-stream.on("audio", (buf) => {
-  /* Buffer of audio payload */
+stream.on("audio", (frame) => {
+  // frame.data   audio payload (ADTS-framed for the two AAC profiles)
+  // frame.codec  "aac-lc" | "aac-eld" | "g711a"
 });
 stream.on("start", () => {});
 stream.on("stop", () => {}); // upstream ended, or you called stop()
@@ -56,8 +57,14 @@ stream.stop(); // detach this consumer
 `stream.stop()` detaches **this** consumer only. The shared pull stops when the _last_ consumer
 detaches (after the linger window).
 
-`codec` is sniffed off the parameter sets on a keyframe and carried on the delta frames that follow,
-so every frame carries a codec even though only keyframes have config to sniff.
+The two codecs reach you differently. **Video** `codec` is sniffed off the parameter sets on a keyframe
+and carried on the delta frames that follow, so every frame carries one even though only keyframes have
+config to sniff. **Audio** `codec` is declared by the station in each frame's header, so it is read
+rather than inferred — and read on every frame, because the device is free to change it mid-stream.
+
+Audio deliberately carries **no sample rate and no channel count**: neither is on the wire. The eufy app
+assumes 16 kHz mono for all three codecs, and a host that needs those numbers is making the same
+assumption — the SDK does not dress it up as a device fact.
 
 ## 2. Node Readable (pipe it)
 

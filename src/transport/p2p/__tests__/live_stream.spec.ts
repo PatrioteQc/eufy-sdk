@@ -37,6 +37,14 @@ function videoFrame(opts: {
   return { commandId: 1300, channel: opts.channel ?? 0, signCode: 0, data: Buffer.concat([hdr, body]) };
 }
 
+/** Build a CMD_AUDIO_FRAME: 16-byte header carrying the codec id at 0x05, then the payload. */
+function audioFrame(audioType: number, payload: Buffer): Partial<P2PFrame> {
+  const hdr = Buffer.alloc(0x10);
+  hdr.writeUInt32LE(payload.length, 0x00);
+  hdr.writeUInt8(audioType, 0x05);
+  return { commandId: 1301, channel: 0, signCode: 0, data: Buffer.concat([hdr, payload]) };
+}
+
 describe("LiveStream", () => {
   function mk(opts = {}) {
     const session = new FakeSession();
@@ -89,20 +97,41 @@ describe("LiveStream", () => {
     expect(frames[0].codec).toBe("h264");
   });
 
-  it("emits audio with its 16-byte header stripped", () => {
+  it("emits audio with its 16-byte header stripped, carrying the declared codec", () => {
     const { session, live } = mk();
-    const audio: Buffer[] = [];
-    live.on("audio", (d) => audio.push(d));
+    const audio: any[] = [];
+    live.on("audio", (f) => audio.push(f));
     live.start();
     const payload = Buffer.from([10, 11, 12, 13]);
-    session.push({
-      commandId: 1301,
-      channel: 0,
-      signCode: 0,
-      data: Buffer.concat([Buffer.alloc(0x10), payload]),
-    } as any);
+    session.push(audioFrame(0, payload) as any);
     expect(audio).toHaveLength(1);
-    expect(audio[0].equals(payload)).toBe(true);
+    expect(audio[0].codec).toBe("aac-lc");
+    expect(audio[0].data.equals(payload)).toBe(true);
+  });
+
+  it("maps each codec id the app accepts, and re-reads it on every frame", () => {
+    const { session, live } = mk();
+    const audio: any[] = [];
+    live.on("audio", (f) => audio.push(f));
+    live.start();
+    const p = Buffer.from([1]);
+    session.push(audioFrame(0, p) as any);
+    session.push(audioFrame(7, p) as any);
+    session.push(audioFrame(2, p) as any);
+    expect(audio.map((f) => f.codec)).toEqual(["aac-lc", "aac-eld", "g711a"]);
+  });
+
+  it("inherits the last known codec for an unknown id, and drops when none is known yet", () => {
+    const { session, live } = mk();
+    const audio: any[] = [];
+    live.on("audio", (f) => audio.push(f));
+    live.start();
+    const p = Buffer.from([1]);
+    session.push(audioFrame(9, p) as any); // nothing known yet — nothing to label it with
+    expect(audio).toHaveLength(0);
+    session.push(audioFrame(7, p) as any);
+    session.push(audioFrame(9, p) as any);
+    expect(audio.map((f) => f.codec)).toEqual(["aac-eld", "aac-eld"]);
   });
 
   it("starts the requested camera channel and does NOT filter inbound frames by it", () => {

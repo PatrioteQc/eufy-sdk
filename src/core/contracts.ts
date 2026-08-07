@@ -199,6 +199,28 @@ export interface LiveVideoFrame {
 }
 
 /**
+ * Elementary-stream audio codec of a {@link LiveAudioFrame}. The station declares it per frame as a
+ * byte in the `CMD_AUDIO_FRAME` header — unlike video, nothing is sniffed. These are the three values
+ * the v6 app accepts (`AudioReader.setAudioSpecificConfig`: 0 → `mp4a.40.2`, 2 → G.711 A-law,
+ * 7 → `mp4a.40.39`); it fails the stream on anything else.
+ */
+export type AudioCodec = "aac-lc" | "aac-eld" | "g711a";
+
+/**
+ * One audio access unit, carrying the codec the station declared for it.
+ *
+ * Sample rate and channel count are deliberately absent: they are not on the wire. The v6 app assumes
+ * 16 kHz mono for every audio type rather than reading them, so the SDK does not invent fields the
+ * device never sent — a host needing them applies that assumption knowingly.
+ */
+export interface LiveAudioFrame {
+  /** Codec declared in the frame header. */
+  codec: AudioCodec;
+  /** Elementary-stream bytes (ADTS-framed for the two AAC profiles). */
+  data: Buffer;
+}
+
+/**
  * One fragmented-MP4 (CMAF) output unit from the native muxer. `init` (the `ftyp`+`moov` init
  * segment) is present exactly once, on the first fragment; every fragment carries a `moof`+`mdat`
  * media segment in `data`. Structural (plain `Buffer`s) so it stays in core with no transport import.
@@ -237,7 +259,7 @@ export interface LiveStreamHandle {
   /** Re-issue the media-start command (start-race retry / keepalive nudge). Optional. */
   nudge?(): void;
   on(event: "video", listener: (frame: LiveVideoFrame) => void): this;
-  on(event: "audio", listener: (data: Buffer) => void): this;
+  on(event: "audio", listener: (frame: LiveAudioFrame) => void): this;
   on(event: "start" | "stop", listener: () => void): this;
   on(event: "error", listener: (err: Error) => void): this;
   /** Battery-budget elapsed — extend to keep streaming or let it auto-stop (battery cameras only). */

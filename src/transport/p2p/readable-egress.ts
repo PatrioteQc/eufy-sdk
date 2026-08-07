@@ -14,7 +14,7 @@
  */
 import { Readable } from "node:stream";
 import type { Consumer } from "./shared-live-source.js";
-import type { LiveVideoFrame } from "../../core/contracts.js";
+import type { LiveAudioFrame, LiveVideoFrame } from "../../core/contracts.js";
 
 export interface ReadableEgressOptions {
   /** Emit {@link LiveVideoFrame} objects instead of raw Annex-B bytes (default false = bytes). */
@@ -54,8 +54,8 @@ export function openReadableFromConsumer(consumer: Consumer, opts: ReadableEgres
   consumer.on("video", onVideo);
 
   if (opts.audio && !objectMode) {
-    consumer.on("audio", (data: Buffer) => {
-      if (!readable.push(data)) consumer.pause();
+    consumer.on("audio", (frame: LiveAudioFrame) => {
+      if (!readable.push(frame.data)) consumer.pause();
     });
   }
 

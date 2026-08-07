@@ -30,7 +30,7 @@
 import { EventEmitter } from "node:events";
 import { noopLogger, type Logger } from "../../core/logger.js";
 import { Timer } from "../../core/util.js";
-import type { LiveStreamHandle, LiveVideoFrame, StreamBudgetNotice } from "../../core/contracts.js";
+import type { LiveAudioFrame, LiveStreamHandle, LiveVideoFrame, StreamBudgetNotice } from "../../core/contracts.js";
 
 /** Lifecycle state of a {@link SharedLiveSource}. */
 export type SharedLiveState = "idle" | "warming" | "live" | "lingering" | "stopped";
@@ -92,7 +92,7 @@ export interface SharedLiveSourceOptions {
 export interface Consumer extends LiveStreamHandle {
   /** Detach a previously registered listener (mirrors {@link LiveStreamHandle.on}). */
   off(event: "video", listener: (frame: LiveVideoFrame) => void): this;
-  off(event: "audio", listener: (data: Buffer) => void): this;
+  off(event: "audio", listener: (frame: LiveAudioFrame) => void): this;
   off(event: "start" | "stop", listener: () => void): this;
   off(event: "error", listener: (err: Error) => void): this;
   /** True once the source has replayed a cached keyframe to this consumer (no GOP wait on join). */
@@ -107,7 +107,7 @@ export interface Consumer extends LiveStreamHandle {
   detach(): void;
 }
 
-type Item = { kind: "video"; frame: LiveVideoFrame } | { kind: "audio"; data: Buffer };
+type Item = { kind: "video"; frame: LiveVideoFrame } | { kind: "audio"; frame: LiveAudioFrame };
 
 /** Internal per-consumer state + delivery. Exposed to callers only through the {@link Consumer} view. */
 class ConsumerImpl extends EventEmitter implements Consumer {
@@ -182,9 +182,9 @@ class ConsumerImpl extends EventEmitter implements Consumer {
   }
 
   /** Source → consumer audio. Dropped entirely while resyncing (audio has no keyframes). */
-  deliverAudio(data: Buffer): void {
+  deliverAudio(frame: LiveAudioFrame): void {
     if (this.detached || this.awaitingKeyframe) return;
-    this.accept({ kind: "audio", data });
+    this.accept({ kind: "audio", frame });
   }
 
   private accept(item: Item): void {
@@ -203,7 +203,7 @@ class ConsumerImpl extends EventEmitter implements Consumer {
 
   private flush(item: Item): void {
     if (item.kind === "video") this.emit("video", item.frame);
-    else this.emit("audio", item.data);
+    else this.emit("audio", item.frame);
   }
 
   fail(err: Error): void {
@@ -316,7 +316,7 @@ export class SharedLiveSource {
     const stream = this.opts.makeStream();
     this.stream = stream;
     stream.on("video", (frame) => this.onVideo(frame));
-    stream.on("audio", (data) => this.onAudio(data));
+    stream.on("audio", (frame) => this.onAudio(frame));
     stream.on("stop", () => this.onUpstreamEnd());
     stream.on("error", (err) => this.onUpstreamError(err));
     stream.start();
@@ -395,8 +395,8 @@ export class SharedLiveSource {
     for (const c of this.consumers) c.deliverVideo(frame);
   }
 
-  private onAudio(data: Buffer): void {
-    for (const c of this.consumers) c.deliverAudio(data);
+  private onAudio(frame: LiveAudioFrame): void {
+    for (const c of this.consumers) c.deliverAudio(frame);
   }
 
   private pushRing(frame: LiveVideoFrame): void {
