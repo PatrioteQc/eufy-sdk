@@ -11,21 +11,33 @@
  *    keyframe ECIES envelope. If an `eccPrivateKey` is supplied we run `VideoFrameDecoder`; otherwise
  *    those frames are skipped (no key → no video).
  *
- * Emits: `video` ({@link LiveVideoFrame} — Annex-B), `audio` (Buffer), `start`, `stop`, `error`.
+ * Emits: `video` ({@link LiveVideoFrame} — Annex-B), `audio` ({@link LiveAudioFrame}), `start`, `stop`,
+ * `error`.
  */
 import { EventEmitter } from "node:events";
 import type { P2PSession, P2PFrame } from "./p2p-session.js";
 import { parseVideoFrameHeader, VideoFrameDecoder } from "./video.js";
 import { sniffAnnexbCodec } from "./annexb.js";
 import { noopLogger, type Logger } from "../../core/logger.js";
-import type { LiveVideoFrame, VideoCodec } from "../../core/contracts.js";
+import type { AudioCodec, LiveAudioFrame, LiveVideoFrame, VideoCodec } from "../../core/contracts.js";
 
 const CMD_VIDEO_FRAME = 1300;
 const CMD_AUDIO_FRAME = 1301;
 const VIDEO_HEADER_LEN = 0x16; // 22-byte CMD_VIDEO_FRAME header before the Annex-B payload
 const AUDIO_HEADER_LEN = 0x10; // 16-byte CMD_AUDIO_FRAME header before the audio payload
+/** Byte offset of the codec id between the frame-size and frame-number fields. */
+const AUDIO_TYPE_OFFSET = 0x05;
 const SC4 = Buffer.from([0, 0, 0, 1]);
 const SC3 = Buffer.from([0, 0, 1]);
+
+/**
+ * Codec ids the station puts at {@link AUDIO_TYPE_OFFSET}, as the v6 app maps them
+ * (`AudioReader.AAC_LC = 0`, `G711A = 2`, `AAC_ELD = 7`).
+ *
+ * The app's `PCM_SILENCE = -1` is absent on purpose: it is not a wire value. The app injects it
+ * itself when a stream produces no audio at all, to feed its decoder silence.
+ */
+const AUDIO_CODECS: Readonly<Record<number, AudioCodec>> = { 0: "aac-lc", 2: "g711a", 7: "aac-eld" };
 
 /**
  * How often the media start is re-issued to hold a stream open, when a caller expresses no preference.
@@ -182,7 +194,15 @@ export class LiveStream extends EventEmitter {
         }
       } else if (f.commandId === CMD_AUDIO_FRAME) {
         const audio = f.data.length > AUDIO_HEADER_LEN ? f.data.subarray(AUDIO_HEADER_LEN) : f.data;
-        if (audio.length) this.emit("audio", audio);
+        if (audio.length) {
+          const codecId = f.data.length > AUDIO_TYPE_OFFSET ? f.data.readUInt8(AUDIO_TYPE_OFFSET) : undefined;
+          const codec = codecId === undefined ? undefined : AUDIO_CODECS[codecId];
+          if (!codec) {
+            this.logger.debug(`[live] dropping audio frame: unknown codec id ${codecId ?? "missing"}`);
+          } else {
+            this.emit("audio", { codec, data: audio });
+          }
+        }
       }
     } catch (e) {
       this.emit("error", e instanceof Error ? e : new Error(String(e)));
@@ -192,14 +212,14 @@ export class LiveStream extends EventEmitter {
 
 export interface LiveStream {
   on(event: "video", listener: (frame: LiveVideoFrame) => void): this;
-  on(event: "audio", listener: (data: Buffer) => void): this;
+  on(event: "audio", listener: (frame: LiveAudioFrame) => void): this;
   on(event: "start" | "stop", listener: () => void): this;
   on(event: "error", listener: (err: Error) => void): this;
   // Structural conformance to LiveStreamHandle; the upstream stream never emits "budget" itself
   // (the shared source raises it on the consumer side), but the type must be assignable.
   on(event: "budget", listener: (notice: import("../../core/contracts.js").StreamBudgetNotice) => void): this;
   emit(event: "video", frame: LiveVideoFrame): boolean;
-  emit(event: "audio", data: Buffer): boolean;
+  emit(event: "audio", frame: LiveAudioFrame): boolean;
   emit(event: "start" | "stop"): boolean;
   emit(event: "error", err: Error): boolean;
 }

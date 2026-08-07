@@ -19,8 +19,6 @@ import type { LiveVideoFrame } from "../../core/contracts.js";
 export interface ReadableEgressOptions {
   /** Emit {@link LiveVideoFrame} objects instead of raw Annex-B bytes (default false = bytes). */
   objectMode?: boolean;
-  /** Include audio frames interleaved (bytes mode only; default false = video only). */
-  audio?: boolean;
   /** Readable highWaterMark (bytes, or object count in objectMode). */
   highWaterMark?: number;
 }
@@ -52,12 +50,6 @@ export function openReadableFromConsumer(consumer: Consumer, opts: ReadableEgres
     if (!ok) consumer.pause();
   };
   consumer.on("video", onVideo);
-
-  if (opts.audio && !objectMode) {
-    consumer.on("audio", (data: Buffer) => {
-      if (!readable.push(data)) consumer.pause();
-    });
-  }
 
   consumer.on("stop", () => readable.push(null)); // upstream ended → EOF
   consumer.on("error", (err: Error) => readable.destroy(err));

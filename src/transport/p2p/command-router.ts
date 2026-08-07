@@ -16,7 +16,6 @@ import type {
   Ff09Identity,
   AutoLockSnapshot,
   MediaProvider,
-  MediaFragment,
   ScalarForm,
   AacEncoder,
   TalkbackHandle,
@@ -56,6 +55,7 @@ import { SessionManager, PREWARM_MS, type PowerTier, type SessionManagerOpts } f
 import { Fmp4Muxer } from "./fmp4.js";
 import { openReadableFromConsumer } from "./readable-egress.js";
 import { Talkback } from "./talkback.js";
+import { FragmentRecording } from "./fragment-recording.js";
 
 /**
  * How many times each idempotent "direct" control command (camera on/off 1035, spotlight
@@ -654,62 +654,26 @@ export class P2PCommandRouter {
   /**
    * **Continuous fragmented-MP4 recording** — attach a consumer to the device's shared live source and
    * yield CMAF fragments (init segment first, then a `moof`+`mdat` per keyframe boundary) muxed by the
-   * dependency-free {@link Fmp4Muxer}. The async generator detaches its consumer on return/throw, so a
-   * `break`/`return` at the call site cleanly releases the shared pull. No ffmpeg.
+   * dependency-free {@link Fmp4Muxer}. The returned recording handle exposes battery-budget notices
+   * and detaches its consumer on `stop`, iterator return, or iterator throw. No ffmpeg.
    */
-  async *recordFragments(
+  recordFragments(
     sn: string,
     opts: {
       fragmentSeconds?: number;
+      preBufferSeconds?: number;
       eccPrivateKey?: Buffer;
       keepAliveMs?: number;
       powered?: "wired" | "battery";
     } = {},
-  ): AsyncGenerator<MediaFragment> {
-    const source = await this.sharedLiveSourceFor(sn, {
+  ): FragmentRecording {
+    const source = this.sharedLiveSourceFor(sn, {
       eccPrivateKey: opts.eccPrivateKey,
       keepAliveMs: opts.keepAliveMs,
+      preBufferSeconds: opts.preBufferSeconds,
       powered: opts.powered,
     });
-    const consumer = source.attach();
-    const mux = new Fmp4Muxer({ fragmentSeconds: opts.fragmentSeconds });
-    const queue: MediaFragment[] = [];
-    let wake: (() => void) | undefined;
-    let done = false;
-    let failure: Error | undefined;
-    const nudge = () => {
-      wake?.();
-      wake = undefined;
-    };
-    consumer.on("video", (f) => {
-      const frag = mux.push(f);
-      if (frag) queue.push(frag);
-      nudge();
-    });
-    consumer.on("stop", () => {
-      const tail = mux.flush();
-      if (tail) queue.push(tail);
-      done = true;
-      nudge();
-    });
-    consumer.on("error", (e) => {
-      failure = e;
-      done = true;
-      nudge();
-    });
-    try {
-      for (;;) {
-        if (queue.length) {
-          yield queue.shift()!;
-          continue;
-        }
-        if (failure) throw failure;
-        if (done) return;
-        await new Promise<void>((r) => (wake = r));
-      }
-    } finally {
-      consumer.detach();
-    }
+    return new FragmentRecording(source, opts);
   }
 
   /**

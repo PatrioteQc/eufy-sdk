@@ -446,6 +446,25 @@ describe("camera capability module", () => {
       await acts.snapshotLive!();
       expect(seen).toEqual(["snapshot:battery", "snapshotLive:battery"]);
     });
+
+    it("passes recording prebuffer options and the power hint to the recording handle", () => {
+      const seen: unknown[] = [];
+      const recording = {
+        on: () => recording,
+        stop: () => undefined,
+        async *[Symbol.asyncIterator]() {},
+      };
+      const media: MediaProvider = {
+        snapshot: async () => ({ file: "", jpeg: Buffer.alloc(0) }),
+        snapshotLive: async () => ({ jpeg: Buffer.alloc(0), width: 1, height: 1 }),
+        live: async () => ({}) as never,
+        record: async () => Buffer.alloc(0),
+        recordFragments: (opts) => (seen.push(opts), recording),
+      };
+      const { acts } = camera(ctx(0, { capabilities: new Set(["camera", "battery"]) }), media);
+      expect(acts.recordFragments!({ preBufferSeconds: 8 })).toBe(recording);
+      expect(seen).toEqual([{ powered: "battery", preBufferSeconds: 8 }]);
+    });
   });
 });
 

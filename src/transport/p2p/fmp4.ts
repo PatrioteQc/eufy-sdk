@@ -1,23 +1,23 @@
 /**
  * Native fragmented-MP4 (fMP4 / CMAF) muxer — pure Node, ZERO dependency (only `node:buffer`).
  *
- * The shipping `recordClip` shells out to ffmpeg for a one-shot buffer. This muxer produces the same
- * CMAF shape (`ftyp`+`moov` init segment, then `moof`+`mdat` media fragments) as a continuous,
- * dependency-free stream so a host can serve fMP4 (MSE / HLS-fMP4 / DASH) without ffmpeg on PATH.
+ * Produces a continuous, dependency-free CMAF stream: an `ftyp`+`moov` init segment followed by
+ * `moof`+`mdat` media fragments.
  *
- * Feed it {@link LiveVideoFrame}s (Annex-B). It emits the `init` segment once — on the first keyframe,
- * whose parameter sets ({@link extractParamSets}) build the `avcC` (H.264) / `hvcC` (H.265) decoder
- * config — then a media fragment per boundary (a keyframe once `fragmentSeconds` has elapsed). Annex-B
- * start codes are rewritten to AVCC 4-byte length prefixes in the `mdat`.
+ * Feed it {@link LiveVideoFrame}s (Annex-B) and optional station-declared AAC frames. It emits the
+ * `init` segment once the video parameter sets and requested audio configuration are known, then a
+ * media fragment at the first keyframe after `fragmentSeconds` has elapsed. Annex-B start codes are
+ * rewritten to AVCC length prefixes and AAC's ADTS transport headers are removed from `mdat` samples.
  *
  * H.265 note: the `hvcC` NAL arrays (VPS/SPS/PPS) are exact; the profile/tier/level header fields use
  * safe Main-profile defaults (decoders re-read the SPS from the arrays), and picture size comes from
- * {@link LiveVideoFrame}. This matches the plan's H265 fallback.
+ * {@link LiveVideoFrame}.
  *
  * @module p2p/fmp4
  */
 import { extractParamSets, splitAnnexbNals, type ParamSets } from "./annexb.js";
-import type { LiveVideoFrame, MediaFragment, VideoCodec } from "../../core/contracts.js";
+import { AAC_SAMPLE_RATE, AAC_SAMPLES_PER_FRAME, parseAdtsHeader } from "./adts.js";
+import type { AudioCodec, LiveAudioFrame, LiveVideoFrame, MediaFragment, VideoCodec } from "../../core/contracts.js";
 
 const TIMESCALE = 90000; // 90kHz — the conventional media timescale
 const DEFAULT_FRAME_TICKS = TIMESCALE / 15; // fallback per-sample duration (~15fps) before we measure
@@ -27,6 +27,8 @@ export interface Fmp4Options {
   fragmentSeconds?: number;
   /** Assumed fps for the first sample's duration before inter-frame timing is known (default 15). */
   fps?: number;
+  /** Include an AAC track when the source declares AAC-LC or AAC-ELD before the first media fragment. */
+  audio?: boolean;
 }
 
 /** Type strings for the H.264 / H.265 sample entry + decoder-config boxes. */
@@ -41,6 +43,11 @@ interface Sample {
   keyframe: boolean;
 }
 
+type AacCodec = Exclude<AudioCodec, "g711a">;
+const AAC_ELD_SAMPLES_PER_FRAME = 512;
+const ADTS_FREQUENCY_INDEX_16K = 8;
+const ADTS_CHANNELS_MONO = 1;
+
 export class Fmp4Muxer {
   private params?: ParamSets;
   private codec: Exclude<VideoCodec, "av1"> = "h264";
@@ -51,13 +58,24 @@ export class Fmp4Muxer {
   private baseDecodeTime = 0; // running decode time (ticks) for tfdt
   private fragTicks = 0; // ticks accumulated in the open fragment
   private samples: Sample[] = [];
-  private lastPushMs = 0;
+  private lastVideoTimestampMs?: number;
+  private readonly audioRequested: boolean;
+  private audioCodec?: AacCodec;
+  private audioDisabled = false;
+  private audioSamples: Sample[] = [];
+  private audioBaseDecodeTime = 0;
+  private firstVideoTimestampMs?: number;
+  private firstAudioTimestampMs?: number;
+  private lastAudioTimestampMs?: number;
+  private timelineOriginMs?: number;
+  private timelineAligned = false;
   private readonly fragmentTicks: number;
   private readonly firstDuration: number;
 
   constructor(opts: Fmp4Options = {}) {
     this.fragmentTicks = (opts.fragmentSeconds ?? 2) * TIMESCALE;
     this.firstDuration = opts.fps ? TIMESCALE / opts.fps : DEFAULT_FRAME_TICKS;
+    this.audioRequested = opts.audio ?? false;
   }
 
   /**
@@ -65,11 +83,11 @@ export class Fmp4Muxer {
    * media fragment when this frame closed the open one. Returns `undefined` if nothing is emitted yet
    * (e.g. delta frames before the first keyframe).
    */
-  push(frame: LiveVideoFrame): MediaFragment | undefined {
+  push(frame: LiveVideoFrame, timestampMs = now()): MediaFragment | undefined {
     if (frame.codec === "av1") throw new Error("fMP4 muxer: AV1 is not supported");
     let init: Buffer | undefined;
 
-    if (!this.initSent) {
+    if (!this.params) {
       if (!frame.keyframe) return undefined; // wait for the first keyframe (carries the param sets)
       const ps = extractParamSets(frame.data);
       if (!ps || ps.codec === "av1") return undefined;
@@ -77,25 +95,37 @@ export class Fmp4Muxer {
       this.codec = ps.codec;
       this.width = frame.width || pictureWidthFallback(ps);
       this.height = frame.height || 0;
-      init = this.buildInit();
-      this.initSent = true;
-      this.lastPushMs = now();
+      this.firstVideoTimestampMs = timestampMs;
     }
 
-    // Compute this sample's duration from inter-frame wallclock (best-effort), with a floor.
-    const t = now();
-    const measured = this.lastPushMs ? Math.round((t - this.lastPushMs) * (TIMESCALE / 1000)) : 0;
-    this.lastPushMs = t;
-    const duration = measured > 0 ? measured : this.firstDuration;
+    if (this.lastVideoTimestampMs !== undefined && this.samples.length) {
+      const measured = Math.round((timestampMs - this.lastVideoTimestampMs) * (TIMESCALE / 1000));
+      if (measured > 0) {
+        const previous = this.samples[this.samples.length - 1];
+        this.fragTicks += measured - previous.duration;
+        previous.duration = measured;
+      }
+    }
+    this.lastVideoTimestampMs = timestampMs;
 
     let fragment: Buffer | undefined;
     // Boundary: a keyframe that opens a fragment past the minimum length closes the current one first.
     if (frame.keyframe && this.samples.length > 0 && this.fragTicks >= this.fragmentTicks) {
+      if (!this.initSent) {
+        this.audioDisabled = !this.audioCodec;
+        init = this.buildInit();
+        this.initSent = true;
+      }
       fragment = this.buildFragment();
     }
 
-    this.samples.push({ data: annexbToAvcc(frame.data), duration, keyframe: frame.keyframe });
-    this.fragTicks += duration;
+    this.samples.push({ data: annexbToAvcc(frame.data), duration: this.firstDuration, keyframe: frame.keyframe });
+    this.fragTicks += this.firstDuration;
+
+    if (!this.initSent && (!this.audioRequested || this.audioCodec || this.audioDisabled)) {
+      init = this.buildInit();
+      this.initSent = true;
+    }
 
     if (init || fragment) {
       return { init, data: fragment ?? Buffer.alloc(0), keyframe: !!fragment && this.samplesStartKeyframe() };
@@ -103,11 +133,68 @@ export class Fmp4Muxer {
     return undefined;
   }
 
+  /** Add one station-declared AAC access unit to the audio track. G.711 remains available via `live()`. */
+  pushAudio(frame: LiveAudioFrame, timestampMs = now()): MediaFragment | undefined {
+    if (!this.audioRequested || this.audioDisabled) return undefined;
+    if (frame.codec === "g711a") {
+      if (this.initSent) return undefined;
+      this.audioDisabled = true;
+      if (!this.params) return undefined;
+      this.initSent = true;
+      return { init: this.buildInit(), data: Buffer.alloc(0), keyframe: false };
+    }
+    if (this.audioCodec && this.audioCodec !== frame.codec) {
+      return this.disableAudio();
+    }
+    const header = parseAdtsHeader(frame.data);
+    if (!header || header.frameLength > frame.data.length) {
+      throw new Error(`fMP4 muxer: ${frame.codec} frame is not a complete ADTS access unit`);
+    }
+    if (header.frequencyIndex !== ADTS_FREQUENCY_INDEX_16K || header.channels !== ADTS_CHANNELS_MONO) {
+      return this.disableAudio();
+    }
+    this.audioCodec = frame.codec;
+    this.firstAudioTimestampMs ??= timestampMs;
+    const measured =
+      this.lastAudioTimestampMs === undefined
+        ? 0
+        : Math.round((timestampMs - this.lastAudioTimestampMs) * (AAC_SAMPLE_RATE / 1000));
+    this.lastAudioTimestampMs = timestampMs;
+    if (this.timelineAligned && this.audioSamples.length === 0 && this.timelineOriginMs !== undefined) {
+      this.audioBaseDecodeTime = Math.round((timestampMs - this.timelineOriginMs) * (AAC_SAMPLE_RATE / 1000));
+    } else if (measured > 0 && this.audioSamples.length) {
+      this.audioSamples[this.audioSamples.length - 1].duration = measured;
+    }
+    this.audioSamples.push({
+      data: frame.data.subarray(header.headerLength, header.frameLength),
+      duration: frame.codec === "aac-eld" ? AAC_ELD_SAMPLES_PER_FRAME : AAC_SAMPLES_PER_FRAME,
+      keyframe: true,
+    });
+    if (!this.params || this.initSent) return undefined;
+    this.initSent = true;
+    return { init: this.buildInit(), data: Buffer.alloc(0), keyframe: false };
+  }
+
+  /** Permanently omit incompatible audio while allowing the video recording to continue. */
+  private disableAudio(): MediaFragment | undefined {
+    this.audioDisabled = true;
+    this.audioSamples = [];
+    if (!this.params || this.initSent) return undefined;
+    this.initSent = true;
+    return { init: this.buildInit(), data: Buffer.alloc(0), keyframe: false };
+  }
+
   /** Flush the open fragment (call at end-of-stream). Returns the final fragment, or undefined. */
   flush(): MediaFragment | undefined {
     if (!this.samples.length) return undefined;
+    let init: Buffer | undefined;
+    if (!this.initSent) {
+      this.audioDisabled = !this.audioCodec;
+      init = this.buildInit();
+      this.initSent = true;
+    }
     const data = this.buildFragment();
-    return { data, keyframe: true };
+    return { init, data, keyframe: true };
   }
 
   private samplesStartKeyframe(): boolean {
@@ -117,20 +204,34 @@ export class Fmp4Muxer {
   // ── Box builders ────────────────────────────────────────────────────────────────────────────
 
   private buildInit(): Buffer {
+    this.alignTimeline();
     return Buffer.concat([this.ftyp(), this.moov()]);
+  }
+
+  private alignTimeline(): void {
+    if (this.timelineAligned || this.firstVideoTimestampMs === undefined) return;
+    const origin = Math.min(this.firstVideoTimestampMs, this.firstAudioTimestampMs ?? this.firstVideoTimestampMs);
+    this.timelineOriginMs = origin;
+    this.baseDecodeTime = Math.round((this.firstVideoTimestampMs - origin) * (TIMESCALE / 1000));
+    this.audioBaseDecodeTime = Math.round(((this.firstAudioTimestampMs ?? origin) - origin) * (AAC_SAMPLE_RATE / 1000));
+    this.timelineAligned = true;
   }
 
   private buildFragment(): Buffer {
     const samples = this.samples;
+    const audioSamples = this.audioSamples;
     this.samples = [];
+    this.audioSamples = [];
     this.fragTicks = 0;
     const seq = this.seq++;
-    const moof = this.moof(seq, samples);
-    const mdat = box("mdat", Buffer.concat(samples.map((s) => s.data)));
-    // Patch trun data_offset now that moof size is known (points at the first byte of mdat payload).
-    const dataOffset = moof.length + 8; // + mdat header (size + type)
-    patchTrunDataOffset(moof, dataOffset);
+    const moof = this.moof(seq, samples, audioSamples);
+    const videoData = Buffer.concat(samples.map((s) => s.data));
+    const audioData = Buffer.concat(audioSamples.map((s) => s.data));
+    const mdat = box("mdat", videoData, audioData);
+    const dataOffset = moof.length + 8;
+    patchTrunDataOffsets(moof, audioSamples.length ? [dataOffset, dataOffset + videoData.length] : [dataOffset]);
     this.baseDecodeTime += samples.reduce((n, s) => n + s.duration, 0);
+    this.audioBaseDecodeTime += audioSamples.reduce((n, s) => n + s.duration, 0);
     return Buffer.concat([moof, mdat]);
   }
 
@@ -139,7 +240,7 @@ export class Fmp4Muxer {
   }
 
   private moov(): Buffer {
-    return box("moov", this.mvhd(), this.trak(), this.mvex());
+    return box("moov", this.mvhd(), this.trak(), ...(this.hasAudioTrack() ? [this.audioTrak()] : []), this.mvex());
   }
 
   private mvhd(): Buffer {
@@ -152,7 +253,7 @@ export class Fmp4Muxer {
     b.writeUInt32BE(0x00010000, 20); // rate 1.0
     b.writeUInt16BE(0x0100, 24); // volume 1.0
     writeMatrix(b, 32);
-    b.writeUInt32BE(2, 96); // next track id
+    b.writeUInt32BE(this.hasAudioTrack() ? 3 : 2, 96);
     return box("mvhd", b);
   }
 
@@ -269,23 +370,31 @@ export class Fmp4Muxer {
   }
 
   private mvex(): Buffer {
+    return box("mvex", this.trex(1), ...(this.hasAudioTrack() ? [this.trex(2)] : []));
+  }
+
+  private trex(trackId: number): Buffer {
     const trex = Buffer.alloc(24);
-    trex.writeUInt32BE(1, 4); // track id
-    trex.writeUInt32BE(1, 8); // default sample description index
-    return box("mvex", box("trex", trex));
+    trex.writeUInt32BE(trackId, 4);
+    trex.writeUInt32BE(1, 8);
+    return box("trex", trex);
   }
 
-  private moof(seq: number, samples: Sample[]): Buffer {
+  private moof(seq: number, samples: Sample[], audioSamples: Sample[]): Buffer {
     const mfhd = box("mfhd", Buffer.concat([u32(0), u32(seq)]));
-    const traf = this.traf(samples);
-    return box("moof", mfhd, traf);
+    return box(
+      "moof",
+      mfhd,
+      this.traf(1, this.baseDecodeTime, samples),
+      ...(this.hasAudioTrack() && audioSamples.length ? [this.traf(2, this.audioBaseDecodeTime, audioSamples)] : []),
+    );
   }
 
-  private traf(samples: Sample[]): Buffer {
+  private traf(trackId: number, baseDecodeTime: number, samples: Sample[]): Buffer {
     // tfhd: default-base-is-moof (0x020000) + default_sample_flags present (0x20)? We set per-sample
     // flags in trun instead, so tfhd carries only track id + default-base-is-moof.
-    const tfhd = box("tfhd", Buffer.concat([u32(0x020000), u32(1)]));
-    const tfdt = box("tfdt", Buffer.concat([u32(0x01000000), u64(this.baseDecodeTime)]));
+    const tfhd = box("tfhd", Buffer.concat([u32(0x020000), u32(trackId)]));
+    const tfdt = box("tfdt", Buffer.concat([u32(0x01000000), u64(baseDecodeTime)]));
     return box("traf", tfhd, tfdt, this.trun(samples));
   }
 
@@ -297,6 +406,71 @@ export class Fmp4Muxer {
       parts.push(u32(s.duration), u32(s.data.length), u32(s.keyframe ? 0x02000000 : 0x01010000));
     }
     return box("trun", Buffer.concat(parts));
+  }
+
+  private hasAudioTrack(): boolean {
+    return !!this.audioCodec && !this.audioDisabled;
+  }
+
+  private audioTrak(): Buffer {
+    return box("trak", this.audioTkhd(), this.audioMdia());
+  }
+
+  private audioTkhd(): Buffer {
+    const b = Buffer.alloc(84);
+    b.writeUInt32BE(0x00000007, 0);
+    b.writeUInt32BE(2, 12);
+    b.writeUInt16BE(0x0100, 36);
+    writeMatrix(b, 40);
+    return box("tkhd", b);
+  }
+
+  private audioMdia(): Buffer {
+    const mdhd = Buffer.alloc(32);
+    mdhd.writeUInt32BE(AAC_SAMPLE_RATE, 12);
+    mdhd.writeUInt16BE(0x55c4, 24);
+    const hdlr = box(
+      "hdlr",
+      Buffer.concat([u32(0), u32(0), str("soun"), u32(0), u32(0), u32(0), Buffer.from("SoundHandler\0")]),
+    );
+    return box("mdia", box("mdhd", mdhd), hdlr, this.audioMinf());
+  }
+
+  private audioMinf(): Buffer {
+    const smhd = box("smhd", Buffer.alloc(8));
+    const dref = box("dref", Buffer.concat([u32(0), u32(1), box("url ", u32(1))]));
+    return box("minf", smhd, box("dinf", dref), this.audioStbl());
+  }
+
+  private audioStbl(): Buffer {
+    return box(
+      "stbl",
+      box("stsd", Buffer.concat([u32(0), u32(1), this.audioSampleEntry()])),
+      box("stts", Buffer.concat([u32(0), u32(0)])),
+      box("stsc", Buffer.concat([u32(0), u32(0)])),
+      box("stsz", Buffer.concat([u32(0), u32(0), u32(0)])),
+      box("stco", Buffer.concat([u32(0), u32(0)])),
+    );
+  }
+
+  private audioSampleEntry(): Buffer {
+    const head = Buffer.alloc(28);
+    head.writeUInt16BE(1, 6);
+    head.writeUInt16BE(1, 16);
+    head.writeUInt16BE(16, 18);
+    head.writeUInt32BE(AAC_SAMPLE_RATE << 16, 24);
+    return box("mp4a", head, this.esds());
+  }
+
+  private esds(): Buffer {
+    const config = this.audioCodec === "aac-eld" ? Buffer.from([0xf8, 0xf0, 0x20]) : Buffer.from([0x14, 0x08]);
+    const specific = descriptor(0x05, config);
+    const decoder = descriptor(
+      0x04,
+      Buffer.concat([Buffer.from([0x40, 0x15, 0, 0, 0]), u32(64000), u32(32000), specific]),
+    );
+    const sl = descriptor(0x06, Buffer.from([0x02]));
+    return box("esds", u32(0), descriptor(0x03, Buffer.concat([u16(2), Buffer.from([0]), decoder, sl])));
   }
 }
 
@@ -354,13 +528,37 @@ function annexbToAvcc(annexb: Buffer): Buffer {
   return Buffer.concat(out);
 }
 
-/** Locate the trun's data_offset field inside a freshly built moof and set it. */
-function patchTrunDataOffset(moof: Buffer, offset: number): void {
-  const trunType = Buffer.from("trun", "ascii");
-  const idx = moof.indexOf(trunType);
-  if (idx < 0) return;
-  // trun payload starts at idx+4: [u32 flags][u32 sample_count][u32 data_offset]
-  moof.writeInt32BE(offset, idx + 4 + 8);
+/** Walk each traf in a freshly built moof and set its trun data_offset field. */
+function patchTrunDataOffsets(moof: Buffer, offsets: number[]): void {
+  let offsetIndex = 0;
+  for (const traf of childBoxes(moof, 0)) {
+    if (traf.type !== "traf") continue;
+    for (const child of childBoxes(moof, traf.start)) {
+      if (child.type !== "trun") continue;
+      const offset = offsets[offsetIndex++];
+      if (offset === undefined) throw new Error("fMP4 muxer: missing trun data offset");
+      moof.writeInt32BE(offset, child.start + 16);
+    }
+  }
+  if (offsetIndex !== offsets.length) throw new Error("fMP4 muxer: trun count does not match data offsets");
+}
+
+/** Return the structurally valid direct children of one MP4 container box. */
+function childBoxes(buf: Buffer, parentStart: number): { type: string; start: number }[] {
+  const parentEnd = parentStart + buf.readUInt32BE(parentStart);
+  const children: { type: string; start: number }[] = [];
+  for (let start = parentStart + 8; start + 8 <= parentEnd;) {
+    const size = buf.readUInt32BE(start);
+    if (size < 8 || start + size > parentEnd) throw new Error("fMP4 muxer: invalid box structure");
+    children.push({ type: buf.toString("ascii", start + 4, start + 8), start });
+    start += size;
+  }
+  return children;
+}
+
+function descriptor(tag: number, payload: Buffer): Buffer {
+  if (payload.length >= 128) throw new Error("fMP4 muxer: MPEG-4 descriptor is too large");
+  return Buffer.concat([Buffer.from([tag, payload.length]), payload]);
 }
 
 function pictureWidthFallback(_ps: ParamSets): number {

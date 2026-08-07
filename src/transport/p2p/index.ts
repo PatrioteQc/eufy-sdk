@@ -8,6 +8,7 @@ export {
   SharedLiveSource,
   type SharedLiveState,
   type SharedLiveSourceOptions,
+  type TimedMediaFrame,
   type Consumer as LiveConsumer,
 } from "./shared-live-source.js";
 export * from "./commands.js";

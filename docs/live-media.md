@@ -42,8 +42,8 @@ stream.on("video", (frame) => {
   // frame.width, frame.height
   // frame.keyframe  true on an IDR (a valid resync/segment boundary)
 });
-stream.on("audio", (buf) => {
-  /* Buffer of audio payload */
+stream.on("audio", (frame) => {
+  consumeAudio(frame.codec, frame.data);
 });
 stream.on("start", () => {});
 stream.on("stop", () => {}); // upstream ended, or you called stop()
@@ -56,13 +56,21 @@ stream.stop(); // detach this consumer
 `stream.stop()` detaches **this** consumer only. The shared pull stops when the _last_ consumer
 detaches (after the linger window).
 
-`codec` is sniffed off the parameter sets on a keyframe and carried on the delta frames that follow,
-so every frame carries a codec even though only keyframes have config to sniff.
+The two codecs reach you differently. **Video** `codec` is sniffed off the parameter sets on a keyframe
+and carried on the delta frames that follow, so every frame carries one even though only keyframes have
+config to sniff. **Audio** `codec` is declared by the station in each frame's header, so it is read
+rather than inferred — and read on every frame, because the device is free to change it mid-stream.
+
+Audio deliberately carries **no sample rate and no channel count**: neither is on the wire. The eufy app
+assumes 16 kHz mono for all three codecs, and a host that needs those numbers is making the same
+assumption — the SDK does not dress it up as a device fact.
 
 ## 2. Node Readable (pipe it)
 
-A fresh `node:stream` Readable per call, over its own consumer. Default is raw Annex-B bytes; pass
-`objectMode: true` to get `LiveVideoFrame` objects instead.
+A fresh video-only `node:stream` Readable per call, over its own consumer. Default is raw Annex-B
+bytes; pass `objectMode: true` to get `LiveVideoFrame` objects instead. Use `live()` for separate raw
+video/audio frames or `recordFragments()` for a muxed stream; raw elementary audio is never
+interleaved into the Annex-B byte stream.
 
 ```ts
 const r = await cam.openReadable?.(); // Annex-B byte stream
@@ -76,20 +84,30 @@ the shared pull or any peer consumer. Destroying the Readable releases the consu
 
 ## 3. fMP4 / CMAF fragments (for HLS / MSE)
 
-Continuous fragmented-MP4, muxed **dependency-free** (no ffmpeg, no native dep). An async iterable:
-the init segment (`ftyp`+`moov`) comes first, then a fragment per keyframe boundary (or every
-`fragmentSeconds`).
+Continuous fragmented-MP4, muxed **dependency-free** (no ffmpeg, no native dep). The returned
+recording handle is an async iterable: the init segment (`ftyp`+`moov`) comes first, then media
+fragments at keyframe boundaries. `fragmentSeconds` is a **minimum**, not a fixed cadence: after the
+minimum elapses, the next keyframe closes the fragment. A long GOP therefore produces a longer
+fragment.
 
 ```ts
-for await (const frag of cam.recordFragments!({ fragmentSeconds: 2 })) {
+const recording = cam.recordFragments!({ fragmentSeconds: 2, preBufferSeconds: 10 });
+recording.on("budget", (notice) => notice.extend());
+
+for await (const frag of recording) {
   if (frag.init) sink.write(frag.init); // once, on the first emission
   if (frag.data.length) sink.write(frag.data); // moof+mdat; frag.keyframe marks a segment boundary
 }
-// break / return releases the consumer.
 ```
 
 Both H.264 (`avc1`/`avcC`) and H.265 (`hvc1`/`hvcC`) are handled; Annex-B start codes are converted to
-AVCC length-prefixed NALs in the `mdat`.
+AVCC length-prefixed NALs in the `mdat`. AAC-LC and AAC-ELD sources add an `mp4a`/`esds` audio track,
+with ADTS framing removed from each media sample. G.711 A-law remains available through `live()` and
+is not mislabeled as MPEG-4 AAC in the container.
+
+`preBufferSeconds` drains retained audio/video before live frames, beginning at a video keyframe and
+preserving transport-arrival timing across the handoff. It can only return media already retained by a
+warm shared source; opening a cold recording cannot reconstruct time before the source started.
 
 ## Snapshots
 
@@ -191,7 +209,8 @@ The budget belongs to the **shared session**, not to one consumer: a live stream
 same camera are two consumers of one pull, so a single `extend()` covers both. If nobody extends, the
 session stops on schedule and every consumer ends with it.
 
-When the budget elapses on a battery camera the stream emits `budget` with an `extend()` handle:
+When the budget elapses on a battery camera, live streams and fragmented recording handles emit
+`budget` with an `extend()` handle:
 
 ```ts
 stream.on("budget", (notice) => {

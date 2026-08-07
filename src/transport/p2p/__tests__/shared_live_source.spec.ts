@@ -1,6 +1,6 @@
 import { EventEmitter } from "node:events";
 import { SharedLiveSource, type SharedLiveSourceOptions } from "../shared-live-source.js";
-import type { LiveStreamHandle, LiveVideoFrame } from "../../../core/contracts.js";
+import type { LiveAudioFrame, LiveStreamHandle, LiveVideoFrame } from "../../../core/contracts.js";
 
 /** Fake LiveStream: counts start/stop/nudge, lets a test push video/audio + emit stop/error. */
 class FakeStream extends EventEmitter implements LiveStreamHandle {
@@ -20,8 +20,8 @@ class FakeStream extends EventEmitter implements LiveStreamHandle {
   video(frame: LiveVideoFrame) {
     this.emit("video", frame);
   }
-  audio(data: Buffer) {
-    this.emit("audio", data);
+  audio(frame: LiveAudioFrame) {
+    this.emit("audio", frame);
   }
 }
 
@@ -55,6 +55,16 @@ describe("SharedLiveSource", () => {
     expect(streams).toHaveLength(1);
     expect(streams[0].started).toBe(1);
     expect(source.consumerCount).toBe(2);
+  });
+
+  it("delivers the source-captured arrival time with live media", () => {
+    const { source, last } = mk();
+    const consumer = source.attach();
+    const timestamps: number[] = [];
+    consumer.onMedia((item) => timestamps.push(item.timestampMs));
+    vi.setSystemTime(1234);
+    last().video(frame(true));
+    expect(timestamps).toEqual([1234]);
   });
 
   it("lingers then stops when the last consumer detaches", () => {
@@ -261,5 +271,28 @@ describe("SharedLiveSource ring buffer (V5)", () => {
     source.attach();
     last().video(frame(true));
     expect(source.ringBuffer(10)).toHaveLength(0);
+  });
+
+  it("atomically attaches with timestamped audio and keyframe-aligned video", async () => {
+    const { source, last } = mk({ preBufferSeconds: 10 });
+    source.attach();
+    vi.setSystemTime(1000);
+    last().video(frame(true, 0x67));
+    vi.setSystemTime(1064);
+    last().audio({ codec: "aac-lc", data: Buffer.from([0xff, 0xf1]) });
+    vi.setSystemTime(1128);
+    last().video(frame(false, 0x41));
+
+    const { consumer, buffered } = source.attachWithPrebuffer(10);
+    expect(buffered.map((item) => [item.kind, item.timestampMs])).toEqual([
+      ["video", 1000],
+      ["audio", 1064],
+      ["video", 1128],
+    ]);
+
+    const live: LiveVideoFrame[] = [];
+    consumer.on("video", (item) => live.push(item));
+    await Promise.resolve();
+    expect(live).toHaveLength(0);
   });
 });
