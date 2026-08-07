@@ -44,6 +44,9 @@ interface Sample {
 }
 
 type AacCodec = Exclude<AudioCodec, "g711a">;
+const AAC_ELD_SAMPLES_PER_FRAME = 512;
+const ADTS_FREQUENCY_INDEX_16K = 8;
+const ADTS_CHANNELS_MONO = 1;
 
 export class Fmp4Muxer {
   private params?: ParamSets;
@@ -141,11 +144,14 @@ export class Fmp4Muxer {
       return { init: this.buildInit(), data: Buffer.alloc(0), keyframe: false };
     }
     if (this.audioCodec && this.audioCodec !== frame.codec) {
-      throw new Error(`fMP4 muxer: audio codec changed from ${this.audioCodec} to ${frame.codec}`);
+      return this.disableAudio();
     }
     const header = parseAdtsHeader(frame.data);
     if (!header || header.frameLength > frame.data.length) {
       throw new Error(`fMP4 muxer: ${frame.codec} frame is not a complete ADTS access unit`);
+    }
+    if (header.frequencyIndex !== ADTS_FREQUENCY_INDEX_16K || header.channels !== ADTS_CHANNELS_MONO) {
+      return this.disableAudio();
     }
     this.audioCodec = frame.codec;
     this.firstAudioTimestampMs ??= timestampMs;
@@ -161,9 +167,18 @@ export class Fmp4Muxer {
     }
     this.audioSamples.push({
       data: frame.data.subarray(header.headerLength, header.frameLength),
-      duration: AAC_SAMPLES_PER_FRAME,
+      duration: frame.codec === "aac-eld" ? AAC_ELD_SAMPLES_PER_FRAME : AAC_SAMPLES_PER_FRAME,
       keyframe: true,
     });
+    if (!this.params || this.initSent) return undefined;
+    this.initSent = true;
+    return { init: this.buildInit(), data: Buffer.alloc(0), keyframe: false };
+  }
+
+  /** Permanently omit incompatible audio while allowing the video recording to continue. */
+  private disableAudio(): MediaFragment | undefined {
+    this.audioDisabled = true;
+    this.audioSamples = [];
     if (!this.params || this.initSent) return undefined;
     this.initSent = true;
     return { init: this.buildInit(), data: Buffer.alloc(0), keyframe: false };
@@ -513,16 +528,32 @@ function annexbToAvcc(annexb: Buffer): Buffer {
   return Buffer.concat(out);
 }
 
-/** Locate the trun's data_offset field inside a freshly built moof and set it. */
+/** Walk each traf in a freshly built moof and set its trun data_offset field. */
 function patchTrunDataOffsets(moof: Buffer, offsets: number[]): void {
-  const trunType = Buffer.from("trun", "ascii");
-  let at = 0;
-  for (const offset of offsets) {
-    const idx = moof.indexOf(trunType, at);
-    if (idx < 0) return;
-    moof.writeInt32BE(offset, idx + 12);
-    at = idx + trunType.length;
+  let offsetIndex = 0;
+  for (const traf of childBoxes(moof, 0)) {
+    if (traf.type !== "traf") continue;
+    for (const child of childBoxes(moof, traf.start)) {
+      if (child.type !== "trun") continue;
+      const offset = offsets[offsetIndex++];
+      if (offset === undefined) throw new Error("fMP4 muxer: missing trun data offset");
+      moof.writeInt32BE(offset, child.start + 16);
+    }
   }
+  if (offsetIndex !== offsets.length) throw new Error("fMP4 muxer: trun count does not match data offsets");
+}
+
+/** Return the structurally valid direct children of one MP4 container box. */
+function childBoxes(buf: Buffer, parentStart: number): { type: string; start: number }[] {
+  const parentEnd = parentStart + buf.readUInt32BE(parentStart);
+  const children: { type: string; start: number }[] = [];
+  for (let start = parentStart + 8; start + 8 <= parentEnd;) {
+    const size = buf.readUInt32BE(start);
+    if (size < 8 || start + size > parentEnd) throw new Error("fMP4 muxer: invalid box structure");
+    children.push({ type: buf.toString("ascii", start + 4, start + 8), start });
+    start += size;
+  }
+  return children;
 }
 
 function descriptor(tag: number, payload: Buffer): Buffer {

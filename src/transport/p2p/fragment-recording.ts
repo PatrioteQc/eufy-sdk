@@ -70,8 +70,7 @@ export class FragmentRecording extends EventEmitter implements FragmentRecording
       if (this.ended) return;
       const attached = source.attachWithPrebuffer(this.opts.preBufferSeconds ?? 0);
       this.consumer = attached.consumer;
-      this.consumer.on("video", (frame) => this.ingest({ kind: "video", frame, timestampMs: Date.now() }));
-      this.consumer.on("audio", (frame) => this.ingest({ kind: "audio", frame, timestampMs: Date.now() }));
+      this.consumer.onMedia((item) => this.ingest(item));
       this.consumer.on("budget", (notice) => this.emit("budget", notice));
       this.consumer.on("stop", () => this.stop());
       this.consumer.on("error", (error) => this.fail(error));

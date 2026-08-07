@@ -77,14 +77,14 @@ function boxesOfType(buf: Buffer, type: string): Buffer[] {
   return found;
 }
 
-function adts(payload: Buffer): Buffer {
+function adts(payload: Buffer, frequencyIndex = 8, channels = 1): Buffer {
   const length = payload.length + 7;
   return Buffer.concat([
     Buffer.from([
       0xff,
       0xf1,
-      0x60,
-      0x40 | ((length >> 11) & 0x03),
+      0x40 | (frequencyIndex << 2) | ((channels >> 2) & 0x01),
+      ((channels & 0x03) << 6) | ((length >> 11) & 0x03),
       (length >> 3) & 0xff,
       ((length & 0x07) << 5) | 0x1f,
       0xfc,
@@ -179,6 +179,32 @@ describe("Fmp4Muxer audio", () => {
     const init = mux.pushAudio(audio("aac-eld", Buffer.from([1, 2, 3])), 1000)!;
     expect(findBox(init.init!, "mp4a")).toBeDefined();
     expect(findBox(init.init!, "esds")!.includes(Buffer.from([0xf8, 0xf0, 0x20]))).toBe(true);
+  });
+
+  it("uses 512 samples for the final AAC-ELD sample in a fragment", () => {
+    const mux = new Fmp4Muxer({ audio: true, fragmentSeconds: 0 });
+    mux.push(kf("h264"), 1000);
+    mux.pushAudio(audio("aac-eld", Buffer.from([1, 2, 3])), 1000);
+    const out = mux.push(kf("h264"), 1100)!;
+    expect(boxesOfType(out.data, "trun")[1].readUInt32BE(20)).toBe(512);
+  });
+
+  it("falls back to video-only when ADTS declares an unsupported sample rate", () => {
+    const mux = new Fmp4Muxer({ audio: true });
+    expect(mux.push(kf("h264"), 1000)).toBeUndefined();
+    const frame = { codec: "aac-lc", data: adts(Buffer.from([1, 2, 3]), 4) } satisfies LiveAudioFrame;
+    const init = mux.pushAudio(frame, 1000);
+    expect(init?.init).toBeDefined();
+    expect(findBox(init!.init!, "mp4a")).toBeUndefined();
+  });
+
+  it("continues video-only when the declared AAC profile changes", () => {
+    const mux = new Fmp4Muxer({ audio: true, fragmentSeconds: 0 });
+    mux.push(kf("h264"), 1000);
+    mux.pushAudio(audio("aac-lc", Buffer.from([1])), 1000);
+    expect(() => mux.pushAudio(audio("aac-eld", Buffer.from([2])), 1032)).not.toThrow();
+    const out = mux.push(kf("h264"), 1100)!;
+    expect(countType(out.data, "traf")).toBe(1);
   });
 
   it("falls back to a video-only init when the source codec cannot be represented as mp4a", () => {

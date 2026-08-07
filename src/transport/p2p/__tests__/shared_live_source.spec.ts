@@ -57,6 +57,16 @@ describe("SharedLiveSource", () => {
     expect(source.consumerCount).toBe(2);
   });
 
+  it("delivers the source-captured arrival time with live media", () => {
+    const { source, last } = mk();
+    const consumer = source.attach();
+    const timestamps: number[] = [];
+    consumer.onMedia((item) => timestamps.push(item.timestampMs));
+    vi.setSystemTime(1234);
+    last().video(frame(true));
+    expect(timestamps).toEqual([1234]);
+  });
+
   it("lingers then stops when the last consumer detaches", () => {
     const { source, last } = mk();
     const a = source.attach();

@@ -2,7 +2,15 @@ export * from "./p2p-session.js";
 export * from "./live-stream.js";
 export * from "./video.js";
 export * from "./media.js";
-export * from "./shared-live-source.js";
+// `Consumer` is what `SharedLiveSource.attach` returns, so a caller has to be able to name it —
+// exported under `LiveConsumer`, since `Consumer` alone is too generic to claim at the root barrel.
+export {
+  SharedLiveSource,
+  type SharedLiveState,
+  type SharedLiveSourceOptions,
+  type TimedMediaFrame,
+  type Consumer as LiveConsumer,
+} from "./shared-live-source.js";
 export * from "./commands.js";
 export * from "./envelope.js";
 export * from "./write-commands.js";

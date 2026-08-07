@@ -92,6 +92,8 @@ export interface Consumer extends LiveStreamHandle {
   off(event: "audio", listener: (frame: LiveAudioFrame) => void): this;
   off(event: "start" | "stop", listener: () => void): this;
   off(event: "error", listener: (err: Error) => void): this;
+  /** Subscribe to frames carrying the source-captured arrival time used by the prebuffer. */
+  onMedia(listener: (item: TimedMediaFrame) => void): this;
   /** True once the source has replayed a cached keyframe to this consumer (no GOP wait on join). */
   readonly primed: boolean;
   /** True while this consumer is dropping frames after an overflow, waiting for the next IDR. */
@@ -104,8 +106,6 @@ export interface Consumer extends LiveStreamHandle {
   detach(): void;
 }
 
-type Item = { kind: "video"; frame: LiveVideoFrame } | { kind: "audio"; frame: LiveAudioFrame };
-
 /** One media frame retained with its transport-arrival time for prebuffer continuity. */
 export type TimedMediaFrame =
   | { kind: "video"; frame: LiveVideoFrame; timestampMs: number }
@@ -113,13 +113,13 @@ export type TimedMediaFrame =
 
 /** Internal per-consumer state + delivery. Exposed to callers only through the {@link Consumer} view. */
 class ConsumerImpl extends EventEmitter implements Consumer {
-  private queue: Item[] = [];
+  private queue: TimedMediaFrame[] = [];
   private paused = false;
   private detached = false;
   primed = false;
   awaitingKeyframe = false;
   /** Cached keyframe to replay, held until a "video" listener actually subscribes (see below). */
-  private pendingPrime?: LiveVideoFrame;
+  private pendingPrime?: Extract<TimedMediaFrame, { kind: "video" }>;
 
   constructor(
     private readonly onDetach: (c: ConsumerImpl) => void,
@@ -135,18 +135,23 @@ class ConsumerImpl extends EventEmitter implements Consumer {
       const kf = this.pendingPrime;
       if (!kf) return;
       this.pendingPrime = undefined;
-      queueMicrotask(() => this.deliverVideo(kf));
+      queueMicrotask(() => this.deliverVideo(kf.frame, kf.timestampMs));
     });
   }
 
   /** Stage a keyframe to replay when the first video listener subscribes. */
-  prime(frame: LiveVideoFrame): void {
+  prime(item: Extract<TimedMediaFrame, { kind: "video" }>): void {
     this.primed = true;
-    this.pendingPrime = frame;
+    this.pendingPrime = item;
   }
 
   /** Attached-by-construction — `start()` is a no-op so a Consumer satisfies LiveStreamHandle. */
   start(): this {
+    return this;
+  }
+
+  onMedia(listener: (item: TimedMediaFrame) => void): this {
+    this.on("media", listener);
     return this;
   }
 
@@ -174,22 +179,22 @@ class ConsumerImpl extends EventEmitter implements Consumer {
   }
 
   /** Source → consumer video. Honors resync-to-keyframe and the bounded queue. */
-  deliverVideo(frame: LiveVideoFrame): void {
+  deliverVideo(frame: LiveVideoFrame, timestampMs: number): void {
     if (this.detached) return;
     if (this.awaitingKeyframe) {
       if (!frame.keyframe) return; // still hunting the resync point
       this.awaitingKeyframe = false;
     }
-    this.accept({ kind: "video", frame });
+    this.accept({ kind: "video", frame, timestampMs });
   }
 
   /** Source → consumer audio. Dropped entirely while resyncing (audio has no keyframes). */
-  deliverAudio(frame: LiveAudioFrame): void {
+  deliverAudio(frame: LiveAudioFrame, timestampMs: number): void {
     if (this.detached || this.awaitingKeyframe) return;
-    this.accept({ kind: "audio", frame });
+    this.accept({ kind: "audio", frame, timestampMs });
   }
 
-  private accept(item: Item): void {
+  private accept(item: TimedMediaFrame): void {
     if (!this.paused && this.queue.length === 0) {
       this.flush(item);
       return;
@@ -203,9 +208,10 @@ class ConsumerImpl extends EventEmitter implements Consumer {
     }
   }
 
-  private flush(item: Item): void {
+  private flush(item: TimedMediaFrame): void {
     if (item.kind === "video") this.emit("video", item.frame);
     else this.emit("audio", item.frame);
+    this.emit("media", item);
   }
 
   fail(err: Error): void {
@@ -230,7 +236,7 @@ export class SharedLiveSource {
   private disposed = false;
 
   /** Last keyframe access unit seen — replayed to a joining consumer (keyframe-prime). */
-  private lastKeyframe?: LiveVideoFrame;
+  private lastKeyframe?: Extract<TimedMediaFrame, { kind: "video" }>;
   /** Rolling prebuffer, keyframe-alignable on drain. */
   private ring: TimedMediaFrame[] = [];
 
@@ -390,6 +396,7 @@ export class SharedLiveSource {
   }
 
   private onVideo(frame: LiveVideoFrame): void {
+    const item = { kind: "video", frame, timestampMs: Date.now() } as const;
     if (this.warmRetryTimer || this.warmDeadlineTimer.pending) {
       this.clearWarmWatch(); // first frame → warmed
       this.logger.debug(
@@ -398,16 +405,17 @@ export class SharedLiveSource {
       if (this.powered === "battery") this.armBudget(); // battery drain starts now
     }
     if (frame.keyframe) {
-      this.lastKeyframe = frame;
+      this.lastKeyframe = item;
       if (this._state === "warming") this._state = "live";
     }
-    this.pushRing({ kind: "video", frame, timestampMs: Date.now() });
-    for (const c of this.consumers) c.deliverVideo(frame);
+    this.pushRing(item);
+    for (const c of this.consumers) c.deliverVideo(frame, item.timestampMs);
   }
 
   private onAudio(frame: LiveAudioFrame): void {
-    this.pushRing({ kind: "audio", frame, timestampMs: Date.now() });
-    for (const c of this.consumers) c.deliverAudio(frame);
+    const item = { kind: "audio", frame, timestampMs: Date.now() } as const;
+    this.pushRing(item);
+    for (const c of this.consumers) c.deliverAudio(frame, item.timestampMs);
   }
 
   private pushRing(item: TimedMediaFrame): void {
