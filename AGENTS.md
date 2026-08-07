@@ -164,3 +164,17 @@ Adding a capability touches **only its own module file plus a couple of lines in
   command named after the first.
 - **No backward-compat below 1.0.** Remove speculative and dead code rather than keeping old shapes
   beside new ones.
+
+## Agent skills
+
+### Issue tracker
+
+Issues and specs live in GitHub Issues for this repository; use the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Use the canonical labels `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, and `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+This is a single-context repository using root `CONTEXT.md` and `docs/adr/`. See `docs/agents/domain.md`.
