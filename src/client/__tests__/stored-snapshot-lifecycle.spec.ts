@@ -42,6 +42,7 @@ function cameraRecord(sn = CAMERA_SN): EufyDevice {
     model: "T8170",
     category: "eufy_security",
     realtime: "p2p",
+    p2pDid: "XXXXXXX-000000-XXXXX",
     params: {},
     paramUpdatedAt: {},
     raw: {
@@ -56,7 +57,7 @@ function cameraRecord(sn = CAMERA_SN): EufyDevice {
 
 type ClientInternals = {
   mega: {
-    downloadMedia(url: string): Promise<Buffer>;
+    downloadImage(url: string, p2pDid?: string): Promise<Buffer>;
     login(): Promise<LoginResult>;
   };
   registry: {
@@ -86,7 +87,7 @@ function makeClient(storedSnapshotCache?: boolean) {
   const camera = cameraRecord();
   const noSnapshot = cameraRecord(NO_SNAPSHOT_SN);
 
-  vi.spyOn(internals.registry, "list").mockReturnValue([camera, noSnapshot]);
+  const list = vi.spyOn(internals.registry, "list").mockReturnValue([camera, noSnapshot]);
   vi.spyOn(internals.registry, "record").mockResolvedValue({
     deviceType: 30,
     model: "T8170",
@@ -104,8 +105,8 @@ function makeClient(storedSnapshotCache?: boolean) {
     if (sn === NO_SNAPSHOT_SN) return new Set(["camera"]);
     return undefined;
   });
-  const download = vi.spyOn(internals.mega, "downloadMedia");
-  return { eufy, internals, download };
+  const download = vi.spyOn(internals.mega, "downloadImage");
+  return { eufy, internals, download, list };
 }
 
 function exactCandidate(deviceSn = CAMERA_SN): ThumbnailCandidate {
@@ -156,10 +157,23 @@ describe("stored snapshot client lifecycle", () => {
     await client.internals.observeStoredImage(exactCandidate());
 
     expect(client.download).toHaveBeenCalledOnce();
-    expect(client.download).toHaveBeenCalledWith(IMAGE_URL);
+    expect(client.download).toHaveBeenCalledWith(IMAGE_URL, "XXXXXXX-000000-XXXXX");
     await vi.waitFor(async () => expect(action()).resolves.toEqual(image));
     await expect(action()).resolves.toBe(image);
     expect(client.download).toHaveBeenCalledOnce();
+  });
+
+  it("uses the parent station key input for an attached camera image", async () => {
+    const client = makeClient();
+    const stationSn = "T8000P0000000004";
+    const child = { ...cameraRecord(CAMERA_SN), stationSn, p2pDid: undefined };
+    const station = { ...cameraRecord(stationSn), p2pDid: "XXXXXXX-000001-XXXXX" };
+    client.list.mockReturnValue([child, station]);
+    client.download.mockResolvedValue(jpeg());
+
+    await client.internals.observeStoredImage(exactCandidate());
+
+    expect(client.download).toHaveBeenCalledWith(IMAGE_URL, "XXXXXXX-000001-XXXXX");
   });
 
   it.each([

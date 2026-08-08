@@ -141,9 +141,9 @@ open P2P, start live media, or transcode. If no JPEG is retained it rejects with
 - `download-failed` — the latest acquisition could not be downloaded;
 - `invalid-image` — downloaded bytes did not have the required JPEG structure.
 
-Only structurally valid, bounded JPEG bytes are retained. In particular, currently observed v2 blobs
-do not pass that validation. This contract does not imply that every device family supplies a usable
-push thumbnail.
+Only structurally valid, bounded JPEG bytes are retained. V1 `eufysecurity:` wrappers are decrypted
+with their device record's key input before validation. V2 wrappers do not pass validation because
+their reconstruction requires image decoding and re-encoding outside this contract.
 
 The cache is enabled by default. Constructing `EufyMega` with `{ storedSnapshotCache: false }` ignores
 candidates and omits `snapshotStored` from bound cameras. Retained bytes live only in the client process

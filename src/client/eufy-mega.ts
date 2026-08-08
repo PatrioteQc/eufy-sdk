@@ -176,7 +176,13 @@ export class EufyMega extends EventEmitter {
     this.mega = new MegaHttpClient(opts);
     if (opts.storedSnapshotCache !== false) {
       this.storedImages = new StoredImageCache(
-        (url) => this.mega.downloadMedia(url),
+        async (url, deviceKey) => {
+          const devices = this.registry.list();
+          const device = devices.find((entry) => entry.sn === deviceKey);
+          const stationKey = device?.stationSn || device?.sn;
+          const p2pDid = devices.find((entry) => entry.sn === stationKey)?.p2pDid;
+          return this.mega.downloadImage(url, p2pDid);
+        },
         opts.logger ?? noopLogger,
         Date.now,
         (error) => error instanceof SessionExpiredError,

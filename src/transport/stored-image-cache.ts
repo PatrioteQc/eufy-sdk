@@ -33,7 +33,7 @@ export class StoredImageCache {
   private generation = 0;
 
   constructor(
-    private readonly downloader: (url: string) => Promise<Buffer>,
+    private readonly downloader: (url: string, deviceKey: string) => Promise<Buffer>,
     private readonly logger: Logger,
     private readonly clock: () => number = Date.now,
     private readonly isLifecycleError: (error: unknown) => boolean = () => false,
@@ -89,7 +89,7 @@ export class StoredImageCache {
       state.inFlight = candidate;
       this.activeDownloads += 1;
       this.activeDevices.add(candidate.deviceKey);
-      void this.downloader(candidate.url).then(
+      void this.downloader(candidate.url, candidate.deviceKey).then(
         (image) => this.complete(candidate, image),
         (error: unknown) => this.complete(candidate, undefined, error),
       );

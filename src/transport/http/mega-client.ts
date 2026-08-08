@@ -29,6 +29,7 @@ import { MemorySessionStore, isSessionValid, type SessionStore } from "../../cor
 import { noopLogger, type Logger } from "../../core/logger.js";
 import type { SecureMqttCredentials } from "../mqtt/secure-mqtt.js";
 import { downloadMediaResource, MediaDownloadAuthenticationError } from "./media-download.js";
+import { normalizePushImage } from "./decodeImageV1.js";
 
 export type RegionShard = "eu-pr" | "us-pr";
 
@@ -575,6 +576,11 @@ export class MegaHttpClient {
       }
       throw error;
     }
+  }
+
+  /** Download push image bytes and decrypt a recognized v1 wrapper when its device key input is available. */
+  async downloadImage(url: string, p2pDid?: string): Promise<Buffer> {
+    return normalizePushImage(await this.downloadMedia(url), p2pDid);
   }
 
   /** The security-app data host for this region (face recognition, media, etc.). */
