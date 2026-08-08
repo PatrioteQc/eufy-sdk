@@ -17,13 +17,12 @@ export const RTSP_PARAM = {
    * RTSP credentials + the authentication switch (app `NAS_SEND_SECURITY_PASSWD`). A `SET_PAYLOAD`
    * (1350) envelope: `{cmd:1287, mChannel:<deviceCh>, mValue3:0, payload:{mode, passwd, username}}`.
    *
-   * ✅ Byte-exact against the app's own frame (confirmed 2026-08-03 on a
-   * T8425 behind a T8030): the app auto-generates BOTH a username and a password (16 chars each — its
-   * "13 char" UI rule is frontend-only; the firmware accepts any length). The `mode` field is the
-   * auth scheme, all three confirmed live (frame + served `WWW-Authenticate` header):
-   * `0` = open, `1` = Basic, `2` = Digest. The app offers Basic/Digest but no "open" option. The
-   * credentials also come back embedded in the URL the device echoes when publishing — see
-   * `requireAuth`.
+   * ✅ Byte-exact against the app's own frame (confirmed 2026-08-03 on a T8425 behind a T8030): the app
+   * auto-generates BOTH a username and a password (16 chars each — its "13 char" UI rule is
+   * frontend-only; the firmware accepts any length). The app maps `mode` as `0` = open, `1` = Basic,
+   * `2` = Digest and offers Basic/Digest but no "open" option. A standalone T8442 was observed serving
+   * a Digest challenge. A HomeBase-attached T8210 echoed freshly supplied Basic credentials in its URL,
+   * confirming storage, while unauthenticated `DESCRIBE` remained 200 with no challenge.
    */
   SEND_SECURITY_PASSWD: 1287,
   /**
@@ -39,17 +38,18 @@ export const RTSP_PARAM = {
 /**
  * The RTSP authentication scheme a caller can require. Maps to the credential write's `mode` field.
  *
- * - `"digest"` — the server answers a describe with a hashed nonce challenge; the password never
- *   crosses the wire. The safer choice, and the app's default.
- * - `"basic"` — the reader sends the password base64-encoded on every request (encoding, not
- *   encryption — readable by anyone sniffing the LAN). Offered for players that only speak Basic.
+ * - `"digest"` — request a hashed nonce challenge, observed on a standalone camera. The reader does
+ *   not send the plaintext password during RTSP authentication, though configuration still sends it
+ *   to the device. The safer choice, and the app's default.
+ * - `"basic"` — request Basic authentication, where the reader sends the password base64-encoded on
+ *   every request (encoding, not encryption). Offered for players that only speak Basic.
  */
 export type RtspAuthScheme = "digest" | "basic";
 
 /**
- * `mode` on the credential write — the authentication switch. ✅ All three verified live: `0` serves
- * openly, `1` answers a Basic challenge, `2` answers a Digest challenge. The app sends `2` (Digest) by
- * default and exposes Basic/Digest in its UI but no "open" option.
+ * `mode` on the credential write — the app's authentication request: `0` = open, `1` = Basic, `2` =
+ * Digest. The app sends `2` by default and exposes Basic/Digest in its UI but no "open" option. Served
+ * enforcement is topology-dependent; see {@link RtspActions}.
  */
 const AUTH_MODE = { off: 0, basic: 1, digest: 2 } as const;
 
@@ -75,15 +75,18 @@ export type RtspRecordingModeValue = (typeof RtspRecordingMode)[keyof typeof Rts
  * - **A station publishes for ONE attached camera at a time.** Enabling a second withdraws the first,
  *   silently — the station tracks a single camera, not a set. The SDK cannot detect or prevent this;
  *   a caller driving several cameras owns the arbitration.
- * - **A published stream encodes continuously**, with none of the budget the live-media path applies.
- *   On a device with the `battery` capability that will drain the cell, so the feature suits mains
- *   -powered cameras feeding a recorder.
+ * - **Publication is a persistent device setting, not an SDK-owned media session.** An RTSP consumer
+ *   connects directly to the serving device; the SDK does not observe consumer disconnects and does
+ *   not withdraw in response. The caller that publishes owns calling `withdraw()` when its recorder is
+ *   done. The SDK deliberately applies no live-media power budget: on a device with the `battery`
+ *   capability, leaving RTSP published will drain the cell, so the feature suits mains-powered cameras
+ *   feeding a recorder.
  *
  * The stream itself is served over plain RTSP on the local network, by the station for a
- * HomeBase-attached camera or by the camera itself when standalone. Authentication is honoured in
- * BOTH cases — the station enforces the credential setting on an attached camera's stream, and a
- * standalone camera on its own. The effect is observable with an RTSP `DESCRIBE`: 401 = challenged,
- * 200 = open.
+ * HomeBase-attached camera or by the camera itself when standalone. A standalone camera has been
+ * observed serving a Digest challenge. A tested HomeBase-attached camera echoed freshly supplied Basic
+ * credentials in its URL but stayed open without them. Verify storage from the device-reported URL
+ * and the served effect on each endpoint with an RTSP `DESCRIBE`: 401 = challenged, 200 = open.
  */
 export type RtspActions = Surface<typeof RTSP_MEMBERS>;
 
@@ -152,14 +155,14 @@ export const RTSP_MEMBERS = {
       "readback (0 → 1 → 0).",
   },
 
-  /** Publish this camera's stream. Withdraws whichever camera the station was publishing before. */
+  /** Persistently publish this camera's stream. The enabling caller owns withdrawing it when done. */
   publish: method(
     ({ ctx, sink }) =>
       (): Promise<void> =>
         sink.dispatch(publishCommand(true, ctx)),
     "Publish the stream.",
   ),
-  /** Withdraw this camera's stream. */
+  /** Withdraw this camera's persistent publication; consumer retries do not ask the SDK to republish it. */
   withdraw: method(
     ({ ctx, sink }) =>
       (): Promise<void> =>
@@ -168,17 +171,17 @@ export const RTSP_MEMBERS = {
   ),
 
   /**
-   * Require authentication on this camera's stream, with the given credentials. A reader that does not
-   * present them is then refused (`DESCRIBE` answers 401 instead of 200).
+   * Store credentials and request authentication on this camera's stream. Served enforcement is
+   * topology-dependent and must be verified with `DESCRIBE` (401 = challenged, 200 = open).
    *
-   * `scheme` defaults to `"digest"` (a hashed nonce challenge — the password never crosses the wire,
-   * and the app's own default). Pass `"basic"` only for a player that can't do Digest: Basic sends the
-   * password base64-encoded on every request, readable by anyone on the LAN.
+   * `scheme` defaults to `"digest"` (a hashed nonce challenge and the app's own default). The reader
+   * does not send the plaintext password during Digest authentication, though this configuration write
+   * still sends it to the device. Pass `"basic"` only for a player that can't do Digest: Basic sends
+   * the password base64-encoded on every request, readable by anyone on the LAN.
    *
-   * Works on both topologies — a HomeBase-attached camera (the station enforces the setting on the
-   * stream it serves) and a standalone one. There is no read-back for credentials, so verify the effect
-   * with a `DESCRIBE` (401 = challenged) rather than assuming the write landed. The device also echoes
-   * its own RTSP URL — with the credentials embedded — on the publish param.
+   * The write stores credentials on both topologies, but a tested HomeBase-attached endpoint did not
+   * enforce the requested mode. Verify storage from the device-reported URL, which embeds the
+   * credentials, and enforcement with a `DESCRIBE` (401 = challenged, 200 = open).
    */
   requireAuth: method(
     ({ ctx, sink }) =>
@@ -186,14 +189,14 @@ export const RTSP_MEMBERS = {
         sink.dispatch(
           credentialsCommand(scheme === "basic" ? AUTH_MODE.basic : AUTH_MODE.digest, username, password, ctx),
         ),
-    "Require authentication on the stream.",
+    "Store credentials and request authentication; verify the served endpoint.",
   ),
-  /** Serve this camera's stream without authentication, keeping the stored credentials. */
+  /** Store an anonymous-mode request while keeping the supplied credentials. */
   allowAnonymous: method(
     ({ ctx, sink }) =>
       (username: string, password: string): Promise<void> =>
         sink.dispatch(credentialsCommand(AUTH_MODE.off, username, password, ctx)),
-    "Serve the stream without authentication.",
+    "Store an anonymous-mode request.",
   ),
 
   /**
