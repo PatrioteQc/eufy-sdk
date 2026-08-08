@@ -17,8 +17,8 @@ once up front.
 ## Publishing
 
 ```ts
-await rtsp?.publish(); // start serving this camera
-await rtsp?.withdraw(); // stop
+await rtsp?.publish(); // persistently publish this camera
+await rtsp?.withdraw(); // explicitly withdraw the publication
 rtsp?.published; // boolean | undefined — current state
 ```
 
@@ -32,6 +32,31 @@ recorder can open. Which host serves it depends on how the camera is installed:
 | HomeBase-attached | the HomeBase, one URL per attached camera   |
 | Standalone        | the camera itself, on its own local address |
 
+### Publication ownership
+
+`publish()` changes a persistent device setting; it does not open an SDK-owned media session. An
+RTSP player connects directly to the camera or HomeBase, outside the SDK. The SDK does not observe
+that player's disconnect, `TEARDOWN`, or retry loop, and therefore does not call `withdraw()` in
+response. Treat the endpoint as published until its state reports otherwise or a caller explicitly
+withdraws it.
+
+The caller that enables publication therefore owns its lifetime. Pair `publish()` with `withdraw()`
+when the recorder no longer needs the endpoint:
+
+```ts
+await rtsp?.publish();
+try {
+  await runRecorder();
+} finally {
+  await rtsp?.withdraw();
+}
+```
+
+Coordinate this ownership when several processes can control the same camera. A process must not
+withdraw a publication that another process or the vendor app still expects to remain available.
+After an observed withdrawal, `DESCRIBE` returns 404 until the stream is published again; a consumer
+retry does not ask the SDK to publish it.
+
 ## Three constraints worth knowing up front
 
 **One camera at a time per HomeBase.** A station publishes for a single attached camera. Calling
@@ -39,9 +64,11 @@ recorder can open. Which host serves it depends on how the camera is installed:
 SDK cannot detect or prevent this, so a host driving several cameras owns the choice of which is
 live.
 
-**It will drain a battery camera.** A published stream encodes continuously, with none of the
-budgeting the live-media path applies. The feature is meant for mains-powered cameras feeding a
-recorder. Check `dev.has("battery")` before offering it, and prefer leaving it off.
+**It will drain a battery camera.** A published stream encodes continuously. The SDK intentionally
+does not apply the live-media power budget here: it owns a P2P live session, but it cannot know whether
+an independent RTSP recorder still needs this persistent endpoint. The feature is meant for
+mains-powered cameras feeding a recorder. Check `dev.has("battery")` before offering it, leave it off
+by default, and make the enabling caller responsible for `withdraw()`.
 
 **A published stream is readable by your whole local network** unless the camera enforces
 authentication — see below. Treat publishing as making the camera available to anything on that
@@ -50,41 +77,33 @@ network.
 ## Authentication
 
 ```ts
-await rtsp?.requireAuth("eufy", secret); // demand credentials
-await rtsp?.allowAnonymous("eufy", secret); // serve without demanding them
+await rtsp?.requireAuth("eufy", secret); // request authenticated serving
+await rtsp?.allowAnonymous("eufy", secret); // request anonymous serving
 ```
 
-`requireAuth()` makes the camera answer with a Digest challenge; `allowAnonymous()` returns it to
-serving openly while keeping the credentials stored.
+These methods request an authentication mode and store the supplied credentials. A standalone camera
+has been observed serving a Digest challenge, but verify the endpoint rather than treating a resolved
+write as proof of enforcement. On a HomeBase-attached camera, the device-reported URL echoed freshly
+supplied Basic credentials, confirming storage, while unauthenticated `DESCRIBE` still returned 200
+with no challenge. The station continued serving anonymously.
 
-**Only a camera that serves its own stream enforces this.** On a HomeBase-attached camera the station
-does the serving and ignores the camera's authentication setting, so `requireAuth()` **rejects**
-rather than reporting a success that would not hold:
-
-```ts
-try {
-  await rtsp?.requireAuth("eufy", secret);
-} catch {
-  // HomeBase-attached: the stream is open to the local network while published
-}
-```
-
-That is deliberate. The credentials would store, and the device would even report them, while the
-stream stayed readable by anyone — so the SDK refuses instead of letting a stored password pass for
-access control. If you need an authenticated stream from a HomeBase-attached camera, you cannot get
-one; restrict access at the network instead, or leave the camera unpublished and use
+**Authentication enforcement is device- and topology-dependent.** A tested HomeBase-attached camera
+stored the requested credentials but its station continued serving without a challenge.
+A resolved `requireAuth()` call is therefore not proof of access control: verify storage from the
+device-reported URL and enforcement from `DESCRIBE` on the endpoint you will use. If that endpoint
+stays open, restrict access at the network instead, or leave the camera unpublished and use
 [live media](/live-media) instead.
 
 ## Choosing between RTSP and live media
 
-| You want                                | Use                           |
-| --------------------------------------- | ----------------------------- |
-| Frames in your own process              | [live media](/live-media)     |
-| Several cameras at once                 | [live media](/live-media)     |
-| A battery camera, occasionally          | [live media](/live-media)     |
-| A recorder (NAS/NVR) to pull the stream | RTSP                          |
-| Continuous recording of a wired camera  | RTSP                          |
-| An authenticated stream                 | RTSP, standalone cameras only |
+| You want                                | Use                                         |
+| --------------------------------------- | ------------------------------------------- |
+| Frames in your own process              | [live media](/live-media)                   |
+| Several cameras at once                 | [live media](/live-media)                   |
+| A battery camera, occasionally          | [live media](/live-media)                   |
+| A recorder (NAS/NVR) to pull the stream | RTSP                                        |
+| Continuous recording of a wired camera  | RTSP                                        |
+| An authenticated stream                 | RTSP, after `DESCRIBE` confirms a challenge |
 
 Live media is the general answer. RTSP earns its place when the consumer is an existing recorder that
 speaks RTSP and you would rather not proxy frames through your own application.

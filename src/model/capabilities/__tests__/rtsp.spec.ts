@@ -66,7 +66,7 @@ describe("rtsp capability module", () => {
     expect(sent.map((c) => (c as { value: number }).value)).toEqual([1, 0]);
   });
 
-  it("sets auth on a HomeBase-attached camera too — the station enforces it (verified live on a T8030)", async () => {
+  it("builds the auth setting for a HomeBase-attached camera; enforcement belongs to the RTSP endpoint", async () => {
     const attached = { ...ctx, homeBaseAttached: true } as CommandContext;
     const { acts: actions, sent } = bind<RtspActions>("rtsp", attached);
 
@@ -113,7 +113,7 @@ describe("rtsp capability module", () => {
     expect(payloads.map((c) => c.payload.mode)).toEqual([2, 0]);
   });
 
-  it("requireAuth picks the mode by scheme: digest (default) = 2, basic = 1 — both confirmed live", async () => {
+  it("maps the requested scheme to the app's mode: digest (default) = 2, basic = 1", async () => {
     const { acts: actions, sent } = bind<RtspActions>("rtsp", ctx);
 
     await actions.requireAuth("eufy", "hunter2"); // default digest
