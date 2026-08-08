@@ -7,6 +7,8 @@ export { MessageTag } from "./message-tags.js";
 // this layer owns only the MCS wire-framing tags (./message-tags).
 export type {
   PushEvent,
+  ThumbnailCandidate,
+  ThumbnailCandidateAttribution,
   PushPayload,
   PushEnrichment,
   RawPushMessage,
