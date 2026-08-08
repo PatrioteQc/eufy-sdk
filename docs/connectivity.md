@@ -28,12 +28,14 @@ To manage nothing automatically (advanced / tests), construct with `{ autoRealti
 ## Battery cameras: open on demand, detach when idle
 
 A standalone **battery** camera is only reached over P2P when something actually needs it — a control
-command, a live stream, a snapshot, or a doorbell pre-warm. After the last of those finishes, the
+command, a live stream or fresh `snapshotLive()`, or a doorbell pre-warm. After the last of those finishes, the
 session lingers briefly and then closes, so the camera can return to sleep. A persistent P2P session
 would keep it awake with a heartbeat every few seconds; opening on demand avoids that.
 
 - **Reads don't wake the camera.** `dev.getProperty(...)` is served from cache / the cloud, never a
   P2P pull — so a host polling a device every ~15 s does not drain the battery.
+- **Stored snapshots don't wake the camera.** `snapshotStored()` only reads a push thumbnail already
+  retained in memory; it performs no network or P2P work when called.
 - **Wired cameras / HomeBases** stay connected (they don't drain), so their realtime state is always
   live.
 
@@ -200,14 +202,15 @@ re-authenticating.
 
 ## Options summary
 
-| Option           | Default                           | Effect                                                                                                        |
-| ---------------- | --------------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| `autoRealtime`   | `true`                            | Auto-start push/MQTT on login + on-demand P2P. `false` opts out.                                              |
-| `p2pIdleMs`      | `300000` (5 min)                  | Idle window before a **battery** station detaches.                                                            |
-| `cacheTtlMs`     | `15000` (15 s)                    | Freshness window for cached reads.                                                                            |
-| `prewarmEvents`  | doorbell + person / pet / package | Which semantic events speculatively open P2P (not raw `motion`).                                              |
-| `prewarmMs`      | `28000` (28 s)                    | How long a pre-warmed session is held before idle-detach.                                                     |
-| `pollMs`         | `600000` (10 min)                 | How often cloud params are re-read for changes. `0` disables. Paced to the cloud's own refresh rate.          |
-| `localAddresses` | —                                 | LAN address override per station (`sn` → `host[:port]`) for direct P2P when the record's IP is wrong/blocked. |
+| Option                | Default                           | Effect                                                                                                        |
+| --------------------- | --------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `autoRealtime`        | `true`                            | Auto-start push/MQTT on login + on-demand P2P. `false` opts out.                                              |
+| `p2pIdleMs`           | `300000` (5 min)                  | Idle window before a **battery** station detaches.                                                            |
+| `cacheTtlMs`          | `15000` (15 s)                    | Freshness window for cached reads.                                                                            |
+| `prewarmEvents`       | doorbell + person / pet / package | Which semantic events speculatively open P2P (not raw `motion`).                                              |
+| `prewarmMs`           | `28000` (28 s)                    | How long a pre-warmed session is held before idle-detach.                                                     |
+| `pollMs`              | `600000` (10 min)                 | How often cloud params are re-read for changes. `0` disables. Paced to the cloud's own refresh rate.          |
+| `storedSnapshotCache` | `true`                            | Eagerly retain qualifying push JPEGs for passive `snapshotStored()`. `false` omits that method.               |
+| `localAddresses`      | —                                 | LAN address override per station (`sn` → `host[:port]`) for direct P2P when the record's IP is wrong/blocked. |
 
 Next: [Live media](/live-media).

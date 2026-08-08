@@ -7,7 +7,7 @@
  */
 
 import type { Capability, CloudRecord, Codec, PropertySpec } from "../types.js";
-import { bindMembers, installs, memberWrite, propertiesOf } from "./members.js";
+import { bindMembers, hasRequiredCapabilities, installs, memberWrite, propertiesOf } from "./members.js";
 import { camelCase } from "./access.js";
 import { describeBound, type CapabilityDescriptor } from "./manifest.js";
 import type {
@@ -734,6 +734,15 @@ export function accessorNamesFor(capabilities: ReadonlySet<Capability>): (keyof 
   return MODULES.filter((m) => (m.actions || m.members) && capabilities.has(m.capability)).map(
     (m) => camelCase(m.capability) as keyof DeviceActionMap,
   );
+}
+
+/** Whether this resolved set owns a provider-backed member with the given action name. */
+export function hasProvidedAction(capabilities: ReadonlySet<Capability>, action: string): boolean {
+  return MODULES.some((module) => {
+    if (!capabilities.has(module.capability)) return false;
+    const member = module.members?.[action];
+    return member !== undefined && "provided" in member && hasRequiredCapabilities(member, capabilities);
+  });
 }
 
 /**

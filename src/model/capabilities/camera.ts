@@ -477,12 +477,11 @@ export const CAMERA_MEMBERS = {
    * value, and it exists only on a device bound to a provider. Each is declared once, with its
    * signature taken FROM {@link MediaProvider} — so a change there is a compile error here, not a drift.
    */
-  snapshot: provided(
+  snapshotStored: provided(
     "media",
-    (m, { ctx }) =>
-      (opts?: Parameters<MediaProvider["snapshot"]>[0]) =>
-        m.snapshot({ powered: poweredOf(ctx), ...opts }),
-    "Latest stored still.",
+    (m) => m.snapshotStored && (() => m.snapshotStored!()),
+    "Latest validated push thumbnail retained in memory.",
+    ["snapshot"],
   ),
   snapshotLive: provided(
     "media",

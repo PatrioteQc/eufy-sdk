@@ -22,7 +22,7 @@ hero:
       link: https://github.com/mega-yfue/eufy-sdk
 features:
   - title: 🔀 One pull, many consumers
-    details: Every live view, snapshot, and recording on a camera shares one media session, fanned out — with instant keyframe-priming for late joiners.
+    details: Every live view, fresh snapshot, and recording on a camera shares one media session, fanned out — with instant keyframe-priming for late joiners.
   - title: 📦 Dependency-free egress
     details: Raw frames, a node Readable, or fragmented-MP4 (CMAF) for HLS/MSE — muxed with zero native deps.
   - title: 🔋 Power-aware

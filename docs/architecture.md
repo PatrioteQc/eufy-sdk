@@ -93,11 +93,13 @@ The event names and payloads are typed, so `eufy.on("motion", …)` autocomplete
 
 ## Consuming media
 
-Camera media hangs off a bound camera's action object and is built around **one pull, many
-consumers** — every live view, snapshot, and recording on a camera shares a single session:
+Camera media hangs off a bound camera's action object. Live egress is built around **one pull, many
+consumers** — every live view, fresh snapshot, and recording on a camera shares a single session:
 
 ```ts
 const cam = (await eufy.getDevice(sn)).camera();
+const stored = await cam?.snapshotStored?.(); // passive retained push JPEG; no live pull
+const fresh = await cam?.snapshotLive(); // explicit fresh capture from the shared live source
 const stream = await cam?.live(); // raw frames
 const r = await cam?.openReadable?.(); // a node Readable
 for await (const frag of cam!.recordFragments!()) {
@@ -105,7 +107,7 @@ for await (const frag of cam!.recordFragments!()) {
 }
 ```
 
-The media surface (`live`, `openReadable`, `recordFragments`, `snapshot`, `snapshotLive`, `record`) is
+The media surface (`snapshotStored`, `snapshotLive`, `live`, `openReadable`, `recordFragments`, `record`) is
 the [`MediaProvider`](/api/interfaces/MediaProvider) contract. See
 [Consuming a live stream](/live-media) for the full walkthrough (egress choices, keyframe priming,
 power budgets).

@@ -10,30 +10,22 @@
  * contract doesn't drag a transport type into core.
  */
 
-/**
- * Why {@link MediaProvider.snapshot} could not produce a still. Deliberately only the reasons the
- * TRANSPORT can actually determine from reachability — `"offline"` (the P2P session never resolved /
- * connected) and `"no-still"` (the device was reachable but has no stored still and a live burst
- * yielded no frame). A privacy-/disabled-camera reason is intentionally NOT here: that's model state
- * the transport can't read without violating capability↔transport decorrelation, and a host already
- * knows its own camera-enabled state (e.g. `dev.camera()?.privacy`) to decide that before asking.
- */
-export type SnapshotUnavailableReason = "offline" | "no-still";
+/** Why {@link MediaProvider.snapshotStored} has no retained push thumbnail to return. */
+export type StoredSnapshotUnavailableReason = "not-observed" | "pending" | "download-failed" | "invalid-image";
 
 /**
- * Thrown by {@link MediaProvider.snapshot} when neither the stored still nor the live-burst fallback
- * yields an image. `reason` lets a caller branch its presentation (e.g. an offline vs generic-
- * unavailable placeholder) — the SDK returns a real JPEG or this error, never placeholder bytes
- * (rendering an "unavailable" image is presentation, not Eufy truth).
+ * Thrown by {@link MediaProvider.snapshotStored} when no validated push thumbnail is retained. The
+ * reason distinguishes absence, acquisition still in progress, and the latest terminal failure; the
+ * SDK returns only observed JPEG bytes and never substitutes live media or presentation bytes.
  */
-export class SnapshotUnavailableError extends Error {
+export class StoredSnapshotUnavailableError extends Error {
   constructor(
-    readonly reason: SnapshotUnavailableReason,
+    readonly reason: StoredSnapshotUnavailableReason,
     message: string,
     options?: { cause?: unknown },
   ) {
     super(message, options);
-    this.name = "SnapshotUnavailableError";
+    this.name = "StoredSnapshotUnavailableError";
   }
 }
 
@@ -320,13 +312,6 @@ export interface WebRTCPeerHandle {
 }
 
 /**
- * Default cache window for {@link MediaProvider.snapshot} — a repeated poll inside this window reuses
- * the last still instead of re-hitting the device. Lives with the contract, not the implementation, so
- * a caller reading {@link MediaProvider} can see the value it is overriding with `cacheTtlMs`.
- */
-export const DEFAULT_SNAPSHOT_CACHE_MS = 6000;
-
-/**
  * The **media / device-query boundary** — the second transport, for operations that RETURN data (a
  * still, a live stream, a recording, a P2P request/reply query). The client implements it (P2P media
  * plumbing); capability modules call it without knowing the protocol. Bound to one device serial, so
@@ -335,26 +320,12 @@ export const DEFAULT_SNAPSHOT_CACHE_MS = 6000;
  */
 export interface MediaProvider {
   /**
-   * A still image for the camera. Tries the latest **stored** still first (cheap, no pull); when the
-   * device has no stored still it falls back to a **live burst** (one keyframe off the shared source,
-   * reusing a warm pull if one exists). `file` is the on-device path of the stored still, or `""` when
-   * the JPEG was live-derived by the fallback. Rejects with a {@link SnapshotUnavailableError} (whose
-   * `reason` says whether the device was unreachable or simply had no image) when neither path yields a
-   * frame — the caller decides how to present that (e.g. an "offline" vs "unavailable" placeholder; the
-   * SDK never returns placeholder bytes).
-   *
-   * **Short-TTL cached + coalesced.** A caller polling the still every few seconds returns the last
-   * still for `cacheTtlMs` (default {@link DEFAULT_SNAPSHOT_CACHE_MS}) instead of re-hitting the wire,
-   * and concurrent calls for the same device share ONE in-flight fetch — so a battery camera isn't woken
-   * on every poll. Only successes are cached; a failure is not. Pass `cacheTtlMs: 0` to force a fresh
-   * fetch. Tune the TTL to the caller's refresh cadence (the SDK owns the mechanic, the caller owns the
-   * cadence — same split as the live power budget).
+   * Return the latest validated push thumbnail retained in memory. This passive operation performs no
+   * network, storage, P2P, live-media, or transcoding work at call time. It rejects with
+   * {@link StoredSnapshotUnavailableError} when no image is retained. Optional because cache ownership
+   * and capability binding belong to the client.
    */
-  snapshot(opts?: {
-    timeoutMs?: number;
-    cacheTtlMs?: number;
-    powered?: "wired" | "battery";
-  }): Promise<{ file: string; jpeg: Buffer }>;
+  snapshotStored?(): Promise<Buffer>;
   /**
    * A fresh still decoded from a short live burst.
    *

@@ -11,7 +11,14 @@ import protobuf, { type Root } from "protobufjs";
 import { MCS_PROTO } from "./proto.js";
 import { MessageTag } from "./message-tags.js";
 import { McsParser } from "./parser.js";
-import type { FcmCredentials, McsMessage, PushEvent, PushPayload, RawPushMessage } from "./types.js";
+import type {
+  FcmCredentials,
+  McsMessage,
+  PushEvent,
+  PushPayload,
+  RawPushMessage,
+  ThumbnailCandidate,
+} from "./types.js";
 import { noopLogger, type Logger } from "../../core/logger.js";
 
 const HOST = "mtalk.google.com";
@@ -22,6 +29,58 @@ const HEARTBEAT_MS = 5 * 60 * 1000;
 function readNullTerminated(buf: Buffer): string {
   const i = buf.indexOf(0);
   return buf.toString("utf8", 0, i === -1 ? buf.length : i);
+}
+
+function nonemptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+/**
+ * Normalises a decoded eufy envelope without consulting device semantics; semantic event names remain unset.
+ * @internal
+ */
+export function normalizePushEvent(raw: RawPushMessage): PushEvent {
+  const env = raw.payload ?? {};
+  let inner: unknown = env.payload ?? env;
+  if (typeof inner === "string") {
+    try {
+      inner = JSON.parse(inner);
+    } catch {
+      inner = undefined;
+    }
+  }
+  const p: PushPayload = typeof inner === "object" && inner ? (inner as PushPayload) : {};
+  const eventType = (p.event_type ?? p.a) as number | undefined;
+  const url = nonemptyString(p.pic_url) ? p.pic_url : nonemptyString(p.thumbnail) ? p.thumbnail : undefined;
+  let thumbnailCandidate: ThumbnailCandidate | undefined;
+  if (url) {
+    const deviceClaims = [p.device_sn, env.device_sn].filter(nonemptyString);
+    const deviceSn = deviceClaims[0];
+    const stationClaims = [p.station_sn, env.station_sn, p.s].filter(nonemptyString);
+    const stationSn = stationClaims[0];
+    thumbnailCandidate = {
+      url,
+      attribution:
+        deviceSn && deviceClaims.every((claim) => claim === deviceSn)
+          ? { kind: "device", deviceSn }
+          : deviceClaims.length === 0 && stationSn
+            ? {
+                kind: "station",
+                ...(stationClaims.every((claim) => claim === stationSn) ? { stationSn } : {}),
+              }
+            : { kind: "ambiguous" },
+    };
+  }
+  return {
+    deviceSn: (p.device_sn ?? env.device_sn ?? p.s) as string | undefined,
+    stationSn: (p.station_sn ?? env.station_sn) as string | undefined,
+    eventType,
+    thumbnailUrl: (p.pic_url ?? p.thumbnail) as string | undefined,
+    thumbnailCandidate,
+    cipher: (p.cipher ?? p.k) as number | undefined,
+    payload: p,
+    raw,
+  };
 }
 
 export class PushClient extends EventEmitter {
@@ -186,28 +245,7 @@ export class PushClient extends EventEmitter {
 
   /** Flatten the eufy envelope (whose inner `payload` is often a JSON string). */
   private normalize(raw: RawPushMessage): PushEvent | undefined {
-    const env: any = raw.payload ?? {};
-    let inner: PushPayload = env.payload ?? env;
-    if (typeof inner === "string") {
-      try {
-        inner = JSON.parse(inner);
-      } catch {
-        /* leave as string */
-      }
-    }
-    const p: PushPayload = typeof inner === "object" && inner ? inner : {};
-    const eventType = (p.event_type ?? p.a) as number | undefined;
-    return {
-      deviceSn: (p.device_sn ?? env.device_sn ?? p.s) as string | undefined,
-      stationSn: (p.station_sn ?? env.station_sn) as string | undefined,
-      eventType,
-      // `eventName` (the human label) is a semantic mapping, not wire framing — the client enriches
-      // it via the model's `detectionName` when it re-emits, keeping this transport capability-blind.
-      thumbnailUrl: (p.pic_url ?? p.thumbnail) as string | undefined,
-      cipher: (p.cipher ?? p.k) as number | undefined,
-      payload: p,
-      raw,
-    };
+    return normalizePushEvent(raw);
   }
 
   private startHeartbeat(): void {

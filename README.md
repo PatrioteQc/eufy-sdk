@@ -37,7 +37,8 @@ you drive through a **typed, fluent API**:
 ```ts
 const dev = await eufy.getDevice(sn);
 
-await dev.camera()?.snapshot();
+const stored = await dev.camera()?.snapshotStored?.(); // latest retained push JPEG
+const fresh = await dev.camera()?.snapshotLive(); // explicit fresh live capture
 await dev.panTilt()?.rotate(PtzDirection.left);
 await dev.light()?.setBrightness(60);
 
@@ -71,7 +72,7 @@ npm install @mega-yfue/eufy-sdk
 Once the repository is public, releases also go to npmjs and the `.npmrc` becomes unnecessary.
 
 **Node.js ≥ 24.5.0** is required, not just recommended (see [`.nvmrc`](./.nvmrc)). `ffmpeg` is
-optional — only the JPEG-snapshot, one-shot mp4 record and WebRTC container-output paths use it.
+optional — only the live JPEG snapshot, one-shot mp4 record and WebRTC container-output paths use it.
 
 ## Documentation
 

@@ -17,6 +17,8 @@ import type { EufyDevice, RealtimeMessage } from "../core/types.js";
 export interface EufyMegaOptions extends MegaClientConfig {
   /** Persist FCM push credentials + seen ids across runs (default: in-memory). */
   pushStore?: FcmStore;
+  /** Eagerly retain validated push thumbnails in memory for `camera.snapshotStored()` (default `true`). */
+  storedSnapshotCache?: boolean;
   /**
    * LAN address overrides for direct P2P, keyed by **parent-station serial** → `host` or `host:port`.
    * The SDK normally derives a station's LAN address from its device record; supply this when the
@@ -83,7 +85,7 @@ export interface EufyMegaOptions extends MegaClientConfig {
    */
   prewarmEvents?: (keyof DeviceEventMap)[];
   /**
-   * ffmpeg's own `-loglevel` for the media paths that shell out to it (snapshot / record / WebRTC
+   * ffmpeg's own `-loglevel` for the media paths that shell out to it (live snapshot / record / WebRTC
    * container). Default `"error"` (quiet). Raise it (e.g. `"trace"`) to diagnose a failing decode/mux;
    * ffmpeg's stderr is then forwarded to the {@link EufyMegaOptions.logger} as `[ffmpeg]` debug lines
    * — so you also need a `logger` that shows `debug`. Independent of the SDK's own log level.

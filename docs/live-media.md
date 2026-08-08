@@ -9,9 +9,10 @@ const dev = await eufy.getDevice(sn);
 const cam = dev.camera?.(); // camera controls + media (media present only when client-bound)
 ```
 
-The media methods (`live`, `snapshotLive`, `openReadable`, `recordFragments`, `snapshot`, `record`)
-are **optional** on the returned object — present only when the device is bound to a live client.
-Guard them (`cam?.live`) or assert once up front.
+The media methods (`snapshotStored`, `snapshotLive`, `live`, `openReadable`, `recordFragments`, `record`)
+are **optional** on the returned object and require a device bound to a live client. `snapshotStored`
+also requires snapshot capability evidence and the stored-image cache described below. Guard methods
+(`cam?.live`) or assert once up front.
 
 ## One pull, many consumers
 
@@ -111,6 +112,50 @@ warm shared source; opening a cold recording cannot reconstruct time before the 
 
 ## Snapshots
 
+The two snapshot methods are intentionally distinct. Choose whether the call may start live media;
+there is no automatic stored-to-live fallback.
+
+### Stored: passive retained push JPEG
+
+```ts
+import { StoredSnapshotUnavailableError } from "@mega-yfue/eufy-sdk";
+
+try {
+  const jpeg: Buffer = await cam.snapshotStored!();
+} catch (error) {
+  if (error instanceof StoredSnapshotUnavailableError) console.log(error.reason);
+}
+```
+
+`snapshotStored(): Promise<Buffer>` returns the latest qualifying push thumbnail retained for that
+device. Acquisition happens eagerly when the push arrives, before any snapshot call. A candidate must
+be attributed to one exact account-known device that has snapshot capability evidence; ambiguous or
+station-only candidates are ignored.
+
+The call itself is passive: it does not wait for an acquisition, access storage, make an HTTP request,
+open P2P, start live media, or transcode. If no JPEG is retained it rejects with
+`StoredSnapshotUnavailableError`; `reason` is one of:
+
+- `not-observed` — no qualifying candidate has been observed;
+- `pending` — acquisition of a qualifying candidate is queued or in progress;
+- `download-failed` — the latest acquisition could not be downloaded;
+- `invalid-image` — downloaded bytes did not have the required JPEG structure.
+
+Only structurally valid, bounded JPEG bytes are retained. In particular, currently observed v2 blobs
+do not pass that validation. This contract does not imply that every device family supplies a usable
+push thumbnail.
+
+The cache is enabled by default. Constructing `EufyMega` with `{ storedSnapshotCache: false }` ignores
+candidates and omits `snapshotStored` from bound cameras. Retained bytes live only in the client process
+for the current account: `logout()`, `clearSession()`, or changing account clears them; a plain
+`disconnect()` does not clear the same client's account cache.
+
+Eager acquisition uses `MegaHttpClient.downloadMedia`, which enforces HTTPS host allowlists, a 15 s
+timeout, and a 10 MiB body limit. It follows at most one allowlisted object-store redirect and does not
+forward account authentication headers to the redirected host.
+
+### Live: explicit fresh capture
+
 ```ts
 const shot = await cam.snapshotLive?.(); // { jpeg, width, height }
 ```
@@ -120,8 +165,6 @@ If the shared source already has a cached keyframe (a live view or another consu
 briefly attach, wait for a clean keyframe, decode, and detach. (The JPEG decode itself uses ffmpeg as
 an optional convenience sink; the raw keyframe bytes are always available dependency-free via
 `openReadable` / the event stream.)
-
-`cam.snapshot?.()` is the distinct **stored** still (cloud/HomeBase path) and never pulls.
 
 ## Talkback — audio the other way
 
@@ -202,8 +245,7 @@ notice.
 
 The model sets the `powered` hint for you from `dev.has("battery")` — a host does **not** pass it. It
 applies to every egress that can open the session (`live`, `openReadable`, `recordFragments`,
-`talkback`, and both snapshot paths), so the budget doesn't depend on which one you happened to open
-first — including the case where a snapshot poll is what warmed the session before anyone watched.
+`talkback`, and `snapshotLive`), so the budget doesn't depend on which one you happened to open first.
 
 The budget belongs to the **shared session**, not to one consumer: a live stream and a talkback on the
 same camera are two consumers of one pull, so a single `extend()` covers both. If nobody extends, the
@@ -241,11 +283,11 @@ session idle-detaches so a battery device sleeps — see [Connectivity & battery
 
 ## Choosing an egress
 
-| Need                                | Use                                                      |
-| ----------------------------------- | -------------------------------------------------------- |
-| Raw frames, custom pipeline         | `cam.live()` → `on("video"/"audio")`                     |
-| Pipe bytes to a file/socket/encoder | `cam.openReadable()`                                     |
-| Serve HLS / feed an MSE player      | `cam.recordFragments()`                                  |
-| A single still                      | `cam.snapshotLive()` (live) or `cam.snapshot()` (stored) |
-| Fixed-length clip buffer            | `cam.record(seconds)`                                    |
-| Send audio TO the camera            | `cam.talkback()`                                         |
+| Need                                | Use                                                                         |
+| ----------------------------------- | --------------------------------------------------------------------------- |
+| Raw frames, custom pipeline         | `cam.live()` → `on("video"/"audio")`                                        |
+| Pipe bytes to a file/socket/encoder | `cam.openReadable()`                                                        |
+| Serve HLS / feed an MSE player      | `cam.recordFragments()`                                                     |
+| A single still                      | `cam.snapshotLive()` (fresh) or `cam.snapshotStored()` (retained push JPEG) |
+| Fixed-length clip buffer            | `cam.record(seconds)`                                                       |
+| Send audio TO the camera            | `cam.talkback()`                                                            |

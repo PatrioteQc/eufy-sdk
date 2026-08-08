@@ -8,13 +8,13 @@
  *   await eufy.login(); // → LoginResult; on success the SDK auto-starts realtime (push/MQTT/wired P2P)
  *   eufy.on("motion", (e) => console.log(e.deviceSn)); // typed semantic events — flowing already
  *   const dev = await eufy.getDevice((await eufy.getDevices())[0].sn);
- *   await dev.camera()?.snapshot(); // opens the camera's P2P on demand, idle-detaches after
+ *   await dev.camera()?.snapshotStored();
  *
  * Connectivity is SDK-managed: the host calls no `connect*`. P2P to a battery camera is opened only
  * when a command/stream/doorbell-ring needs it and closed when idle, so the camera can sleep.
  */
 import { EventEmitter } from "node:events";
-import { MegaHttpClient, LoginStatus, type LoginResult } from "../transport/http/mega-client.js";
+import { MegaHttpClient, LoginStatus, SessionExpiredError, type LoginResult } from "../transport/http/mega-client.js";
 import { SecureMqtt, type SecureMqttCredentials } from "../transport/mqtt/secure-mqtt.js";
 import { mqttAppName, mqttScopeFor, type MqttScope } from "../transport/mqtt/topics.js";
 import { parseDpMessage, parseAiotDpReport } from "../transport/mqtt/dp-codec.js";
@@ -32,14 +32,17 @@ import {
   buildRealtimeInit,
   hasRealtimeReads,
   needsRealtimeInit,
+  hasProvidedAction,
 } from "../model/capabilities/index.js";
 import type { DeviceEventMap } from "../model/capabilities/index.js";
 import type { CommandContext } from "../model/capabilities/types.js";
 import { CapabilityNotSupportedError } from "../model/capabilities/types.js";
-import type { Command, CommandSink, Ff09SettingsReader } from "../core/contracts.js";
+import type { Command, CommandSink, Ff09SettingsReader, MediaProvider } from "../core/contracts.js";
+import { noopLogger } from "../core/logger.js";
 import { PushClient } from "../transport/push/push-client.js";
 import { FcmRegistrar } from "../transport/push/fcm.js";
 import { MemoryFcmStore } from "../transport/push/store.js";
+import { StoredImageCache } from "../transport/stored-image-cache.js";
 import type { PushEvent, RawPushMessage } from "../transport/push/types.js";
 import { type EufyDevice, type RealtimeTransport } from "../core/types.js";
 import { Timer } from "../core/util.js";
@@ -121,6 +124,10 @@ export class EufyMega extends EventEmitter {
   /** Device list/record/capability resolution + the frame→caps cache. */
   private readonly registry: DeviceRegistry;
   private pushClient?: PushClient;
+  /** Push-fed passive image store; absent when the caller disables acquisition. */
+  private readonly storedImages?: StoredImageCache;
+  /** Account whose retained images are currently held. */
+  private storedImageAccount?: string;
   /** Guards the auto-realtime bring-up so it runs once per session (idempotent across login retries). */
   private realtimeStarted = false;
   /**
@@ -167,6 +174,14 @@ export class EufyMega extends EventEmitter {
     this.opts = opts;
     this.prewarmEvents = new Set(opts.prewarmEvents ?? DEFAULT_PREWARM_EVENTS);
     this.mega = new MegaHttpClient(opts);
+    if (opts.storedSnapshotCache !== false) {
+      this.storedImages = new StoredImageCache(
+        (url) => this.mega.downloadMedia(url),
+        opts.logger ?? noopLogger,
+        Date.now,
+        (error) => error instanceof SessionExpiredError,
+      );
+    }
     this.registry = new DeviceRegistry({
       mega: this.mega,
       onError: (e) => this.reportError(e),
@@ -383,7 +398,7 @@ export class EufyMega extends EventEmitter {
       dev.bindActions(
         ctx,
         this.commandSinkFor(sn),
-        this.p2p.mediaProviderFor(sn),
+        this.mediaProviderFor(sn),
         this.ff09SettingsReaderFor(sn, ctx),
         rawDpCodec,
       );
@@ -513,7 +528,11 @@ export class EufyMega extends EventEmitter {
    * surface failures via `error`. Idempotent (guarded by {@link realtimeStarted}).
    */
   private afterLogin(result: LoginResult): LoginResult {
-    if (result.status === LoginStatus.Ok && this.opts.autoRealtime !== false) void this.ensureRealtime();
+    if (result.status === LoginStatus.Ok) {
+      if (this.storedImageAccount && this.storedImageAccount !== result.session.userId) this.storedImages?.clear();
+      this.storedImageAccount = result.session.userId;
+      if (this.opts.autoRealtime !== false) void this.ensureRealtime();
+    }
     return result;
   }
 
@@ -544,6 +563,19 @@ export class EufyMega extends EventEmitter {
   private commandSinkFor(sn: string): CommandSink {
     return {
       dispatch: (cmd: Command) => this.routeCommand(sn, cmd),
+    };
+  }
+
+  /** Combine explicit P2P media with the optional passive push-thumbnail provider. */
+  private mediaProviderFor(sn: string): MediaProvider {
+    const media = this.p2p.mediaProviderFor(sn);
+    if (!this.storedImages) return media;
+    return {
+      ...media,
+      snapshotStored: () => {
+        if (!this.mega.loggedIn) return Promise.reject(new Error("login() first"));
+        return this.storedImages!.snapshotStored(sn);
+      },
     };
   }
 
@@ -646,7 +678,7 @@ export class EufyMega extends EventEmitter {
    * @example
    * ```ts
    * const dev = await eufy.getDevice(sn);
-   * if (dev.has("camera")) await dev.camera()?.snapshot();
+   * if (dev.has("camera")) await dev.camera()?.snapshotStored();
    * console.log(dev.getProperty("battery"));
    * ```
    */
@@ -660,7 +692,7 @@ export class EufyMega extends EventEmitter {
     dev.bindActions(
       ctx,
       this.commandSinkFor(sn),
-      this.p2p.mediaProviderFor(sn),
+      this.mediaProviderFor(sn),
       this.ff09SettingsReaderFor(sn, ctx),
       rawDpCodec,
     );
@@ -826,7 +858,7 @@ export class EufyMega extends EventEmitter {
       dev.bindActions(
         ctx,
         this.commandSinkFor(sn),
-        this.p2p.mediaProviderFor(sn),
+        this.mediaProviderFor(sn),
         this.ff09SettingsReaderFor(sn, ctx),
         rawDpCodec,
       );
@@ -1165,6 +1197,7 @@ export class EufyMega extends EventEmitter {
       // Enrich the transport-neutral push with its human event label (the transport stays
       // capability-blind — the id→name mapping is a model concern).
       if (ev.eventName === undefined && ev.eventType != null) ev.eventName = detectionName(ev.eventType);
+      if (ev.thumbnailCandidate) void this.observeStoredImage(ev.thumbnailCandidate);
       this.emit("push", ev); // raw normalized push (low-level escape hatch)
       // Capabilities map the push eventType → a semantic event (motion / doorbellPress / lockState…).
       const signal = {
@@ -1187,6 +1220,23 @@ export class EufyMega extends EventEmitter {
     });
     client.connect();
     return client;
+  }
+
+  /** Admit only exact, account-known devices with resolved snapshot evidence into the passive store. */
+  private async observeStoredImage(candidate: NonNullable<PushEvent["thumbnailCandidate"]>): Promise<void> {
+    if (!this.storedImages || candidate.attribution.kind !== "device") return;
+    const account = this.mega.auth?.userId;
+    if (!account) return;
+    try {
+      if (!this.registry.list().length) await this.registry.getDevices();
+      if (this.mega.auth?.userId !== account) return;
+      const caps = this.registry.capabilitiesForDevice(candidate.attribution.deviceSn);
+      if (caps && hasProvidedAction(caps, "snapshotStored")) {
+        this.storedImages.observe(candidate.attribution.deviceSn, candidate.url);
+      }
+    } catch (e) {
+      this.reportError(e);
+    }
   }
 
   /**
@@ -1236,8 +1286,16 @@ export class EufyMega extends EventEmitter {
     return this.mega.loggedIn;
   }
 
-  /** Forget the persisted session (forces a fresh login + 2FA next time). */
+  /** Tear down realtime, clear passive media, and forget the persisted login session. */
+  async logout(): Promise<void> {
+    await this.disconnect();
+    this.clearSession();
+  }
+
+  /** Forget the persisted session (forces a fresh login + 2FA next time) and clear account-owned media. */
   clearSession(): void {
+    this.storedImages?.clear();
+    this.storedImageAccount = undefined;
     this.mega.clearSession();
   }
 }
