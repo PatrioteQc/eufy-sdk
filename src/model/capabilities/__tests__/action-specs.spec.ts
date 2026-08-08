@@ -357,8 +357,8 @@ const writables: { label: string; mod: CapabilityModule; property: string }[] = 
 
 /**
  * A member whose own `write` reaches this property name — in ANY module, since one setting is sometimes
- * published by the capability that READS it and written by the one that owns the wire (the doorbell's LED
- * is the camera's status LED, claimed through `intentNames`; its ringtone volume is `audio`'s).
+ * published by the capability that reads it and written by the one that owns the wire (a doorbell's
+ * ringtone volume is written by `audio`).
  *
  * Checked over the member TABLES rather than by calling `buildCommand`, so the answer does not depend on
  * picking a value inside each member's declared domain.

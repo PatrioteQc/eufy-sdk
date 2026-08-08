@@ -39,7 +39,8 @@ export const CAMERA_CMD = {
   /**
    * Video-doorbell status-LED on/off. Rides the `1350` SET_PAYLOAD envelope
    * (`{account_id,cmd:1716,mChannel,mValue3:1716,payload:{light_enable:0|1}}`),
-   * signCode 8. ✅ verified live on Doorbell Dual T8214. Distinct from the camera status LED (1045).
+   * signCode 8. ✅ verified live on Doorbell Dual T8214. Family-specific wire for the same semantic
+   * status LED setting ordinary cameras report under 1045.
    */
   DOORBELL_LED: 1716,
   /**
@@ -458,18 +459,20 @@ export const CAMERA_MEMBERS = {
     write: (v, ctx) => privacyCommand(asBool(v), ctx.channel),
   },
   /**
-   * The doorbell capability's writable LED property resolves to this same family-aware wire, so the LED
-   * command lives in ONE place — hence the extra intent name.
+   * The same status LED is reported under 1045 on ordinary cameras and 1716 on video doorbells. The
+   * alias is the same semantic value on a family-specific wire. The parameter valid for the resolved
+   * family is sufficient evidence to install both the getter and family-aware setter.
    */
   statusLed: {
     param: CAMERA_CMD.DEV_LED_SWITCH,
     type: "bool",
     kind: "boolean",
-    writeOnly: true,
     provenance: "verified",
-    description: "The camera's status LED — see statusLedCommand for the doorbell's own wire.",
+    readAvailable: (ctx) => !hasCapability(ctx, "doorbell"),
+    readAliases: [{ paramType: CAMERA_CMD.DOORBELL_LED, available: (ctx) => hasCapability(ctx, "doorbell") }],
+    requiresRead: true,
+    description: "Camera status LED. Video doorbells report the same state under their button-ring LED parameter.",
     write: (v, ctx) => statusLedCommand(asBool(v), ctx),
-    intentNames: ["doorbellLedEnable"],
   },
 
   /**

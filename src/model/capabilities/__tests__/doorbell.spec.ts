@@ -24,7 +24,6 @@ describe("doorbell capability module", () => {
       "dingdongVolume",
       "dingdongRingtone",
       "notificationMode",
-      "doorbellLedEnable",
     ]);
   });
 
@@ -35,16 +34,15 @@ describe("doorbell capability module", () => {
     }
   });
 
-  /**
-   * The LED is one setting two capabilities publish: the doorbell reports it, `camera`'s family-aware
-   * status-LED write claims the name through its `intentNames`. Deriving `writable` from this member's
-   * own `write` published a settable property as read-only.
-   */
-  it("publishes doorbellLedEnable as writable even though the write belongs to another capability", () => {
-    const prop = DOORBELL.properties.find((p) => p.name === "doorbellLedEnable")!;
-    expect(prop.writable).toBe(true);
-    const doorbellCtx = ctx(3, { capabilities: new Set(["camera", "doorbell"]), deviceType: 94, model: "T8214" });
-    expect(buildCommand("doorbellLedEnable", true, doorbellCtx)).toMatchObject({ payload: { light_enable: 1 } });
+  it("does not publish the camera-owned status LED under the doorbell capability", () => {
+    expect(DOORBELL.properties.some((p) => p.name === "doorbellLedEnable")).toBe(false);
+    const doorbellCtx = ctx(3, {
+      capabilities: new Set(["camera", "doorbell"]),
+      deviceType: 94,
+      model: "T8214",
+      paramIds: new Set([1716]),
+    });
+    expect(buildCommand("doorbellLedEnable", true, doorbellCtx)).toBeUndefined();
   });
 
   it("detects via the doorbell model-name regex", () => {
