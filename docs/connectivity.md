@@ -180,16 +180,16 @@ because independent transports do not share a counter. When comparable vendor or
 receipt order decides the latest observation. Same-state evidence refreshes the retained observation
 without emitting a duplicate transition.
 
-The push payload's short `m` field is deliberately not exposed as availability: investigation found no
-current-app reader establishing its values, polarity, or whether it describes the named device, its
-parent station, or a transport. The SDK likewise does not turn MQTT/P2P disconnects, silence, operation
-failures, or a caller timeout into device unavailability. `deviceAvailability(sn)` therefore returns
-`undefined` when there is no verified observation rather than guessing.
+The push payload's short `m` field is not exposed as availability: no current-app reader establishes its
+values, polarity, or whether it describes the named device, its parent station, or a transport. The SDK
+likewise does not turn MQTT/P2P disconnects, silence, operation failures, or a caller timeout into device
+unavailability. `deviceAvailability(sn)` therefore returns `undefined` when there is no verified
+observation rather than guessing.
 
-This remains true when one account contains both smart lights and robot vacuums. They use separate MQTT
-credential scopes (`eufy_life` for the light, default for an `eufy_home` vacuum), and an idle vacuum may
-legitimately produce no DP report for an extended period. Light `state_info` evidence is not projected
-onto the vacuum, and vacuum report silence is not an availability observation.
+An account containing both smart lights and robot vacuums uses separate MQTT credential scopes:
+`eufy_life` for the light and default for an `eufy_home` vacuum. An idle vacuum may legitimately produce
+no DP report for an extended period. Light `state_info` evidence is not projected onto the vacuum, and
+vacuum report silence is not an availability observation.
 
 ### Don't use the P2P session as a reachability check
 

@@ -99,8 +99,8 @@ export interface RealtimeMessage {
 export type AvailabilityState = "available" | "unavailable";
 
 /**
- * A verified authoritative signal that can produce availability observations. Extend this union only
- * when a current vendor wire establishes polarity and device attribution for another transport.
+ * Provenance of an authoritative availability observation. The current contract contains only the
+ * secure-MQTT signal whose polarity and device attribution are established by the current vendor app.
  */
 export type AvailabilitySource = { readonly transport: "smqtt"; readonly signal: "state-info" };
 
