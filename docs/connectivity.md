@@ -137,8 +137,8 @@ eufy.on("deviceState", (s) => {
 ```
 
 `lastSeenMs` is when the device last reported to the cloud, in ms, comparable to `Date.now()`. It works
-the same way for every device class — cameras, sensors and MQTT appliances alike — so it's the one
-portable liveness signal to build on.
+the same way for every device class — cameras, sensors and MQTT appliances alike — as a portable
+liveness fact.
 
 **There is deliberately no `online: boolean`.** "Unreachable" is a threshold, and the right threshold
 differs per device: a mains camera reports constantly, while a battery contact sensor can be silent for
@@ -151,6 +151,45 @@ const stale = Date.now() - (s.lastSeenMs ?? 0) > myThresholdFor(deviceKind);
 
 **`lastSeenMs` moves slowly** — it comes from the cloud's own device heartbeat, minutes rather than
 seconds (see below). It answers "is this device alive at all", not "what is it doing right now".
+
+### Explicit availability observations
+
+Where the current vendor wire provides an attributable availability state, the SDK exposes it
+separately from `lastSeenMs`:
+
+```ts
+const current = eufy.deviceAvailability(sn);
+// { entity, availability, source: { transport, signal }, receivedAt, ... } | undefined
+
+eufy.on("availability", (observation) => {
+  // fires on an explicit state transition; repeated identical states are coalesced
+});
+```
+
+The currently verified source is the `eufy_life` MQTT `synq/.../state_info` channel. In the current app,
+`IotNotifyLightImpl.handleStateInfoTopic` parses `MqttBaseProtocol.payload`, reads its boolean `status`,
+and updates the `LightDevice` selected from the topic's serial. That establishes both polarity and
+device scope. Envelope time and sequence values are preserved when supplied. An older ordered message
+cannot replace a newer observation, and only a later explicit `available` observation clears an explicit
+`unavailable` one.
+
+Availability state is harmonized above the transports: each transport may decode only a verified wire
+signal, then the client normalizes it into this contract and retains one latest observation per device.
+Vendor timestamps are compared across sources; sequence values are compared only within the same source
+because independent transports do not share a counter. When comparable vendor ordering is absent, SDK
+receipt order decides the latest observation. Same-state evidence refreshes the retained observation
+without emitting a duplicate transition.
+
+The push payload's short `m` field is deliberately not exposed as availability: investigation found no
+current-app reader establishing its values, polarity, or whether it describes the named device, its
+parent station, or a transport. The SDK likewise does not turn MQTT/P2P disconnects, silence, operation
+failures, or a caller timeout into device unavailability. `deviceAvailability(sn)` therefore returns
+`undefined` when there is no verified observation rather than guessing.
+
+This remains true when one account contains both smart lights and robot vacuums. They use separate MQTT
+credential scopes (`eufy_life` for the light, default for an `eufy_home` vacuum), and an idle vacuum may
+legitimately produce no DP report for an extended period. Light `state_info` evidence is not projected
+onto the vacuum, and vacuum report silence is not an availability observation.
 
 ### Don't use the P2P session as a reachability check
 

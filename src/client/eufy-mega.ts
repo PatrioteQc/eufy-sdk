@@ -17,6 +17,7 @@ import { EventEmitter } from "node:events";
 import { MegaHttpClient, LoginStatus, type LoginResult } from "../transport/http/mega-client.js";
 import { SecureMqtt, type SecureMqttCredentials } from "../transport/mqtt/secure-mqtt.js";
 import { mqttAppName, mqttScopeFor, type MqttScope } from "../transport/mqtt/topics.js";
+import { parseStateInfoSignal } from "../transport/mqtt/availability.js";
 import { parseDpMessage, parseAiotDpReport } from "../transport/mqtt/dp-codec.js";
 import { type P2PSession, type P2PFrame } from "../transport/p2p/p2p-session.js";
 import { P2PCommandRouter } from "../transport/p2p/command-router.js";
@@ -41,7 +42,7 @@ import { PushClient } from "../transport/push/push-client.js";
 import { FcmRegistrar } from "../transport/push/fcm.js";
 import { MemoryFcmStore } from "../transport/push/store.js";
 import type { PushEvent, RawPushMessage } from "../transport/push/types.js";
-import { type EufyDevice, type RealtimeTransport } from "../core/types.js";
+import { type AvailabilityObservation, type EufyDevice, type RealtimeTransport } from "../core/types.js";
 import { Timer } from "../core/util.js";
 import { Device, resolveDevice, detectionName, type Capability, type DeviceInspection } from "../model/index.js";
 import { isHomeBase } from "../model/device-family.js";
@@ -159,6 +160,8 @@ export class EufyMega extends EventEmitter {
    * Realtime-only: the poll path deliberately bypasses it so an unchanged state is still re-asserted.
    */
   private readonly lastStateAnnounced = new Map<string, unknown>();
+  /** Latest authoritative availability observation per device; no heuristic path writes this map. */
+  private readonly availabilityObservations = new Map<string, AvailabilityObservation>();
   /** Re-armed after each cloud-param poll; cancelled by {@link disconnect}. */
   private readonly pollTimer = new Timer();
 
@@ -891,6 +894,7 @@ export class EufyMega extends EventEmitter {
     transport.on("disconnect", (r) => this.emit("disconnect", r));
     transport.on("message", (m) => {
       this.emit("message", m); // raw MQTT message (low-level escape hatch)
+      if (m.topic) this.processAvailabilityMessage(m.topic, m.raw);
       const signal = {
         source: "mqtt" as const,
         deviceSn: m.deviceSn,
@@ -957,6 +961,68 @@ export class EufyMega extends EventEmitter {
   deviceState(sn: string): DeviceState {
     const dev = this.registry.list().find((d) => d.sn === sn);
     return dev ? this.stateOf(dev) : { sn, stationSn: this.p2p.stationKeyOf(sn) };
+  }
+
+  /**
+   * Return the latest explicit availability observation for `sn`, or `undefined` when no verified
+   * vendor signal has been observed. This never derives a state from {@link DeviceState.lastSeenMs},
+   * connection silence, P2P lifecycle, operation failures or caller-selected timeouts.
+   */
+  deviceAvailability(sn: string): AvailabilityObservation | undefined {
+    return this.availabilityObservations.get(sn);
+  }
+
+  /** Decode a verified wire signal, then assign its device-availability semantics at the client seam. */
+  private processAvailabilityMessage(topic: string, raw: unknown): void {
+    const signal = parseStateInfoSignal(topic, raw);
+    if (!signal) return;
+    this.applyAvailabilityObservation({
+      entity: { kind: "device", sn: signal.deviceSn },
+      availability: signal.status ? "available" : "unavailable",
+      source: { transport: "smqtt", signal: "state-info" },
+      scope: "device",
+      ...(signal.observedAt === undefined ? {} : { observedAt: signal.observedAt }),
+      ...(signal.sequence === undefined ? {} : { sequence: signal.sequence }),
+      receivedAt: Date.now(),
+    });
+  }
+
+  /**
+   * Retain one authoritative observation per device and emit only state transitions. When both the
+   * previous and incoming envelopes supply ordering evidence, an older message cannot overwrite newer
+   * device truth. Exact duplicate ordering cannot reverse state. If comparable vendor ordering is
+   * absent, handler arrival order defines which explicit observation is later. A same-state observation
+   * still refreshes the retained evidence without re-emitting.
+   */
+  private applyAvailabilityObservation(observation: AvailabilityObservation): void {
+    const sn = observation.entity.sn;
+    const previous = this.availabilityObservations.get(sn);
+    if (previous) {
+      const sameSource =
+        previous.source.transport === observation.source.transport &&
+        previous.source.signal === observation.source.signal;
+      const bothTimed = previous.observedAt !== undefined && observation.observedAt !== undefined;
+      if (bothTimed && observation.observedAt! < previous.observedAt!) return;
+      if (sameSource && (!bothTimed || observation.observedAt === previous.observedAt)) {
+        if (
+          previous.sequence !== undefined &&
+          observation.sequence !== undefined &&
+          observation.sequence < previous.sequence
+        ) {
+          return;
+        }
+        if (
+          previous.sequence !== undefined &&
+          observation.sequence === previous.sequence &&
+          observation.availability !== previous.availability
+        ) {
+          return;
+        }
+      }
+    }
+
+    this.availabilityObservations.set(sn, observation);
+    if (previous?.availability !== observation.availability) this.emit("availability", observation);
   }
 
   /**
