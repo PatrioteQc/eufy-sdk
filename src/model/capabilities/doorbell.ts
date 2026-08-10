@@ -149,12 +149,10 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 /**
  * Every `doorbell` feature, declared once.
  *
- * Four of the eight reads are read-ONLY here even though the device accepts a write, because the write
+ * Three of the seven reads are read-ONLY here even though the device accepts a write, because the write
  * does not belong to this capability or is not confirmed:
  *  - `ringtoneVolume` (1708) — the WRITE lives on `audio`, which owns every volume wire. 1708 leaks
  *    onto non-doorbell cameras, so `audio` gates its setter on the doorbell capability instead.
- *  - `doorbellLedEnable` (1716) — resolves through the shared `camera` status-LED wire, which is
- *    family-aware; `camera`'s member claims this name via `intentNames`.
  *  - `chimeSwitch` (1702) — READ confirmed on a T8214, the WRITE wire never captured. Its 1703/1704
  *    siblings share the param range but that is NOT evidence of a shared frame, and a wrong guess on a
  *    fire-and-forget P2P write looks exactly like success.
@@ -285,23 +283,6 @@ export const DOORBELL_MEMBERS = {
       "Notification config JSON {notification_motion_onoff,notification_ring_onoff," +
       "notification_style} (1710; confirmed on T8214).",
   },
-  /**
-   * The doorbell's button-ring LED, read here and WRITTEN on `camera` — a doorbell is a camera-codec
-   * device, and its LED wire is one branch of the family-aware status-LED command, so the setter lives
-   * in the one place that knows both branches. `camera`'s `statusLed` claims this property name through
-   * its `intentNames`, which is what `writtenElsewhere` is asserting.
-   */
-  doorbellLedEnable: {
-    param: 1716,
-    type: "bool",
-    kind: "boolean",
-    provenance: "mega",
-    writtenElsewhere: true,
-    description:
-      "Doorbell LED enable (1716; confirmed on T8214). The WRITE resolves through `camera`'s " +
-      "family-aware status-LED wire, which claims this name.",
-  },
-
   /**
    * Play one of the doorbell's quick responses at the visitor. `voiceId` comes from
    * {@link DOORBELL_MEMBERS.quickResponses}. The doorbell only plays while it has an active media

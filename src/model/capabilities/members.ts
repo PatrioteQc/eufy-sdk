@@ -60,11 +60,10 @@ export interface ValueMember {
    * A setter for this value EXISTS, but is not this member's own {@link write} — so the published
    * schema's `writable` cannot be derived from `write` alone.
    *
-   * `writable` means "a setter exists", and one legitimately lives elsewhere in three shapes: a `method`
-   * member drives the value because a single `write` cannot (rtsp's recording mode sends a
-   * two-frame pair), another capability claims the name through its {@link intentNames} (the camera's
-   * status LED is the doorbell's LED), or the setter needs per-bind state the table cannot hold (a
-   * vacuum's suction level validates against the model's own range). Guarded by `action-specs.spec.ts`,
+   * `writable` means "a setter exists", and one legitimately lives elsewhere when a `method` member
+   * drives the value because a single `write` cannot (rtsp's recording mode sends a two-frame pair), or
+   * the setter needs per-bind state the table cannot hold (a vacuum's suction level validates against
+   * the model's own range). Guarded by `action-specs.spec.ts`,
    * which asserts every `writable` property has a reachable setter — so this cannot drift into a lie.
    */
   writtenElsewhere?: true;
@@ -82,6 +81,10 @@ export interface ValueMember {
    * speaks.
    */
   requires?: readonly number[];
+  /** Install the write only when this member's family-valid primary param or read alias was reported. */
+  requiresRead?: true;
+  /** Whether the primary read parameter carries this member on the current device family. */
+  readAvailable?: (ctx: AvailabilityContext) => boolean;
   /**
    * Install the write only where this predicate holds — the general form of {@link requires}, for a gate
    * no list of params can express.
@@ -107,13 +110,16 @@ export interface ValueMember {
    */
   unverified?: true;
   /**
-   * Extra names the intent path should route here, taking the caller's value as-is — for one setting
-   * another capability publishes under its own property name (a doorbell's LED is the camera's LED).
-   * Unlike {@link aliases}, no value is supplied: it is the same write under a second name.
+   * Extra names the intent path should route here, taking the caller's value as-is. Unlike
+   * {@link aliases}, no value is supplied: it is the same write under a second name.
    */
   intentNames?: readonly string[];
-  /** Extra wire ids that also carry this value on some families, with their own polarity. */
-  readAliases?: readonly { paramType: number; invert?: boolean }[];
+  /** Extra wire ids that also carry this value on some families, with their own polarity and family gate. */
+  readAliases?: readonly {
+    paramType: number;
+    invert?: boolean;
+    available?: (ctx: AvailabilityContext) => boolean;
+  }[];
   /**
    * What the setter accepts, when the member's own kind and bounds do not say it well enough — an
    * argument whose name reads better than the member's, or one the caller may omit.
@@ -140,7 +146,7 @@ export interface ValueMember {
    *
    * No getter (it could only ever answer `undefined`) and no entry in the property schema, which
    * describes what a device reports. It still declares its param and type, because that is what the
-   * write needs. Camera privacy and the status LED are these.
+   * write needs. Camera privacy is one of these.
    */
   writeOnly?: true;
   /**
@@ -368,6 +374,7 @@ export type UnverifiedKeys<M extends Members> = {
 export type ConditionalKeys<M extends Members> =
   | UnverifiedKeys<M>
   | { [K in keyof M]: M[K] extends { requires: readonly number[] } ? K : never }[keyof M]
+  | { [K in keyof M]: M[K] extends { requiresRead: true } ? K : never }[keyof M]
   | { [K in keyof M]: M[K] extends { available: unknown } ? K : never }[keyof M];
 
 /**
@@ -472,19 +479,23 @@ export function propertiesOf(members: Members, ctx?: AvailabilityContext): Prope
   return Object.entries(members).flatMap(([name, m]) => {
     if (!("type" in m) || m.param === undefined || m.writeOnly) return [];
     if (ctx && m.available && !m.available(ctx)) return [];
+    const primaryAvailable = !ctx || !m.readAvailable || m.readAvailable(ctx);
+    const aliases = m.readAliases?.filter((alias) => !ctx || !alias.available || alias.available(ctx));
+    const promoted = primaryAvailable ? undefined : aliases?.[0];
+    if (!primaryAvailable && !promoted) return [];
     const { values: enumValues, dynamic } = resolvedEnum(m, ctx);
     return [
       {
         name: m.property ?? name,
-        paramType: m.param,
+        paramType: promoted?.paramType ?? m.param,
         type: m.type,
         kind: dynamic ? "enum" : m.kind,
         unit: m.unit,
         enumValues,
         provenance: m.provenance,
-        invert: m.invert,
+        invert: promoted?.invert ?? m.invert,
         decode: m.coerce,
-        readAliases: m.readAliases,
+        readAliases: aliases?.slice(promoted ? 1 : 0).map(({ paramType, invert }) => ({ paramType, invert })),
         writable: m.write !== undefined || m.writtenElsewhere === true,
         description: m.description,
       },
@@ -674,10 +685,13 @@ function narrow(
  * device that reports only the alias does hold the state. Gating on `param` alone hid the read on exactly
  * the families the alias exists for — a standalone camera reports its power state on 2001, never 1035.
  */
-function reads(m: ValueMember, ctx: CommandContext): boolean {
+function reads(
+  m: Pick<ValueMember, "param" | "realtime" | "readAvailable" | "readAliases">,
+  ctx: CommandContext,
+): boolean {
   if (m.realtime === true) return true;
-  if (m.param !== undefined && ctx.paramIds.has(m.param)) return true;
-  return m.readAliases?.some((a) => ctx.paramIds.has(a.paramType)) === true;
+  if ((!m.readAvailable || m.readAvailable(ctx)) && m.param !== undefined && ctx.paramIds.has(m.param)) return true;
+  return m.readAliases?.some((a) => (!a.available || a.available(ctx)) && ctx.paramIds.has(a.paramType)) === true;
 }
 
 /**
@@ -689,10 +703,18 @@ function reads(m: ValueMember, ctx: CommandContext): boolean {
  * @internal
  */
 export function installs(
-  m: { requires?: readonly number[]; available?: (c: CommandContext) => boolean },
+  m: {
+    requires?: readonly number[];
+    requiresRead?: true;
+    available?: (c: CommandContext) => boolean;
+    param?: number;
+    realtime?: boolean;
+    readAvailable?: ValueMember["readAvailable"];
+    readAliases?: ValueMember["readAliases"];
+  },
   ctx: CommandContext,
 ): boolean {
-  return reports(m.requires, ctx) && (!m.available || m.available(ctx));
+  return reports(m.requires, ctx) && (!m.requiresRead || reads(m, ctx)) && (!m.available || m.available(ctx));
 }
 
 /**

@@ -34,6 +34,7 @@ describe("camera capability module", () => {
       "nightVision",
       "videoQuality",
       "antiTheftDetection",
+      "statusLed",
     ]);
   });
 
@@ -113,14 +114,15 @@ describe("camera capability module", () => {
     });
 
     it("statusLed → a set-param pinned to int-string (DEV_LED_SWITCH 1045, always level-1)", () => {
-      expect(buildCommand("statusLed", true, ctx(1))).toEqual({
+      const statusLedCtx = ctx(1, { paramIds: new Set([CAMERA_CMD.DEV_LED_SWITCH]) });
+      expect(buildCommand("statusLed", true, statusLedCtx)).toEqual({
         kind: "set-param",
         param: CAMERA_CMD.DEV_LED_SWITCH,
         value: 1,
         form: "int-string",
         channel: 1,
       });
-      expect(buildCommand("statusLed", false, ctx())).toMatchObject({ form: "int-string", value: 0 });
+      expect(buildCommand("statusLed", false, statusLedCtx)).toMatchObject({ form: "int-string", value: 0 });
     });
 
     it("imageFlipped → an 'auto' scalar for ROTATE_IMAGE (1207), 1=flipped/0=normal", () => {
@@ -220,7 +222,12 @@ describe("camera capability module", () => {
     });
 
     it("statusLed on a DOORBELL swaps to the 1716 set-payload wire (family-aware, verified T8214)", () => {
-      const doorbellCtx = ctx(3, { deviceType: 94, model: "T8214", capabilities: new Set(["camera", "doorbell"]) });
+      const doorbellCtx = ctx(3, {
+        deviceType: 94,
+        model: "T8214",
+        capabilities: new Set(["camera", "doorbell"]),
+        paramIds: new Set([CAMERA_CMD.DOORBELL_LED]),
+      });
       expect(buildCommand("statusLed", true, doorbellCtx)).toEqual({
         kind: "set-payload",
         cmd: CAMERA_CMD.DOORBELL_LED,
@@ -230,15 +237,6 @@ describe("camera capability module", () => {
       expect(buildCommand("statusLed", false, doorbellCtx)).toMatchObject({
         kind: "set-payload",
         payload: { light_enable: 0 },
-      });
-    });
-
-    it("the doorbell's writable `doorbellLedEnable` property routes through the same status-LED wire", () => {
-      const doorbellCtx = ctx(3, { deviceType: 94, model: "T8214", capabilities: new Set(["camera", "doorbell"]) });
-      expect(buildCommand("doorbellLedEnable", true, doorbellCtx)).toMatchObject({
-        kind: "set-payload",
-        cmd: CAMERA_CMD.DOORBELL_LED,
-        payload: { light_enable: 1 },
       });
     });
   });
@@ -329,6 +327,86 @@ describe("camera capability module", () => {
         params: { 2001: "true" },
       });
       expect(dev.getProperty("enabled")?.value).toBe(true);
+    });
+  });
+
+  describe("statusLed — family-aware read alias and evidence-gated write", () => {
+    it.each([
+      [CAMERA_CMD.DEV_LED_SWITCH, "1", true, { deviceType: 9, model: "T8114" }],
+      [CAMERA_CMD.DEV_LED_SWITCH, "0", false, { deviceType: 9, model: "T8114" }],
+      [CAMERA_CMD.DOORBELL_LED, "true", true, { deviceType: 94, model: "T8214" }],
+      [CAMERA_CMD.DOORBELL_LED, "false", false, { deviceType: 94, model: "T8214" }],
+    ])("reads reported param %i value %s as %s", (param, value, expected, identity) => {
+      const dev = Device.fromRecord("SN", {
+        ...identity,
+        category: "eufy_security",
+        params: { [param]: value },
+      });
+      expect(dev.getProperty("statusLed")?.value).toBe(expected);
+    });
+
+    it("does not let a non-doorbell's unrelated 1716 value overwrite status LED 1045", () => {
+      const dev = Device.fromRecord("SN", {
+        deviceType: 9,
+        model: "T8114",
+        category: "eufy_security",
+        params: { 1045: "0", 1716: "1" },
+      });
+      expect(dev.getProperty("statusLed")?.value).toBe(false);
+    });
+
+    it("uses 1716, not 1045, when a doorbell reports both parameters", () => {
+      const dev = Device.fromRecord("SN", {
+        deviceType: 94,
+        model: "T8214",
+        category: "eufy_security",
+        params: { 1045: "0", 1716: "1" },
+      });
+      expect(dev.getProperty("statusLed")).toMatchObject({ paramType: 1716, value: true });
+    });
+
+    it("does not treat 1045 alone as status LED evidence on a doorbell", () => {
+      const dev = Device.fromRecord("SN", {
+        deviceType: 94,
+        model: "T8214",
+        category: "eufy_security",
+        params: { 1045: "1" },
+      });
+      expect(dev.getProperty("statusLed")).toBeUndefined();
+      const { acts } = camera(
+        ctx(0, { paramIds: new Set([CAMERA_CMD.DEV_LED_SWITCH]), capabilities: new Set(["camera", "doorbell"]) }),
+      );
+      expect("statusLed" in acts).toBe(false);
+      expect(acts.setStatusLed).toBeUndefined();
+    });
+
+    it("does not treat 1716 alone as status LED evidence on a non-doorbell", () => {
+      const dev = Device.fromRecord("SN", {
+        deviceType: 9,
+        model: "T8114",
+        category: "eufy_security",
+        params: { 1716: "1" },
+      });
+      expect(dev.getProperty("statusLed")).toBeUndefined();
+      const { acts } = camera(ctx(0, { paramIds: new Set([CAMERA_CMD.DOORBELL_LED]) }));
+      expect("statusLed" in acts).toBe(false);
+      expect(acts.setStatusLed).toBeUndefined();
+    });
+
+    it.each([
+      [CAMERA_CMD.DEV_LED_SWITCH, new Set(["camera"] as const)],
+      [CAMERA_CMD.DOORBELL_LED, new Set(["camera", "doorbell"] as const)],
+    ])("installs statusLed and setStatusLed when the device reports %i", (param, capabilities) => {
+      const { acts } = camera(ctx(0, { paramIds: new Set([param]), capabilities }));
+      expect("statusLed" in acts).toBe(true);
+      expect(acts.statusLed).toBeUndefined();
+      expect(acts.setStatusLed).toBeTypeOf("function");
+    });
+
+    it("omits both members without a reported status LED parameter", () => {
+      const { acts } = camera(ctx());
+      expect("statusLed" in acts).toBe(false);
+      expect(acts.setStatusLed).toBeUndefined();
     });
   });
 
@@ -480,10 +558,11 @@ declare const cam: CameraActions;
 const _enabled: Exact<typeof cam.enabled, boolean | undefined> = true;
 const _watermark: Exact<typeof cam.watermark, number | undefined> = true;
 
-// Write-only: a setter, and NO getter — the device never reports either state back.
+// Write-only: a setter and no getter, because the device never reports privacy state back.
 const _noPrivacyGetter: Exact<"privacy" extends keyof CameraActions ? true : false, false> = true;
-const _noStatusLedGetter: Exact<"statusLed" extends keyof CameraActions ? true : false, false> = true;
 const _setPrivacy: Exact<Parameters<typeof cam.setPrivacy>[0], boolean> = true;
+const _statusLed: Exact<typeof cam.statusLed, boolean | undefined> = true;
+const _setStatusLedOptional: Exact<undefined extends typeof cam.setStatusLed ? true : false, true> = true;
 
 // `accepts` widens the SETTER past the getter: a resolution name as well as the tier that is stored.
 const _videoQualityRead: Exact<typeof cam.videoQuality, number | undefined> = true;
@@ -508,8 +587,9 @@ export const _surfaceAssertions = [
   _enabled,
   _watermark,
   _noPrivacyGetter,
-  _noStatusLedGetter,
   _setPrivacy,
+  _statusLed,
+  _setStatusLedOptional,
   _videoQualityRead,
   _videoQualityWrite,
   _antiTheftOptional,

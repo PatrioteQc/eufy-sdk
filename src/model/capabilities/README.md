@@ -226,7 +226,8 @@ when the key would collide there (`battery`'s `level` → property `battery`, si
   which is how `activity` surfaces a named union rather than the `string` it is stored as.
 - **Evidence-gated presence.** A getter is installed **only when the device actually reported the
   backing param** (`ctx.paramIds`, or a `readAliases` id, which is the same value on another family's
-  wire; `realtime: true` is the opt-out for state that only ever arrives over realtime). So a device
+  wire; `readAvailable` and each alias's `available` predicate restrict those ids to the families where
+  they carry that meaning; `realtime: true` is the opt-out for state that only ever arrives over realtime). So a device
   advertises exactly the reads it has — never a phantom sub-feature of the capability it owns (a battery
   cam that reports its custom-recording settings exposes `recordDuration`; one that reports only a level
   won't have that key at all). This means **don't declare a `param` for a guessed id** — hold the read
@@ -265,6 +266,8 @@ when the key would collide there (`battery`'s `level` → property `battery`, si
   battery" is much weaker evidence than "speaks this setting". `available: (ctx) => …` is the general
   form for a gate no param list can express (a topology or family fact). Either one lands the setter
   **optional** on the surface, because whether it exists is a runtime fact.
+- `requiresRead: true` installs the write only when the member's family-valid primary param or read alias
+  was reported. Use it when the readable state itself is the exact evidence for the control.
 - `unverified: true` says the device accepts the setting but the frame shape has NOT been captured. The
   `write` beside it is **not installed** (a caller learns at compile time, from the optional setter) and
   the intent path throws `"<cap>: <member> write wire unverified"` rather than reporting a device that
@@ -278,7 +281,7 @@ when the key would collide there (`battery`'s `level` → property `battery`, si
   SET to the three whose write was captured. Reach for this only for that asymmetry — a member whose two
   sides agree declares `enumValues` alone and the argument derives from it.
 - `aliases` route extra intent verbs to the same write with the value each stands for; `intentNames`
-  route a second property name to it (one setting another capability publishes under its own name);
+  route a second property name to it;
   `accepts<T>()` widens the setter past what the getter answers (a resolution NAME for a tier stored as
   an int).
 

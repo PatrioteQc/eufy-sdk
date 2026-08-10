@@ -281,13 +281,13 @@ describe("param dictionary — full real-device coverage", () => {
     expect(paramDef("clean", 1101)).toBeUndefined(); // 1101 is not a clean id
   });
 
-  it("a real camera names dictionary params it isn't curated for", () => {
-    // 1045 is in the dictionary (app/apk name) but not a capability spec — should still be named.
+  it("a curated camera property takes precedence over its generic dictionary name", () => {
     const def = SECURITY_PARAMS[1045];
     expect(def).toBeDefined();
     expect(def.provenance).toBe("apk");
     const dev = Device.fromRecord("cam", { deviceType: 9, model: "T8124R", params: { 1045: "1" } });
-    expect(dev.getProperty(def.name)?.value).toBe(true);
+    expect(dev.getProperty("statusLed")?.value).toBe(true);
+    expect(dev.getProperty(def.name)).toBeUndefined();
     expect(dev.getProperty(`unknown_1045`)).toBeUndefined();
   });
 });
