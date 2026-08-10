@@ -23,7 +23,12 @@ const sink: CommandSink = { dispatch: async () => undefined };
 const camelCase = (id: string): string => id.replace(/_([a-z])/g, (_, c: string) => c.toUpperCase());
 
 /** Every param any module reads — the "device reported everything" evidence set. */
-const allParams = (): Set<number> => new Set(MODULES.flatMap((m) => m.properties.map((p) => p.paramType)));
+const allParams = (): Set<number> =>
+  new Set(
+    MODULES.flatMap((m) =>
+      m.properties.flatMap((p) => [p.paramType, ...(p.readAliases?.map((alias) => alias.paramType) ?? [])]),
+    ),
+  );
 
 const ctxWith = (paramIds: Set<number>): CommandContext => ({
   channel: 0,
