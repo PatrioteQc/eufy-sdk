@@ -12,7 +12,7 @@ import type { DeviceEventMap } from "../model/capabilities/index.js";
 import type { Capability } from "../model/index.js";
 import type { P2PFrame } from "../transport/p2p/p2p-session.js";
 import type { PushEvent, RawPushMessage } from "../transport/push/types.js";
-import type { EufyDevice, RealtimeMessage } from "../core/types.js";
+import type { AvailabilityObservation, EufyDevice, RealtimeMessage } from "../core/types.js";
 
 export interface EufyMegaOptions extends MegaClientConfig {
   /** Persist FCM push credentials + seen ids across runs (default: in-memory). */
@@ -188,6 +188,11 @@ export type EufyMegaEventMap = {
    * a session actually lives.
    */
   deviceState: [state: DeviceState];
+  /**
+   * A verified vendor-wire availability observation. Duplicate states are coalesced; silence,
+   * `lastSeenMs`, operation failure and transport lifecycle never emit or clear this event.
+   */
+  availability: [observation: AvailabilityObservation];
   // P2P lifecycle + raw frame.
   p2pConnect: [stationSn: string];
   p2pClose: [stationSn: string];

@@ -114,7 +114,8 @@ export interface PushPayload extends PushEnrichment {
 
   // sensor / contact
   e?: string; // sensor open state ("1"/"0")
-  m?: number; // online/offline
+  /** Unverified vendor field; polarity and entity scope are not established. */
+  m?: number;
 
   // media (the thumbnail lives here)
   pic_url?: string;

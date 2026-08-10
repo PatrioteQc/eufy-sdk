@@ -95,6 +95,33 @@ export interface RealtimeMessage {
   raw: unknown;
 }
 
+/** A vendor-authored availability state, distinct from inferred reachability or transport lifecycle. */
+export type AvailabilityState = "available" | "unavailable";
+
+/**
+ * Provenance of an authoritative availability observation. The current contract contains only the
+ * secure-MQTT signal whose polarity and device attribution are established by the current vendor app.
+ */
+export type AvailabilitySource = { readonly transport: "smqtt"; readonly signal: "state-info" };
+
+/**
+ * An explicit availability observation whose entity, polarity and scope are verified on the current
+ * vendor wire. The SDK emits this only for authoritative signals; silence, stale cloud facts, failed
+ * operations and idle transports do not create or clear one.
+ */
+export interface AvailabilityObservation {
+  readonly entity: { readonly kind: "device"; readonly sn: string };
+  readonly availability: AvailabilityState;
+  readonly source: AvailabilitySource;
+  readonly scope: "device";
+  /** Vendor-supplied observation time in milliseconds, when the envelope carries one. */
+  readonly observedAt?: number;
+  /** Vendor-supplied message ordering value, when the envelope carries one. */
+  readonly sequence?: number;
+  /** When the SDK received this explicit signal, in milliseconds. */
+  readonly receivedAt: number;
+}
+
 /**
  * Common surface for every realtime transport (smqtt / p2p).
  * Implementations live under src/mqtt and src/p2p; the facade owns selection.
