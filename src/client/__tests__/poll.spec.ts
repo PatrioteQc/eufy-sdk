@@ -355,7 +355,10 @@ describe("disconnect during startup", () => {
 
   it("a later login brings realtime back up", async () => {
     const eufy = makeClient({ pollMs: 1000 });
-    vi.spyOn((eufy as any).mega, "login").mockResolvedValue({ status: "ok" });
+    vi.spyOn((eufy as any).mega, "login").mockResolvedValue({
+      status: "ok",
+      session: { userId: "user-a", authToken: "token", raw: {} },
+    });
     const poll = vi.spyOn((eufy as any).registry, "pollChanges").mockResolvedValue({
       params: [],
       added: [],

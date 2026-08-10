@@ -51,7 +51,8 @@ eufy.on("deviceCapabilities", ({ deviceSn, gained }) => console.log(deviceSn, "g
 import { PtzDirection, ArmingMode } from "@mega-yfue/eufy-sdk";
 
 await dev.camera?.()?.on(); // power on
-await dev.camera?.()?.snapshot(); // → { file, jpeg } (present only when bound to a live client)
+const stored = await dev.camera?.()?.snapshotStored?.(); // → Buffer; latest retained push JPEG
+const fresh = await dev.camera?.()?.snapshotLive(); // → { jpeg, width, height }; fresh live capture
 await dev.ptz?.()?.rotate(PtzDirection.left, 1.0); // PTZ step — see the PTZ guide
 await dev.light?.()?.setBrightness(50); // spotlight 1–100
 await dev.arming?.()?.setMode(ArmingMode.home); // guard mode
@@ -63,7 +64,7 @@ await dev.lock?.()?.setRainMode?.(true); // P2P video lock only — optional acc
 Argument constants (`PtzDirection`, `ArmingMode`, …) are exported from the package — pass the named
 member so the choices autocomplete and can't drift.
 
-Available today: `camera` (on/off/privacy/statusLed + snapshot/live/record when bound), `light`
+Available today: `camera` (on/off/privacy/statusLed + stored/live snapshots, live/record when bound), `light`
 (camera floodlight/spotlight: on/off/brightness/colorTemp/enable), `smartLight` (the eufy_life
 permanent-outdoor-light line: on/off/brightness/effect — see the [Smart lights guide](/smart-lights)),
 `ptz` (rotate + left/right/up/down, zoom, and a `preset()` sub-API — see the [PTZ guide](/ptz)), plus

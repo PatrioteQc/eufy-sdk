@@ -140,6 +140,16 @@ export interface PushPayload extends PushEnrichment {
   [k: string]: unknown;
 }
 
+/** Facts available to attribute a push-provided thumbnail candidate. */
+export type ThumbnailCandidateAttribution =
+  { kind: "device"; deviceSn: string } | { kind: "station"; stationSn?: string } | { kind: "ambiguous" };
+
+/** A push-provided thumbnail URL together with its transport-level attribution facts. */
+export interface ThumbnailCandidate {
+  url: string;
+  attribution: ThumbnailCandidateAttribution;
+}
+
 /** A normalised, consumer-facing push event emitted by the client. */
 export interface PushEvent {
   /** Best-effort device serial (falls back to station). */
@@ -151,6 +161,8 @@ export interface PushEvent {
   eventName?: string;
   /** The thumbnail URL, if the push carried one (pic_url/thumbnail). */
   thumbnailUrl?: string;
+  /** A usable thumbnail URL and the identity claims carried beside it. */
+  thumbnailCandidate?: ThumbnailCandidate;
   /** Cipher id for decoding the media (when present). */
   cipher?: number;
   /** The full parsed eufy payload. */

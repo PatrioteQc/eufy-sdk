@@ -39,15 +39,7 @@ import {
 import { decodeP2PCloudIPs } from "./codec.js";
 import { P2P_ENVELOPE } from "./envelope.js";
 import { freshestLanIp } from "./lan-ip.js";
-import {
-  fetchStoredSnapshot,
-  captureSnapshotFromShared,
-  recordClip,
-  snapshotWithFallback,
-  cachedSnapshot,
-  makeSnapshotCacheState,
-  DEFAULT_SNAPSHOT_CACHE_MS,
-} from "./media.js";
+import { captureSnapshotFromShared, recordClip } from "./media.js";
 import type { FfmpegLevel } from "../ffmpeg.js";
 import { LiveStream } from "./live-stream.js";
 import { SharedLiveSource } from "./shared-live-source.js";
@@ -167,8 +159,6 @@ export class P2PCommandRouter {
   private readonly talkbacks = new Map<string, Talkback>();
   /** cipher_id → ECC private key (one eufylife get_ciphers call per cipher), shared across (re)opens. */
   private readonly cipherKeyCache = new Map<number, string | undefined>();
-  /** Per-serial snapshot TTL cache + in-flight coalescing (see `cachedSnapshot`) — one poll wakes one pull. */
-  private readonly snapshotState = makeSnapshotCacheState();
 
   constructor(private readonly deps: P2PRouterDeps) {
     this.manager = new SessionManager({ poweredFor: deps.poweredFor, logger: deps.logger, ...deps.sessionIdle });
@@ -435,40 +425,13 @@ export class P2PCommandRouter {
    * A {@link MediaProvider} bound to one serial — resolves the session then calls `p2p/media`.
    *
    * Every egress here is a consumer of the SAME shared pull, so N `live()` calls collapse to one PPCS
-   * session and a snapshot taken against a warm, keyframe-primed source costs no extra pull at all; a
+   * session and a live snapshot against a warm, keyframe-primed source costs no extra pull at all; a
    * cold source warms one and waits for a clean keyframe. Each therefore passes `powered` through,
    * because any of them may be the call that creates the source, and the source keeps the power hint it
    * was built with for everyone who joins later.
    */
   mediaProviderFor(sn: string): MediaProvider {
     return {
-      snapshot: (opts) => {
-        const logger = this.deps.logger ?? noopLogger;
-        return cachedSnapshot(
-          this.snapshotState,
-          sn,
-          opts?.cacheTtlMs ?? DEFAULT_SNAPSHOT_CACHE_MS,
-          () =>
-            snapshotWithFallback(
-              sn,
-              {
-                connect: () => this.resolveSession(sn),
-                stored: (r) => fetchStoredSnapshot(r.session, sn, r.accountId, opts),
-                live: async () => {
-                  const source = await this.sharedLiveSourceFor(sn, { powered: opts?.powered });
-                  return captureSnapshotFromShared(source, {
-                    ...opts,
-                    logger,
-                    ffmpegLevel: this.deps.ffmpegLogLevel,
-                  });
-                },
-              },
-              logger,
-            ),
-          Date.now,
-          logger,
-        );
-      },
       snapshotLive: async (opts) => {
         const source = await this.sharedLiveSourceFor(sn, { powered: opts?.powered });
         return captureSnapshotFromShared(source, {

@@ -5,17 +5,16 @@
  * device has the capability) power it on and pan-tilt. Accessors are `undefined` when the device
  * lacks the capability, so guard with `?.`.
  *
- * `snapshot()` returns a real still — the stored one, or a live-burst fallback (`file === ""` then) —
- * and is short-TTL cached + coalesced (tune with `{ cacheTtlMs }`). It throws a typed
- * `SnapshotUnavailableError` (not a falsy result) when none is obtainable; branch on `reason`
- * (`offline` vs `no-still`) and render your own placeholder — the SDK never returns placeholder bytes.
+ * `snapshotStored()` passively returns the latest qualifying push JPEG retained in memory. It never
+ * opens P2P or falls back to live capture. When no JPEG is retained it throws the typed
+ * `StoredSnapshotUnavailableError`; use `snapshotLive()` separately when a fresh capture is required.
  *
  *   EUFY_EMAIL=… EUFY_PASSWORD=… node examples/03-snapshot-and-control.ts <serial>
  *
  * Requires `npm run build` first.
  */
 import fs from "node:fs";
-import { PtzDirection, SnapshotUnavailableError } from "../dist/index.js";
+import { PtzDirection, StoredSnapshotUnavailableError } from "../dist/index.js";
 import { loginClient } from "./_client.ts";
 
 async function main(): Promise<void> {
@@ -30,13 +29,13 @@ async function main(): Promise<void> {
   // Media actions exist only when the device is bound to a live client (they are here) — the
   // method is optional on the type, so guard the method, not just the `camera()` accessor.
   try {
-    const shot = await cam?.snapshot?.(); // pass { cacheTtlMs } to tune the poll cache; 0 = fresh
-    if (shot) {
-      fs.writeFileSync("snapshot.jpg", shot.jpeg);
-      console.log("saved snapshot.jpg", shot.jpeg.length, "bytes", shot.file ? `(stored ${shot.file})` : "(live)");
+    const jpeg = await cam?.snapshotStored?.();
+    if (jpeg) {
+      fs.writeFileSync("snapshot.jpg", jpeg);
+      console.log("saved snapshot.jpg", jpeg.length, "bytes");
     }
   } catch (e) {
-    if (e instanceof SnapshotUnavailableError) console.log(`no snapshot available: ${e.reason}`);
+    if (e instanceof StoredSnapshotUnavailableError) console.log(`no stored snapshot available: ${e.reason}`);
     else throw e;
   }
 

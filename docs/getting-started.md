@@ -16,7 +16,7 @@ eufy-sdk is not affiliated with, endorsed by, or sponsored by Anker Innovations 
 - **`ffmpeg` — optional, on `PATH`.** Needed only for the convenience decode/mux sinks: JPEG
   `snapshotLive()`, the one-shot `record(seconds)` buffer, and WebRTC container output (`.mp4`/`.mkv`;
   falls back to raw when absent). The core paths — `live()`, `openReadable()`, `recordFragments()`
-  (CMAF fMP4), and the stored `snapshot()` — need no ffmpeg.
+  (CMAF fMP4), and the passive stored `snapshotStored()` — need no ffmpeg.
 
 ## Install
 

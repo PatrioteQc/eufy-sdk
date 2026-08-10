@@ -1,21 +1,10 @@
 /**
- * Legacy v1 `eufysecurity:` push-thumbnail decoder.
+ * V1 `eufysecurity:` push-thumbnail decoder.
  *
- * Wire format:  eufysecurity:<SERIAL(16)>:<CODE(10)>:<DATA>
- * Unlike v2 (keyless head-obfuscation), v1 encrypts the FIRST 256 bytes of DATA
- * with AES-128-ECB (no padding). The key is derived from the camera serial, the
- * station `p2p_did` and the per-image code — so v1 CANNOT be decoded without the
- * station's p2p_did (available from the device list). The remaining bytes after
- * the first 256 are already plaintext JPEG.
- *
- * ⚠️ LEGACY, UNVERIFIED FOR V6. This key derivation is the OLD pre-v6 algorithm as published by a
- * third-party reverse-engineering project (its id-suffix / base-code / seed / key chain), ported as-is. The V6 app does NOT
- * use it: it delegates to a native `genCheckCode(sn, p2p_did, code)` in `libcrypto-security.so` (an
- * opaque binary — see `Cryptography.genCheckCode` in the decompiled app), whose algorithm we have not
- * reversed. So this decoder is proven self-consistent (see the round-trip spec) but NOT proven to
- * match a real V6 v1 blob. It's kept only as a fallback: current V6 cameras emit **v2** thumbnails
- * (keyless head-obfuscation, fully working) — a live v1 has not been observed on V6. If a v6 device
- * ever does emit v1 and this fails, reverse `genCheckCode` (Ghidra) or drop v1 support.
+ * Wire format: `eufysecurity:<SERIAL(16)>:<CODE(10)>:<DATA>`. V1 encrypts the first 256 bytes of
+ * `DATA` with AES-128-ECB and leaves the remaining JPEG bytes in plaintext. The key is derived from
+ * the camera serial, station `p2p_did`, and per-image code. This decoder is verified against a V6
+ * production push thumbnail: the decrypted result is a structurally valid, viewable JPEG.
  */
 import { createDecipheriv, createHash } from "node:crypto";
 
@@ -97,7 +86,7 @@ export function decodeImageV1(data: Buffer, p2pDid: string): Buffer | null {
   if (!isV1Image(data)) return null;
   const serialNumber = data.subarray(13, 29).toString("latin1");
   const code = data.subarray(30, 40).toString("latin1");
-  const otherData = Buffer.from(data.subarray(41)); // copy — we mutate the head
+  const otherData = Buffer.from(data.subarray(41));
   const encryptedData = otherData.subarray(0, 256);
   const imageKey = getImageKey(serialNumber, p2pDid, code);
   const cipher = createDecipheriv("aes-128-ecb", Buffer.from(imageKey, "utf-8").subarray(0, 16), null);
@@ -105,4 +94,10 @@ export function decodeImageV1(data: Buffer, p2pDid: string): Buffer | null {
   const decrypted = Buffer.concat([cipher.update(encryptedData), cipher.final()]);
   decrypted.copy(otherData, 0);
   return otherData;
+}
+
+/** Decrypt a recognized v1 wrapper when its device key input is available; leave other media unchanged. */
+export function normalizePushImage(data: Buffer, p2pDid?: string): Buffer {
+  if (!p2pDid || !isV1Image(data)) return data;
+  return decodeImageV1(data, p2pDid) ?? data;
 }

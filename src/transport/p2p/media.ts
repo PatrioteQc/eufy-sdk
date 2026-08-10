@@ -1,5 +1,5 @@
 /**
- * Camera **media** operations over P2P — snapshot (stored + live), live stream, clip recording.
+ * Camera **media** operations over P2P — live snapshot, live stream, clip recording.
  *
  * These are the bodies that used to live on `EufyMega`; they take an already-resolved
  * {@link P2PSession} (the client owns session/channel resolution) and return data. They speak only
@@ -15,117 +15,8 @@ import { LiveStream, type LiveStreamOptions } from "./live-stream.js";
 import { sniffAnnexbCodec } from "./annexb.js";
 import { spawnFfmpeg, type FfmpegLevel } from "../ffmpeg.js";
 import { noopLogger, type Logger } from "../../core/logger.js";
-import { SnapshotUnavailableError } from "../../core/contracts.js";
 import type { SharedLiveSource } from "./shared-live-source.js";
 import type { LiveVideoFrame } from "../../core/contracts.js";
-
-/**
- * The three steps {@link snapshotWithFallback} orchestrates, injected so the fallback policy can be
- * unit-tested without a live session: `connect` resolves the P2P session (a failure ⇒ the camera is
- * unreachable → `"offline"`); `stored` fetches the latest stored still; `live` decodes a still from a
- * live burst. The router supplies the real implementations (`resolveSession` / `fetchStoredSnapshot` /
- * `captureSnapshotFromShared`).
- */
-export interface SnapshotSteps {
-  connect(): Promise<{ session: P2PSession; accountId: string }>;
-  stored(resolved: { session: P2PSession; accountId: string }): Promise<{ file: string; jpeg: Buffer }>;
-  live(): Promise<{ jpeg: Buffer }>;
-}
-
-/**
- * Return a real still or throw — never a placeholder. Tries the **stored** still first (cheap, no
- * pull); when the device is reachable but has no stored still (or the stored fetch fails), falls back
- * to a **live burst** (reusing a warm shared pull). `file` is the stored path, or `""` when the JPEG is
- * live-derived. Throws {@link SnapshotUnavailableError} with `reason:"offline"` when the session won't
- * resolve, or `"no-still"` when the device is reachable but neither path yields a frame. A host maps the
- * reason to its own presentation (e.g. a placeholder image) — the SDK stays representation-agnostic.
- */
-export { DEFAULT_SNAPSHOT_CACHE_MS } from "../../core/contracts.js";
-
-/** A still + when it was captured (ms epoch), the unit the snapshot TTL cache stores. */
-export type CachedSnapshot = { at: number; result: { file: string; jpeg: Buffer } };
-
-/**
- * Per-serial snapshot state: the last still (for the TTL cache) and any in-flight fetch (for
- * coalescing). Held by the transport across `snapshot()` calls (the bound provider is recreated per
- * `getDevice`, so this state must live on the long-lived router, not the provider closure).
- */
-export interface SnapshotCacheState {
-  cache: Map<string, CachedSnapshot>;
-  inflight: Map<string, Promise<{ file: string; jpeg: Buffer }>>;
-}
-
-/** Fresh, empty {@link SnapshotCacheState} — one per router. */
-export function makeSnapshotCacheState(): SnapshotCacheState {
-  return { cache: new Map(), inflight: new Map() };
-}
-
-/**
- * Wrap a snapshot `fetch` with a short-TTL cache + concurrency coalescing, so a caller that polls a
- * still every few seconds doesn't wake a battery camera each time. Returns the cached still when it's
- * younger than `ttlMs`; otherwise reuses an in-flight fetch for the same serial, or starts one. Only
- * SUCCESSES are cached — a failed fetch is never stored (a transiently-offline camera must be retried,
- * not pinned "unavailable"). `ttlMs <= 0` bypasses the cache but STILL coalesces concurrent calls (two
- * simultaneous polls never open two pulls). `now` is injectable for deterministic tests; `logger` emits
- * `[snapshot]` debug traces (cache hit / coalesced / fetch) for troubleshooting a polling caller.
- */
-export function cachedSnapshot(
-  state: SnapshotCacheState,
-  sn: string,
-  ttlMs: number,
-  fetch: () => Promise<{ file: string; jpeg: Buffer }>,
-  now: () => number = Date.now,
-  logger: Logger = noopLogger,
-): Promise<{ file: string; jpeg: Buffer }> {
-  if (ttlMs > 0) {
-    const hit = state.cache.get(sn);
-    if (hit && now() - hit.at < ttlMs) {
-      logger.debug(`[snapshot] ${sn}: cache hit (age ${now() - hit.at}ms < ttl ${ttlMs}ms)`);
-      return Promise.resolve(hit.result);
-    }
-  }
-  const inflight = state.inflight.get(sn);
-  if (inflight) {
-    logger.debug(`[snapshot] ${sn}: coalesced onto the in-flight fetch`);
-    return inflight;
-  }
-  logger.debug(`[snapshot] ${sn}: fetching (ttl ${ttlMs}ms)`);
-  const p = fetch()
-    .then((result) => {
-      if (ttlMs > 0) state.cache.set(sn, { at: now(), result });
-      return result;
-    })
-    .finally(() => state.inflight.delete(sn));
-  state.inflight.set(sn, p);
-  return p;
-}
-
-export async function snapshotWithFallback(
-  sn: string,
-  steps: SnapshotSteps,
-  logger: Logger = noopLogger,
-): Promise<{ file: string; jpeg: Buffer }> {
-  const resolved = await steps.connect().catch((e: unknown) => {
-    logger.debug(`[snapshot] ${sn}: session did not resolve — unavailable (offline)`);
-    throw new SnapshotUnavailableError("offline", `snapshot: camera ${sn} is unreachable`, { cause: e });
-  });
-  try {
-    return await steps.stored(resolved);
-  } catch {
-    logger.debug(`[snapshot] ${sn}: no stored still — falling back to a live burst`);
-    try {
-      const { jpeg } = await steps.live();
-      return { file: "", jpeg };
-    } catch (liveErr) {
-      logger.debug(`[snapshot] ${sn}: live burst produced no frame — unavailable (no-still)`);
-      throw new SnapshotUnavailableError(
-        "no-still",
-        `snapshot: camera ${sn} has no stored still and a live capture produced no frame`,
-        { cause: liveErr },
-      );
-    }
-  }
-}
 
 /**
  * ffmpeg's `-f` demuxer name for an Annex-B buffer. Sniffs via the shared {@link sniffAnnexbCodec}
@@ -143,71 +34,6 @@ function annexbFfmpegFormat(buf: Buffer): "hevc" | "h264" {
  */
 export async function openLiveStream(session: P2PSession, opts: LiveStreamOptions = {}): Promise<LiveStream> {
   return new LiveStream(session, opts).start();
-}
-
-/**
- * **Stored snapshot** — the latest event thumbnail: query `history_record_info` (inner cmd 10013)
- * for this camera's stored crop path, then fetch + decode the JPEG (surfaced already-decoded via
- * the session `image` event). The app fetches snapshot files on mChannel 0.
- */
-export async function fetchStoredSnapshot(
-  session: P2PSession,
-  sn: string,
-  accountId: string,
-  opts: { timeoutMs?: number } = {},
-): Promise<{ file: string; jpeg: Buffer }> {
-  const timeoutMs = opts.timeoutMs ?? 15000;
-
-  // 1. latest snapshot path for this camera (history_record_info, inner cmd 10013)
-  const file = await new Promise<string>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      cleanup();
-      reject(new Error(`timeout waiting for snapshot path of ${sn}`));
-    }, timeoutMs);
-    const onData = (f: { json?: unknown }) => {
-      const j = f.json as { cmd?: number; data?: Array<{ device_sn?: string; payload?: Record<string, unknown> }> };
-      if (j?.cmd === 10013 && Array.isArray(j.data)) {
-        const row = j.data.find((d) => d.device_sn === sn);
-        const p = row?.payload?.crop_hb3_path as string | undefined;
-        if (p) {
-          cleanup();
-          resolve(p);
-        } else if (row) {
-          cleanup();
-          reject(new Error(`no stored snapshot for ${sn} (event_count=${row?.payload?.event_count ?? 0})`));
-        }
-      }
-    };
-    const cleanup = () => {
-      clearTimeout(timer);
-      session.off("data", onData);
-    };
-    session.on("data", onData);
-    session.queryDatabase("history_record_info", { accountId, innerCmd: 10013, channel: 255 });
-  });
-
-  // 2. fetch + decode the JPEG (surfaced already-decoded via the `image` event)
-  const jpeg = await new Promise<Buffer>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      cleanup();
-      reject(new Error(`timeout waiting for snapshot image of ${sn}`));
-    }, timeoutMs);
-    const onImage = (img: { file: string; data: Buffer }) => {
-      if (img.data?.length) {
-        cleanup();
-        resolve(img.data);
-      }
-    };
-    const cleanup = () => {
-      clearTimeout(timer);
-      session.off("image", onImage);
-    };
-    session.on("image", onImage);
-    // the app fetches snapshot files on mChannel 0 (not the camera's device_channel)
-    session.requestImage(file, { accountId, channel: 0 });
-  });
-
-  return { file, jpeg };
 }
 
 /**

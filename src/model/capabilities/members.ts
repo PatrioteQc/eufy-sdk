@@ -18,6 +18,7 @@
 import type { Command, CommandSink, Ff09SettingsReader, MediaProvider, RawDpCodec } from "../../core/contracts.js";
 import { describedAction, readBool, readNum, readStr } from "./access.js";
 import type { ActionArgSpec, ActionSpec, AvailabilityContext, CapabilityStateReader, CommandContext } from "./types.js";
+import type { Capability } from "../types.js";
 import type { PropertySpec, PropertyValueType, ValueKind } from "../types.js";
 
 // ── the contract ────────────────────────────────────────────────────────────────────────────────
@@ -292,6 +293,8 @@ export interface ProvidedMember<P extends keyof Providers, F> {
   description: string;
   /** This member ANSWERS rather than ACTS — see {@link MethodMember.answers}. */
   answers?: true;
+  /** Additional resolved capability evidence required before this provider method is installed. */
+  requiredCapabilities?: readonly Capability[];
 }
 
 /**
@@ -307,8 +310,17 @@ export function provided<P extends keyof Providers, F>(
   needs: P,
   build: (provider: Providers[P], deps: MemberDeps) => F,
   description: string,
+  requiredCapabilities?: readonly Capability[],
 ): ProvidedMember<P, F> {
-  return { needs, provided: build, description };
+  return { needs, provided: build, description, requiredCapabilities };
+}
+
+/** Whether the resolved capability set satisfies a provider member's additional evidence gate. */
+export function hasRequiredCapabilities(
+  member: { requiredCapabilities?: readonly Capability[] },
+  capabilities: ReadonlySet<Capability> | undefined,
+): boolean {
+  return !member.requiredCapabilities?.some((capability) => !capabilities?.has(capability));
 }
 
 /**
@@ -321,6 +333,7 @@ export type AnyProvidedMember = {
   provided: (provider: never, deps: MemberDeps) => unknown;
   description: string;
   answers?: true;
+  requiredCapabilities?: readonly Capability[];
 };
 
 export type Member = ValueMember | ActionMember | MethodMember<unknown> | AnyProvidedMember;
@@ -749,6 +762,7 @@ export function bindMembers<M extends Members>(
   const deps: MemberDeps = { ctx, sink, read, rawDp, media };
   for (const [name, m] of Object.entries(members)) {
     if ("provided" in m) {
+      if (!hasRequiredCapabilities(m, ctx.capabilities)) continue;
       const provider = m.needs === "media" ? media : ff09Settings;
       if (!provider) continue;
       const built = (m.provided as (p: unknown, d: MemberDeps) => unknown)(provider, deps);

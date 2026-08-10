@@ -28,6 +28,8 @@ import {
 import { MemorySessionStore, isSessionValid, type SessionStore } from "../../core/store.js";
 import { noopLogger, type Logger } from "../../core/logger.js";
 import type { SecureMqttCredentials } from "../mqtt/secure-mqtt.js";
+import { downloadMediaResource, MediaDownloadAuthenticationError } from "./media-download.js";
+import { normalizePushImage } from "./decodeImageV1.js";
 
 export type RegionShard = "eu-pr" | "us-pr";
 
@@ -557,47 +559,28 @@ export class MegaHttpClient {
     });
   }
 
-  /**
-   * Download a media URL that arrives on a push (`pic_url`/`thumbnail`/
-   * `video_url`/`crop_url`). v6 splits the planes: the control API is on the mega
-   * hosts (`app-*.eufy.com`) but signed media URLs are served from the media host
-   * `security-app-{region}.eufylife.com` (current v6 production, not legacy — every
-   * captured `/v1/s/g/…` thumbnail URL is on it). That host takes a plain authed
-   * GET — `x-auth-token` + `gtoken`, no ecdh body signing. Returns the raw bytes; the
-   * payload may be a plain JPEG/MP4 or a `v2_eufysecurity:` obfuscated blob
-   * (decode the latter keylessly — head-only obfuscation, no key needed).
-   */
+  /** Download raw bytes from a push-media URL using the active account session. */
   async downloadMedia(url: string): Promise<Buffer> {
     if (!this.auth_) throw new Error("login() first");
-    // Exact header set the v6 app sends to security-app (captured): x-auth-token +
-    // gtoken + `app-name: eufy_mega`. The app-name header is REQUIRED — without it
-    // the host 401s even with a valid token. No `authorization`, no ecdh signing.
-    const res = await fetch(url, {
-      redirect: "manual", // the /v1/s/g/<tok> URL 302-redirects to a presigned S3 URL
-      headers: {
+    try {
+      return await downloadMediaResource(url, {
         "x-auth-token": this.auth_.authToken,
         gtoken: gtoken(this.auth_.userId),
         "app-name": "eufy_mega",
         "model-type": "PHONE",
         "user-agent": "Dalvik/2.1.0 (Linux; U; Android 16; Pixel 6a Build/CP1A.260405.005)",
-      },
-    });
-    // Follow the redirect ourselves to a presigned S3 object — WITHOUT forwarding
-    // the eufy auth headers (AWS rejects/!needs them; the URL is already signed).
-    const location = res.status >= 300 && res.status < 400 ? res.headers.get("location") : null;
-    if (location) {
-      const s3 = await fetch(location);
-      const buf = Buffer.from(await s3.arrayBuffer());
-      if (s3.status !== 200) {
-        throw new Error(`media S3 GET → ${s3.status}: ${buf.toString("latin1").slice(0, 120)}`);
+      });
+    } catch (error) {
+      if (error instanceof MediaDownloadAuthenticationError) {
+        throw new SessionExpiredError("media download rejected the active session");
       }
-      return buf;
+      throw error;
     }
-    const buf = Buffer.from(await res.arrayBuffer());
-    if (res.status !== 200) {
-      throw new Error(`media GET ${url} → ${res.status}: ${buf.toString("latin1").slice(0, 120)}`);
-    }
-    return buf;
+  }
+
+  /** Download push image bytes and decrypt a recognized v1 wrapper when its device key input is available. */
+  async downloadImage(url: string, p2pDid?: string): Promise<Buffer> {
+    return normalizePushImage(await this.downloadMedia(url), p2pDid);
   }
 
   /** The security-app data host for this region (face recognition, media, etc.). */

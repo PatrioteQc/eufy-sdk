@@ -68,12 +68,13 @@ const built = (m: CapabilityModule): CapabilityActions => {
     codec: "camera",
     category: "eufy_home", // enables isAiotVacuum-gated members in vacuum/suction/locate
     paramIds: new Set(m.properties.map((p) => p.paramType)),
+    capabilities: new Set([m.capability, "snapshot"]),
   };
   const actions = buildActions(
     [m.capability],
     ctx,
     sink,
-    {} as MediaProvider,
+    { snapshotStored: async () => Buffer.alloc(0) } as MediaProvider,
     {} as Ff09SettingsReader,
     {} as RawDpCodec,
     () => undefined,
@@ -201,7 +202,7 @@ describe("described actions — what a stateful one reflects", () => {
     const ptz = built(CAPABILITY_MODULES.ptz);
     expect(actionSpecOf(ptz.rotate)).toMatchObject({ form: "momentary", description: expect.any(String) });
     const camera = built(CAPABILITY_MODULES.camera);
-    expect(actionSpecOf(camera.snapshot)).toMatchObject({ form: "momentary", description: expect.any(String) });
+    expect(actionSpecOf(camera.snapshotStored)).toMatchObject({ form: "momentary", description: expect.any(String) });
   });
 });
 

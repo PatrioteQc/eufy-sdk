@@ -81,7 +81,10 @@ describe("EufyMega auto-realtime", () => {
   it("a successful login triggers auto-realtime", async () => {
     const c = makeClient({ mqtt: 0 });
     const ensure = vi.spyOn(c.eufy as any, "ensureRealtime").mockResolvedValue(undefined);
-    vi.spyOn((c.eufy as any).mega, "login").mockResolvedValue({ status: LoginStatus.Ok });
+    vi.spyOn((c.eufy as any).mega, "login").mockResolvedValue({
+      status: LoginStatus.Ok,
+      session: { userId: "user-a", authToken: "token", raw: {} },
+    });
     await c.eufy.login();
     expect(ensure).toHaveBeenCalledOnce();
   });
@@ -89,7 +92,10 @@ describe("EufyMega auto-realtime", () => {
   it("autoRealtime:false → login does not auto-start", async () => {
     const c = makeClient({ mqtt: 0 }, { autoRealtime: false });
     const ensure = vi.spyOn(c.eufy as any, "ensureRealtime").mockResolvedValue(undefined);
-    vi.spyOn((c.eufy as any).mega, "login").mockResolvedValue({ status: LoginStatus.Ok });
+    vi.spyOn((c.eufy as any).mega, "login").mockResolvedValue({
+      status: LoginStatus.Ok,
+      session: { userId: "user-a", authToken: "token", raw: {} },
+    });
     await c.eufy.login();
     expect(ensure).not.toHaveBeenCalled();
   });

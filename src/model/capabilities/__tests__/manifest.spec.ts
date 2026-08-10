@@ -25,7 +25,12 @@ const camelCase = (id: string): string => id.replace(/_([a-z])/g, (_, c: string)
 /** Every param any module reads — the "device reported everything" evidence set. */
 const allParams = (): Set<number> => new Set(MODULES.flatMap((m) => m.properties.map((p) => p.paramType)));
 
-const ctxWith = (paramIds: Set<number>): CommandContext => ({ channel: 0, codec: "camera", paramIds });
+const ctxWith = (paramIds: Set<number>): CommandContext => ({
+  channel: 0,
+  codec: "camera",
+  paramIds,
+  capabilities: new Set(MODULES.map((m) => m.capability)),
+});
 
 /** Describe the bound objects of a synthetic device that HAS every capability. */
 const describeAll = (paramIds: Set<number>, media?: MediaProvider): ReturnType<typeof describeCapabilities> =>
@@ -161,10 +166,12 @@ describe("describeCapabilities — enumeration of the live bound objects", () =>
 
   it("describes a provider-gated method only on a device bound to that provider", () => {
     const withoutMedia = describeAll(allParams()).find((d) => d.capability === "camera")!;
-    const withMedia = describeAll(allParams(), {} as MediaProvider).find((d) => d.capability === "camera")!;
+    const withMedia = describeAll(allParams(), {
+      snapshotStored: async () => Buffer.alloc(0),
+    } as MediaProvider).find((d) => d.capability === "camera")!;
     const named = (d: typeof withMedia): string[] => [...d.actions.map((a) => a.name), ...d.undescribedActions];
-    expect(named(withoutMedia)).not.toContain("snapshot");
-    expect(named(withMedia)).toContain("snapshot");
+    expect(named(withoutMedia)).not.toContain("snapshotStored");
+    expect(named(withMedia)).toContain("snapshotStored");
   });
 });
 

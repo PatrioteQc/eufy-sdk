@@ -153,9 +153,11 @@ device's detected capabilities, and `EufyMega.setProperty` throws `CapabilityNot
 rather than firing a command into the void (P2P writes are fire-and-forget, so a wrong/absent
 command otherwise looks like success).
 
-Media operations that RETURN data (snapshot / live / record) go through the injected `media` provider,
-not the sink: they are `provided("media", …)` members, so each takes its signature from `MediaProvider`
-itself and lands **optional** — `device.camera()?.snapshot?.()` exists only on a bound device.
+Media operations that RETURN data (stored/live snapshots, live / record) go through the injected
+`media` provider, not the sink: they are `provided("media", …)` members, so each takes its signature
+from `MediaProvider` itself and lands **optional**. `device.camera()?.snapshotStored?.()` is additionally
+omitted when the client disables its passive stored-image cache; it returns retained push bytes and
+does not fall back to the provider's explicit `snapshotLive()` path.
 
 ## Members — the capability's whole surface, declared once
 
@@ -205,7 +207,9 @@ What comes out of the table, with nothing else declared:
 `method()` is the escape hatch that keeps the table honest instead of pretending everything is a
 property: a lock's `setAutoLock(enabled, delaySeconds?)` is neither a getter over one param nor a bare
 momentary command. `provided()` takes its signature FROM the injected provider and lands **optional**,
-because an unbound device genuinely does not have it (`dev.lock()?.getAutoLockState`).
+because an unbound device genuinely does not have it (`dev.lock()?.getAutoLockState`). Its optional
+fourth argument lists additional resolved capability evidence the method requires, keeping that gate in
+the same member declaration used by binding and provider eligibility.
 
 A method owning its signature cannot have its arguments derived, with one exception: **taking none is
 derived from arity**, so `lock()` describes as `args: []` ("takes nothing", offerable as a plain button)

@@ -439,26 +439,35 @@ describe("camera capability module", () => {
     });
 
     it("media actions appear only with a provider, and delegate to it", async () => {
-      expect(camera(ctx()).acts.snapshot).toBeUndefined(); // controls only when unbound to media
+      expect(camera(ctx()).acts.snapshotStored).toBeUndefined();
 
       const calls: string[] = [];
       const media: MediaProvider = {
-        snapshot: async () => (calls.push("snapshot"), { file: "f", jpeg: Buffer.alloc(0) }),
+        snapshotStored: async () => (calls.push("snapshotStored"), Buffer.from("jpeg")),
         snapshotLive: async () => (calls.push("snapshotLive"), { jpeg: Buffer.alloc(0), width: 1, height: 1 }),
         // The test only checks it's callable; a live stream instance isn't needed here.
         live: async () => (calls.push("live"), {} as never),
         record: async (s: number) => (calls.push(`record:${s}`), Buffer.alloc(0)),
       };
-      const { acts } = camera(ctx(), media);
-      const snap = await acts.snapshot!();
+      const { acts } = camera(ctx(0, { capabilities: new Set(["camera", "snapshot"]) }), media);
+      const snap = await acts.snapshotStored!();
       await acts.record!(5);
-      expect(snap).toMatchObject({ file: "f" });
-      expect(calls).toEqual(["snapshot", "record:5"]);
+      expect(snap).toEqual(Buffer.from("jpeg"));
+      expect(calls).toEqual(["snapshotStored", "record:5"]);
+    });
+
+    it("withholds stored snapshots without snapshot capability evidence", () => {
+      const media: MediaProvider = {
+        snapshotStored: async () => Buffer.alloc(0),
+        snapshotLive: async () => ({ jpeg: Buffer.alloc(0), width: 1, height: 1 }),
+        live: async () => ({}) as never,
+        record: async () => Buffer.alloc(0),
+      };
+      expect(camera(ctx(), media).acts.snapshotStored).toBeUndefined();
     });
 
     it("an optional media method the provider does not implement is absent, not a key holding undefined", () => {
       const media: MediaProvider = {
-        snapshot: async () => ({ file: "", jpeg: Buffer.alloc(0) }),
         snapshotLive: async () => ({ jpeg: Buffer.alloc(0), width: 1, height: 1 }),
         live: async () => ({}) as never,
         record: async () => Buffer.alloc(0),
@@ -477,7 +486,6 @@ describe("camera capability module", () => {
     const AUDIO_SPEAKER = 1241;
 
     const mediaWithTalkback = (calls: string[] = []): MediaProvider => ({
-      snapshot: async () => ({ file: "", jpeg: Buffer.alloc(0) }),
       snapshotLive: async () => ({ jpeg: Buffer.alloc(0), width: 1, height: 1 }),
       live: async () => ({}) as never,
       record: async () => Buffer.alloc(0),
@@ -508,10 +516,10 @@ describe("camera capability module", () => {
       expect(calls).toEqual(["talkback:battery"]);
     });
 
-    it("passes the power hint to both snapshot paths, which can be what warms the session", async () => {
+    it("keeps the passive snapshot separate from the powered live path", async () => {
       const seen: string[] = [];
       const media: MediaProvider = {
-        snapshot: async (o) => (seen.push(`snapshot:${o?.powered}`), { file: "", jpeg: Buffer.alloc(0) }),
+        snapshotStored: async () => (seen.push("snapshotStored"), Buffer.alloc(0)),
         snapshotLive: async (o) => (
           seen.push(`snapshotLive:${o?.powered}`),
           { jpeg: Buffer.alloc(0), width: 1, height: 1 }
@@ -519,10 +527,10 @@ describe("camera capability module", () => {
         live: async () => ({}) as never,
         record: async () => Buffer.alloc(0),
       };
-      const { acts } = camera(ctx(0, { capabilities: new Set(["camera", "battery"]) }), media);
-      await acts.snapshot!();
+      const { acts } = camera(ctx(0, { capabilities: new Set(["camera", "snapshot", "battery"]) }), media);
+      await acts.snapshotStored!();
       await acts.snapshotLive!();
-      expect(seen).toEqual(["snapshot:battery", "snapshotLive:battery"]);
+      expect(seen).toEqual(["snapshotStored", "snapshotLive:battery"]);
     });
 
     it("passes recording prebuffer options and the power hint to the recording handle", () => {
@@ -533,7 +541,6 @@ describe("camera capability module", () => {
         async *[Symbol.asyncIterator]() {},
       };
       const media: MediaProvider = {
-        snapshot: async () => ({ file: "", jpeg: Buffer.alloc(0) }),
         snapshotLive: async () => ({ jpeg: Buffer.alloc(0), width: 1, height: 1 }),
         live: async () => ({}) as never,
         record: async () => Buffer.alloc(0),
@@ -573,11 +580,10 @@ const _videoQualityWrite: Exact<Parameters<NonNullable<typeof cam.setVideoQualit
 const _antiTheftOptional: Exact<undefined extends typeof cam.setAntiTheftDetection ? true : false, true> = true;
 const _watermarkRequired: Exact<undefined extends typeof cam.setWatermark ? true : false, false> = true;
 
-// Media is optional (absent unbound) and typed BY the provider — `snapshot` answers its return, not void.
-const _snapshotOptional: Exact<undefined extends typeof cam.snapshot ? true : false, true> = true;
+const _snapshotOptional: Exact<undefined extends typeof cam.snapshotStored ? true : false, true> = true;
 const _snapshotReturns: Exact<
-  ReturnType<NonNullable<typeof cam.snapshot>>,
-  ReturnType<MediaProvider["snapshot"]>
+  ReturnType<NonNullable<typeof cam.snapshotStored>>,
+  ReturnType<NonNullable<MediaProvider["snapshotStored"]>>
 > = true;
 const _recordArg: Exact<Parameters<NonNullable<typeof cam.record>>[0], number> = true;
 // …and a builder's falsy "declined" answer never reaches the caller — past the guard it is the function.
