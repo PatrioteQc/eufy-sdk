@@ -19,7 +19,7 @@ function makeClient(opts: Record<string, unknown> = {}) {
     get: () => ({ userId: "u", authToken: "t" }),
   });
   vi.spyOn(eufy as any, "startPush").mockResolvedValue(undefined);
-  vi.spyOn(eufy as any, "warmWiredP2P").mockResolvedValue(undefined);
+  vi.spyOn(eufy as any, "warmWiredP2P").mockResolvedValue({ required: 0, ready: 0, failed: 0, pending: 0 });
   vi.spyOn(eufy, "getMqttDevices").mockReturnValue([]);
   vi.spyOn(eufy, "getDevices").mockResolvedValue([]);
   vi.spyOn((eufy as any).registry, "list").mockReturnValue([{ sn: "a" }]);
@@ -306,7 +306,7 @@ describe("disconnect during startup", () => {
     push.release();
     await starting;
 
-    expect(push.client.close).toHaveBeenCalled();
+    await vi.waitFor(() => expect(push.client.close).toHaveBeenCalled());
     expect((eufy as any).pushClient).toBeUndefined(); // never installed
   });
 
@@ -331,7 +331,7 @@ describe("disconnect during startup", () => {
 
     expect((eufy as any).pushClient).toBe(fresh.client);
     expect(fresh.client.close).not.toHaveBeenCalled();
-    expect(stale.client.close).toHaveBeenCalled();
+    await vi.waitFor(() => expect(stale.client.close).toHaveBeenCalled());
   });
 
   it("does not arm the poll loop when the bring-up finishes after a disconnect", async () => {

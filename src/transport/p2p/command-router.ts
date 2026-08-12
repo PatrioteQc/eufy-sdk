@@ -147,6 +147,8 @@ export interface P2PRouterDeps {
 export class P2PCommandRouter {
   /** Per-station P2P session lifecycle: on-demand open + battery-aware idle-detach + refcount. */
   private readonly manager: SessionManager;
+  /** Error objects already forwarded while a station startup awaits the same session signal. */
+  private readonly reportedErrors = new WeakSet<Error>();
   /** One shared live source per `${parentSn}:${channel}` — collapses N live() calls to one pull. */
   private readonly liveSources = new Map<string, SharedLiveSource>();
   /** The options each live source was built from, so a later caller's conflicting ones can be reported. */
@@ -162,6 +164,16 @@ export class P2PCommandRouter {
 
   constructor(private readonly deps: P2PRouterDeps) {
     this.manager = new SessionManager({ poweredFor: deps.poweredFor, logger: deps.logger, ...deps.sessionIdle });
+  }
+
+  /** Forward one P2P failure once even when both the session listener and startup waiter observe it. */
+  private reportError(error: unknown): Error {
+    const normalized = error instanceof Error ? error : new Error(String(error));
+    if (!this.reportedErrors.has(normalized)) {
+      this.reportedErrors.add(normalized);
+      this.deps.onError(normalized);
+    }
+    return normalized;
   }
 
   /**
@@ -236,7 +248,7 @@ export class P2PCommandRouter {
    * on-LAN even when broadcast is blocked (AP isolation) or the record's `ip_addr` went stale.
    */
   private async openStation(parentSn: string): Promise<P2PSession> {
-    return this.manager.acquire(parentSn, async () => {
+    return this.manager.acquire(parentSn, async (register) => {
       const devs = this.deps.listDevices();
       const stationDev = devs.find((d) => d.sn === parentSn) ?? devs.find((d) => this.stationKeyFor(d) === parentSn);
       const raw = (stationDev?.raw ?? {}) as Record<string, any>;
@@ -250,7 +262,7 @@ export class P2PCommandRouter {
       }
       const localAddress = this.deps.localAddresses?.[parentSn] ?? freshestLanIp(raw);
       const session = this.makeSession(parentSn, did, raw, dskKey, localAddress);
-      this.manager.register(parentSn, session);
+      register(session);
       await session.connect();
       return session;
     });
@@ -297,9 +309,12 @@ export class P2PCommandRouter {
       },
       logger: this.deps.logger ?? noopLogger,
     });
-    session.on("connect", () => this.deps.onConnect(stationSn));
+    session.on("connect", () => {
+      if (this.manager.get(stationSn) === session) this.deps.onConnect(stationSn);
+    });
     session.on("close", () => {
-      if (this.manager.get(stationSn) === session) this.manager.remove(stationSn);
+      if (this.manager.get(stationSn) !== session) return;
+      this.manager.remove(stationSn);
       for (const [key, src] of this.liveSources) {
         if (key.startsWith(`${stationSn}:`)) {
           src.dispose();
@@ -315,15 +330,54 @@ export class P2PCommandRouter {
       }
       this.deps.onClose(stationSn);
     });
-    session.on("error", (e: Error) => this.deps.onError(e));
+    session.on("error", (e: Error) => this.reportError(e));
     session.on("level2Ready", ({ cipherId }: { cipherId: number }) => this.deps.onLevel2Ready(stationSn, cipherId));
     session.on("data", (f: P2PFrame) => this.deps.onFrame(stationSn, f));
     return session;
   }
 
-  /** Open (or reuse) a station's P2P session by parent serial — the facade's wired-station warm-up. */
-  async ensureStation(parentSn: string): Promise<void> {
-    await this.openStation(parentSn);
+  /**
+   * Open (or reuse) a station's P2P session and await its completed handshake. An optional abort only
+   * stops this wait; session ownership remains with {@link SessionManager} and its normal teardown.
+   */
+  async ensureStation(parentSn: string, signal?: AbortSignal): Promise<void> {
+    try {
+      const session = await this.openStation(parentSn);
+      if (session.isConnected) return;
+      await new Promise<void>((resolve, reject) => {
+        const cleanup = () => {
+          signal?.removeEventListener("abort", onAbort);
+          session.off("connect", onConnect);
+          session.off("error", onError);
+          session.off("close", onClose);
+        };
+        const onConnect = () => {
+          cleanup();
+          resolve();
+        };
+        const onError = (error: Error) => {
+          cleanup();
+          reject(error);
+        };
+        const onClose = () => {
+          cleanup();
+          reject(new Error(`P2P session closed before connecting for station ${parentSn}`));
+        };
+        const onAbort = () => {
+          cleanup();
+          reject(new DOMException("P2P station wait aborted", "AbortError"));
+        };
+        if (signal?.aborted) return onAbort();
+        signal?.addEventListener("abort", onAbort, { once: true });
+        session.once("connect", onConnect);
+        session.once("error", onError);
+        session.once("close", onClose);
+        if (session.isConnected) onConnect();
+      });
+    } catch (error) {
+      if (signal?.aborted) throw new DOMException("P2P station wait aborted", "AbortError");
+      throw this.reportError(error);
+    }
   }
 
   /** Resolve a serial to its loaded device record, opening its station's P2P session on demand. */

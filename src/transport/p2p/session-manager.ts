@@ -65,6 +65,8 @@ export interface SessionManagerOpts {
  */
 export class SessionManager {
   private readonly entries = new Map<string, SessionEntry>();
+  /** Invalidates station factories that finish after {@link closeAll}. */
+  private generation = 0;
   private readonly logger: Logger;
 
   constructor(private readonly opts: SessionManagerOpts = {}) {
@@ -117,11 +119,7 @@ export class SessionManager {
     return e;
   }
 
-  /**
-   * Register an already-built, wired session (the eager warm-up path and test seeding). Arms no idle
-   * timer — a registered session with no users stays until a user attaches then releases, or until
-   * {@link closeAll}.
-   */
+  /** Register an already-built session for test seeding or an externally assembled connection. */
   register(parentSn: string, session: P2PSession): void {
     this.entry(parentSn).session = session;
   }
@@ -131,18 +129,26 @@ export class SessionManager {
    * same cold station share ONE connect (the `connecting` promise); `factory` builds + wires + awaits
    * `connect()` and resolves the connected session.
    */
-  async acquire(parentSn: string, factory: () => Promise<P2PSession>): Promise<P2PSession> {
+  async acquire(
+    parentSn: string,
+    factory: (register: (session: P2PSession) => void) => Promise<P2PSession>,
+  ): Promise<P2PSession> {
     const e = this.entry(parentSn);
-    if (e.session) return e.session;
     if (e.connecting) {
       this.logger.debug(`[session ${parentSn}] connecting — joining in-flight open (${e.powered})`);
       return e.connecting;
     }
+    if (e.session) return e.session;
     this.logger.debug(`[session ${parentSn}] connecting now (${e.powered}, on demand)`);
-    const p = factory();
+    const generation = this.generation;
+    const p = factory((session) => (e.session = session));
     e.connecting = p;
     try {
       const session = await p;
+      if (generation !== this.generation || this.entries.get(parentSn) !== e) {
+        await session.close();
+        throw new Error(`P2P session start superseded for station ${parentSn}`);
+      }
       e.session ??= session;
       this.logger.debug(`[session ${parentSn}] connected`);
       return e.session;
@@ -220,6 +226,7 @@ export class SessionManager {
 
   /** Close every session and clear all timers. */
   async closeAll(): Promise<void> {
+    this.generation++;
     const sessions: P2PSession[] = [];
     for (const e of this.entries.values()) {
       e.idle.cancel();
