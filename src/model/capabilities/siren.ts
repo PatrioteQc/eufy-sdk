@@ -25,8 +25,8 @@ export const SIREN_PARAM = {
 } as const;
 
 /**
- * The siren's **write-only command ids** — momentary triggers with no reported state param, so they
- * are gated on the capability's presence rather than a param readback. Both captured live on a T90R0.
+ * The siren's **write-only command ids**. Momentary actions install only when their family-specific
+ * reported evidence and topology gates hold.
  */
 export const SIREN_CMD = {
   /** Sound the siren briefly as a test (app `APP_CMD_SIREN_SENSOR_ALARM_TEST`). */
@@ -76,14 +76,6 @@ export type HubAlarmToneValue = (typeof HubAlarmTone)[keyof typeof HubAlarmTone]
  */
 export type SirenActions = Surface<typeof SIREN_MEMBERS>;
 
-/**
- * The params whose presence proves the device really is a siren.
- *
- * The momentary triggers have no state param of their own, and detection reaches this capability by
- * DeviceType and a name hint — so a camera, or a renamed device, could be handed a wire that was only
- * ever captured on a real siren. Requiring one of these is the evidence that it is one.
- */
-const SIREN_EVIDENCE = [SIREN_PARAM.RING_STATUS, SIREN_PARAM.ALARM_VOLUME, SIREN_PARAM.ALARM_TIMEOUT] as const;
 /** Reported HomeBase alarm params that prove the alarm-output configuration surface. */
 const HUB_ALARM_EVIDENCE = [SIREN_CMD.HUB_ALARM_TONE, 1282] as const;
 
@@ -102,14 +94,33 @@ function isEvidencedAttachedCamera(ctx: CommandContext): boolean {
   return ctx.codec === "camera" && ctx.homeBaseAttached === true && hasReportedEasSwitch(ctx);
 }
 
-/** Whether this device belongs to a standalone siren-sensor protocol family. */
-function isStandaloneSirenFamily(ctx: AvailabilityContext): boolean {
-  return ctx.deviceType === DeviceType.SIREN_SENSOR || ctx.deviceType === DeviceType.SIREN_SENSOR_E20;
+/** Whether a model-side record or bound context reports a specific parameter. */
+function reportsParam(
+  source: { params?: Record<number, string>; paramIds?: ReadonlySet<number> },
+  param: number,
+): boolean {
+  return source.paramIds?.has(param) === true || Object.hasOwn(source.params ?? {}, param);
 }
 
-/** Whether a standalone siren-family device reports a parameter that proves its command surface. */
+/** Whether reported volume plus state or timeout proves a standalone siren command surface. */
+function hasStandaloneSirenEvidence(source: {
+  params?: Record<number, string>;
+  paramIds?: ReadonlySet<number>;
+}): boolean {
+  return (
+    reportsParam(source, SIREN_PARAM.ALARM_VOLUME) &&
+    (reportsParam(source, SIREN_PARAM.RING_STATUS) || reportsParam(source, SIREN_PARAM.ALARM_TIMEOUT))
+  );
+}
+
+/** Whether this context belongs to the sensor codec used by standalone sirens. */
+function isSensorCodec(ctx: AvailabilityContext): boolean {
+  return ctx.codec === "sensor";
+}
+
+/** Whether a sensor-codec device reports the combined standalone siren evidence. */
 function isEvidencedStandaloneSiren(ctx: CommandContext): boolean {
-  return isStandaloneSirenFamily(ctx) && SIREN_EVIDENCE.some((param) => ctx.paramIds.has(param));
+  return isSensorCodec(ctx) && hasStandaloneSirenEvidence(ctx);
 }
 
 /** Build the station-family HomeBase duration command, requiring the acting username carried by the wire. */
@@ -200,7 +211,7 @@ export const SIREN_MEMBERS = {
     type: "bool",
     kind: "boolean",
     provenance: "verified",
-    available: isStandaloneSirenFamily,
+    available: isSensorCodec,
     description:
       "Whether the siren is sounding (61008 APP_CMD_DEV_RING_STATUS). ✅ Confirmed boolean: a live " +
       "test on a T90R0 pushed 1 (sounding) then 0 (silent).",
@@ -215,7 +226,7 @@ export const SIREN_MEMBERS = {
     type: "number",
     kind: "scalar",
     provenance: "verified",
-    available: isStandaloneSirenFamily,
+    available: isSensorCodec,
     requires: [SIREN_PARAM.ALARM_VOLUME],
     enumValues: enumLabels(SirenVolume),
     args: [{ name: "level", kind: "scalar", description: "A device level 1-3 (Low/Mid/High), not a percentage." }],
@@ -234,7 +245,7 @@ export const SIREN_MEMBERS = {
     unit: "s",
     kind: "seconds",
     provenance: "verified",
-    available: isStandaloneSirenFamily,
+    available: isSensorCodec,
     requires: [SIREN_PARAM.ALARM_TIMEOUT],
     enumValues: enumLabels(SirenAlarmDuration),
     args: [{ name: "seconds", kind: "seconds", description: "One of the app's presets: 60/300/600/900." }],
@@ -256,7 +267,7 @@ export const SIREN_MEMBERS = {
     type: "bool",
     kind: "boolean",
     provenance: "apk",
-    available: isStandaloneSirenFamily,
+    available: isSensorCodec,
     description: "Do-not-disturb (1828 APP_CMD_SENSOR_NOT_DISTURB). Observed 0 on a T90R0.",
   },
 
@@ -298,8 +309,7 @@ export const SIREN_MEMBERS = {
   /** Sound a standalone siren briefly using its dedicated installation-test wire. */
   test: {
     action: (ctx) => sirenPayload(SIREN_CMD.ALARM_TEST, {}, ctx),
-    requires: SIREN_EVIDENCE,
-    available: isStandaloneSirenFamily,
+    available: isEvidencedStandaloneSiren,
     description: "Sound the siren briefly as a test.",
   },
   /** Trigger a verified station-family HomeBase or evidenced attached-camera alarm for a bounded duration. */
@@ -333,21 +343,14 @@ export const SIREN: CapabilityModule = {
   description: "Audible alarm output with evidence-bounded state, configuration, test, trigger, and stop members.",
   members: SIREN_MEMBERS,
   properties: propertiesOf(SIREN_MEMBERS),
-  /**
-   * Detection stays on DeviceType, and that is right: it resolved correctly on a real T90R0
-   * (deviceType 123 = `SIREN_SENSOR_E20`), so it is not relying on the model-name hint.
-   *
-   * HomeBase detection requires a reported alarm parameter. Camera detection requires both attached
-   * topology and the reported EAS slot; neither fact alone admits alarm output.
-   */
+  /** Detection uses reported evidence and topology; no model string or device type admits a wire. */
   detection: {
-    deviceTypes: [DeviceType.SIREN_SENSOR, DeviceType.SIREN_SENSOR_E20],
-    modelHints: [/siren/i],
     detect: (record, codec) => {
       const homeBase = record.deviceType !== undefined && HOMEBASE_TYPES.has(record.deviceType);
       const homeBaseAlarm = homeBase && HUB_ALARM_EVIDENCE.some((param) => Object.hasOwn(record.params ?? {}, param));
       const attachedCameraAlarm = codec === "camera" && !!record.parentSn && hasReportedEasSwitch(record);
-      return homeBaseAlarm || attachedCameraAlarm;
+      const standaloneSiren = codec === "sensor" && hasStandaloneSirenEvidence(record);
+      return homeBaseAlarm || attachedCameraAlarm || standaloneSiren;
     },
   },
 };

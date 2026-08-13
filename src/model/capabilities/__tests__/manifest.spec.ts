@@ -100,7 +100,7 @@ describe("describeCapabilities — enumeration of the live bound objects", () =>
       codec: "sensor",
       deviceType: 123,
       capabilities: new Set(["siren"]),
-      paramIds: new Set([61008]),
+      paramIds: new Set([61008, 1825]),
     });
     const unverified = describeSiren({
       channel: 0,
@@ -123,8 +123,8 @@ describe("describeCapabilities — enumeration of the live bound objects", () =>
     ]);
     expect(camera.reads).toEqual([]);
     expect(camera.actions.map((action) => action.name)).toEqual(["trigger", "stop"]);
-    expect(standalone.reads.map((read) => read.accessor)).toEqual(["active"]);
-    expect(standalone.actions.map((action) => action.name)).toEqual(["test", "stop"]);
+    expect(standalone.reads.map((read) => read.accessor)).toEqual(["active", "volume"]);
+    expect(standalone.actions.map((action) => action.name)).toEqual(["setVolume", "test", "stop"]);
     expect(unverified.reads).toEqual([]);
     expect(unverified.actions).toEqual([]);
   });

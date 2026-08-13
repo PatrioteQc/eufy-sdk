@@ -3,6 +3,7 @@ import { actionSpecOf, camelCase } from "../access.js";
 import { bind } from "./bind.js";
 import { isKnownValueKind } from "../../types.js";
 import { codecForType } from "../../classify.js";
+import type { Codec } from "../../types.js";
 import type { ActionArgSpec, ActionSpec, CapabilityActions, CapabilityModule, CommandContext } from "../types.js";
 import type { CommandSink, Ff09SettingsReader, MediaProvider, RawDpCodec } from "../../../core/contracts.js";
 import type { Surface } from "../members.js";
@@ -57,13 +58,23 @@ const DESCRIBED_MODULES = [
 ] as const;
 
 const sink: CommandSink = { dispatch: async () => undefined };
+const FALLBACK_CODECS: readonly Codec[] = [
+  "sensor",
+  "station",
+  "lock",
+  "keypad",
+  "vacuum",
+  "mower",
+  "light",
+  "printer",
+];
 
 /**
  * Build a module's action object with every optional provider present and every backing param reported,
  * so an action can only be missing because it isn't installed at all. The providers are empty fakes:
  * nothing here calls an action, it only reads what is attached to one. The default camera context
- * preserves the catalogue-wide baseline; a module that installs nothing there retries with its first
- * declared device type and corresponding codec.
+ * preserves the catalogue-wide baseline; a module that installs nothing there retries its declared
+ * device type, then codecs admitted by its own custom detection predicate.
  */
 const built = (m: CapabilityModule): CapabilityActions => {
   const ctx: CommandContext = {
@@ -85,13 +96,24 @@ const built = (m: CapabilityModule): CapabilityActions => {
     );
     return actions[camelCase(m.capability) as keyof typeof actions] as CapabilityActions;
   };
+  const installsAction = (actions: CapabilityActions): boolean =>
+    Object.values(Object.getOwnPropertyDescriptors(actions)).some(
+      (descriptor) => typeof descriptor.value === "function",
+    );
   const initial = bindContext(ctx);
-  const installsAction = Object.values(Object.getOwnPropertyDescriptors(initial)).some(
-    (descriptor) => typeof descriptor.value === "function",
-  );
+  if (installsAction(initial)) return initial;
   const deviceType = m.detection?.deviceTypes?.[0];
-  if (installsAction || deviceType === undefined) return initial;
-  return bindContext({ ...ctx, codec: codecForType(deviceType) ?? ctx.codec, deviceType });
+  if (deviceType !== undefined) {
+    const typed = bindContext({ ...ctx, codec: codecForType(deviceType) ?? ctx.codec, deviceType });
+    if (installsAction(typed)) return typed;
+  }
+  const params = Object.fromEntries([...ctx.paramIds].map((param) => [param, "1"]));
+  for (const codec of FALLBACK_CODECS) {
+    if (m.detection?.detect?.({ params }, codec) !== true) continue;
+    const candidate = bindContext({ ...ctx, codec });
+    if (installsAction(candidate)) return candidate;
+  }
+  return initial;
 };
 
 /**

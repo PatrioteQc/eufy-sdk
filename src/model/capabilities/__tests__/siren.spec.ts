@@ -83,18 +83,67 @@ describe("siren capability module", () => {
       expect(sent[0]).toMatchObject({ kind: "set-payload", cmd: SIREN_PARAM.ALARM_TIMEOUT, payload: { value: 300 } });
     });
 
-    it("test + stop are momentary triggers (bare payload), gated on a reported siren param", async () => {
-      // A device that reports a siren state param (here just ring-status) IS a siren, so test/stop install.
-      const { acts: a, sent } = sirenOf(ctx([61008]));
+    it("test + stop are momentary triggers gated on volume plus ring-state evidence", async () => {
+      const { acts: a, sent } = sirenOf(ctx([1825, 61008]));
       await a.test!();
       await a.stop!();
       expect(sent.map((c) => (c as { cmd: number }).cmd)).toEqual([SIREN_CMD.ALARM_TEST, SIREN_CMD.MANUAL_STOP]);
       expect(sent.every((c) => (c as { kind: string }).kind === "set-payload")).toBe(true);
     });
 
-    it("installs nothing on a device that reports no siren param (curated/name-hint mis-detection)", () => {
-      // The capability can land on a camera (curated list) or a renamed device (name hint); with none
-      // of the siren params reported, even the momentary triggers stay off the wire.
+    it("installs standalone actions from sensor codec and evidence without a siren device type or model", () => {
+      const { acts } = sirenOf({
+        channel: 16,
+        codec: "sensor",
+        deviceType: DeviceType.MOTION_SENSOR,
+        model: "T8999",
+        capabilities: new Set(["siren"]),
+        paramIds: new Set([1825, 61006]),
+      });
+
+      expect(acts.test).toBeDefined();
+      expect(acts.stop).toBeDefined();
+    });
+
+    it.each([{ paramIds: [61006] }, { paramIds: [61008] }, { paramIds: [1825] }])(
+      "installs no standalone action from partial evidence $paramIds",
+      ({ paramIds }) => {
+        const actions = sirenOf({
+          channel: 16,
+          codec: "sensor",
+          deviceType: DeviceType.SIREN_SENSOR_E20,
+          model: "T90R0",
+          capabilities: new Set(["siren"]),
+          paramIds: new Set(paramIds),
+        }).acts;
+
+        expect(actions.test).toBeUndefined();
+        expect(actions.stop).toBeUndefined();
+      },
+    );
+
+    it("retains configured duration and volume on the volume-plus-timeout evidence path", () => {
+      const actions = sirenOf(ctx([1825, 61006])).acts;
+
+      expect("volume" in actions).toBe(true);
+      expect(actions.setVolume).toBeDefined();
+      expect("alarmDuration" in actions).toBe(true);
+      expect(actions.setAlarmDuration).toBeDefined();
+      expect("active" in actions).toBe(false);
+      expect("doNotDisturb" in actions).toBe(false);
+    });
+
+    it("retains reported active and do-not-disturb reads on the volume-plus-ring evidence path", () => {
+      const actions = sirenOf(ctx([1825, 61008, 1828])).acts;
+
+      expect("volume" in actions).toBe(true);
+      expect(actions.setVolume).toBeDefined();
+      expect("active" in actions).toBe(true);
+      expect("doNotDisturb" in actions).toBe(true);
+      expect("alarmDuration" in actions).toBe(false);
+    });
+
+    it("installs nothing on a sensor with no standalone siren evidence", () => {
       const a = sirenOf(ctx([])).acts as Record<string, unknown>;
       expect(a.setVolume).toBeUndefined();
       expect(a.setAlarmDuration).toBeUndefined();
@@ -444,10 +493,51 @@ describe("siren capability module", () => {
         ),
       ).not.toContain("siren");
     });
-    it("proves siren via the standalone siren-sensor DeviceTypes", () => {
-      expect(SIREN.detection?.deviceTypes).toContain(DeviceType.SIREN_SENSOR);
-      expect(SIREN.detection?.deviceTypes).toContain(DeviceType.SIREN_SENSOR_E20);
+    it("does not detect a motion sensor from generic timeout alone", () => {
+      expect(
+        detectCapabilities({ deviceType: DeviceType.MOTION_SENSOR, model: "T8910", params: { 61006: "0" } }, "sensor"),
+      ).not.toContain("siren");
     });
+    it("does not detect standalone siren evidence under a non-sensor codec", () => {
+      expect(
+        detectCapabilities({ deviceType: DeviceType.INDOOR_CAMERA, params: { 1825: "3", 61008: "0" } }, "camera"),
+      ).not.toContain("siren");
+      expect(
+        detectCapabilities({ deviceType: DeviceType.HB3, params: { 1825: "3", 61006: "900" } }, "station"),
+      ).not.toContain("siren");
+    });
+    it("detects standalone sirens from sensor codec plus combined evidence without static family hints", () => {
+      expect(
+        detectCapabilities(
+          { deviceType: DeviceType.MOTION_SENSOR, model: "T8999", params: { 1825: "3", 61008: "0" } },
+          "sensor",
+        ),
+      ).toContain("siren");
+      expect(
+        detectCapabilities(
+          { deviceType: DeviceType.MOTION_SENSOR, model: "T8999", params: { 1825: "3", 61006: "900" } },
+          "sensor",
+        ),
+      ).toContain("siren");
+      expect(SIREN.detection?.deviceTypes ?? []).not.toContain(DeviceType.SIREN_SENSOR);
+      expect(SIREN.detection?.deviceTypes ?? []).not.toContain(DeviceType.SIREN_SENSOR_E20);
+      expect(SIREN.detection?.modelHints ?? []).toEqual([]);
+    });
+    it.each([{ 61006: "0" }, { 61008: "0" }, { 1825: "3" }])(
+      "does not detect a standalone siren from partial evidence %j",
+      (params) => {
+        expect(
+          detectCapabilities(
+            {
+              deviceType: DeviceType.SIREN_SENSOR_E20,
+              model: "T90R0",
+              params: params as unknown as Record<number, string>,
+            },
+            "sensor",
+          ),
+        ).not.toContain("siren");
+      },
+    );
     it("detects a HomeBase device type only when it reports alarm evidence", () => {
       expect(
         detectCapabilities({ deviceType: DeviceType.STATION, model: "T8999", params: { 1281: "1" } }, "station"),
@@ -460,9 +550,8 @@ describe("siren capability module", () => {
 });
 
 /**
- * The derived surface, pinned at COMPILE time. Every siren write is gated on the device reporting a
- * siren param, so every one is optional — a caller cannot call one without checking, which is exactly
- * what "a present method means a verified wire" has to mean for a capability reachable by name hint.
+ * The derived surface, pinned at compile time. Family-specific evidence makes every write optional, so
+ * callers must check presence before invoking a verified wire.
  */
 type Exact<A, B> = [A] extends [B] ? ([B] extends [A] ? true : never) : never;
 declare const sn: SirenActions;
@@ -479,7 +568,7 @@ const _triggerArgs: Exact<Parameters<NonNullable<typeof sn.trigger>>, [seconds: 
 const _stopOptional: Exact<undefined extends typeof sn.stop ? true : false, true> = true;
 const _stopArgs: Exact<Parameters<NonNullable<typeof sn.stop>>, []> = true;
 
-// Read-only members get no setter: nothing can write the sounding state or do-not-disturb.
+/** Read-only members expose no setter for sounding state or do-not-disturb. */
 const _noSetActive: Exact<"setActive" extends keyof SirenActions ? true : false, false> = true;
 const _noSetDnd: Exact<"setDoNotDisturb" extends keyof SirenActions ? true : false, false> = true;
 
