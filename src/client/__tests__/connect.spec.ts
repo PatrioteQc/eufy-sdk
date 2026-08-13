@@ -1,6 +1,8 @@
+import { EventEmitter } from "node:events";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { EufyMega } from "../eufy-mega.js";
 import { LoginStatus } from "../../transport/http/mega-client.js";
+import { PushClient } from "../../transport/push/push-client.js";
 import type { EufyDevice } from "../../core/types.js";
 
 /**
@@ -26,7 +28,9 @@ function makeClient(subsets: { mqtt: number; category?: string }, opts: Record<s
   const fakeTransport = { subscribeDevice: vi.fn(async () => {}), disconnect: vi.fn(async () => {}) };
   const mqtt = vi.spyOn(eufy as any, "startMqtt").mockResolvedValue(fakeTransport);
   const push = vi.spyOn(eufy as any, "startPush").mockResolvedValue(undefined);
-  const wired = vi.spyOn(eufy as any, "warmWiredP2P").mockResolvedValue(undefined);
+  const wired = vi
+    .spyOn(eufy as any, "warmWiredP2P")
+    .mockResolvedValue({ required: 0, ready: 0, failed: 0, pending: 0 });
   const getDevices = vi.spyOn(eufy, "getDevices").mockResolvedValue([]);
 
   return { eufy, mqtt, push, wired, getDevices };
@@ -34,6 +38,203 @@ function makeClient(subsets: { mqtt: number; category?: string }, opts: Record<s
 
 describe("EufyMega auto-realtime", () => {
   beforeEach(() => vi.restoreAllMocks());
+
+  it("rejects readiness waits before login", async () => {
+    const c = makeClient({ mqtt: 0 });
+
+    await expect(c.eufy.waitForRealtime()).rejects.toThrow("login() first");
+    expect(c.push).not.toHaveBeenCalled();
+  });
+
+  it("reports disabled after login without starting transports", async () => {
+    const c = makeClient({ mqtt: 0 }, { autoRealtime: false });
+    Object.defineProperty((c.eufy as any).mega, "loggedIn", { configurable: true, get: () => true });
+
+    await expect(c.eufy.waitForRealtime()).resolves.toEqual({
+      state: "disabled",
+      push: { required: 0, ready: 0, failed: 0, pending: 0 },
+      mqtt: { required: 0, ready: 0, failed: 0, pending: 0 },
+      wiredP2p: { required: 0, ready: 0, failed: 0, pending: 0 },
+    });
+    expect(c.push).not.toHaveBeenCalled();
+    expect(c.mqtt).not.toHaveBeenCalled();
+    expect(c.wired).not.toHaveBeenCalled();
+  });
+
+  it("joins the auto-started bring-up and reuses its settled readiness", async () => {
+    const c = makeClient({ mqtt: 0 });
+    let releasePush!: () => void;
+    c.push.mockReturnValue(new Promise((resolve) => (releasePush = () => resolve(undefined))));
+    Object.defineProperty((c.eufy as any).mega, "loggedIn", { configurable: true, get: () => true });
+    vi.spyOn((c.eufy as any).mega, "login").mockResolvedValue({
+      status: LoginStatus.Ok,
+      session: { userId: "user-a", authToken: "token", raw: {} },
+    });
+
+    await c.eufy.login();
+    const first = c.eufy.waitForRealtime();
+    const concurrent = c.eufy.waitForRealtime();
+    expect(c.push).toHaveBeenCalledOnce();
+    releasePush();
+
+    const expected = {
+      state: "ready",
+      push: { required: 1, ready: 1, failed: 0, pending: 0 },
+      mqtt: { required: 0, ready: 0, failed: 0, pending: 0 },
+      wiredP2p: { required: 0, ready: 0, failed: 0, pending: 0 },
+    };
+    const result = await first;
+    expect(result).toEqual(expected);
+    expect(Object.isFrozen(result)).toBe(true);
+    expect(Object.isFrozen(result.push)).toBe(true);
+    expect(() => ((result.push as { ready: number }).ready = 9)).toThrow();
+    await expect(concurrent).resolves.toEqual(expected);
+    await expect(c.eufy.waitForRealtime()).resolves.toEqual(expected);
+    expect(c.push).toHaveBeenCalledOnce();
+    expect(c.getDevices).not.toHaveBeenCalled();
+  });
+
+  it("times out one waiter without cancelling background startup", async () => {
+    const c = makeClient({ mqtt: 0 });
+    let releasePush!: () => void;
+    c.push.mockReturnValue(new Promise((resolve) => (releasePush = () => resolve(undefined))));
+    Object.defineProperty((c.eufy as any).mega, "loggedIn", { configurable: true, get: () => true });
+    vi.spyOn((c.eufy as any).mega, "login").mockResolvedValue({
+      status: LoginStatus.Ok,
+      session: { userId: "user-a", authToken: "token", raw: {} },
+    });
+    await c.eufy.login();
+
+    await expect(c.eufy.waitForRealtime({ timeoutMs: 1 })).resolves.toEqual({
+      state: "timed-out",
+      push: { required: 1, ready: 0, failed: 0, pending: 1 },
+      mqtt: { required: 0, ready: 0, failed: 0, pending: 0 },
+      wiredP2p: { required: 0, ready: 0, failed: 0, pending: 0 },
+    });
+    expect(c.push).toHaveBeenCalledOnce();
+
+    releasePush();
+    await expect(c.eufy.waitForRealtime()).resolves.toMatchObject({
+      state: "ready",
+      push: { required: 1, ready: 1, failed: 0, pending: 0 },
+    });
+    expect(c.push).toHaveBeenCalledOnce();
+  });
+
+  it("keeps production push pending until the MCS client authenticates", async () => {
+    const pushStore = {
+      load: () => ({
+        creds: {
+          fid: "synthetic-fid",
+          androidId: "1",
+          securityToken: "synthetic-token",
+          fcmToken: "synthetic-fcm-token",
+          createdAt: 0,
+        },
+        persistentIds: [],
+      }),
+      save: vi.fn(),
+      clear: vi.fn(),
+    };
+    const c = makeClient({ mqtt: 0 }, { pushStore });
+    c.push.mockRestore();
+    let client!: PushClient;
+    vi.spyOn(PushClient.prototype, "connect").mockImplementation(function (this: PushClient) {
+      client = this;
+    });
+    vi.spyOn((c.eufy as any).mega, "registerPushToken").mockResolvedValue(undefined);
+    Object.defineProperty((c.eufy as any).mega, "loggedIn", { configurable: true, get: () => true });
+    vi.spyOn((c.eufy as any).mega, "login").mockResolvedValue({
+      status: LoginStatus.Ok,
+      session: { userId: "user-a", authToken: "token", raw: {} },
+    });
+    await c.eufy.login();
+
+    await expect(c.eufy.waitForRealtime({ timeoutMs: 1 })).resolves.toMatchObject({
+      state: "timed-out",
+      push: { required: 1, ready: 0, failed: 0, pending: 1 },
+    });
+
+    client.emit("connect");
+    await expect(c.eufy.waitForRealtime()).resolves.toMatchObject({
+      state: "ready",
+      push: { required: 1, ready: 1, failed: 0, pending: 0 },
+    });
+    await c.eufy.disconnect();
+  });
+
+  it("keeps wired P2P pending until the station handshake completes", async () => {
+    const c = makeClient({ mqtt: 0 });
+    c.wired.mockRestore();
+    const session = Object.assign(new EventEmitter(), {
+      isConnected: false,
+      close: vi.fn(async () => {}),
+    });
+    vi.spyOn((c.eufy as any).registry, "p2pDevices").mockReturnValue([{ sn: "wired" }]);
+    vi.spyOn(c.eufy as any, "stationPower").mockReturnValue("wired");
+    (c.eufy as any).p2p.manager.register("wired", session);
+    Object.defineProperty((c.eufy as any).mega, "loggedIn", { configurable: true, get: () => true });
+    vi.spyOn((c.eufy as any).mega, "login").mockResolvedValue({
+      status: LoginStatus.Ok,
+      session: { userId: "user-a", authToken: "token", raw: {} },
+    });
+    await c.eufy.login();
+
+    await expect(c.eufy.waitForRealtime({ timeoutMs: 1 })).resolves.toMatchObject({
+      state: "timed-out",
+      wiredP2p: { required: 1, ready: 0, failed: 0, pending: 1 },
+    });
+
+    session.isConnected = true;
+    session.emit("connect");
+    await expect(c.eufy.waitForRealtime()).resolves.toMatchObject({
+      state: "ready",
+      wiredP2p: { required: 1, ready: 1, failed: 0, pending: 0 },
+    });
+  });
+
+  it("supersedes a disconnected startup and gives relogin a fresh generation", async () => {
+    const c = makeClient({ mqtt: 0 });
+    const staleClient = { close: vi.fn() };
+    const freshClient = { close: vi.fn() };
+    let releaseStale!: () => void;
+    c.push
+      .mockReturnValueOnce(new Promise((resolve) => (releaseStale = () => resolve(staleClient))))
+      .mockResolvedValueOnce(freshClient);
+    Object.defineProperty((c.eufy as any).mega, "loggedIn", { configurable: true, get: () => true });
+    vi.spyOn((c.eufy as any).mega, "login").mockResolvedValue({
+      status: LoginStatus.Ok,
+      session: { userId: "user-a", authToken: "token", raw: {} },
+    });
+
+    await c.eufy.login();
+    const staleWait = c.eufy.waitForRealtime();
+    await c.eufy.disconnect();
+    await expect(staleWait).resolves.toMatchObject({ state: "superseded" });
+    await expect(c.eufy.waitForRealtime()).resolves.toMatchObject({ state: "superseded" });
+    expect(c.push).toHaveBeenCalledOnce();
+
+    await c.eufy.login();
+    await expect(c.eufy.waitForRealtime()).resolves.toMatchObject({ state: "ready" });
+    expect((c.eufy as any).pushClient).toBe(freshClient);
+
+    releaseStale();
+    await vi.waitFor(() => expect(staleClient.close).toHaveBeenCalledOnce());
+    expect(freshClient.close).not.toHaveBeenCalled();
+    expect((c.eufy as any).pushClient).toBe(freshClient);
+    expect(c.push).toHaveBeenCalledTimes(2);
+  });
+
+  it("reports a settled generation as superseded after disconnect", async () => {
+    const c = makeClient({ mqtt: 0 });
+    Object.defineProperty((c.eufy as any).mega, "loggedIn", { configurable: true, get: () => true });
+    await (c.eufy as any).ensureRealtime();
+
+    await c.eufy.disconnect();
+
+    await expect(c.eufy.waitForRealtime()).resolves.toMatchObject({ state: "superseded" });
+    expect(c.push).toHaveBeenCalledOnce();
+  });
 
   it("always starts push + warms wired P2P; skips MQTT with no appliances", async () => {
     const c = makeClient({ mqtt: 0 });
@@ -76,6 +277,60 @@ describe("EufyMega auto-realtime", () => {
 
     expect(c.mqtt).toHaveBeenCalledOnce(); // sibling still ran
     expect(errors).toContain(boom); // failure surfaced, not thrown
+  });
+
+  it("reports count-only partial readiness across all selected planes", async () => {
+    const c = makeClient({ mqtt: 0 });
+    const life = { sn: "life", category: "eufy_life" } as unknown as EufyDevice;
+    const mega = { sn: "mega", category: "eufy_mega" } as unknown as EufyDevice;
+    (c.eufy as any).getMqttDevices.mockReturnValue([life, mega]);
+    const pushError = new Error("push down");
+    const mqttError = new Error("mqtt down");
+    const p2pError = new Error("station down");
+    c.push.mockRejectedValue(pushError);
+    c.mqtt.mockImplementation(async (...args: unknown[]) => {
+      const scope = args[0];
+      if (scope === "default") throw mqttError;
+      return { subscribeDevice: vi.fn(async () => {}), disconnect: vi.fn(async () => {}) };
+    });
+    c.wired.mockRestore();
+    vi.spyOn((c.eufy as any).registry, "p2pDevices").mockReturnValue([
+      { sn: "wired-a" },
+      { sn: "wired-a-child" },
+      { sn: "wired-b" },
+      { sn: "battery" },
+    ]);
+    vi.spyOn((c.eufy as any).p2p, "stationKeyOf").mockImplementation((...args: unknown[]) => {
+      const sn = args[0] as string;
+      return sn === "wired-a-child" ? "wired-a" : sn;
+    });
+    vi.spyOn(c.eufy as any, "stationPower").mockImplementation((...args: unknown[]) =>
+      args[0] === "battery" ? "battery" : "wired",
+    );
+    vi.spyOn((c.eufy as any).p2p, "ensureStation").mockImplementation(async (...args: unknown[]) => {
+      const sn = args[0];
+      if (sn === "wired-b") {
+        (c.eufy as any).reportError(p2pError);
+        throw p2pError;
+      }
+    });
+    const errors: Error[] = [];
+    c.eufy.on("error", (error) => errors.push(error));
+    Object.defineProperty((c.eufy as any).mega, "loggedIn", { configurable: true, get: () => true });
+    vi.spyOn((c.eufy as any).mega, "login").mockResolvedValue({
+      status: LoginStatus.Ok,
+      session: { userId: "user-a", authToken: "token", raw: {} },
+    });
+    await c.eufy.login();
+
+    await expect(c.eufy.waitForRealtime()).resolves.toEqual({
+      state: "partial",
+      push: { required: 1, ready: 0, failed: 1, pending: 0 },
+      mqtt: { required: 2, ready: 1, failed: 1, pending: 0 },
+      wiredP2p: { required: 2, ready: 1, failed: 1, pending: 0 },
+    });
+    expect(errors).toEqual(expect.arrayContaining([pushError, mqttError, p2pError]));
+    expect((c.eufy as any).p2p.ensureStation).toHaveBeenCalledTimes(2);
   });
 
   it("a successful login triggers auto-realtime", async () => {
@@ -137,7 +392,7 @@ describe("EufyMega auto-realtime", () => {
         (c.eufy as any).ensureRealtime(),
         new Promise((_, rej) => setTimeout(() => rej(new Error("deadlocked")), 2000)),
       ]),
-    ).resolves.toBeUndefined();
+    ).resolves.toMatchObject({ state: "ready" });
     expect(published).toEqual(["cmd/x/req"]);
     expect(c.mqtt).toHaveBeenCalledOnce(); // reused the in-flight transport, didn't open a second
   });
@@ -165,7 +420,8 @@ describe("EufyMega auto-realtime", () => {
 
     expect((c.eufy as any).transports.size).toBe(0);
     expect((c.eufy as any).mqttReady.size).toBe(0);
-    expect(transport.disconnect).toHaveBeenCalled();
+    expect(c.mqtt).not.toHaveBeenCalled();
+    expect(transport.disconnect).not.toHaveBeenCalled();
   });
 
   it("a captcha/2FA login result does NOT auto-start realtime", async () => {

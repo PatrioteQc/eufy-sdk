@@ -50,9 +50,27 @@ import { Timer } from "../core/util.js";
 import { Device, resolveDevice, detectionName, type Capability, type DeviceInspection } from "../model/index.js";
 import { isHomeBase } from "../model/device-family.js";
 import { DeviceRegistry } from "./device-registry.js";
-import type { EufyMegaOptions, EufyMegaEvent, EufyMegaEventMap, AnyDeviceEvent, DeviceState } from "./types.js";
+import type {
+  EufyMegaOptions,
+  EufyMegaEvent,
+  EufyMegaEventMap,
+  AnyDeviceEvent,
+  DeviceState,
+  RealtimePlaneReadiness,
+  RealtimeReadiness,
+  WaitForRealtimeOptions,
+} from "./types.js";
 
-export type { EufyMegaOptions, EufyMegaEvent, EufyMegaEventMap, AnyDeviceEvent, DeviceState } from "./types.js";
+export type {
+  EufyMegaOptions,
+  EufyMegaEvent,
+  EufyMegaEventMap,
+  AnyDeviceEvent,
+  DeviceState,
+  RealtimePlaneReadiness,
+  RealtimeReadiness,
+  WaitForRealtimeOptions,
+} from "./types.js";
 
 /**
  * Read a non-empty string field off a raw device record, tolerating the app's `deviceParams` nesting
@@ -85,6 +103,49 @@ const DEFAULT_PREWARM_EVENTS: readonly (keyof DeviceEventMap)[] = [
   "petDetection",
   "packageDelivered",
 ];
+
+interface RealtimeGeneration {
+  readonly epoch: number;
+  readonly readiness: MutableRealtimeReadiness;
+  readonly promise: Promise<RealtimeReadiness>;
+  readonly resolve: (readiness: RealtimeReadiness) => void;
+  readonly abort: AbortController;
+  result?: RealtimeReadiness;
+  superseded?: RealtimeReadiness;
+  settled: boolean;
+}
+
+class RealtimeStartupSupersededError extends Error {}
+
+interface MutableRealtimePlaneReadiness {
+  required: number;
+  ready: number;
+  failed: number;
+  pending: number;
+}
+
+interface MutableRealtimeReadiness {
+  state: RealtimeReadiness["state"];
+  push: MutableRealtimePlaneReadiness;
+  mqtt: MutableRealtimePlaneReadiness;
+  wiredP2p: MutableRealtimePlaneReadiness;
+}
+
+function createPlaneReadiness(required = 0): MutableRealtimePlaneReadiness {
+  return { required, ready: 0, failed: 0, pending: required };
+}
+
+function readinessSnapshot(
+  readiness: RealtimeReadiness | MutableRealtimeReadiness,
+  state = readiness.state,
+): RealtimeReadiness {
+  return Object.freeze({
+    state,
+    push: Object.freeze({ ...readiness.push }),
+    mqtt: Object.freeze({ ...readiness.mqtt }),
+    wiredP2p: Object.freeze({ ...readiness.wiredP2p }),
+  });
+}
 
 // Typed EventEmitter surface: declaration-merge strongly-typed on/once/off/emit onto the class so
 // `eufy.on("motion", e => …)` autocompletes the name and types the payload, while the runtime is
@@ -129,8 +190,6 @@ export class EufyMega extends EventEmitter {
   private readonly storedImages?: StoredImageCache;
   /** Account whose retained images are currently held. */
   private storedImageAccount?: string;
-  /** Guards the auto-realtime bring-up so it runs once per session (idempotent across login retries). */
-  private realtimeStarted = false;
   /**
    * Which bring-up generation is current. Bumped by every {@link disconnect}, so an in-flight
    * {@link ensureRealtime} can tell on completion whether it is still the live one.
@@ -142,6 +201,8 @@ export class EufyMega extends EventEmitter {
    * meant to release. Comparing generations makes each bring-up responsible for exactly its own epoch.
    */
   private realtimeEpoch = 0;
+  /** Shared startup state for the current epoch; caller timeouts never replace or cancel it. */
+  private realtimeGeneration?: RealtimeGeneration;
   /**
    * Devices already handed to a caller, so a realtime report refreshes the object they are holding
    * rather than only the registry. Weak so a caller dropping a `Device` still lets it be collected —
@@ -284,10 +345,9 @@ export class EufyMega extends EventEmitter {
    * successor (that would let two `connect()`s run concurrently and strand whichever installed first,
    * still subscribed and double-emitting).
    */
-  private ensureMqttStarted(scope: MqttScope): Promise<void> {
+  private ensureMqttStarted(scope: MqttScope, epoch = this.realtimeEpoch): Promise<void> {
     const existing = this.mqttReady.get(scope);
     if (existing) return existing;
-    const epoch = this.realtimeEpoch;
     const attempt: Promise<void> = (async () => {
       const mqtt = await this.startMqtt(scope);
       if (epoch !== this.realtimeEpoch) {
@@ -321,7 +381,7 @@ export class EufyMega extends EventEmitter {
    * read-less rather than failing the lookup.
    */
   private async awaitFirstRealtimeState(sn: string): Promise<void> {
-    if (this.opts.autoRealtime === false || !this.realtimeStarted) return;
+    if (this.opts.autoRealtime === false || this.realtimeGeneration?.epoch !== this.realtimeEpoch) return;
     if (this.registry.hasRealtimeState(sn)) return;
     const timeoutMs = this.opts.stateSnapshotMs ?? 4000;
     if (timeoutMs <= 0) return;
@@ -534,7 +594,7 @@ export class EufyMega extends EventEmitter {
   /**
    * On a successful login, kick off auto-realtime (unless `autoRealtime:false`). Fire-and-forget so
    * `login()` returns as soon as the session is ready — realtime channels come up in the background and
-   * surface failures via `error`. Idempotent (guarded by {@link realtimeStarted}).
+   * surface failures via `error`. Idempotent through the retained generation promise.
    */
   private afterLogin(result: LoginResult): LoginResult {
     if (result.status === LoginStatus.Ok) {
@@ -543,6 +603,40 @@ export class EufyMega extends EventEmitter {
       if (this.opts.autoRealtime !== false) void this.ensureRealtime();
     }
     return result;
+  }
+
+  /**
+   * Wait for the auto-managed realtime startup begun by the current successful {@link login}.
+   *
+   * A caller-specific timeout does not cancel startup. Calls made before successful login reject with
+   * `login() first`; clients configured with `autoRealtime:false` resolve as `disabled` without opening
+   * a transport.
+   */
+  async waitForRealtime(options: WaitForRealtimeOptions = {}): Promise<RealtimeReadiness> {
+    if (!this.loggedIn) throw new Error("login() first");
+    if (this.opts.autoRealtime === false) {
+      return {
+        state: "disabled",
+        push: createPlaneReadiness(),
+        mqtt: createPlaneReadiness(),
+        wiredP2p: createPlaneReadiness(),
+      };
+    }
+    const generation = this.realtimeGeneration;
+    if (!generation) throw new Error("login() first");
+    if (generation.epoch !== this.realtimeEpoch) {
+      return generation.superseded ?? readinessSnapshot(generation.readiness, "superseded");
+    }
+    if (options.timeoutMs === undefined) return generation.promise;
+    const timeoutMs = Math.max(0, options.timeoutMs);
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => resolve(readinessSnapshot(generation.readiness, "timed-out")), timeoutMs);
+      timer.unref?.();
+      void generation.promise.then((result) => {
+        clearTimeout(timer);
+        resolve(result);
+      });
+    });
   }
 
   /** Raw mega HTTP client, for endpoints not yet wrapped. */
@@ -748,32 +842,104 @@ export class EufyMega extends EventEmitter {
    * left detached: their P2P opens on demand (command / stream / event pre-warm) and idle-detaches. All
    * channels start concurrently; a single failure surfaces via `error` without aborting the rest.
    */
-  private async ensureRealtime(): Promise<void> {
-    if (this.realtimeStarted) return;
-    this.realtimeStarted = true;
+  private ensureRealtime(): Promise<RealtimeReadiness> {
+    return this.ensureRealtimeGeneration().promise;
+  }
+
+  /** Create or join the one transport bring-up owned by the current realtime epoch. */
+  private ensureRealtimeGeneration(): RealtimeGeneration {
+    if (this.realtimeGeneration?.epoch === this.realtimeEpoch) return this.realtimeGeneration;
     const epoch = this.realtimeEpoch;
+    let resolve!: (readiness: RealtimeReadiness) => void;
+    const promise = new Promise<RealtimeReadiness>((done) => (resolve = done));
+    const generation: RealtimeGeneration = {
+      epoch,
+      readiness: {
+        state: "ready",
+        push: createPlaneReadiness(1),
+        mqtt: createPlaneReadiness(),
+        wiredP2p: createPlaneReadiness(),
+      },
+      promise,
+      resolve,
+      abort: new AbortController(),
+      settled: false,
+    };
+    this.realtimeGeneration = generation;
+    void this.startRealtimeGeneration(generation);
+    return generation;
+  }
+
+  /** Start all selected transports concurrently and settle their owning generation once. */
+  private async startRealtimeGeneration(generation: RealtimeGeneration): Promise<void> {
+    const { epoch, readiness } = generation;
     try {
       if (!this.registry.list().length) await this.getDevices();
-      const push = await Promise.allSettled([
-        this.startPush(),
-        ...this.mqttScopesInUse().map((scope) => this.ensureMqttStarted(scope)),
-        this.warmWiredP2P(),
-      ]).then((rs) => {
-        for (const r of rs) if (r.status === "rejected") this.reportError(r.reason);
-        return rs[0].status === "fulfilled" ? rs[0].value : undefined;
-      });
+      if (epoch !== this.realtimeEpoch) return this.settleRealtimeGeneration(generation, "superseded");
+      const scopes = this.mqttScopesInUse();
+      readiness.mqtt = createPlaneReadiness(scopes.length);
+      let push: PushClient | undefined;
+      let startupFailed = false;
+      const pushStart = this.startPush(generation.abort.signal).then(
+        (client) => {
+          push = client;
+          readiness.push.ready++;
+          readiness.push.pending--;
+        },
+        (error) => {
+          if (error instanceof RealtimeStartupSupersededError) return;
+          readiness.push.failed++;
+          readiness.push.pending--;
+          this.reportError(error);
+        },
+      );
+      const mqttStarts = scopes.map((scope) =>
+        this.ensureMqttStarted(scope, epoch).then(
+          () => {
+            readiness.mqtt.ready++;
+            readiness.mqtt.pending--;
+          },
+          (error) => {
+            readiness.mqtt.failed++;
+            readiness.mqtt.pending--;
+            this.reportError(error);
+          },
+        ),
+      );
+      const wiredStart = this.warmWiredP2P(readiness.wiredP2p, generation.abort.signal).then(
+        (result) => {
+          readiness.wiredP2p = result;
+        },
+        (error) => {
+          this.reportError(error);
+          readiness.wiredP2p.pending = 0;
+          startupFailed = true;
+        },
+      );
+      await Promise.all([pushStart, ...mqttStarts, wiredStart]);
       if (epoch !== this.realtimeEpoch) {
         push?.close();
-        await this.closeMqttTransports();
-        await this.p2p.closeAll();
-        return;
+        return this.settleRealtimeGeneration(generation, "superseded");
       }
       this.pushClient = push;
       this.schedulePoll();
+      const failures = readiness.push.failed + readiness.mqtt.failed + readiness.wiredP2p.failed;
+      this.settleRealtimeGeneration(generation, failures || startupFailed ? "partial" : "ready");
     } catch (e) {
-      this.realtimeStarted = false; // allow a retry on the next login
       this.reportError(e);
+      readiness.push.failed += readiness.push.pending;
+      readiness.push.pending = 0;
+      this.settleRealtimeGeneration(generation, epoch === this.realtimeEpoch ? "partial" : "superseded");
     }
+  }
+
+  /** Resolve a generation with an immutable count snapshot; later transport completions are ignored. */
+  private settleRealtimeGeneration(generation: RealtimeGeneration, state: RealtimeReadiness["state"]): void {
+    if (generation.settled) return;
+    generation.settled = true;
+    generation.readiness.state = state;
+    generation.result = readinessSnapshot(generation.readiness);
+    generation.resolve(generation.result);
   }
 
   /**
@@ -880,13 +1046,33 @@ export class EufyMega extends EventEmitter {
 
   /** Eagerly open P2P sessions for WIRED stations only (persistent — they don't drain). Battery
    *  stations stay closed until an on-demand open. Best-effort per station. */
-  private async warmWiredP2P(): Promise<void> {
+  private async warmWiredP2P(
+    readiness = createPlaneReadiness(),
+    signal?: AbortSignal,
+  ): Promise<RealtimePlaneReadiness> {
     const wired = new Set<string>();
     for (const d of this.registry.p2pDevices()) {
       const key = this.p2p.stationKeyOf(d.sn);
       if (this.stationPower(key) === "wired") wired.add(key);
     }
-    await Promise.all([...wired].map((sn) => this.p2p.ensureStation(sn).catch((e) => this.reportError(e))));
+    readiness.required = wired.size;
+    readiness.pending = wired.size;
+    await Promise.all(
+      [...wired].map((sn) =>
+        this.p2p.ensureStation(sn, signal).then(
+          () => {
+            readiness.ready++;
+            readiness.pending--;
+          },
+          (error) => {
+            if (signal?.aborted) return;
+            readiness.failed++;
+            readiness.pending--;
+          },
+        ),
+      ),
+    );
+    return readiness;
   }
 
   /**
@@ -1240,7 +1426,7 @@ export class EufyMega extends EventEmitter {
    * and {@link ensureRealtime} owns the decision of whether a finished bring-up is still the current
    * one — so this never overwrites a channel a later login already brought up.
    */
-  private async startPush(): Promise<PushClient> {
+  private async startPush(signal?: AbortSignal): Promise<PushClient> {
     if (!this.mega.auth) throw new Error("login() first");
     const store = this.opts.pushStore ?? new MemoryFcmStore();
     let persisted = store.load();
@@ -1263,7 +1449,6 @@ export class EufyMega extends EventEmitter {
     client.setPersistentIds(persisted.persistentIds);
     client.on("connect", () => this.emit("pushConnect"));
     client.on("disconnect", () => this.emit("pushDisconnect"));
-    client.on("error", (e) => this.reportError(e));
     client.on("message", (raw: RawPushMessage) => this.emit("pushRaw", raw));
     client.on("push", (ev: PushEvent) => {
       // Enrich the transport-neutral push with its human event label (the transport stays
@@ -1290,7 +1475,33 @@ export class EufyMega extends EventEmitter {
       }
       store.save({ creds: persistedCreds, persistentIds: client.getPersistentIds() });
     });
-    client.connect();
+    await new Promise<void>((resolve, reject) => {
+      const cleanup = () => {
+        signal?.removeEventListener("abort", onAbort);
+        client.off("connect", onConnect);
+        client.off("error", onError);
+      };
+      const onConnect = () => {
+        cleanup();
+        resolve();
+      };
+      const onError = (error: Error) => {
+        cleanup();
+        client.close();
+        reject(error);
+      };
+      const onAbort = () => {
+        cleanup();
+        client.close();
+        reject(new RealtimeStartupSupersededError());
+      };
+      if (signal?.aborted) return onAbort();
+      signal?.addEventListener("abort", onAbort, { once: true });
+      client.once("connect", onConnect);
+      client.once("error", onError);
+      client.connect();
+    });
+    client.on("error", (e) => this.reportError(e));
     return client;
   }
 
@@ -1318,16 +1529,21 @@ export class EufyMega extends EventEmitter {
    */
   async disconnect(): Promise<void> {
     this.realtimeEpoch++;
+    if (this.realtimeGeneration) {
+      const generation = this.realtimeGeneration;
+      generation.superseded = readinessSnapshot(generation.result ?? generation.readiness, "superseded");
+      generation.abort.abort();
+      this.settleRealtimeGeneration(generation, "superseded");
+    }
     await this.teardownRealtime();
   }
 
   /**
    * Disconnect and forget every installed secure-MQTT transport.
    *
-   * Shared by {@link teardownRealtime} and by the stale-epoch bail-out in {@link ensureRealtime}: a
-   * bring-up that loses its epoch race has already installed its transports by the time it finds out,
-   * so it has to release them itself. Leaving that to the `disconnect()` that bumped the epoch does not
-   * work — that call has already run its teardown against an empty map and returned.
+   * Clearing both installed transports and their in-flight memos lets the next successful login own a
+   * fresh set. Individual stale attempts retain their epoch guard and close only the transport they
+   * created, so they cannot clear a successor generation's map.
    */
   private async closeMqttTransports(): Promise<void> {
     await Promise.all([...this.transports.values()].map((t) => t.disconnect()));
@@ -1345,7 +1561,6 @@ export class EufyMega extends EventEmitter {
    */
   private async teardownRealtime(): Promise<void> {
     this.pollTimer.cancel();
-    this.realtimeStarted = false;
     this.lastStateAnnounced.clear();
     await this.closeMqttTransports();
     await this.p2p.closeAll();

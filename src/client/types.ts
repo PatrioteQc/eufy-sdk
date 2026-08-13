@@ -14,6 +14,44 @@ import type { P2PFrame } from "../transport/p2p/p2p-session.js";
 import type { PushEvent, RawPushMessage } from "../transport/push/types.js";
 import type { AvailabilityObservation, EufyDevice, RealtimeMessage } from "../core/types.js";
 
+/** Count-only startup status for one auto-managed realtime transport plane. */
+export interface RealtimePlaneReadiness {
+  /** Number of transport starts selected for the plane. */
+  readonly required: number;
+  /** Number of selected starts that completed successfully. */
+  readonly ready: number;
+  /** Number of selected starts that failed. */
+  readonly failed: number;
+  /** Number of selected starts that have not settled. */
+  readonly pending: number;
+}
+
+/**
+ * Count-only status of the current auto-managed realtime generation.
+ *
+ * The summary intentionally carries no credentials, identifiers, or underlying errors. Transport
+ * failures continue to surface through the `error` event.
+ */
+export interface RealtimeReadiness {
+  /** Outcome of the generation or of this caller's bounded wait. */
+  readonly state: "ready" | "partial" | "disabled" | "superseded" | "timed-out";
+  /** Account-wide FCM push startup status. */
+  readonly push: RealtimePlaneReadiness;
+  /** Secure-MQTT credential-scope startup status. */
+  readonly mqtt: RealtimePlaneReadiness;
+  /** Persistent station-control P2P startup status for wired stations. */
+  readonly wiredP2p: RealtimePlaneReadiness;
+}
+
+/** Options for {@link EufyMega.waitForRealtime}. */
+export interface WaitForRealtimeOptions {
+  /**
+   * Maximum time in milliseconds for this caller to wait. Expiry does not cancel background startup;
+   * a later call can observe the generation's final result.
+   */
+  timeoutMs?: number;
+}
+
 export interface EufyMegaOptions extends MegaClientConfig {
   /** Persist FCM push credentials + seen ids across runs (default: in-memory). */
   pushStore?: FcmStore;
