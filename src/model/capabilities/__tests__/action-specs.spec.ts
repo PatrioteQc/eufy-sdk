@@ -2,6 +2,7 @@ import { buildActions, CAPABILITY_MODULES } from "../index.js";
 import { actionSpecOf, camelCase } from "../access.js";
 import { bind } from "./bind.js";
 import { isKnownValueKind } from "../../types.js";
+import { codecForType } from "../../classify.js";
 import type { ActionArgSpec, ActionSpec, CapabilityActions, CapabilityModule, CommandContext } from "../types.js";
 import type { CommandSink, Ff09SettingsReader, MediaProvider, RawDpCodec } from "../../../core/contracts.js";
 import type { Surface } from "../members.js";
@@ -60,26 +61,37 @@ const sink: CommandSink = { dispatch: async () => undefined };
 /**
  * Build a module's action object with every optional provider present and every backing param reported,
  * so an action can only be missing because it isn't installed at all. The providers are empty fakes:
- * nothing here CALLS an action, it only reads what is attached to one.
+ * nothing here calls an action, it only reads what is attached to one. The default camera context
+ * preserves the catalogue-wide baseline; a module that installs nothing there retries with its first
+ * declared device type and corresponding codec.
  */
 const built = (m: CapabilityModule): CapabilityActions => {
   const ctx: CommandContext = {
     channel: 0,
     codec: "camera",
-    category: "eufy_home", // enables isAiotVacuum-gated members in vacuum/suction/locate
+    category: "eufy_home",
     paramIds: new Set(m.properties.map((p) => p.paramType)),
     capabilities: new Set([m.capability, "snapshot"]),
   };
-  const actions = buildActions(
-    [m.capability],
-    ctx,
-    sink,
-    { snapshotStored: async () => Buffer.alloc(0) } as MediaProvider,
-    {} as Ff09SettingsReader,
-    {} as RawDpCodec,
-    () => undefined,
+  const bindContext = (context: CommandContext): CapabilityActions => {
+    const actions = buildActions(
+      [m.capability],
+      context,
+      sink,
+      { snapshotStored: async () => Buffer.alloc(0) } as MediaProvider,
+      {} as Ff09SettingsReader,
+      {} as RawDpCodec,
+      () => undefined,
+    );
+    return actions[camelCase(m.capability) as keyof typeof actions] as CapabilityActions;
+  };
+  const initial = bindContext(ctx);
+  const installsAction = Object.values(Object.getOwnPropertyDescriptors(initial)).some(
+    (descriptor) => typeof descriptor.value === "function",
   );
-  return actions[camelCase(m.capability) as keyof typeof actions] as CapabilityActions;
+  const deviceType = m.detection?.deviceTypes?.[0];
+  if (installsAction || deviceType === undefined) return initial;
+  return bindContext({ ...ctx, codec: codecForType(deviceType) ?? ctx.codec, deviceType });
 };
 
 /**

@@ -16,6 +16,7 @@ import {
   inspectParams,
 } from "../index.js";
 import type { CloudRecord } from "../index.js";
+import { DeviceType } from "../device-types.js";
 // VACUUM_DP is the capability's own wire vocabulary (internal — not on the barrel), so a spec imports
 // it by direct path, the same way the P2P command specs import `CAMERA_CMD`.
 import { VACUUM_DP } from "../capabilities/vacuum-clean.js";
@@ -332,16 +333,19 @@ describe("mergeProperties — shared props dedupe across capabilities", () => {
     expect(detectCapabilities({ model: "cam" }, "camera")).toContain("video");
   });
 
+  /** Camera audio and HomeBase siren schemas retain their independently evidenced members. */
   it("honours per-member `available` through resolveDevice — a hub omits camera-only audio props", () => {
-    // A camera reporting the mic/speaker params, and a HomeBase — both resolve the shared `audio`
-    // capability, but each keeps only the members its family speaks.
     const camNames = resolveDevice({ deviceType: 9, model: "T8114", params: { 1240: "1", 1241: "1" } }).properties.map(
       (p) => p.name,
     );
     expect(camNames).toEqual(expect.arrayContaining(["microphone", "speaker", "speakerVolume", "audioRecording"]));
     expect(camNames).not.toContain("hubAlarmTone");
 
-    const hubNames = resolveDevice({ model: "T8030", deviceType: 0 }).properties.map((p) => p.name);
+    const hubNames = resolveDevice({
+      model: "T8030",
+      deviceType: DeviceType.HB3,
+      params: { 1281: "1" },
+    }).properties.map((p) => p.name);
     expect(hubNames).toContain("hubAlarmTone");
     for (const cameraOnly of ["microphone", "speaker", "speakerVolume", "audioRecording"]) {
       expect(hubNames).not.toContain(cameraOnly);

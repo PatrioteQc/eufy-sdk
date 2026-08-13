@@ -973,7 +973,7 @@ export type { DoorbellActions, QuickResponse } from "./doorbell.js";
 export { parseQuickResponses } from "./doorbell.js";
 export { DoorbellRingtone, type DoorbellRingtoneValue } from "./doorbell.js";
 export type { AudioActions } from "./audio.js";
-export { HubAlarmTone, type HubAlarmToneValue } from "./audio.js";
+export { HubAlarmTone, type HubAlarmToneValue } from "./siren.js";
 /**
  * RoboVac activity and clean type are the declared returns of the public `dev.vacuumClean()` getters,
  * so a consumer needs to be able to name both unions.

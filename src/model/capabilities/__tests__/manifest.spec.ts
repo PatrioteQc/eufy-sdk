@@ -72,6 +72,63 @@ const tableReads = (m: CapabilityModule, paramIds: Set<number>): string[] =>
     .map(([name]) => name);
 
 describe("describeCapabilities — enumeration of the live bound objects", () => {
+  it("describes only the alarm-output members installed for each verified siren family", () => {
+    const describeSiren = (ctx: CommandContext) =>
+      describeCapabilities(buildActions(["siren"], ctx, sink, undefined, undefined, undefined, () => undefined)).find(
+        (entry) => entry.capability === "siren",
+      )!;
+    const homeBase = describeSiren({
+      channel: 0,
+      codec: "station",
+      deviceType: 0,
+      model: "T8010",
+      accountName: "tester",
+      capabilities: new Set(["siren"]),
+      paramIds: new Set([1281, 1282]),
+    });
+    const camera = describeSiren({
+      channel: 1,
+      codec: "camera",
+      deviceType: 9,
+      model: "T8114",
+      homeBaseAttached: true,
+      capabilities: new Set(["siren"]),
+      paramIds: new Set([1015]),
+    });
+    const standalone = describeSiren({
+      channel: 16,
+      codec: "sensor",
+      deviceType: 123,
+      capabilities: new Set(["siren"]),
+      paramIds: new Set([61008]),
+    });
+    const unverified = describeSiren({
+      channel: 0,
+      codec: "camera",
+      deviceType: 9,
+      homeBaseAttached: false,
+      capabilities: new Set(["siren"]),
+      paramIds: new Set([61008]),
+    });
+
+    expect(homeBase.reads.map((read) => read.accessor)).toEqual(["alarmTone"]);
+    expect(homeBase.actions.map((action) => action.name)).toEqual([
+      "setAlarmVolume",
+      "setAlarmTone",
+      "trigger",
+      "stop",
+    ]);
+    expect(homeBase.actions.find((action) => action.name === "trigger")?.args).toEqual([
+      { name: "seconds", kind: "seconds", min: 1, description: "A positive whole-number duration." },
+    ]);
+    expect(camera.reads).toEqual([]);
+    expect(camera.actions.map((action) => action.name)).toEqual(["trigger", "stop"]);
+    expect(standalone.reads.map((read) => read.accessor)).toEqual(["active"]);
+    expect(standalone.actions.map((action) => action.name)).toEqual(["test", "stop"]);
+    expect(unverified.reads).toEqual([]);
+    expect(unverified.actions).toEqual([]);
+  });
+
   it("agrees with the member tables on which reads a device installed", () => {
     const params = allParams();
     for (const d of describeAll(params)) {

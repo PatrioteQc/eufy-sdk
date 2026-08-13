@@ -78,6 +78,8 @@ export type Command =
     }
   | { kind: "p2p-privacy-burst"; enabled: boolean; channel: number }
   | { kind: "p2p-station-scalar"; cmd: number; value: number; channel: number }
+  /** P2P int-plus-string frame; the transport injects the authenticated account id string. */
+  | { kind: "p2p-int-string"; cmd: number; value: number; valueSub: number; channel: number }
   | ({ kind: "ff09-actuate" } & Ff09Identity)
   | { kind: "ff09-autolock"; adminUserId: string; deviceSn: string; enabled: boolean; delaySeconds?: number }
   | { kind: "ff09-setting-toggle"; adminUserId: string; deviceSn: string; settingId: number; value: boolean }
