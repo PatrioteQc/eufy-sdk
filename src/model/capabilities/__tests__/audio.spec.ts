@@ -1,4 +1,4 @@
-import { AUDIO, AUDIO_CMD, HubAlarmTone, type AudioActions } from "../audio.js";
+import { AUDIO, AUDIO_CMD, type AudioActions } from "../audio.js";
 import { bind } from "./bind.js";
 import { DeviceType } from "../../device-types.js";
 import { buildCommand, detectCapabilities } from "../index.js";
@@ -23,13 +23,7 @@ const ctx = (channel = 0, extra: Partial<CommandContext> = {}): CommandContext =
 describe("audio capability module", () => {
   it("declares the mic/speaker/volume schema", () => {
     expect(AUDIO.capability).toBe("audio");
-    expect(AUDIO.properties.map((p) => p.name)).toEqual([
-      "microphone",
-      "speaker",
-      "speakerVolume",
-      "audioRecording",
-      "hubAlarmTone",
-    ]);
+    expect(AUDIO.properties.map((p) => p.name)).toEqual(["microphone", "speaker", "speakerVolume", "audioRecording"]);
   });
 
   it("detects cameras via mic/speaker params; the HomeBase family, but NOT NVRs", () => {
@@ -114,16 +108,17 @@ describe("audio capability module", () => {
     ]);
   });
 
-  describe("station (HomeBase) audio — folded into the same capability", () => {
+  describe("station (HomeBase) voice-prompt audio", () => {
     const hubCtx = ctx(0, { codec: "station", deviceType: DeviceType.HB3 });
 
-    it("a HomeBase gets alarm + prompt volume, NOT mic/speaker/ringtone", () => {
+    it("a HomeBase gets prompt volume only; alarm output belongs to siren", () => {
       const { acts } = bind<AudioActions>("audio", hubCtx);
-      expect(acts.setAlarmVolume).toBeDefined();
       expect(acts.setPromptVolume).toBeDefined();
       expect(acts.setMicrophone).toBeUndefined();
       expect(acts.setVolume).toBeUndefined();
       expect(acts.setRingtoneVolume).toBeUndefined();
+      expect("setAlarmVolume" in acts).toBe(false);
+      expect("setAlarmTone" in acts).toBe(false);
     });
 
     it("an NVR (station codec, no speaker) gets NO audio actions", () => {
@@ -134,12 +129,6 @@ describe("audio capability module", () => {
       expect(buildCommand("promptVolume", 50, nvr)).toBeUndefined();
     });
 
-    it("setAlarmVolume → station-scalar 1235 on the station channel 255", async () => {
-      const { acts, sent } = bind<AudioActions>("audio", hubCtx);
-      await acts.setAlarmVolume!(44);
-      expect(sent).toEqual([{ kind: "p2p-station-scalar", cmd: 1235, value: 44, channel: 255 }]);
-    });
-
     it("setPromptVolume → 1350 set-payload wrapper {value} on ch0", async () => {
       const { acts, sent } = bind<AudioActions>("audio", hubCtx);
       await acts.setPromptVolume!(70);
@@ -148,67 +137,8 @@ describe("audio capability module", () => {
 
     it("a camera does NOT get the station actions", () => {
       const { acts } = bind<AudioActions>("audio", ctx(2));
-      expect(acts.setAlarmVolume).toBeUndefined();
+      expect("setAlarmVolume" in acts).toBe(false);
       expect(acts.setPromptVolume).toBeUndefined();
-    });
-
-    it("hubAlarmTone → 1350 set-payload {type} on ch0, explicit mValue3:0 (wire verified live on T8030)", () => {
-      expect(buildCommand("hubAlarmTone", 2, hubCtx)).toEqual({
-        kind: "set-payload",
-        cmd: AUDIO_CMD.HUB_ALARM_TONE, // 1281
-        payload: { type: 2 },
-        channel: 0,
-        mValue3: 0,
-      });
-    });
-
-    it("hubAlarmTone buildCommand is gated on HomeBase (undefined on a non-HomeBase station)", () => {
-      const nvr = ctx(0, { codec: "station", deviceType: DeviceType.NVR_S4_MAX });
-      expect(buildCommand("hubAlarmTone", 2, nvr)).toBeUndefined();
-    });
-
-    it("setAlarmTone dispatches the same intent (actions path)", async () => {
-      const { acts, sent } = bind<AudioActions>("audio", hubCtx);
-      await acts.setAlarmTone!(2);
-      expect(sent).toEqual([{ kind: "set-payload", cmd: 1281, payload: { type: 2 }, channel: 0, mValue3: 0 }]);
-    });
-
-    it("a camera does NOT get setAlarmTone", () => {
-      const { acts } = bind<AudioActions>("audio", ctx(2));
-      expect(acts.setAlarmTone).toBeUndefined();
-    });
-
-    it("HubAlarmTone is 1-indexed (2 options, no index 0) — index↔name confirmed live on T8030", () => {
-      expect(HubAlarmTone).toEqual({ Tone1: 1, Tone2: 2 });
-    });
-
-    it("HubAlarmTone.Tone1 plugs straight into setAlarmTone", async () => {
-      const { acts, sent } = bind<AudioActions>("audio", hubCtx);
-      await acts.setAlarmTone!(HubAlarmTone.Tone1);
-      expect(sent).toEqual([{ kind: "set-payload", cmd: 1281, payload: { type: 1 }, channel: 0, mValue3: 0 }]);
-    });
-
-    it(
-      "hubAlarmTone throws on anything outside {1,2} — not clamped, since a wrong tone is a wrong " +
-        "value, not a safe default",
-      () => {
-        expect(() => buildCommand("hubAlarmTone", 0, hubCtx)).toThrow(
-          /alarmTone: 0 is not a valid value \(must be one of 1\/2\)/,
-        );
-        expect(() => buildCommand("hubAlarmTone", 3, hubCtx)).toThrow(
-          /alarmTone: 3 is not a valid value \(must be one of 1\/2\)/,
-        );
-        expect(() => buildCommand("hubAlarmTone", "x", hubCtx)).toThrow(
-          /alarmTone: "x" is not a valid value \(must be one of 1\/2\)/,
-        );
-      },
-    );
-
-    /** The refusal is generated from the member's own `enumValues` rather than hand-written. */
-    it("setAlarmTone rejects an invalid value with a descriptive error, same validation as buildCommand", async () => {
-      const { acts, sent } = bind<AudioActions>("audio", hubCtx);
-      await expect(acts.setAlarmTone!(5)).rejects.toThrow(/alarmTone: 5 is not a valid value \(must be one of 1\/2\)/);
-      expect(sent).toEqual([]);
     });
   });
 

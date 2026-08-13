@@ -58,7 +58,7 @@ export const MODEL_REGISTRY: Readonly<Record<string, RegistryEntry>> = {
   // Cameras observed on real owned hardware (inspect-device sweep). Names from the app's own
   // model-family constants (scripts/data/app_model_registry.json); caps mirror what the device
   // reports. T8171 has no family entry in that dump, so it keeps the raw T-code.
-  T8114: { codec: "camera", caps: ["siren", "light", "battery"], name: "eufyCam" },
+  T8114: { codec: "camera", caps: ["light", "battery"], name: "eufyCam" },
   // ptz is NOT curated on these rows on purpose — infer.ts proves it from evidence for the
   // whole fleet (verified live): SoloCam (T8170/T8171) via their reported PTZ preset params
   // (6090/6091/6092, 6210); Indoor-PT (T8410) via its vendor deviceType 31 = INDOOR_PT_CAMERA.

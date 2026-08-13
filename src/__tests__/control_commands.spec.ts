@@ -1,6 +1,7 @@
 import { CAMERA_CMD } from "../model/capabilities/camera.js";
 import { LIGHT_CMD } from "../model/capabilities/light.js";
 import { AUDIO_CMD } from "../model/capabilities/audio.js";
+import { SIREN_CMD } from "../model/capabilities/siren.js";
 import { DOORBELL_CMD } from "../model/capabilities/doorbell.js";
 import { PTZ_CMD } from "../model/capabilities/ptz.js";
 import { P2P_ENVELOPE } from "../transport/p2p/envelope.js";
@@ -25,7 +26,9 @@ describe("capability feature-command ids", () => {
     expect(AUDIO_CMD.AUDIO_SPEAKER).toBe(CommandType.CMD_SET_DEV_SPEAKER_MUTE);
     expect(AUDIO_CMD.SPEAKER_VOLUME).toBe(CommandType.CMD_SET_DEV_SPEAKER_VOLUME);
     expect(AUDIO_CMD.DOORBELL_RINGTONE_VOLUME).toBe(CommandType.CMD_BAT_DOORBELL_SET_RINGTONE_VOLUME);
-    expect(AUDIO_CMD.HUB_SPK_VOLUME).toBe(CommandType.CMD_SET_HUB_SPK_VOLUME);
+    expect(SIREN_CMD.HUB_SPK_VOLUME).toBe(CommandType.CMD_SET_HUB_SPK_VOLUME);
+    expect(SIREN_CMD.HOMEBASE_TONE).toBe(CommandType.CMD_SET_TONE_FILE);
+    expect(SIREN_CMD.CAMERA_TONE).toBe(CommandType.CMD_SET_DEVS_TONE_FILE);
     expect(AUDIO_CMD.HUB_PROMPT_VOLUME).toBe(CommandType.CMD_SET_PROMPT_VOLUME);
     expect(AUDIO_CMD.AUDIO_RECORDING).toBe(CommandType.CMD_SET_AUDIO_MUTE_RECORD);
   });
@@ -45,7 +48,9 @@ describe("capability feature-command ids", () => {
     expect(AUDIO_CMD.AUDIO_SPEAKER).toBe(1241);
     expect(AUDIO_CMD.SPEAKER_VOLUME).toBe(1230);
     expect(AUDIO_CMD.DOORBELL_RINGTONE_VOLUME).toBe(1708);
-    expect(AUDIO_CMD.HUB_SPK_VOLUME).toBe(1235);
+    expect(SIREN_CMD.HUB_SPK_VOLUME).toBe(1235);
+    expect(SIREN_CMD.HOMEBASE_TONE).toBe(1201);
+    expect(SIREN_CMD.CAMERA_TONE).toBe(1202);
     expect(AUDIO_CMD.HUB_PROMPT_VOLUME).toBe(1292);
     expect(AUDIO_CMD.AUDIO_RECORDING).toBe(1288);
   });

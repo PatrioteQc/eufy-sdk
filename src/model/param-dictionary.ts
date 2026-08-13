@@ -1255,7 +1255,7 @@ export const SECURITY_PARAMS: Record<number, ParamDef> = {
     provenance: "verified",
     observed: true,
     models: ["T8010", "T8030"],
-    note: "HomeBase alarm tone/siren-sound selection (distinct from alarmVolume/1235). Write wire-confirmed live on T8030 (2026-07-23): 1350 SET_PAYLOAD, cmd 1281, mChannel 0, mValue3 0, payload:{type:<int enum>} — see capabilities/audio.ts's AUDIO_CMD.HUB_ALARM_TONE for the full capture citation.",
+    note: "HomeBase alarm tone/siren-sound selection (distinct from alarmVolume/1235). Write wire-confirmed live on T8030 (2026-07-23): 1350 SET_PAYLOAD, cmd 1281, mChannel 0, mValue3 0, payload:{type:<int enum>} — see capabilities/siren.ts's SIREN_CMD.HUB_ALARM_TONE for the full capture citation.",
   },
   1282: {
     paramType: 1282,

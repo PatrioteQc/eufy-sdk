@@ -411,6 +411,9 @@ export class P2PCommandRouter {
       case "p2p-station-scalar":
         await this.sendStationScalar(sn, cmd.cmd, cmd.value, cmd.channel);
         return;
+      case "p2p-int-string":
+        await this.sendIntString(sn, cmd.cmd, cmd.value, cmd.valueSub, cmd.channel);
+        return;
       // ── Raw wire kinds — the privacy burst is a bespoke multi-frame sequence, not a set-param. ──
       case "p2p-privacy-burst":
         await this.sendPrivacyBurst(sn, cmd.enabled);
@@ -908,6 +911,19 @@ export class P2PCommandRouter {
     await this.replayLevel2Send(sn, `station scalar cmd ${outerCmd}`, ({ session, accountId }) =>
       session.sendRawLevel2Bytes(buildDirectBinaryBody(value, accountId), channel, outerCmd, 8),
     );
+  }
+
+  /** Send a level-1 int-plus-string frame with authenticated account identity injected by the transport. */
+  private async sendIntString(
+    sn: string,
+    commandType: number,
+    value: number,
+    valueSub: number,
+    channel: number,
+  ): Promise<void> {
+    const { session, accountId } = await this.resolveSession(sn);
+    if (!accountId) throw new Error(`int-plus-string command ${commandType} for ${sn} requires an account id`);
+    session.sendIntStringCommand(commandType, value, valueSub, accountId, channel);
   }
 
   /**
