@@ -1,4 +1,5 @@
 import { PERSON_DETECTION } from "../person-detection.js";
+import { detectCapabilities } from "../index.js";
 
 describe("person_detection capability module", () => {
   it("declares the capability + schema", () => {
@@ -13,7 +14,13 @@ describe("person_detection capability module", () => {
     }
   });
 
-  it("has no detection (attached via registry, not self-detected)", () => {
-    expect(PERSON_DETECTION.detection).toBeUndefined();
+  it("advertises semantic person events on the camera baseline without inventing sensor support", () => {
+    expect(detectCapabilities({ params: {} }, "camera")).toContain("person_detection");
+    expect(detectCapabilities({ params: {} }, "sensor")).not.toContain("person_detection");
+    expect(PERSON_DETECTION.events?.map(({ emit }) => emit)).toEqual([
+      "personDetected",
+      "personDetected",
+      "strangerDetected",
+    ]);
   });
 });
