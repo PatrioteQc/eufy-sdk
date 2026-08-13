@@ -52,9 +52,9 @@ export const CAMERA_CMD = {
   NIGHT_VISION_TYPE: 1277,
   /**
    * **Anti-theft detection** switch (app `APP_CMD_EAS_SWITCH`). Despite the "EAS" name the app's own
-   * parser maps this id onto `anti_theft_detection_switch` — the SDK already names it anti-theft in
-   * `motion.ts`/`siren.ts`/the param dictionary, so it is described that way here too. (The app's
-   * "EAS" resource strings mix emergency- and anti-theft-worded copy; the parser is the tiebreak.)
+   * parser maps this id onto `anti_theft_detection_switch`, so the camera member uses that semantic
+   * name. The app's "EAS" resource strings mix emergency- and anti-theft-worded copy; the parser is
+   * the tiebreak.
    *
    * Wire from the app's own JS: a scalar `params:{value:0|1}`. Emitted with the **adaptive** form so
    * topology picks the level — level-2/direct on a HomeBase-attached device, level-1 on a standalone.
@@ -72,6 +72,16 @@ export const CAMERA_CMD = {
    */
   VIDEO_QUALITY_SET: 2731,
 } as const;
+
+/** Whether a model-side record or bound context reports the camera-owned legacy EAS switch. */
+export function hasReportedEasSwitch(source: {
+  params?: Record<number, string>;
+  paramIds?: ReadonlySet<number>;
+}): boolean {
+  return (
+    source.paramIds?.has(CAMERA_CMD.EAS_SWITCH) === true || Object.hasOwn(source.params ?? {}, CAMERA_CMD.EAS_SWITCH)
+  );
+}
 
 /**
  * On-screen watermark / OSD overlay options. The value is the UI radio index. Use

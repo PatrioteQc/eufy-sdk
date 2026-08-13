@@ -333,6 +333,20 @@ describe("mergeProperties — shared props dedupe across capabilities", () => {
     expect(detectCapabilities({ model: "cam" }, "camera")).toContain("video");
   });
 
+  it("resolves attached camera alarm output from topology and EAS evidence without a model row", () => {
+    expect(resolveDevice({ model: "T8114", deviceType: DeviceType.CAMERA2, params: {} }).capabilities).not.toContain(
+      "siren",
+    );
+    expect(
+      resolveDevice({
+        model: "T8999",
+        deviceType: DeviceType.BATTERY_DOORBELL,
+        parentSn: "T8000P0000000000",
+        params: { 1015: "0" },
+      }).capabilities,
+    ).toContain("siren");
+  });
+
   /** Camera audio and HomeBase siren schemas retain their independently evidenced members. */
   it("honours per-member `available` through resolveDevice — a hub omits camera-only audio props", () => {
     const camNames = resolveDevice({ deviceType: 9, model: "T8114", params: { 1240: "1", 1241: "1" } }).properties.map(

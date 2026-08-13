@@ -234,16 +234,16 @@ describe("siren capability module", () => {
     });
   });
 
-  describe("HomeBase-attached T8114 camera alarm output", () => {
-    it("uses camera device type and attached topology rather than a model label", () => {
+  describe("HomeBase-attached camera alarm output", () => {
+    it("uses attached topology and reported EAS evidence rather than model or device type", () => {
       const { acts } = sirenOf({
         channel: 2,
         codec: "camera",
-        deviceType: DeviceType.CAMERA2,
+        deviceType: DeviceType.BATTERY_DOORBELL,
         model: "T8999",
         homeBaseAttached: true,
         capabilities: new Set(["siren"]),
-        paramIds: new Set(),
+        paramIds: new Set([1015]),
       });
       const alarm = acts as unknown as Record<string, unknown>;
 
@@ -251,12 +251,16 @@ describe("siren capability module", () => {
       expect(alarm.stop).toBeDefined();
     });
 
-    it.each([0, 1])("routes trigger and stop only to the bound camera channel %i", async (channel) => {
+    it.each([
+      [0, DeviceType.CAMERA2, "T8114"],
+      [1, DeviceType.CAMERA2, "T8114"],
+      [2, DeviceType.BATTERY_DOORBELL, "T8210"],
+    ])("routes trigger and stop only to the bound camera channel %i", async (channel, deviceType, model) => {
       const { acts, sent } = sirenOf({
         channel,
         codec: "camera",
-        deviceType: DeviceType.CAMERA2,
-        model: "T8114",
+        deviceType,
+        model,
         homeBaseAttached: true,
         capabilities: new Set(["siren"]),
         paramIds: new Set([1015, 61008, 1825, 61006]),
@@ -279,26 +283,29 @@ describe("siren capability module", () => {
     });
 
     it.each([
-      [DeviceType.CAMERA2, "T8114", false],
-      [DeviceType.INDOOR_PT_CAMERA, "T8410", false],
-      [DeviceType.INDOOR_PT_CAMERA, "T8410", true],
-      [DeviceType.BATTERY_DOORBELL, "T8210", true],
-    ])("installs no alarm action for unverified type/model/topology %s/%s/%s", (deviceType, model, attached) => {
-      const { acts } = sirenOf({
-        channel: 0,
-        codec: "camera",
-        deviceType,
-        model,
-        homeBaseAttached: attached,
-        capabilities: new Set(["siren"]),
-        paramIds: new Set([1015]),
-      });
-      const alarm = acts as unknown as Record<string, unknown>;
+      [DeviceType.CAMERA2, "T8114", false, true],
+      [DeviceType.INDOOR_PT_CAMERA, "T8410", false, false],
+      [DeviceType.INDOOR_PT_CAMERA, "T8410", true, false],
+      [DeviceType.BATTERY_DOORBELL, "T8210", true, false],
+    ])(
+      "installs no alarm action without topology and EAS evidence for %s/%s/%s/%s",
+      (deviceType, model, attached, evidenced) => {
+        const { acts } = sirenOf({
+          channel: 0,
+          codec: "camera",
+          deviceType,
+          model,
+          homeBaseAttached: attached,
+          capabilities: new Set(["siren"]),
+          paramIds: new Set(evidenced ? [1015] : []),
+        });
+        const alarm = acts as unknown as Record<string, unknown>;
 
-      expect(alarm.trigger).toBeUndefined();
-      expect(alarm.stop).toBeUndefined();
-      expect(alarm.active).toBeUndefined();
-    });
+        expect(alarm.trigger).toBeUndefined();
+        expect(alarm.stop).toBeUndefined();
+        expect(alarm.active).toBeUndefined();
+      },
+    );
 
     it.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1, "10"])(
       "rejects invalid camera trigger duration %s without dispatch",
@@ -310,7 +317,7 @@ describe("siren capability module", () => {
           model: "T8114",
           homeBaseAttached: true,
           capabilities: new Set(["siren"]),
-          paramIds: new Set(),
+          paramIds: new Set([1015]),
         });
         const trigger = (acts as unknown as { trigger: (value: number) => Promise<void> }).trigger;
 
@@ -345,6 +352,14 @@ describe("siren capability module", () => {
         capabilities: new Set(["siren"]),
         paramIds: new Set([61008, 1825, 61006]),
       },
+      {
+        channel: 17,
+        codec: "sensor",
+        deviceType: DeviceType.SENSOR,
+        homeBaseAttached: true,
+        capabilities: new Set(["siren"]),
+        paramIds: new Set([1015]),
+      },
     ];
 
     for (const context of contexts) {
@@ -369,10 +384,10 @@ describe("siren capability module", () => {
     {
       channel: 1,
       codec: "camera" as const,
-      deviceType: DeviceType.CAMERA2,
+      deviceType: DeviceType.BATTERY_DOORBELL,
       homeBaseAttached: true,
       capabilities: new Set(["siren"] as const),
-      paramIds: new Set<number>(),
+      paramIds: new Set([1015]),
     },
   ])("propagates transport rejection without fabricating active state", async (context) => {
     const attempted: Command[] = [];
@@ -398,8 +413,36 @@ describe("siren capability module", () => {
   });
 
   describe("detection", () => {
-    it("does NOT key on param 1015 (that's easSwitch, on ordinary cameras — not a siren signal)", () => {
-      expect(SIREN.detection?.evidenceParams ?? []).not.toContain(1015);
+    it("requires both attached topology and reported EAS evidence for a camera", () => {
+      expect(
+        detectCapabilities(
+          {
+            deviceType: DeviceType.BATTERY_DOORBELL,
+            model: "T8999",
+            parentSn: "T8000P0000000000",
+            params: { 1015: "0" },
+          },
+          "camera",
+        ),
+      ).toContain("siren");
+      expect(
+        detectCapabilities(
+          { deviceType: DeviceType.BATTERY_DOORBELL, model: "T8999", params: { 1015: "0" } },
+          "camera",
+        ),
+      ).not.toContain("siren");
+      expect(
+        detectCapabilities(
+          { deviceType: DeviceType.SENSOR, model: "T8999", parentSn: "T8000P0000000000", params: { 1015: "0" } },
+          "sensor",
+        ),
+      ).not.toContain("siren");
+      expect(
+        detectCapabilities(
+          { deviceType: DeviceType.BATTERY_DOORBELL, model: "T8999", parentSn: "T8000P0000000000", params: {} },
+          "camera",
+        ),
+      ).not.toContain("siren");
     });
     it("proves siren via the standalone siren-sensor DeviceTypes", () => {
       expect(SIREN.detection?.deviceTypes).toContain(DeviceType.SIREN_SENSOR);
@@ -412,11 +455,6 @@ describe("siren capability module", () => {
       expect(
         detectCapabilities({ deviceType: DeviceType.STATION, model: "T8999", params: {} }, "station"),
       ).not.toContain("siren");
-    });
-    it("detects the Camera2 protocol family without depending on a model label", () => {
-      expect(detectCapabilities({ deviceType: DeviceType.CAMERA2, model: "T8999", params: {} }, "camera")).toContain(
-        "siren",
-      );
     });
   });
 });

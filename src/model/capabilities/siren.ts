@@ -1,6 +1,7 @@
 import { DeviceType } from "../device-types.js";
 import { coerceEnumValue, enumLabels } from "../../core/util.js";
 import { HOMEBASE_TYPES, isHomeBase } from "../device-family.js";
+import { hasReportedEasSwitch } from "./camera.js";
 import { setPayload, setStationScalar } from "./access.js";
 import { method, propertiesOf, type Members, type Surface } from "./members.js";
 import type { AvailabilityContext, CapabilityModule, CommandContext } from "./types.js";
@@ -38,7 +39,7 @@ export const SIREN_CMD = {
   HUB_SPK_VOLUME: 1235,
   /** HomeBase alarm-tone selection (app `APP_CMD_HUB_ALARM_TONE`). */
   HUB_ALARM_TONE: 1281,
-  /** Attached Camera2 duration alarm, verified live on T8114 (app `SET_DEVS_TONE_FILE`). */
+  /** Attached-camera duration alarm, verified live on T8114 and T8210 (app `SET_DEVS_TONE_FILE`). */
   CAMERA_TONE: 1202,
 } as const;
 
@@ -96,9 +97,9 @@ function isEvidencedStationAlarm(ctx: CommandContext): boolean {
   return isStationAlarmOutput(ctx) && HUB_ALARM_EVIDENCE.some((param) => ctx.paramIds.has(param));
 }
 
-/** Whether this bound device uses the attached Camera2 alarm wire verified on two independent channels. */
-function isAttachedCamera2(ctx: CommandContext): boolean {
-  return ctx.deviceType === DeviceType.CAMERA2 && ctx.homeBaseAttached === true;
+/** Whether an attached camera reports the EAS slot verified with its own manual alarm output. */
+function isEvidencedAttachedCamera(ctx: CommandContext): boolean {
+  return ctx.codec === "camera" && ctx.homeBaseAttached === true && hasReportedEasSwitch(ctx);
 }
 
 /** Whether this device belongs to a standalone siren-sensor protocol family. */
@@ -123,7 +124,7 @@ function homeBaseAlarm(seconds: number, ctx: CommandContext): Command {
   );
 }
 
-/** Build the Camera2 int-plus-string duration command for its own bound device channel. */
+/** Build the attached-camera int-plus-string duration command for its own bound device channel. */
 function cameraAlarm(seconds: number, ctx: CommandContext): Command {
   return {
     kind: "p2p-int-string",
@@ -140,7 +141,7 @@ type AlarmOutputFamily = "homebase" | "camera" | "standalone";
 /** Classify only the alarm-output families whose runtime evidence admits a command. */
 function alarmOutputFamily(ctx: CommandContext): AlarmOutputFamily | undefined {
   if (isEvidencedStationAlarm(ctx)) return "homebase";
-  if (isAttachedCamera2(ctx)) return "camera";
+  if (isEvidencedAttachedCamera(ctx)) return "camera";
   if (isEvidencedStandaloneSiren(ctx)) return "standalone";
   return undefined;
 }
@@ -301,7 +302,7 @@ export const SIREN_MEMBERS = {
     available: isStandaloneSirenFamily,
     description: "Sound the siren briefly as a test.",
   },
-  /** Trigger a verified station-family HomeBase or attached Camera2 alarm for a bounded duration. */
+  /** Trigger a verified station-family HomeBase or evidenced attached-camera alarm for a bounded duration. */
   trigger: {
     ...method(
       ({ ctx, sink }) =>
@@ -309,7 +310,7 @@ export const SIREN_MEMBERS = {
           await sink.dispatch(triggerAlarm(validateTriggerDuration(seconds), ctx));
         },
       "Trigger the alarm for a positive whole-number duration in seconds.",
-      (ctx) => isEvidencedStationAlarm(ctx) || isAttachedCamera2(ctx),
+      (ctx) => isEvidencedStationAlarm(ctx) || isEvidencedAttachedCamera(ctx),
     ),
     args: [{ name: "seconds", kind: "seconds", min: 1, description: "A positive whole-number duration." }],
   },
@@ -336,19 +337,17 @@ export const SIREN: CapabilityModule = {
    * Detection stays on DeviceType, and that is right: it resolved correctly on a real T90R0
    * (deviceType 123 = `SIREN_SENSOR_E20`), so it is not relying on the model-name hint.
    *
-   * Do NOT key siren detection on param 1015: the param dictionary confirms 1015 = `easSwitch`
-   * (`CMD_EAS_SWITCH`), an anti-theft switch on ordinary cameras (T8114/T8210), which would false-flag
-   * every such camera as a siren.
-   *
-   * HomeBase detection additionally requires a reported alarm parameter. Camera2 detection admits the
-   * protocol family, while trigger/stop installation additionally requires HomeBase-attached topology.
+   * HomeBase detection requires a reported alarm parameter. Camera detection requires both attached
+   * topology and the reported EAS slot; neither fact alone admits alarm output.
    */
   detection: {
-    deviceTypes: [DeviceType.SIREN_SENSOR, DeviceType.SIREN_SENSOR_E20, DeviceType.CAMERA2],
+    deviceTypes: [DeviceType.SIREN_SENSOR, DeviceType.SIREN_SENSOR_E20],
     modelHints: [/siren/i],
-    detect: (record) => {
+    detect: (record, codec) => {
       const homeBase = record.deviceType !== undefined && HOMEBASE_TYPES.has(record.deviceType);
-      return homeBase && HUB_ALARM_EVIDENCE.some((param) => Object.hasOwn(record.params ?? {}, param));
+      const homeBaseAlarm = homeBase && HUB_ALARM_EVIDENCE.some((param) => Object.hasOwn(record.params ?? {}, param));
+      const attachedCameraAlarm = codec === "camera" && !!record.parentSn && hasReportedEasSwitch(record);
+      return homeBaseAlarm || attachedCameraAlarm;
     },
   },
 };
