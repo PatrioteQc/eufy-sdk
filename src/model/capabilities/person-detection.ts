@@ -54,6 +54,8 @@ export const PERSON_DETECTION: CapabilityModule = {
   description: "AI human detection enable switch and live detected state.",
   members: PERSON_DETECTION_MEMBERS,
   properties: propertiesOf(PERSON_DETECTION_MEMBERS),
+  /** Camera push traffic emits these semantic events even when no person-detection state param is reported. */
+  detection: { codecs: ["camera"] },
   /**
    * Inbound AI person events. A face or an identified person is `personDetected`; an explicitly
    * UNRECOGNISED person is `strangerDetected`.
