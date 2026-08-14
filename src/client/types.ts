@@ -242,16 +242,17 @@ export type EufyMegaEventMap = {
   pushRaw: [raw: RawPushMessage];
   push: [event: PushEvent];
   /**
-   * A transport-level command got a delivery ack (or didn't) — emitted by the MQTT command router.
+   * A transport-level command got an acknowledgement (or didn't) — emitted by the MQTT command router.
    * For `ff09-actuate` the reply is a "device received it"
    * signal, not a physical-actuation-complete one (see that handler's doc); for `ff09-autolock` the GET
    * step already threw on no reply by the time this fires — `getAcked` is always `true` here, `acked`
    * reports the SET step's fire-and-forget ack. `dispatch()`/`lock()`/`unlock()`/`setAutoLock()` stay
    * `Promise<void>` and never throw on a missing SET ack (fire-and-forget, same as every other write) —
    * this event is the optional channel for a host that wants delivery visibility without the dispatch
-   * contract itself changing shape.
+   * contract itself changing shape. Secure-MQTT DP writes use the persistent account connection and
+   * report broker publication (`acked: true`) without an `instanceIp`; that is not device convergence.
    */
-  commandAck: [info: { sn: string; kind: string; acked: boolean; instanceIp: string; getAcked?: boolean }];
+  commandAck: [info: { sn: string; kind: string; acked: boolean; instanceIp?: string; getAcked?: boolean }];
   // Any transport error.
   error: [err: Error];
 };

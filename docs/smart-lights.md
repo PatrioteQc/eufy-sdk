@@ -2,8 +2,8 @@
 
 The eufy **Life** smart-lighting line — e.g. the T8L02 "Permanent Outdoor Lights" — is driven through
 the `smartLight` capability. Like every capability it's resolved dynamically, so any light on this line
-exposes the same fluent API — on/off and brightness work across the line, while `setEffect` is
-currently limited to one model (see [Limitations](#limitations)).
+exposes the same fluent API — on/off and brightness work across the line, while `setColor` and
+`setEffect` are currently limited to one model (see [Limitations](#limitations)).
 
 ```ts
 const dev = await eufy.getDevice(sn);
@@ -24,6 +24,27 @@ await light.on();
 await light.off();
 await light.setBrightness(80); // 0–100
 ```
+
+## Custom colour
+
+On a T8L02 with reported segment-count evidence, select one plain RGB colour independently from the
+gallery-effect catalogue:
+
+```ts
+await light.setColor({ red: 255, green: 96, blue: 0 });
+```
+
+Each channel must be an integer from 0 through 255. Invalid values reject rather than being rounded or
+clamped, and the SDK sends nothing when the model or current segment evidence is unsupported.
+
+`setColor` changes colour only. It preserves the configured `brightness`; call `setBrightness`
+separately when you intend to change both. It also uses a different device command from
+`setEffect(lightId)`: a plain custom colour is not a gallery entry, and fully custom DIY animations are
+not supported by this method.
+
+Completion means the secure-MQTT transport accepted the publish. It does not prove the physical light
+has converged, and there is deliberately no current-colour getter: the device's current reports do not
+identify authoritative RGB state.
 
 ## Effects
 
@@ -127,4 +148,10 @@ new value without fetching the device again.
   the list widens as models are verified. Note `buildable` describes the effect, not the device — on
   a model outside that list every entry still reports `buildable: true` and `setEffect` rejects
   regardless.
+- **`setColor` is confirmed only on T8L02.** It also requires a current reported `lightLength`, because
+  the frame addresses every segment explicitly. Other models or missing/malformed segment evidence
+  reject before publication; the SDK does not guess a family-wide length or generalize this frame to
+  another T8L0x model.
+- **Current RGB is not reported.** A successful `setColor` is a publication acknowledgement, not a
+  readable state update, so no `color` getter or synthetic event is exposed.
 - **AI scenes are list-only** (see above) — no id to apply.

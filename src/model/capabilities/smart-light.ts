@@ -16,7 +16,7 @@ import { asBool, clamp } from "../../core/util.js";
  * different product line on a different transport family (`Codec: "light"`, its own secure-MQTT "DP"
  * TLV wire), not a camera accessory.
  *
- * **Write path (cmd `0x0201` / `0x020D`):**
+ * **Write path (cmd `0x0201` / `0x0206` / `0x020D`):**
  *  - `on`/`off`/`setBrightness` (`setDeviceInfoPayloadData`) — WIRE-CONFIRMED, toggled and dimmed a
  *    real device, and the device's own status report echoes back the brightness that was written.
  *  - `setEffect(lightId)` (`setLightEffectParamsV2PayloadData`) — WIRED. The frame is built from the
@@ -25,6 +25,9 @@ import { asBool, clamp } from "../../core/util.js";
  *    mixing engine (EXACT on pure primaries, a small mean error on mixed colours). The catalog fetch +
  *    frame serialization happen in the transport (via an injected resolver), keeping this module
  *    transport-neutral.
+ *  - `setColor(color)` (`setLightEffectParamsPayloadData`) — WIRE-CONFIRMED on T8L02. This plain
+ *    custom-colour path is distinct from gallery effects and preserves configured brightness. The
+ *    device does not report authoritative RGB state, so no current-colour getter is exposed.
  *
  * **Read path — TWO inbound frames.** The device pushes an unsolicited `0x0204` status report after
  * every change, and answers a `0x0200` `get_device_info` request with a `0x0A00` reply. They carry the
@@ -61,6 +64,8 @@ const LIGHT_CMD = {
   SET_DEVICE_INFO: 0x0201,
   /** The device→app status report (`event_device_status_notify`), sent unsolicited. */
   DEVICE_STATUS_REPORT: 0x0204,
+  /** `setLightEffectParamsPayloadData` — apply one plain custom colour to evidenced segments. */
+  SET_LIGHT_EFFECT_PARAMS: 0x0206,
   /** The device's answer to {@link LIGHT_CMD.GET_DEVICE_INFO}. */
   GET_DEVICE_INFO_REPLY: 0x0a00,
   /** `setLightEffectParamsV2PayloadData` — select a gallery effect by catalog id. WIRED (see doc). */
@@ -217,8 +222,32 @@ function presetCommand(lightId: number): Command {
  */
 const CONFIRMED_EFFECT_MODELS: ReadonlySet<string> = new Set(["T8L02"]);
 
+/** Models whose plain custom-colour frame has been captured and physically verified. */
+const CONFIRMED_COLOR_MODELS: ReadonlySet<string> = new Set(["T8L02"]);
+
+/** Largest segment count representable by `[count, ...positions]` in a one-byte-length DP field. */
+const MAX_COLOR_SEGMENTS = 254;
+
 /** Normalize a cloud `device_model` the way the model registry keys its rows, for a gate lookup. */
 const modelKey = (model: string | undefined): string => (model ?? "").trim().toUpperCase();
+
+/** Integer RGB input for `SmartLightActions.setColor`; each channel must be in 0..255. */
+export interface RgbColor {
+  red: number;
+  green: number;
+  blue: number;
+}
+
+/** Build semantic custom-colour intent after all evidence and value checks have passed. */
+function colorCommand(color: RgbColor, segmentCount: number): Command {
+  return {
+    kind: "mqtt-dp-color",
+    mqttCmdCode: LIGHT_MQTT_CMD,
+    cmdCode: LIGHT_CMD.SET_LIGHT_EFFECT_PARAMS,
+    ...color,
+    segmentCount,
+  };
+}
 
 /**
  * Bound `smart_light` controls — the object returned by `dev.smartLight()`.
@@ -392,12 +421,49 @@ export const SMART_LIGHT_MEMBERS = {
             ),
     "Select a light-effect gallery entry by its catalog id. Colours are an RGBCW approximation, exact on primaries.",
   ),
+
+  /**
+   * Plain custom colour, distinct from the gallery-effect wire. The frame addresses every reported
+   * segment, so a current positive segment count is mandatory and no family-wide length is guessed.
+   * Completion acknowledges transport publication only; the device reports no authoritative RGB.
+   */
+  setColor: method(
+    ({ ctx, sink, read }) =>
+      (color: RgbColor): Promise<void> => {
+        if (!CONFIRMED_COLOR_MODELS.has(modelKey(ctx.model))) {
+          return Promise.reject(
+            new Error(
+              `custom-colour write is verified only on ${[...CONFIRMED_COLOR_MODELS].join(", ")}; ` +
+                `model ${ctx.model ?? "unknown"} has no confirmed 0x0206 frame encoding`,
+            ),
+          );
+        }
+        const segmentCount = read("lightLength")?.value;
+        if (
+          typeof segmentCount !== "number" ||
+          !Number.isInteger(segmentCount) ||
+          segmentCount < 1 ||
+          segmentCount > MAX_COLOR_SEGMENTS
+        ) {
+          return Promise.reject(
+            new Error(`custom-colour write requires a reported integer segment count in 1..${MAX_COLOR_SEGMENTS}`),
+          );
+        }
+        const channels = color && [color.red, color.green, color.blue];
+        if (!channels || channels.some((channel) => !Number.isInteger(channel) || channel < 0 || channel > 255)) {
+          return Promise.reject(new Error("custom-colour RGB channels must be integers in 0..255"));
+        }
+        return sink.dispatch(colorCommand(color, segmentCount));
+      },
+    "Set one plain RGB colour across all reported segments on verified T8L02 lights. Preserves configured brightness; completion acknowledges publication, not observed colour.",
+  ),
 } as const satisfies Members;
 
 export const SMART_LIGHT: CapabilityModule = {
   capability: "smart_light",
   line: "life",
-  description: "eufy_life smart-lighting: T8L02 Permanent Outdoor Lights and similar (on/off/brightness/effect).",
+  description:
+    "eufy_life smart-lighting: T8L02 Permanent Outdoor Lights and similar (on/off/brightness/custom colour/effect).",
   members: SMART_LIGHT_MEMBERS,
   properties: propertiesOf(SMART_LIGHT_MEMBERS),
   detection: { codecs: ["light"] },

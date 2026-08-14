@@ -78,7 +78,7 @@ import { INFO } from "./info.js";
 // DeviceActionMap projection below (the single place a capability's accessor type is registered).
 import type { PtzActions } from "./ptz.js";
 import type { LightActions } from "./light.js";
-import type { SmartLightActions } from "./smart-light.js";
+import type { RgbColor, SmartLightActions } from "./smart-light.js";
 import type { CameraActions } from "./camera.js";
 import type { AudioActions } from "./audio.js";
 import type { BatteryActions } from "./battery.js";
@@ -653,7 +653,7 @@ export interface DeviceActionMap {
   ptz: PtzActions;
   /** Floodlight/spotlight: `on`/`off`/`set`, `setBrightness`/`setColorTemp`/`setEnabled`, `setAutoSpotlight`. */
   light: LightActions;
-  /** eufy_life smart light (T8L0x): `on`/`off`, `setBrightness`, `setEffect(lightId)`. */
+  /** eufy_life smart light (T8L0x): `on`/`off`, `setBrightness`, T8L02 `setColor`, `setEffect(lightId)`. */
   smartLight: SmartLightActions;
   /** Camera: `on`/`off`, privacy, status LED; `snapshot`/`live`/`record` when bound to a live client. */
   camera: CameraActions;
@@ -915,6 +915,7 @@ export type {
   PtzActions,
   LightActions,
   SmartLightActions,
+  RgbColor,
   CameraActions,
   LockActions,
   SirenActions,

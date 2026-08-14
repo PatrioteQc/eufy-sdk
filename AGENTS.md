@@ -82,6 +82,20 @@ path exists. A provider is what's left when the inbound path cannot know what it
 An optional provider is genuinely optional: a device bound without it must degrade to `undefined`,
 never to a guess.
 
+## Reuse before abstraction
+
+1. **Search before creating.** Before adding a helper, type, provider, command kind or serializer,
+   search the whole repository by operation and data shape, including the primitive APIs it uses rather
+   than only its proposed name. Finish when every new primitive either reuses an existing owner or has
+   a distinct contract or authority.
+2. **Preserve ownership and contract.** Reuse or extend an existing primitive when it owns the same
+   operation and satisfies the required semantics. Introduce an abstraction when it simplifies current
+   callers under that same ownership. Trust-boundary validation and independently authoritative
+   declarations remain local.
+3. **Reduce after green.** After focused tests and typechecking pass, inspect the diff for same-contract
+   helpers, value shapes and test setup already owned elsewhere. Resolve every match before running the
+   full verification gate.
+
 ## Capability design
 
 Adding a capability touches **only its own module file plus a couple of lines in

@@ -4,7 +4,7 @@
  * The MQTT sibling of `transport/p2p/command-router.ts`'s `P2PCommandRouter`.
  *
  * The MQTT-bound kinds are `ff09-*` (`ff09-actuate` — a single fire-and-forget frame; `ff09-autolock`
- * — a GET-then-SET read-modify-write) and `mqtt-dp`/`mqtt-dp-preset` (the `eufy_life` DP TLV writes
+ * — a GET-then-SET read-modify-write) and `mqtt-dp`/`mqtt-dp-color`/`mqtt-dp-preset` (the `eufy_life` DP TLV writes
  * behind the T8L0x smart lights), routed here when a device's stack is MQTT (see {@link claimsDevice}).
  * A future command family (another frame, another protocol) is one more {@link dispatchCommand} branch
  * — nothing here is ff09-only by design.
@@ -47,6 +47,7 @@ import { buildAppShapedClientId, generateMqttUuid } from "./app-client-id.js";
 import { discoverReachableInstance } from "./broker-discovery.js";
 import { buildDpFrame, buildDpEnvelope } from "./dp-codec.js";
 import { dpPresetFields, dpLevelFields, type DpPresetSpec } from "../dp-preset.js";
+import { dpColorFields } from "./dp-color.js";
 import { buildCleanDpEnvelope } from "./clean-codec.js";
 
 /**
@@ -226,7 +227,7 @@ export interface MqttRouterDeps {
   /**
    * The `a2` account id an `eufy_life` DP frame embeds for `dev` — the owning member's `admin_user_id`
    * (or the session user id). Injected because it needs session state the transport doesn't hold; the
-   * router treats it opaquely. Required once any `mqtt-dp`/`mqtt-dp-preset` command can be routed.
+   * router treats it opaquely. Required once any `mqtt-dp` command family can be routed.
    */
   resolveAccountId?: (dev: EufyDevice) => string;
   /**
@@ -240,7 +241,7 @@ export interface MqttRouterDeps {
    * secure-MQTT transport — the CONFIRMED `eufy_life` light-write path (the facade's `connectMQTT()` +
    * `transport.publish`). Injected because that persistent connection is owned by the facade, not this
    * router (which otherwise opens per-command one-shot connections for ff09). Required to route
-   * `mqtt-dp`/`mqtt-dp-preset`.
+   * `mqtt-dp`/`mqtt-dp-color`/`mqtt-dp-preset`.
    */
   publishSecure?: (dev: EufyDevice, topic: string, body: string) => Promise<void>;
 }
@@ -271,7 +272,7 @@ export class MqttCommandRouter {
 
   /**
    * Route a transport-neutral {@link Command} to the secure-MQTT wire — the MQTT half of the command
-   * sink. The `ff09-actuate`/`ff09-autolock` (locks/garage) and `mqtt-dp`/`mqtt-dp-preset`
+   * sink. The `ff09-actuate`/`ff09-autolock` (locks/garage) and `mqtt-dp`/`mqtt-dp-color`/`mqtt-dp-preset`
    * (`eufy_life` lights) kinds reach here (the facade fans everything else to the P2P router); any
    * other kind is a routing bug, so fail loud rather than resolve as a silent success.
    */
@@ -288,6 +289,9 @@ export class MqttCommandRouter {
         return;
       case "mqtt-dp-preset":
         await this.dispatchDpPreset(sn, cmd);
+        return;
+      case "mqtt-dp-color":
+        await this.dispatchDpColor(sn, cmd);
         return;
       case "aiot-dp":
         await this.dispatchAiotDp(sn, cmd);
@@ -717,7 +721,17 @@ export class MqttCommandRouter {
     const accountId = this.requireAccountId(dev);
     const frame = buildDpFrame(cmd.cmdCode, accountId, cmd.fields);
     await this.publishDpFrame(dev, sn, accountId, cmd.mqttCmdCode, frame);
-    this.deps.onCommandAck({ sn, kind: "mqtt-dp", cmdCode: cmd.cmdCode });
+    this.deps.onCommandAck({ sn, kind: "mqtt-dp", cmdCode: cmd.cmdCode, acked: true });
+  }
+
+  /** Serialize and publish one semantic RGB DP action without changing configured brightness. */
+  private async dispatchDpColor(sn: string, cmd: Extract<Command, { kind: "mqtt-dp-color" }>): Promise<void> {
+    const dev = await this.deviceFor(sn);
+    const accountId = this.requireAccountId(dev);
+    const fields = dpColorFields(cmd);
+    const frame = buildDpFrame(cmd.cmdCode, accountId, fields);
+    await this.publishDpFrame(dev, sn, accountId, cmd.mqttCmdCode, frame);
+    this.deps.onCommandAck({ sn, kind: "mqtt-dp-color", cmdCode: cmd.cmdCode, acked: true });
   }
 
   /**
@@ -739,7 +753,7 @@ export class MqttCommandRouter {
     }
     const envelope = buildCleanDpEnvelope(accountId, sn, cmd.dp, cmd.value);
     await this.deps.publishSecure(dev, secureTopic(dev, "req"), envelope);
-    this.deps.onCommandAck({ sn, kind: "aiot-dp", dp: cmd.dp });
+    this.deps.onCommandAck({ sn, kind: "aiot-dp", dp: cmd.dp, acked: true });
   }
 
   /**
@@ -762,6 +776,6 @@ export class MqttCommandRouter {
       const brightFrame = buildDpFrame(cmd.companionCmdCode, accountId, dpLevelFields(spec.brightness));
       await this.publishDpFrame(dev, sn, accountId, cmd.mqttCmdCode, brightFrame);
     }
-    this.deps.onCommandAck({ sn, kind: "mqtt-dp-preset", presetId: cmd.presetId });
+    this.deps.onCommandAck({ sn, kind: "mqtt-dp-preset", presetId: cmd.presetId, acked: true });
   }
 }
