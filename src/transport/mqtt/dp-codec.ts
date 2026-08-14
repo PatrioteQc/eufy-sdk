@@ -6,12 +6,12 @@
  *
  * This module owns the DP framing for both write frames on this family:
  *  - `0x0201` device-info (on/off + brightness) — generic tag/value fields the capability supplies.
- *  - `0x0206` custom colour — command-specific fields are built by `transport/mqtt/dp-color.ts`.
+ *  - `0x0206` custom colour — command-specific fields come from the MQTT colour-field serializer.
  *  - `0x020D` light-effect — the command-specific fields are built by `transport/dp-preset.ts`
  *    and passed in; this module only frames and wraps them.
  *
- * The capability (`model/capabilities/smart-light.ts`) names the feature ids (`0x0201`/`0x0206`/`0x020D`, the
- * tag numbers, the `mqttCmdCode`) and forwards them opaquely; this module names none of them.
+ * The capability layer names the feature ids (`0x0201`/`0x0206`/`0x020D`, the tag numbers, the
+ * `mqttCmdCode`) and forwards them opaquely; this module names none of them.
  */
 import { randomUUID } from "node:crypto";
 import type { DpInboundFrame } from "../../core/contracts.js";

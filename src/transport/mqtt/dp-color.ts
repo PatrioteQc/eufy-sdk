@@ -1,6 +1,6 @@
 /**
- * Command-specific fields for the `0x0206` DP custom-colour action. The reviewed T8L02 frame applies
- * one foreground RGBCW block to every reported segment, carries no background colour, and marks the
+ * Command-specific fields for the `0x0206` DP custom-colour action. The T8L02 frame applies one
+ * foreground RGBCW block to every reported segment, carries no background colour, and marks the
  * selection as outside the cloud catalog. Framing, account identity and publication remain in MQTT.
  */
 import type { DpField } from "./dp-codec.js";
