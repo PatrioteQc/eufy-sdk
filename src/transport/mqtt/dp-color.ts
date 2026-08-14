@@ -14,6 +14,10 @@ export interface DpColorSpec {
   segmentCount: number;
 }
 
+/**
+ * Reusable non-catalog custom-colour id: captured from the current app, then physically validated
+ * unchanged across successive red, green, blue, and yellow SDK writes on the evidenced model.
+ */
 const LOCAL_COLOR_ID = 20006;
 const MAX_SEGMENTS = 254;
 
