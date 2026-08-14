@@ -456,6 +456,7 @@ export const SMART_LIGHT_MEMBERS = {
         return sink.dispatch(colorCommand(color, segmentCount));
       },
     "Set one plain RGB colour across all reported segments on verified T8L02 lights. Preserves configured brightness; completion acknowledges publication, not observed colour.",
+    (ctx) => CONFIRMED_COLOR_MODELS.has(modelKey(ctx.model)),
   ),
 } as const satisfies Members;
 

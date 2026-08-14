@@ -326,7 +326,7 @@ describe("smart_light write path", () => {
       },
     );
 
-    await acts.setColor({ red: 255, green: 128, blue: 0 });
+    await acts.setColor!({ red: 255, green: 128, blue: 0 });
 
     expect(sent).toEqual([
       {
@@ -344,10 +344,10 @@ describe("smart_light write path", () => {
   });
 
   it.each(["T8L01", "T8L02X", "T8L20", undefined])(
-    "setColor rejects without dispatch on unsupported model %s",
-    async (model) => {
+    "setColor is absent without dispatch on unsupported model %s",
+    (model) => {
       const { acts, sent } = colorSpy(model, 10);
-      await expect(acts.setColor({ red: 1, green: 2, blue: 3 })).rejects.toThrow(/verified only on/i);
+      expect(acts.setColor).toBeUndefined();
       expect(sent).toHaveLength(0);
     },
   );
@@ -356,7 +356,7 @@ describe("smart_light write path", () => {
     "setColor rejects without dispatch when segment evidence is %s",
     async (lightLength) => {
       const { acts, sent } = colorSpy("T8L02", lightLength);
-      await expect(acts.setColor({ red: 1, green: 2, blue: 3 })).rejects.toThrow(/segment count/i);
+      await expect(acts.setColor!({ red: 1, green: 2, blue: 3 })).rejects.toThrow(/segment count/i);
       expect(sent).toHaveLength(0);
     },
   );
@@ -369,7 +369,7 @@ describe("smart_light write path", () => {
     { red: 0, green: Number.POSITIVE_INFINITY, blue: 0 },
   ])("setColor rejects malformed channels without dispatch: $red/$green/$blue", async (color) => {
     const { acts, sent } = colorSpy("T8L02", 10);
-    await expect(acts.setColor(color)).rejects.toThrow(/RGB channels/i);
+    await expect(acts.setColor!(color)).rejects.toThrow(/RGB channels/i);
     expect(sent).toHaveLength(0);
   });
 
@@ -403,7 +403,7 @@ const _refresh: Exact<typeof light.refreshState, () => Promise<void>> = true;
 
 // The model-gated write is a method, so it keeps its own signature rather than a value setter's.
 const _setEffect: Exact<typeof light.setEffect, (lightId: number) => Promise<void>> = true;
-const _setColor: Exact<typeof light.setColor, (color: RgbColor) => Promise<void>> = true;
+const _setColor: Exact<typeof light.setColor, ((color: RgbColor) => Promise<void>) | undefined> = true;
 const _rgb: Exact<RgbColor, { red: number; green: number; blue: number }> = true;
 
 // Reported but unexposed: no getter, and no setter either, since it declares no write.
