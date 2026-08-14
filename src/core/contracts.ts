@@ -95,6 +95,16 @@ export type Command =
   // feature ids it owns — `cmdCode` for the preset frame and `companionCmdCode` for the follow-up frame
   // a resolved preset may need — and the router forwards both opaquely, naming neither.
   | { kind: "mqtt-dp-preset"; mqttCmdCode: number; cmdCode: number; companionCmdCode: number; presetId: number }
+  /** A DP custom-colour write; the transport owns RGB-to-wire conversion and field serialization. */
+  | {
+      kind: "mqtt-dp-color";
+      mqttCmdCode: number;
+      cmdCode: number;
+      red: number;
+      green: number;
+      blue: number;
+      segmentCount: number;
+    }
   | { kind: "aiot-dp"; dp: number; value: boolean | number | string };
 
 /**

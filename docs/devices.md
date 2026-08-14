@@ -66,7 +66,8 @@ member so the choices autocomplete and can't drift.
 
 Available today: `camera` (on/off/privacy/statusLed + stored/live snapshots, live/record when bound), `light`
 (camera floodlight/spotlight: on/off/brightness/colorTemp/enable), `smartLight` (the eufy_life
-permanent-outdoor-light line: on/off/brightness/effect — see the [Smart lights guide](/smart-lights)),
+permanent-outdoor-light line: on/off/brightness/custom colour/effect — see the
+[Smart lights guide](/smart-lights)),
 `ptz` (rotate + left/right/up/down, zoom, and a `preset()` sub-API — see the [PTZ guide](/ptz)), plus
 `arming`, `lock` (lock/unlock/setAutoLock on both the P2P video lock and the MQTT garage door, plus
 setRainMode on the video lock only — optional accessor, `?.()`), and `siren` (volume, alarm duration, and test/stop triggers — see below).

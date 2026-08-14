@@ -1,4 +1,4 @@
-import { SMART_LIGHT, type SmartLightActions } from "../smart-light.js";
+import { SMART_LIGHT, type RgbColor, type SmartLightActions } from "../smart-light.js";
 import { bind } from "./bind.js";
 import type { InboundSignal, CommandContext } from "../types.js";
 import type { Command, DpInboundFrame } from "../../../core/contracts.js";
@@ -308,6 +308,81 @@ describe("smart_light write path", () => {
     expect(sent).toHaveLength(0); // nothing dispatched to the wire
   });
 
+  it("setColor emits one color-only intent from RGB and reported segment evidence", async () => {
+    const state = { value: 10 };
+    const { acts, sent } = bind<SmartLightActions>(
+      "smart_light",
+      { ...ctx, model: " t8l02 " },
+      {
+        read: (name) => (name === "lightLength" ? state : undefined),
+      },
+    );
+
+    await acts.setColor({ red: 255, green: 128, blue: 0 });
+
+    expect(sent).toEqual([
+      {
+        kind: "mqtt-dp-color",
+        mqttCmdCode: 17,
+        cmdCode: 0x0206,
+        red: 255,
+        green: 128,
+        blue: 0,
+        segmentCount: 10,
+      },
+    ]);
+    expect(state.value).toBe(10);
+    expect(acts).not.toHaveProperty("color");
+  });
+
+  it.each(["T8L01", "T8L02X", "T8L20", undefined])(
+    "setColor rejects without dispatch on unsupported model %s",
+    async (model) => {
+      const { acts, sent } = bind<SmartLightActions>(
+        "smart_light",
+        { ...ctx, model },
+        {
+          read: (name) => (name === "lightLength" ? { value: 10 } : undefined),
+        },
+      );
+      await expect(acts.setColor({ red: 1, green: 2, blue: 3 })).rejects.toThrow(/verified only on/i);
+      expect(sent).toHaveLength(0);
+    },
+  );
+
+  it.each([undefined, 0, -1, 1.5, 255])(
+    "setColor rejects without dispatch when segment evidence is %s",
+    async (lightLength) => {
+      const { acts, sent } = bind<SmartLightActions>(
+        "smart_light",
+        { ...ctx, model: "T8L02" },
+        {
+          read: (name) => (name === "lightLength" && lightLength !== undefined ? { value: lightLength } : undefined),
+        },
+      );
+      await expect(acts.setColor({ red: 1, green: 2, blue: 3 })).rejects.toThrow(/segment count/i);
+      expect(sent).toHaveLength(0);
+    },
+  );
+
+  it.each([
+    { red: -1, green: 0, blue: 0 },
+    { red: 256, green: 0, blue: 0 },
+    { red: 1.5, green: 0, blue: 0 },
+    { red: Number.NaN, green: 0, blue: 0 },
+    { red: 0, green: Number.POSITIVE_INFINITY, blue: 0 },
+  ])("setColor rejects malformed channels without dispatch: $red/$green/$blue", async (color) => {
+    const { acts, sent } = bind<SmartLightActions>(
+      "smart_light",
+      { ...ctx, model: "T8L02" },
+      {
+        read: (name) => (name === "lightLength" ? { value: 10 } : undefined),
+      },
+    );
+    await expect(acts.setColor(color)).rejects.toThrow(/RGB channels/i);
+    expect(sent).toHaveLength(0);
+  });
+
   it("on/off/brightness still work on an unconfirmed family member (not gated)", async () => {
     const { acts, sent } = spy({ model: "T8L20" });
     await acts.on!();
@@ -338,6 +413,8 @@ const _refresh: Exact<typeof light.refreshState, () => Promise<void>> = true;
 
 // The model-gated write is a method, so it keeps its own signature rather than a value setter's.
 const _setEffect: Exact<typeof light.setEffect, (lightId: number) => Promise<void>> = true;
+const _setColor: Exact<typeof light.setColor, (color: RgbColor) => Promise<void>> = true;
+const _rgb: Exact<RgbColor, { red: number; green: number; blue: number }> = true;
 
 // Reported but unexposed: no getter, and no setter either, since it declares no write.
 const _noModeGetter: Exact<"lightEffectMode" extends keyof SmartLightActions ? true : false, false> = true;
@@ -354,6 +431,8 @@ export const _surfaceAssertions = [
   _setBrightness,
   _refresh,
   _setEffect,
+  _setColor,
+  _rgb,
   _noModeGetter,
   _noModeSetter,
   _noEffectIdSetter,

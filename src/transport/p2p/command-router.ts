@@ -431,6 +431,7 @@ export class P2PCommandRouter {
         throw new Error(`aiot-dp command (DP ${cmd.dp}) not routable over P2P: AIoT MQTT devices use the MQTT router`);
       case "mqtt-dp":
       case "mqtt-dp-preset":
+      case "mqtt-dp-color":
         // The `eufy_life` DP writes are secure-MQTT-only — the facade routes them to MqttCommandRouter.
         // Reaching the P2P router means a routing bug; fail loud rather than silently no-op.
         throw new Error(`${cmd.kind} is a secure-MQTT-only command and must not reach the P2P router (routing bug)`);

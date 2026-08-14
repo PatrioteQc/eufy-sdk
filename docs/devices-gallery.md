@@ -686,8 +686,8 @@ The eufy **Clean** line — robot **vacuums** (the classic **RoboVac** and newer
 
 ### 🔆 Smart lighting
 
-The eufy **Life** smart-lighting line (`smartLight` capability — on/off, brightness, and gallery
-effects), driven over secure MQTT. See the [Smart lights guide](/smart-lights). Every model code below
+The eufy **Life** smart-lighting line (`smartLight` capability — on/off, brightness, model-limited
+custom colour, and gallery effects), driven over secure MQTT. See the [Smart lights guide](/smart-lights). Every model code below
 resolves to the same capability for on/off and brightness; effect selection is currently limited to
 one model.
 

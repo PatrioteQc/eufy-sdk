@@ -701,7 +701,7 @@ export class EufyMega extends EventEmitter {
       if (MqttCommandRouter.claimsDevice(dev)) return this.mqtt.dispatchCommand(sn, cmd);
       throw new Error(`no transport stack claims device ${sn} for a ${cmd.kind} command`);
     }
-    if (cmd.kind === "mqtt-dp" || cmd.kind === "mqtt-dp-preset") {
+    if (cmd.kind === "mqtt-dp" || cmd.kind === "mqtt-dp-preset" || cmd.kind === "mqtt-dp-color") {
       return this.mqtt.dispatchCommand(sn, cmd);
     }
     if (cmd.kind === "aiot-dp") {
