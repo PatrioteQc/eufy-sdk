@@ -5,6 +5,7 @@
  */
 import type { DpField } from "./dp-codec.js";
 import { rgbcwBlock } from "../dp-preset.js";
+import { u16le, u32le } from "../../core/util.js";
 
 export interface DpColorSpec {
   red: number;
@@ -16,18 +17,6 @@ export interface DpColorSpec {
 const LOCAL_COLOR_ID = 20006;
 const MAX_SEGMENTS = 254;
 
-const u16le = (value: number): Buffer => {
-  const bytes = Buffer.alloc(2);
-  bytes.writeUInt16LE(value, 0);
-  return bytes;
-};
-
-const u32le = (value: number): Buffer => {
-  const bytes = Buffer.alloc(4);
-  bytes.writeUInt32LE(value >>> 0, 0);
-  return bytes;
-};
-
 /** Serialize a validated semantic RGB intent into the complete confirmed `0xa3`-`0xb0` field run. */
 export function dpColorFields(spec: DpColorSpec): DpField[] {
   const channels = [spec.red, spec.green, spec.blue];
@@ -38,8 +27,7 @@ export function dpColorFields(spec: DpColorSpec): DpField[] {
     throw new Error(`custom-colour segment count must be an integer in 1..${MAX_SEGMENTS}`);
   }
 
-  const rgbHex = channels.map((channel) => channel.toString(16).padStart(2, "0")).join("");
-  const color = rgbcwBlock(rgbHex);
+  const color = rgbcwBlock(Buffer.from(channels).toString("hex"));
   if (!color) throw new Error("custom-colour RGB channels could not be converted to RGBCW");
   const positions = Buffer.from([spec.segmentCount, ...Array.from({ length: spec.segmentCount }, (_, index) => index)]);
 

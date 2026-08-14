@@ -238,6 +238,14 @@ describe("smart_light capability module", () => {
 describe("smart_light write path", () => {
   /** The bound object: a member's setter is derived in the barrel, not returned by `actions()`. */
   const spy = (over: Partial<CommandContext> = {}) => bind<SmartLightActions>("smart_light", { ...ctx, ...over });
+  const colorSpy = (model: string | undefined, lightLength?: unknown) =>
+    bind<SmartLightActions>(
+      "smart_light",
+      { ...ctx, model },
+      {
+        read: (name) => (name === "lightLength" && lightLength !== undefined ? { value: lightLength } : undefined),
+      },
+    );
 
   it("on()/off() emit setDeviceInfoPayloadData (cmd 0x0201) with tag 0xa3 = isOn", async () => {
     const { acts, sent } = spy();
@@ -338,13 +346,7 @@ describe("smart_light write path", () => {
   it.each(["T8L01", "T8L02X", "T8L20", undefined])(
     "setColor rejects without dispatch on unsupported model %s",
     async (model) => {
-      const { acts, sent } = bind<SmartLightActions>(
-        "smart_light",
-        { ...ctx, model },
-        {
-          read: (name) => (name === "lightLength" ? { value: 10 } : undefined),
-        },
-      );
+      const { acts, sent } = colorSpy(model, 10);
       await expect(acts.setColor({ red: 1, green: 2, blue: 3 })).rejects.toThrow(/verified only on/i);
       expect(sent).toHaveLength(0);
     },
@@ -353,13 +355,7 @@ describe("smart_light write path", () => {
   it.each([undefined, 0, -1, 1.5, 255])(
     "setColor rejects without dispatch when segment evidence is %s",
     async (lightLength) => {
-      const { acts, sent } = bind<SmartLightActions>(
-        "smart_light",
-        { ...ctx, model: "T8L02" },
-        {
-          read: (name) => (name === "lightLength" && lightLength !== undefined ? { value: lightLength } : undefined),
-        },
-      );
+      const { acts, sent } = colorSpy("T8L02", lightLength);
       await expect(acts.setColor({ red: 1, green: 2, blue: 3 })).rejects.toThrow(/segment count/i);
       expect(sent).toHaveLength(0);
     },
@@ -372,13 +368,7 @@ describe("smart_light write path", () => {
     { red: Number.NaN, green: 0, blue: 0 },
     { red: 0, green: Number.POSITIVE_INFINITY, blue: 0 },
   ])("setColor rejects malformed channels without dispatch: $red/$green/$blue", async (color) => {
-    const { acts, sent } = bind<SmartLightActions>(
-      "smart_light",
-      { ...ctx, model: "T8L02" },
-      {
-        read: (name) => (name === "lightLength" ? { value: 10 } : undefined),
-      },
-    );
+    const { acts, sent } = colorSpy("T8L02", 10);
     await expect(acts.setColor(color)).rejects.toThrow(/RGB channels/i);
     expect(sent).toHaveLength(0);
   });

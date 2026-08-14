@@ -440,9 +440,10 @@ export const SMART_LIGHT_MEMBERS = {
         }
         const segmentCount = read("lightLength")?.value;
         if (
+          typeof segmentCount !== "number" ||
           !Number.isInteger(segmentCount) ||
-          (segmentCount as number) < 1 ||
-          (segmentCount as number) > MAX_COLOR_SEGMENTS
+          segmentCount < 1 ||
+          segmentCount > MAX_COLOR_SEGMENTS
         ) {
           return Promise.reject(
             new Error(`custom-colour write requires a reported integer segment count in 1..${MAX_COLOR_SEGMENTS}`),
@@ -452,7 +453,7 @@ export const SMART_LIGHT_MEMBERS = {
         if (!channels || channels.some((channel) => !Number.isInteger(channel) || channel < 0 || channel > 255)) {
           return Promise.reject(new Error("custom-colour RGB channels must be integers in 0..255"));
         }
-        return sink.dispatch(colorCommand(color, segmentCount as number));
+        return sink.dispatch(colorCommand(color, segmentCount));
       },
     "Set one plain RGB colour across all reported segments on verified T8L02 lights. Preserves configured brightness; completion acknowledges publication, not observed colour.",
   ),

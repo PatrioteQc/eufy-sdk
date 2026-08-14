@@ -15,6 +15,7 @@
  * nonlinear gamut expansion isn't fully reversed.
  */
 import type { DpField } from "./mqtt/dp-codec.js";
+import { u32le } from "../core/util.js";
 
 /** One layer of a gallery light effect, as the cloud catalog `params.layer[]` describes it. */
 export interface DpPresetLayer {
@@ -291,12 +292,6 @@ function layerBlob(l: DpPresetLayer): Buffer {
     Buffer.from(trailer),
   ]);
 }
-
-const u32le = (n: number): Buffer => {
-  const b = Buffer.alloc(4);
-  b.writeUInt32LE(n >>> 0, 0);
-  return b;
-};
 
 /**
  * Build the `0x020D` light-effect frame's command-specific fields (`0xa3` onward — the header
