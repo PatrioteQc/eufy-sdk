@@ -436,7 +436,7 @@ export class MegaHttpClient {
     const authFailure =
       authed &&
       last?.status === 401 &&
-      /user_id is empty|invalid.*token|token.*(expired|error)|unauthor/i.test(last?.msg ?? "");
+      (last.code === 26084 || /user_id is empty|invalid.*token|token.*(expired|error)|unauthor/i.test(last?.msg ?? ""));
     if (authFailure) {
       this.clearSession();
       throw new SessionExpiredError(`${path} failed (401): ${last?.msg}`);
