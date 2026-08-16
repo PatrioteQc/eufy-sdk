@@ -224,6 +224,15 @@ export class SessionManager {
     this.entries.delete(parentSn);
   }
 
+  /** Close one station now and discard its lifecycle entry. */
+  async close(parentSn: string): Promise<void> {
+    const entry = this.entries.get(parentSn);
+    if (!entry) return;
+    entry.idle.cancel();
+    this.entries.delete(parentSn);
+    await entry.session?.close();
+  }
+
   /** Close every session and clear all timers. */
   async closeAll(): Promise<void> {
     this.generation++;

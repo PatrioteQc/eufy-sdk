@@ -61,6 +61,18 @@ export interface Ff09Identity {
  * routes them by the device's runtime topology and the chosen router re-resolves its own routing tail
  * from the device record — nothing transport- or route-specific lives in the intent.
  */
+/** @internal */
+export interface CommandObservation {
+  event: string;
+  expected: boolean | number | string;
+  param: number;
+  property: string;
+  resetStandaloneSession?: boolean;
+  timeoutMs: number;
+}
+
+const COMMAND_OBSERVATION = Symbol("command-observation");
+
 export type Command =
   | { kind: "set-param"; param: number; value: number; form: ScalarForm; channel: number }
   | { kind: "set-json"; param: number; data: Record<string, unknown>; channel: number }
@@ -106,6 +118,16 @@ export type Command =
       segmentCount: number;
     }
   | { kind: "aiot-dp"; dp: number; value: boolean | number | string };
+
+/** Attach non-wire observation policy to a command without changing its enumerable transport intent. @internal */
+export function observeCommand(command: Command, observation: CommandObservation): Command {
+  return Object.defineProperty(command, COMMAND_OBSERVATION, { value: observation });
+}
+
+/** Read capability-owned observation policy at the client boundary. @internal */
+export function commandObservation(command: Command): CommandObservation | undefined {
+  return (command as Command & { [COMMAND_OBSERVATION]?: CommandObservation })[COMMAND_OBSERVATION];
+}
 
 /**
  * The command transport boundary. The client implements it (routing each {@link Command} `kind` to

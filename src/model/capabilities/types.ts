@@ -114,6 +114,10 @@ export type InboundSignal =
  * name each emits. The barrel folds all modules' mappings into one lookup index (built once), so
  * dispatch is a direct id→event lookup — no per-module decode code for the common case.
  */
+interface EventRefresh {
+  member: string;
+}
+
 export interface EventMapping {
   /** Which source this id comes from. (p2p-frame decoding uses {@link CapabilityModule.decodeEvent}.) */
   source: "push" | "poll";
@@ -121,6 +125,8 @@ export interface EventMapping {
   match: number | [number, number];
   /** The semantic SDK event name to emit (e.g. `"motion"`, `"doorbellPress"`, `"lockState"`). */
   emit: string;
+  /** @internal Refresh one reflected member before emitting a valueless transition. */
+  refresh?: EventRefresh;
   /**
    * Static fields folded into the emitted event payload — lets several ids emit the same event
    * name with a discriminator (e.g. battery pushes 6/7/11 all → `batteryAlert` with

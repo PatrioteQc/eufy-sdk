@@ -287,7 +287,10 @@ describe("decodeEvent — detection sub-events and station events", () => {
   });
 
   it("reports a guard-mode change and the alarm lifecycle", () => {
-    expect(push(9)[0]).toMatchObject({ event: "armingModeChanged" });
+    expect(push(9)[0]).toMatchObject({
+      event: "armingModeChanged",
+      refresh: { param: 1224, property: "armingMode", timeoutMs: 20_000 },
+    });
     expect(push(10)[0]).toMatchObject({ event: "alarm", payload: { phase: "triggered" } });
     expect(push(16)[0]).toMatchObject({ event: "alarm", payload: { phase: "delayed" } });
   });

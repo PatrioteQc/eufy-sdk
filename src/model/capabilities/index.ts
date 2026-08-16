@@ -315,7 +315,19 @@ export const STATION_OWNED_CAPABILITIES: ReadonlySet<Capability> = new Set(
  * An index hit: the semantic event name, the capability that claims the id, and any static payload
  * the mapping attached. The capability is what disambiguates a shared id.
  */
-export type EventHit = Pick<EventMapping, "payload" | "derive"> & { emit: string; capability: Capability };
+/** @internal */
+interface ResolvedEventRefresh {
+  param: number;
+  property: string;
+  timeoutMs: number;
+}
+
+/** @internal */
+export type EventHit = Pick<EventMapping, "payload" | "derive"> & {
+  emit: string;
+  capability: Capability;
+  refresh?: ResolvedEventRefresh;
+};
 type EventIndex = { exact: Map<number, EventHit[]>; ranges: Array<{ lo: number; hi: number } & EventHit> };
 
 /**
@@ -339,7 +351,22 @@ export function buildEventIndex(modules: readonly CapabilityModule[]): Record<"p
   const idx: Record<"push" | "poll", EventIndex> = { push: mk(), poll: mk() };
   for (const m of modules) {
     for (const e of m.events ?? []) {
-      const hit = { emit: e.emit, capability: m.capability, payload: e.payload, derive: e.derive };
+      const declaredMember = e.refresh && m.members?.[e.refresh.member];
+      const refresh =
+        declaredMember &&
+        "param" in declaredMember &&
+        typeof declaredMember.param === "number" &&
+        declaredMember.observation?.event === e.emit
+          ? {
+              param: declaredMember.param,
+              property: declaredMember.property ?? e.refresh!.member,
+              timeoutMs: declaredMember.observation.timeoutMs,
+            }
+          : undefined;
+      if (e.refresh && !refresh) {
+        throw new TypeError(`${m.capability}.${e.emit} refreshes an unknown readable member ${e.refresh.member}`);
+      }
+      const hit = { emit: e.emit, capability: m.capability, payload: e.payload, derive: e.derive, refresh };
       if (Array.isArray(e.match)) idx[e.source].ranges.push({ lo: e.match[0], hi: e.match[1], ...hit });
       else {
         const at = idx[e.source].exact;
@@ -416,10 +443,13 @@ export function resolveHits(hits: EventHit[], capabilities?: ReadonlySet<Capabil
  * Omitted (undefined) = run all escape-hatch modules and accept any single-claimant id.
  * @internal
  */
-export function decodeEvent(signal: InboundSignal, capabilities?: ReadonlySet<Capability>): CapabilityEvent[] {
+type DecodedCapabilityEvent = CapabilityEvent & { refresh?: ResolvedEventRefresh };
+
+export function decodeEvent(signal: InboundSignal, capabilities?: ReadonlySet<Capability>): DecodedCapabilityEvent[] {
   if (signal.source === "push") {
     return resolveHits(lookupEvents("push", signal.eventType), capabilities).map((hit) => ({
       event: hit.emit,
+      refresh: hit.refresh,
       payload: {
         deviceSn: signal.deviceSn,
         stationSn: signal.stationSn,
@@ -434,6 +464,7 @@ export function decodeEvent(signal: InboundSignal, capabilities?: ReadonlySet<Ca
   if (signal.source === "poll") {
     return resolveHits(lookupEvents("poll", signal.paramType), capabilities).map((hit) => ({
       event: hit.emit,
+      refresh: hit.refresh,
       payload: {
         deviceSn: signal.deviceSn,
         paramType: signal.paramType,
@@ -447,7 +478,7 @@ export function decodeEvent(signal: InboundSignal, capabilities?: ReadonlySet<Ca
   // p2p-frame / mqtt → escape-hatch decoders on the modules (binary parsing, bespoke payloads).
   // (No module maps `mqtt` yet — the Tuya-DP realtime format isn't reversed; the branch is ready.)
   const scope = signal.source === "p2p-frame" ? { stationSn: signal.stationSn } : { deviceSn: signal.deviceSn };
-  const events: CapabilityEvent[] = [];
+  const events: DecodedCapabilityEvent[] = [];
   for (const m of MODULES) {
     if (!m.decodeEvent) continue;
     if (capabilities && !capabilities.has(m.capability)) continue; // gate on the device's caps

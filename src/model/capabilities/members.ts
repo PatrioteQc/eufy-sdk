@@ -15,7 +15,14 @@
  *
  * @module model/capabilities/members
  */
-import type { Command, CommandSink, Ff09SettingsReader, MediaProvider, RawDpCodec } from "../../core/contracts.js";
+import {
+  observeCommand,
+  type Command,
+  type CommandSink,
+  type Ff09SettingsReader,
+  type MediaProvider,
+  type RawDpCodec,
+} from "../../core/contracts.js";
 import { describedAction, readBool, readNum, readStr } from "./access.js";
 import type { ActionArgSpec, ActionSpec, AvailabilityContext, CapabilityStateReader, CommandContext } from "./types.js";
 import type { Capability } from "../types.js";
@@ -55,6 +62,13 @@ export interface ValueMember {
   description: string;
   /** The wire, or absent for read-only. `undefined` from it = this value is not one we accept. */
   write?: (value: boolean | number | string, ctx: CommandContext) => Command | undefined;
+  /** @internal A valueless transition event and bounded readback that authoritatively confirm this write. */
+  observation?: {
+    event: string;
+    expected(value: boolean | number | string): boolean | number | string;
+    resetStandaloneSession?: boolean;
+    timeoutMs: number;
+  };
   /** Setter name when `set` + the key reads wrong (`isOn` → `set`, not `setIsOn`). */
   writeAs?: string;
   /**
@@ -537,7 +551,16 @@ export function memberWrite(
   if (!inDomain(m, value)) throw new Error(rejection(name, m, value));
   const cmd = m.write?.(value, ctx);
   if (!cmd) throw new Error(rejection(name, m, value));
-  return cmd;
+  return m.observation && m.param !== undefined
+    ? observeCommand(cmd, {
+        event: m.observation.event,
+        expected: m.observation.expected(value),
+        param: m.param,
+        property: m.property ?? name,
+        resetStandaloneSession: m.observation.resetStandaloneSession,
+        timeoutMs: m.observation.timeoutMs,
+      })
+    : cmd;
 }
 
 /**
