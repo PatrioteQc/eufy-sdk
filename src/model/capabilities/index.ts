@@ -311,10 +311,6 @@ export const STATION_OWNED_CAPABILITIES: ReadonlySet<Capability> = new Set(
   MODULES.filter((m) => m.ownedByStation).map((m) => m.capability),
 );
 
-/**
- * An index hit: the semantic event name, the capability that claims the id, and any static payload
- * the mapping attached. The capability is what disambiguates a shared id.
- */
 /** @internal */
 interface ResolvedEventRefresh {
   param: number;
@@ -322,7 +318,11 @@ interface ResolvedEventRefresh {
   timeoutMs: number;
 }
 
-/** @internal */
+/**
+ * An index hit: the semantic event name, the capability that claims the id, and any static payload
+ * the mapping attached. The capability is what disambiguates a shared id.
+ * @internal
+ */
 export type EventHit = Pick<EventMapping, "payload" | "derive"> & {
   emit: string;
   capability: Capability;
@@ -418,6 +418,8 @@ export function resolveHits(hits: EventHit[], capabilities?: ReadonlySet<Capabil
   return hits.filter((h) => capabilities.has(h.capability));
 }
 
+type DecodedCapabilityEvent = CapabilityEvent & { refresh?: ResolvedEventRefresh };
+
 /**
  * Normalize an inbound {@link InboundSignal} (push / P2P frame / poll) into the semantic
  * {@link CapabilityEvent}s to emit. Push/poll resolve via the declarative index (pure data);
@@ -443,8 +445,6 @@ export function resolveHits(hits: EventHit[], capabilities?: ReadonlySet<Capabil
  * Omitted (undefined) = run all escape-hatch modules and accept any single-claimant id.
  * @internal
  */
-type DecodedCapabilityEvent = CapabilityEvent & { refresh?: ResolvedEventRefresh };
-
 export function decodeEvent(signal: InboundSignal, capabilities?: ReadonlySet<Capability>): DecodedCapabilityEvent[] {
   if (signal.source === "push") {
     return resolveHits(lookupEvents("push", signal.eventType), capabilities).map((hit) => ({

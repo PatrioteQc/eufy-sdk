@@ -186,8 +186,9 @@ describe("catch-all event tag", () => {
       );
     const sink = (eufy as any).commandSinkFor("T8000P0000000000");
 
-    await sink.dispatch(command(63));
-    await sink.dispatch(command(1));
+    const disarm = sink.dispatch(command(63));
+    const home = sink.dispatch(command(1));
+    await Promise.all([disarm, home]);
 
     expect(seen).toEqual([63, 1]);
     expect(reset).toHaveBeenCalledTimes(2);

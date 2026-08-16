@@ -51,16 +51,6 @@ export interface Ff09Identity {
   deviceSn: string;
 }
 
-/**
- * A transport-neutral outbound **command intent**. Capability modules emit one of these; they never
- * call the network directly, never name a transport, and never carry a routing key. The
- * {@link CommandSink} routes each by `kind`; kinds are named after the WIRE MECHANISM (the frame or
- * protocol), never the capability that happens to be the first caller. Most carry an opaque param/id +
- * value; a `kind` whose wire interaction is a bespoke sequence (a burst, a read-modify-write) earns its
- * own variant. The `ff09-*` kinds share ONE frame that rides BOTH P2P and secure-MQTT, so the sink
- * routes them by the device's runtime topology and the chosen router re-resolves its own routing tail
- * from the device record — nothing transport- or route-specific lives in the intent.
- */
 /** @internal */
 export interface CommandObservation {
   event: string;
@@ -73,6 +63,16 @@ export interface CommandObservation {
 
 const COMMAND_OBSERVATION = Symbol("command-observation");
 
+/**
+ * A transport-neutral outbound **command intent**. Capability modules emit one of these; they never
+ * call the network directly, never name a transport, and never carry a routing key. The
+ * {@link CommandSink} routes each by `kind`; kinds are named after the WIRE MECHANISM (the frame or
+ * protocol), never the capability that happens to be the first caller. Most carry an opaque param/id +
+ * value; a `kind` whose wire interaction is a bespoke sequence (a burst, a read-modify-write) earns its
+ * own variant. The `ff09-*` kinds share ONE frame that rides BOTH P2P and secure-MQTT, so the sink
+ * routes them by the device's runtime topology and the chosen router re-resolves its own routing tail
+ * from the device record — nothing transport- or route-specific lives in the intent.
+ */
 export type Command =
   | { kind: "set-param"; param: number; value: number; form: ScalarForm; channel: number }
   | { kind: "set-json"; param: number; data: Record<string, unknown>; channel: number }

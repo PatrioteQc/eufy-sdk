@@ -210,38 +210,36 @@ export class SessionManager {
     const e = this.entries.get(parentSn);
     if (!e) return;
     if (e.users > 0) return;
-    const session = e.session;
-    this.entries.delete(parentSn);
     this.logger.debug(`[session ${parentSn}] idle window elapsed — disconnecting now (device can sleep)`);
-    session?.close();
+    void this.close(parentSn);
   }
 
   /** Drop a station's entry + timer (called from the session's `close` handler). Idempotent. */
   remove(parentSn: string): void {
-    const e = this.entries.get(parentSn);
-    if (!e) return;
-    e.idle.cancel();
-    this.entries.delete(parentSn);
+    this.discard(parentSn);
   }
 
   /** Close one station now and discard its lifecycle entry. */
   async close(parentSn: string): Promise<void> {
+    await this.discard(parentSn)?.close();
+  }
+
+  /** Discard one lifecycle entry and return its live session, if any. */
+  private discard(parentSn: string): P2PSession | undefined {
     const entry = this.entries.get(parentSn);
-    if (!entry) return;
+    if (!entry) return undefined;
     entry.idle.cancel();
     this.entries.delete(parentSn);
-    await entry.session?.close();
+    return entry.session;
   }
 
   /** Close every session and clear all timers. */
   async closeAll(): Promise<void> {
     this.generation++;
-    const sessions: P2PSession[] = [];
-    for (const e of this.entries.values()) {
-      e.idle.cancel();
-      if (e.session) sessions.push(e.session);
-    }
-    this.entries.clear();
+    const sessions = [...this.entries.keys()].flatMap((parentSn) => {
+      const session = this.discard(parentSn);
+      return session ? [session] : [];
+    });
     await Promise.all(sessions.map((s) => s.close()));
   }
 }

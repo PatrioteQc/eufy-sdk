@@ -62,7 +62,7 @@ export interface ValueMember {
   description: string;
   /** The wire, or absent for read-only. `undefined` from it = this value is not one we accept. */
   write?: (value: boolean | number | string, ctx: CommandContext) => Command | undefined;
-  /** @internal A valueless transition event and bounded readback that authoritatively confirm this write. */
+  /** @internal Policy for confirming this write through bounded readback before emitting its transition event. */
   observation?: {
     event: string;
     expected(value: boolean | number | string): boolean | number | string;

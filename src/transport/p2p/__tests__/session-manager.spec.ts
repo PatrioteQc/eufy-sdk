@@ -89,6 +89,45 @@ describe("SessionManager lifecycle", () => {
     expect(mgr.has("ST")).toBe(false);
   });
 
+  it("close immediately detaches a live session, cancels idle, and permits a fresh acquisition", async () => {
+    const mgr = managerFor("battery");
+    const first = fakeSession("first");
+    const second = fakeSession("second");
+    await mgr.acquire("ST", async () => first);
+    mgr.addUser("ST");
+    mgr.releaseUser("ST");
+
+    await mgr.close("ST");
+    await vi.advanceTimersByTimeAsync(1000);
+    const reopened = await mgr.acquire("ST", async () => second);
+
+    expect(first.close).toHaveBeenCalledOnce();
+    expect(reopened).toBe(second);
+  });
+
+  it("close supersedes an in-flight acquisition and the next acquisition opens fresh", async () => {
+    const mgr = managerFor("battery");
+    const stale = fakeSession("stale");
+    let finish!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const opening = mgr.acquire("ST", async (register) => {
+      await gate;
+      register(stale);
+      return stale;
+    });
+    await vi.advanceTimersByTimeAsync(0);
+
+    await mgr.close("ST");
+    finish();
+
+    await expect(opening).rejects.toThrow(/superseded/);
+    expect(stale.close).toHaveBeenCalledOnce();
+    const fresh = fakeSession("fresh");
+    await expect(mgr.acquire("ST", async () => fresh)).resolves.toBe(fresh);
+  });
+
   it("closeAll closes every live session and clears timers", async () => {
     const mgr = managerFor("wired");
     const a = fakeSession("a");

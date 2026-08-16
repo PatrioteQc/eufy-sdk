@@ -220,8 +220,8 @@ export class EufyMega extends EventEmitter {
    * this map must never be what keeps one alive.
    */
   private readonly liveDevices = new Map<string, WeakRef<Device>>();
-  /** Serialized value-refresh work for valueless semantic transitions. */
-  private readonly eventRefreshes = new Map<string, Promise<boolean>>();
+  /** Serialized state-transition transactions keyed by device and reflected member. */
+  private readonly stateTransitions = new Map<string, Promise<unknown>>();
   /** Local writes already awaiting the same semantic transition, counted per reflected member. */
   private readonly commandRefreshes = new Map<string, { epoch: number; count: number }>();
   /**
@@ -518,13 +518,15 @@ export class EufyMega extends EventEmitter {
       refresh?: SemanticEventRefresh;
     } = {},
   ): void {
-    if (opts.refresh && typeof payload.deviceSn === "string") {
-      const key = this.eventRefreshKey(payload.deviceSn, opts.refresh);
+    const refresh = opts.refresh;
+    const deviceSn = payload.deviceSn;
+    if (refresh && typeof deviceSn === "string") {
+      const key = this.eventRefreshKey(deviceSn, refresh);
       const commandOwner = this.commandRefreshes.get(key);
       if (commandOwner?.epoch === this.realtimeEpoch && commandOwner.count > 0) return;
-      const device = this.liveDevices.get(payload.deviceSn)?.deref();
+      const device = this.liveDevices.get(deviceSn)?.deref();
       if (device) {
-        const emission = this.refreshEventState(payload.deviceSn, opts.refresh)
+        const emission = this.enqueueStateTransition(key, () => this.refreshEventState(deviceSn, refresh))
           .then(async (refreshed) => {
             if (!refreshed) return;
             this.emitSemantic(event, payload, { edge: opts.edge });
@@ -543,15 +545,8 @@ export class EufyMega extends EventEmitter {
 
   /** Await one capability-declared reflected param before publishing its valueless transition event. */
   private refreshEventState(sn: string, refresh: SemanticEventRefresh): Promise<boolean> {
-    const key = this.eventRefreshKey(sn, refresh);
     const epoch = this.realtimeEpoch;
-    const predecessor = this.eventRefreshes.get(key);
-    const operation = (async (): Promise<boolean> => {
-      if (predecessor) {
-        try {
-          await predecessor;
-        } catch {}
-      }
+    return (async (): Promise<boolean> => {
       if (epoch !== this.realtimeEpoch) return false;
       const initialDevice = this.liveDevices.get(sn)?.deref();
       const before = initialDevice?.getProperty(refresh.property)?.value;
@@ -574,10 +569,23 @@ export class EufyMega extends EventEmitter {
       }
       throw new Error("device state did not converge before semantic event deadline");
     })();
-    const tracked = operation.finally(() => {
-      if (this.eventRefreshes.get(key) === tracked) this.eventRefreshes.delete(key);
+  }
+
+  /** Serialize one complete state-transition transaction behind its keyed predecessor. */
+  private enqueueStateTransition<T>(key: string, operation: () => Promise<T>): Promise<T> {
+    const predecessor = this.stateTransitions.get(key);
+    const current = (async (): Promise<T> => {
+      if (predecessor) {
+        try {
+          await predecessor;
+        } catch {}
+      }
+      return operation();
+    })();
+    const tracked = current.finally(() => {
+      if (this.stateTransitions.get(key) === tracked) this.stateTransitions.delete(key);
     });
-    this.eventRefreshes.set(key, tracked);
+    this.stateTransitions.set(key, tracked);
     return tracked;
   }
 
@@ -593,7 +601,7 @@ export class EufyMega extends EventEmitter {
     return `${sn}:${refresh.param}`;
   }
 
-  /** Bound one unabortable dependency operation to the remaining semantic-event refresh window. */
+  /** Limit waiting on an unabortable dependency operation to the remaining semantic-event refresh window. */
   private beforeDeadline<T>(operation: Promise<T>, timeoutMs: number): Promise<T> {
     return new Promise<T>((resolve, reject) => {
       const timeout = setTimeout(() => reject(new Error("semantic event refresh timed out")), Math.max(0, timeoutMs));
@@ -788,11 +796,13 @@ export class EufyMega extends EventEmitter {
         currentOwner.count += 1;
         this.commandRefreshes.set(key, currentOwner);
         try {
-          await this.routeCommand(sn, cmd);
-          const refreshed = await this.refreshEventState(sn, observation);
-          if (!refreshed || epoch !== this.realtimeEpoch) return;
-          if (observation.resetStandaloneSession) await this.p2p.resetStandaloneSession(sn);
-          if (epoch === this.realtimeEpoch) this.emitSemantic(observation.event, { deviceSn: sn });
+          await this.enqueueStateTransition(key, async () => {
+            await this.routeCommand(sn, cmd);
+            const refreshed = await this.refreshEventState(sn, observation);
+            if (!refreshed || epoch !== this.realtimeEpoch) return;
+            if (observation.resetStandaloneSession) await this.p2p.resetStandaloneSession(sn);
+            if (epoch === this.realtimeEpoch) this.emitSemantic(observation.event, { deviceSn: sn });
+          });
         } finally {
           if (this.commandRefreshes.get(key) === currentOwner) {
             currentOwner.count -= 1;
@@ -1664,7 +1674,7 @@ export class EufyMega extends EventEmitter {
    */
   async disconnect(): Promise<void> {
     this.realtimeEpoch++;
-    this.eventRefreshes.clear();
+    this.stateTransitions.clear();
     this.commandRefreshes.clear();
     if (this.realtimeGeneration) {
       const generation = this.realtimeGeneration;

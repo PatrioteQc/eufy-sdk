@@ -108,16 +108,16 @@ export type InboundSignal =
       dpParams?: Record<number, string>;
     };
 
+interface EventRefresh {
+  member: string;
+}
+
 /**
  * A **declarative** inbound-event mapping — the dual of {@link DetectionSpec} for events. A
  * capability lists which push `eventType`s / poll `paramType`s belong to it and the semantic event
  * name each emits. The barrel folds all modules' mappings into one lookup index (built once), so
  * dispatch is a direct id→event lookup — no per-module decode code for the common case.
  */
-interface EventRefresh {
-  member: string;
-}
-
 export interface EventMapping {
   /** Which source this id comes from. (p2p-frame decoding uses {@link CapabilityModule.decodeEvent}.) */
   source: "push" | "poll";
