@@ -128,6 +128,41 @@ describe("SessionManager lifecycle", () => {
     await expect(mgr.acquire("ST", async () => fresh)).resolves.toBe(fresh);
   });
 
+  it("reset ignores command holds but waits for active session consumers", async () => {
+    const mgr = managerFor("battery");
+    const session = fakeSession();
+    await mgr.acquire("ST", async () => session);
+    mgr.addUser("ST");
+    mgr.bumpCommand("ST");
+
+    const reset = mgr.resetWhenUnused("ST");
+    let resetFinished = false;
+    void reset.then(() => {
+      resetFinished = true;
+    });
+    expect(session.close).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(100);
+    expect(session.close).not.toHaveBeenCalled();
+    expect(resetFinished).toBe(false);
+
+    mgr.releaseUser("ST");
+    await reset;
+    expect(session.close).toHaveBeenCalledOnce();
+    expect(resetFinished).toBe(true);
+  });
+
+  it("reset closes immediately when only command holds remain", async () => {
+    const mgr = managerFor("battery");
+    const session = fakeSession();
+    await mgr.acquire("ST", async () => session);
+    mgr.bumpCommand("ST");
+
+    await mgr.resetWhenUnused("ST");
+
+    expect(session.close).toHaveBeenCalledOnce();
+    expect(mgr.has("ST")).toBe(false);
+  });
+
   it("closeAll closes every live session and clears timers", async () => {
     const mgr = managerFor("wired");
     const a = fakeSession("a");

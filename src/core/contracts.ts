@@ -121,7 +121,7 @@ export type Command =
 
 /** Attach non-wire observation policy to a command without changing its enumerable transport intent. @internal */
 export function observeCommand(command: Command, observation: CommandObservation): Command {
-  return Object.defineProperty(command, COMMAND_OBSERVATION, { value: observation });
+  return Object.defineProperty(command, COMMAND_OBSERVATION, { configurable: true, value: observation });
 }
 
 /** Read capability-owned observation policy at the client boundary. @internal */

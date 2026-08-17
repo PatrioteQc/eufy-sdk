@@ -93,6 +93,40 @@ describe("catch-all event tag", () => {
     expect(device.applyParams).toHaveBeenCalledExactlyOnceWith({ 1224: "63" });
   });
 
+  it("applies a converged cloud record once after unchanged refresh attempts", async () => {
+    vi.useFakeTimers();
+    const eufy = client();
+    let mode = 1;
+    let cloudMode = "1";
+    let polls = 0;
+    const device = {
+      getProperty: () => ({ value: mode }),
+      applyParams: vi.fn((params: Record<number, string>) => {
+        mode = Number(params[1224]);
+      }),
+    };
+    (eufy as any).liveDevices.set("T8000P0000000000", new WeakRef(device));
+    vi.spyOn((eufy as any).registry, "require").mockImplementation(() => ({ params: { 1224: cloudMode } }));
+    vi.spyOn((eufy as any).registry, "getDevices").mockImplementation(async () => {
+      polls += 1;
+      if (polls === 3) cloudMode = "63";
+      return [];
+    });
+    const seen: number[] = [];
+    eufy.on("armingModeChanged", () => seen.push(mode));
+
+    (eufy as any).emitSemantic(
+      "armingModeChanged",
+      { deviceSn: "T8000P0000000000" },
+      { refresh: { param: 1224, property: "armingMode", timeoutMs: 20_000 } },
+    );
+    await vi.advanceTimersByTimeAsync(1000);
+
+    expect(seen).toEqual([63]);
+    expect(device.applyParams).toHaveBeenCalledExactlyOnceWith({ 1224: "63" });
+    vi.useRealTimers();
+  });
+
   it("serializes consecutive valueless transitions so each event observes its own state", async () => {
     const eufy = client();
     let mode = 1;
@@ -149,6 +183,7 @@ describe("catch-all event tag", () => {
 
     await (eufy as any).commandSinkFor("T8000P0000000000").dispatch(command);
 
+    expect((eufy as any).routeCommand).toHaveBeenCalledOnce();
     await vi.waitFor(() => expect(seen).toEqual([63]));
     expect(reset).toHaveBeenCalledExactlyOnceWith("T8000P0000000000");
   });
@@ -190,7 +225,38 @@ describe("catch-all event tag", () => {
     const home = sink.dispatch(command(1));
     await Promise.all([disarm, home]);
 
-    expect(seen).toEqual([63, 1]);
+    await vi.waitFor(() => expect(seen).toEqual([63, 1]));
     expect(reset).toHaveBeenCalledTimes(2);
+  });
+
+  it("acknowledges an observed command without failing when authoritative readback expires", async () => {
+    vi.useFakeTimers();
+    const eufy = client();
+    const device = { getProperty: () => ({ value: 1 }), applyParams: vi.fn() };
+    (eufy as any).liveDevices.set("T8000P0000000000", new WeakRef(device));
+    vi.spyOn((eufy as any).registry, "require").mockReturnValue({ params: { 1224: "1" } });
+    vi.spyOn((eufy as any).registry, "getDevices").mockResolvedValue([]);
+    vi.spyOn(eufy as any, "routeCommand").mockResolvedValue(undefined);
+    const reportError = vi.spyOn(eufy as any, "reportError").mockImplementation(() => undefined);
+    const command = observeCommand(
+      { kind: "set-param", param: 1224, value: 63, form: "auto", channel: 0 },
+      { event: "armingModeChanged", expected: 63, param: 1224, property: "armingMode", timeoutMs: 20_000 },
+    );
+
+    await expect((eufy as any).commandSinkFor("T8000P0000000000").dispatch(command)).resolves.toBeUndefined();
+    await vi.advanceTimersByTimeAsync(20_000);
+
+    expect(reportError).toHaveBeenCalledOnce();
+    vi.useRealTimers();
+  });
+
+  it("allows observation policy to be replaced on a reused command object", () => {
+    const command = { kind: "set-param", param: 1224, value: 63, form: "auto", channel: 0 } as const;
+    const first = { event: "armingModeChanged", expected: 63, param: 1224, property: "armingMode", timeoutMs: 1 };
+    const second = { ...first, expected: 1 };
+
+    observeCommand(command, first);
+    expect(() => observeCommand(command, second)).not.toThrow();
+    expect(commandObservation(command)).toEqual(second);
   });
 });

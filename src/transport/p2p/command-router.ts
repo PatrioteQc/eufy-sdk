@@ -243,7 +243,7 @@ export class P2PCommandRouter {
     const device = this.deps.listDevices().find((candidate) => candidate.sn === sn);
     if (!device) return;
     const station = this.stationKeyFor(device);
-    if (station === sn) await this.manager.close(station);
+    if (station === sn) await this.manager.resetWhenUnused(station);
   }
 
   /**

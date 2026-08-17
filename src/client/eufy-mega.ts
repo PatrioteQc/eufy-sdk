@@ -558,10 +558,17 @@ export class EufyMega extends EventEmitter {
         if (epoch !== this.realtimeEpoch) return false;
         const device = this.liveDevices.get(sn)?.deref();
         const record = this.registry.require(sn);
-        if (device) {
+        const rawValue = record.params?.[refresh.param];
+        const converged =
+          refresh.expected === undefined
+            ? device
+              ? String(rawValue) !== String(before)
+              : rawValue !== rawBefore
+            : String(rawValue) === String(refresh.expected);
+        if (converged && device) {
           device.applyParams(record.params ?? {});
           if (this.matchesObservation(device.getProperty(refresh.property)?.value, refresh, before)) return true;
-        } else if (this.matchesObservation(record.params?.[refresh.param], refresh, rawBefore)) {
+        } else if (converged) {
           return true;
         }
         const delay = Math.min(500, deadline - Date.now());
@@ -795,20 +802,43 @@ export class EufyMega extends EventEmitter {
         const currentOwner = owner?.epoch === epoch ? owner : { epoch, count: 0 };
         currentOwner.count += 1;
         this.commandRefreshes.set(key, currentOwner);
-        try {
-          await this.enqueueStateTransition(key, async () => {
-            await this.routeCommand(sn, cmd);
-            const refreshed = await this.refreshEventState(sn, observation);
-            if (!refreshed || epoch !== this.realtimeEpoch) return;
-            if (observation.resetStandaloneSession) await this.p2p.resetStandaloneSession(sn);
-            if (epoch === this.realtimeEpoch) this.emitSemantic(observation.event, { deviceSn: sn });
-          });
-        } finally {
+        let acknowledge!: () => void;
+        let reject!: (error: unknown) => void;
+        let acknowledged = false;
+        const acknowledgement = new Promise<void>((resolve, rejectPromise) => {
+          acknowledge = () => {
+            acknowledged = true;
+            resolve();
+          };
+          reject = rejectPromise;
+        });
+        const release = (): void => {
           if (this.commandRefreshes.get(key) === currentOwner) {
             currentOwner.count -= 1;
             if (currentOwner.count === 0) this.commandRefreshes.delete(key);
           }
-        }
+        };
+        const transaction = this.enqueueStateTransition(key, async () => {
+          try {
+            await this.routeCommand(sn, cmd);
+            acknowledge();
+            const refreshed = await this.refreshEventState(sn, observation);
+            if (!refreshed || epoch !== this.realtimeEpoch) return;
+            if (observation.resetStandaloneSession) await this.p2p.resetStandaloneSession(sn);
+            if (epoch === this.realtimeEpoch) this.emitSemantic(observation.event, { deviceSn: sn });
+          } catch (error) {
+            if (!acknowledged) reject(error);
+            else this.reportError(error);
+          } finally {
+            release();
+          }
+        });
+        void transaction.catch((error) => {
+          if (!acknowledged) reject(error);
+          else this.reportError(error);
+          release();
+        });
+        return acknowledgement;
       },
     };
   }

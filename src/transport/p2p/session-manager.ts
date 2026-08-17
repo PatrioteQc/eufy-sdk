@@ -40,6 +40,9 @@ export const PREWARM_MS = 28_000;
 interface SessionEntry {
   session?: P2PSession;
   users: number;
+  holds: number;
+  resetPending: boolean;
+  resetWaiters: Array<() => void>;
   idle: Timer;
   powered: PowerTier;
   idleMs: number;
@@ -113,7 +116,7 @@ export class SessionManager {
     let e = this.entries.get(parentSn);
     if (!e) {
       const { powered, idleMs } = this.resolvePower(parentSn);
-      e = { users: 0, idle: new Timer(), powered, idleMs };
+      e = { users: 0, holds: 0, resetPending: false, resetWaiters: [], idle: new Timer(), powered, idleMs };
       this.entries.set(parentSn, e);
     }
     return e;
@@ -170,6 +173,10 @@ export class SessionManager {
     const e = this.entries.get(parentSn);
     if (!e) return;
     e.users = Math.max(0, e.users - 1);
+    if (e.resetPending && e.users <= e.holds) {
+      void this.close(parentSn);
+      return;
+    }
     if (e.users === 0) this.armIdle(parentSn, e);
   }
 
@@ -183,8 +190,18 @@ export class SessionManager {
 
   /** Add a user then auto-release after `ms` — the primitive behind command-keepalive + event pre-warm. */
   hold(parentSn: string, ms: number): void {
+    const entry = this.entry(parentSn);
     this.addUser(parentSn);
-    setTimeout(() => this.releaseUser(parentSn), ms).unref?.();
+    entry.holds += 1;
+    setTimeout(() => this.releaseHold(parentSn), ms).unref?.();
+  }
+
+  /** Release one expiring hold without counting it as an active session consumer. */
+  private releaseHold(parentSn: string): void {
+    const entry = this.entries.get(parentSn);
+    if (!entry) return;
+    entry.holds = Math.max(0, entry.holds - 1);
+    this.releaseUser(parentSn);
   }
 
   /**
@@ -216,30 +233,46 @@ export class SessionManager {
 
   /** Drop a station's entry + timer (called from the session's `close` handler). Idempotent. */
   remove(parentSn: string): void {
-    this.discard(parentSn);
+    const entry = this.discard(parentSn);
+    for (const resolve of entry?.resetWaiters ?? []) resolve();
   }
 
   /** Close one station now and discard its lifecycle entry. */
   async close(parentSn: string): Promise<void> {
-    await this.discard(parentSn)?.close();
+    const entry = this.discard(parentSn);
+    await entry?.session?.close();
+    for (const resolve of entry?.resetWaiters ?? []) resolve();
   }
 
-  /** Discard one lifecycle entry and return its live session, if any. */
-  private discard(parentSn: string): P2PSession | undefined {
+  /** Reset after active consumers detach, ignoring only expiring command holds. */
+  async resetWhenUnused(parentSn: string): Promise<void> {
+    const entry = this.entries.get(parentSn);
+    if (!entry) return;
+    if (entry.users <= entry.holds) {
+      await this.close(parentSn);
+      return;
+    }
+    entry.resetPending = true;
+    return new Promise<void>((resolve) => entry.resetWaiters.push(resolve));
+  }
+
+  /** Discard one lifecycle entry and return it for bounded close/reset completion. */
+  private discard(parentSn: string): SessionEntry | undefined {
     const entry = this.entries.get(parentSn);
     if (!entry) return undefined;
     entry.idle.cancel();
     this.entries.delete(parentSn);
-    return entry.session;
+    return entry;
   }
 
   /** Close every session and clear all timers. */
   async closeAll(): Promise<void> {
     this.generation++;
-    const sessions = [...this.entries.keys()].flatMap((parentSn) => {
-      const session = this.discard(parentSn);
-      return session ? [session] : [];
+    const entries = [...this.entries.keys()].flatMap((parentSn) => {
+      const entry = this.discard(parentSn);
+      return entry ? [entry] : [];
     });
-    await Promise.all(sessions.map((s) => s.close()));
+    await Promise.all(entries.map(({ session }) => session?.close()));
+    for (const entry of entries) for (const resolve of entry.resetWaiters) resolve();
   }
 }
