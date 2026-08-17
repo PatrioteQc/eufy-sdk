@@ -11,8 +11,10 @@ eufy-sdk is not affiliated with, endorsed by, or sponsored by Anker Innovations 
 
 - **Node.js ≥ 24.5.0** — the client uses `node --env-file` and native fetch-era APIs, and needs the
   OpenSSL 3.5.1 that 24.5.0 bundles to decode E2E camera video. See `.nvmrc`.
-- **Runtime dependencies — three:** `mqtt`, `protobufjs`, `werift`. Everything else is Node built-ins
-  (`fetch`, `node:crypto`, `BigInt`).
+- **Runtime dependencies — four:** `mqtt`, `protobufjs`, `werift`, and `jpeg-js` (a pure-JS,
+  zero-transitive-dependency, BSD-3-Clause baseline JPEG codec — required to reconstruct v2 push
+  thumbnails, which must be decoded and re-encoded; there is no Node built-in JPEG codec). Everything
+  else is Node built-ins (`fetch`, `node:crypto`, `BigInt`).
 - **`ffmpeg` — optional, on `PATH`.** Needed only for the convenience decode/mux sinks: JPEG
   `snapshotLive()`, the one-shot `record(seconds)` buffer, and WebRTC container output (`.mp4`/`.mkv`;
   falls back to raw when absent). The core paths — `live()`, `openReadable()`, `recordFragments()`
