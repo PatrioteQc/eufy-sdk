@@ -9,7 +9,7 @@ function locateCtx(model?: string, category?: string): CommandContext {
 describe("locate capability module", () => {
   it("declares the capability + schema", () => {
     expect(LOCATE.capability).toBe("locate");
-    expect(LOCATE.properties.map((p) => p.name)).toEqual(["locating"]);
+    expect(LOCATE.properties.map((p) => p.name)).toEqual(["locating", "locatingLegacy"]);
   });
 
   it("every property has a string name + numeric paramType", () => {
@@ -35,10 +35,13 @@ describe("locate — AIoT vs legacy guard (negative exclusion)", () => {
     expect(acts.locate).toBeDefined();
   });
 
-  it("locate is absent for eufy_home_tuya — absent rather than present-and-rejecting", () => {
-    // T2266 = X8 Pro, category from live API dump (2026-08-04)
-    const { acts } = bind<LocateActions>("locate", locateCtx("T2266", "eufy_home_tuya"));
-    expect(acts.locate).toBeUndefined();
+  it("locate is present for eufy_home_tuya and dispatches DP 103 (legacy Tuya find-robot)", async () => {
+    // T2266 = X8 Pro, category from live API dump (2026-08-04); routeCommand sends aiot-dp to TuyaCommandRouter.
+    // Legacy Tuya clean line uses DP 103 for find-robot, not DP 160 (AIoT).
+    const { acts, sent } = bind<LocateActions>("locate", locateCtx("T2266", "eufy_home_tuya"));
+    expect(acts.locate).toBeDefined();
+    await acts.locate!();
+    expect(sent).toEqual([{ kind: "aiot-dp", dp: 103, value: true }]);
   });
 
   it("dispatches DP 160 = true for eufy_home category (Anker AIoT MQTT)", async () => {

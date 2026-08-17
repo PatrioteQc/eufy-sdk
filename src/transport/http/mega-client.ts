@@ -189,6 +189,11 @@ export class MegaHttpClient {
     return this.auth_ ? { userId: this.auth_.userId, authToken: this.auth_.authToken } : undefined;
   }
 
+  /** The active region shard (e.g. `"eu-pr"`, `"us-pr"`), set after {@link login} or a region override. */
+  get regionShard(): RegionShard {
+    return this.region;
+  }
+
   /**
    * The logged-in account's display name — the login email's local-part (e.g. `someone+tag` for
    * `someone+tag@example.com`). This is the string the app writes into the ff09 command's acting

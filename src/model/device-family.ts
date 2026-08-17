@@ -143,3 +143,12 @@ export const isWiredDoorbell = (ctx: FamilyContext): boolean => ctx.deviceType =
  * X8 Pro (2026-08-04). Additional category strings are added here as devices are captured.
  */
 export const isAiotVacuum = (ctx: FamilyContext): boolean => ctx.category !== "eufy_home_tuya";
+
+/**
+ * Whether a vacuum is on the **ThingClips/Tuya Cloud** platform (`"eufy_home_tuya"` category).
+ *
+ * The positive complement of the negative-exclusion {@link isAiotVacuum}: returns `true` only for
+ * the one confirmed non-AIoT platform. Used to extend capability `available` guards so Tuya
+ * vacuums receive the same write actions as AIoT ones, routed by the facade's `routeCommand`.
+ */
+export const isTuyaVacuum = (ctx: FamilyContext): boolean => ctx.category === "eufy_home_tuya";

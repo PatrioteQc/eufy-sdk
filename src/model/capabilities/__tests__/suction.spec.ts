@@ -36,16 +36,20 @@ describe("suction — AIoT vs legacy guard (negative exclusion)", () => {
     expect(acts.setSuctionLevel).toBeDefined();
   });
 
-  it("write actions are absent for eufy_home_tuya — absent rather than present-and-rejecting", () => {
-    // T2266 = X8 Pro, category from live API dump (2026-08-04)
-    const { acts } = bind<SuctionActions>("suction", suctionCtx("T2266", "eufy_home_tuya"));
-    expect(acts.setSuctionLevel).toBeUndefined();
-    expect(acts.setBoostIq).toBeUndefined();
+  it("write actions are present for eufy_home_tuya and dispatch aiot-dp routed by the facade", async () => {
+    // T2266 = X8 Pro, category from live API dump (2026-08-04); routeCommand sends aiot-dp to TuyaCommandRouter
+    const { acts, sent } = bind<SuctionActions>("suction", suctionCtx("T2266", "eufy_home_tuya"));
+    expect(acts.setSuctionLevel).toBeDefined();
+    expect(acts.setBoostIq).toBeDefined();
+    await acts.setSuctionLevel!(SuctionLevel.Turbo);
+    expect(sent).toEqual([{ kind: "aiot-dp", dp: SUCTION_DP.SUCTION, value: SuctionLevel.Turbo }]);
   });
 
-  it("write actions are absent for eufy_home_tuya with no model (unknown Tuya device)", () => {
-    const { acts } = bind<SuctionActions>("suction", suctionCtx(undefined, "eufy_home_tuya"));
-    expect(acts.setSuctionLevel).toBeUndefined();
+  it("write actions are present for eufy_home_tuya with no model (unknown Tuya device)", async () => {
+    const { acts, sent } = bind<SuctionActions>("suction", suctionCtx(undefined, "eufy_home_tuya"));
+    expect(acts.setSuctionLevel).toBeDefined();
+    await acts.setSuctionLevel!(SuctionLevel.Standard);
+    expect(sent).toEqual([{ kind: "aiot-dp", dp: SUCTION_DP.SUCTION, value: SuctionLevel.Standard }]);
   });
 
   it("dispatches DP 158 for setSuctionLevel on eufy_home category (Anker AIoT MQTT)", async () => {

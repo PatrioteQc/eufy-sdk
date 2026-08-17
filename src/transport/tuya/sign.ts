@@ -128,3 +128,10 @@ export class HmacSigner implements TuyaSigner {
     return createHmac("sha256", this.key).update(preimage, "utf-8").digest("hex");
   }
 }
+
+/**
+ * Channel key sent on every request as `chKey`.
+ * Extracted from the eufy Home/Clean APK (`com.oceanwing.battery.cam`); present in the sign
+ * preimage — confirmed from the live-captured golden vector in `scripts/tuya/setup-sign-key.mjs`.
+ */
+export const TUYA_CHKEY = "7cbfe6d8";

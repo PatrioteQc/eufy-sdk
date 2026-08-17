@@ -10,7 +10,7 @@
  */
 import { randomBytes } from "node:crypto";
 import { deriveTuyaAccount, type TuyaAccount } from "./account.js";
-import { type TuyaSigner } from "./sign.js";
+import { TUYA_CHKEY, type TuyaSigner } from "./sign.js";
 import {
   buildApiParams,
   buildGetDeviceDpsAction,
@@ -37,10 +37,10 @@ export interface TuyaClientConfig {
   /** The native sign seam. Required for any real call; use a fake in tests. */
   signer: TuyaSigner;
   /**
-   * 8-hex `chKey`. ✅ SOLVED (see {@link TuyaSession.chKey}): a pure function of the appId only, so a
-   * per-appId CONSTANT — `"7cbfe6d8"` for this build. Pass that literal.
+   * Channel key — defaults to {@link TUYA_CHKEY} (`"7cbfe6d8"`), the constant extracted from
+   * the eufy Home/Clean APK. Override only for non-standard builds.
    */
-  chKey: string;
+  chKey?: string;
   /** Per-install device id; a random 44-hex one is generated if omitted (see {@link genDeviceId}). */
   deviceId?: string;
   /** Restore a prior session id (skip login). */
@@ -79,7 +79,7 @@ export class TuyaClient {
     this.session = {
       sid: config.sid ?? "",
       deviceId: config.deviceId ?? genDeviceId(),
-      chKey: config.chKey,
+      chKey: config.chKey ?? TUYA_CHKEY,
     };
   }
 

@@ -77,7 +77,23 @@ function fakeCtx(model?: string, category?: string): CommandContext {
 describe("vacuum_clean capability module", () => {
   it("declares the capability + schema", () => {
     expect(VACUUM_CLEAN.capability).toBe("vacuum_clean");
-    expect(VACUUM_CLEAN.properties.map((p) => p.name)).toEqual(["power", "activity", "volume", "battery", "cleanType"]);
+    expect(VACUUM_CLEAN.properties.map((p) => p.name)).toEqual([
+      "power",
+      "activity",
+      "volume",
+      "battery",
+      "cleanType",
+      "batteryLegacy",
+      "errorCode",
+      "workStatus",
+      "workMode",
+      "cleaningStrength",
+      "mopWater",
+      "x8CleanType",
+      "clearTime",
+      "clearArea",
+      "loudness",
+    ]);
   });
 
   it("every property has a string name + numeric paramType", () => {
@@ -212,7 +228,7 @@ const _battery: Exact<typeof vac.battery, number | undefined> = true;
 const _activity: Exact<typeof vac.activity, VacuumActivity | undefined> = true;
 const _cleanType: Exact<typeof vac.cleanType, VacuumCleanType | undefined> = true;
 
-// setPower is gated by available: isAiotVacuum — absent on eufy_home_tuya devices, optional on the surface.
+// setPower is gated by available: isAiotVacuum || isTuyaVacuum — optional on the surface (present only when category is known).
 const _setPowerOptional: Exact<undefined extends typeof vac.setPower ? true : false, true> = true;
 const _setPowerArg: Exact<Parameters<NonNullable<typeof vac.setPower>>[0], boolean> = true;
 
@@ -220,8 +236,12 @@ const _setPowerArg: Exact<Parameters<NonNullable<typeof vac.setPower>>[0], boole
 const _noSetActivity: Exact<"setActivity" extends keyof VacuumCleanActions ? true : false, false> = true;
 const _noSetBattery: Exact<"setBattery" extends keyof VacuumCleanActions ? true : false, false> = true;
 
-// startCleaning is a MethodMember with available: isAiotVacuum — optional on non-AIoT devices.
+// startCleaning is a MethodMember with available: isAiotVacuum || isTuyaVacuum — optional on unknown-category devices.
 const _startCleaning: Exact<typeof vac.startCleaning, (() => Promise<void>) | undefined> = true;
+
+// batteryLegacy and errorCode are evidence-gated reads for the legacy Tuya clean line.
+const _batteryLegacy: Exact<typeof vac.batteryLegacy, number | undefined> = true;
+const _errorCode: Exact<typeof vac.errorCode, number | undefined> = true;
 
 export const _surfaceAssertions = [
   _power,
@@ -233,6 +253,8 @@ export const _surfaceAssertions = [
   _noSetActivity,
   _noSetBattery,
   _startCleaning,
+  _batteryLegacy,
+  _errorCode,
 ];
 
 describe("vacuum_clean — AIoT vs legacy guard (negative exclusion)", () => {
@@ -248,11 +270,24 @@ describe("vacuum_clean — AIoT vs legacy guard (negative exclusion)", () => {
     expect(acts.startCleaning).toBeDefined();
   });
 
-  it("write actions are absent for eufy_home_tuya — absent rather than present-and-rejecting", () => {
+  it("write actions are present for eufy_home_tuya and dispatch legacy Tuya DPs", async () => {
+    // routeCommand in eufy-mega.ts sends aiot-dp to TuyaCommandRouter for eufy_home_tuya;
+    // X8 legacy clean line: start/pause = DP 2 bool, dock = DP 101 bool.
+    const { acts, sent } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, "eufy_home_tuya"));
+    expect(acts.startCleaning).toBeDefined();
+    expect(acts.returnToDock).toBeDefined();
+    expect(acts.pauseCleaning).toBeDefined();
+    await acts.startCleaning!();
+    expect(sent[0]).toMatchObject({ kind: "aiot-dp", dp: 2, value: true });
+    await acts.returnToDock!();
+    expect(sent[1]).toMatchObject({ kind: "aiot-dp", dp: 101, value: true });
+    await acts.pauseCleaning!();
+    expect(sent[2]).toMatchObject({ kind: "aiot-dp", dp: 2, value: false });
+  });
+
+  it("setPower is absent for eufy_home_tuya — no confirmed power DP on the legacy Tuya clean line", () => {
     const { acts } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, "eufy_home_tuya"));
-    expect(acts.startCleaning).toBeUndefined();
-    expect(acts.returnToDock).toBeUndefined();
-    expect(acts.pauseCleaning).toBeUndefined();
+    expect(acts.setPower).toBeUndefined();
   });
 
   it("dispatches DP 151 for setPower on eufy_home category (Anker AIoT MQTT)", async () => {

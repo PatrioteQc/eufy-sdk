@@ -1,12 +1,27 @@
 /**
- * Inbound Tuya DP event parsing and routing.
+ * Inbound Tuya DP event parsing and routing for eufy Home/Clean (`eufy_home_tuya`) devices.
  *
- * The ThingClips SDK delivers DP-change events as already-parsed objects with string-keyed numeric
- * DP ids and typed values. {@link parseTuyaDpEvent} validates and converts that envelope into a
- * numeric-keyed record; {@link TuyaDpRouter} delivers it to the registered {@link TuyaDpInbound}
- * listener so the capability layer can consume Tuya state through the same typed getters as AIoT.
+ * {@link parseTuyaDpReport} unwraps the Anker MQTT `{head, payload}` envelope and extracts the
+ * raw DP map. {@link parseTuyaDpEvent} then validates and normalises it to a numeric-keyed record.
+ * {@link TuyaDpRouter} delivers the result to the registered {@link TuyaDpInbound} listener so the
+ * capability layer can consume Tuya state through the same typed getters as AIoT.
+ *
+ * Inbound messages arrive on `cmd/eufy_home/{model}/{sn}/res` with `sign_code: 0` (no additional
+ * encryption — confirmed from clean-device captures). If a future capture shows `sign_code ≠ 0` the
+ * payload will be AES-128-ECB encrypted with the device's localKey before the JSON can be parsed.
  */
 import type { TuyaDpInbound } from "../../core/contracts.js";
+
+/** Parse `text` as a JSON object, or `undefined` on any failure — never throws. */
+function jsonObject(text: unknown): Record<string, unknown> | undefined {
+  if (typeof text !== "string") return undefined;
+  try {
+    const v: unknown = JSON.parse(text);
+    return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 /**
  * Validate and convert a raw ThingClips DP callback payload to a numeric-keyed record.
@@ -27,6 +42,50 @@ export function parseTuyaDpEvent(payload: unknown): Record<number, boolean | num
     result[dp] = value;
   }
   return Object.keys(result).length > 0 ? result : null;
+}
+
+/**
+ * Extract a raw DP map from an inbound Anker MQTT message for a `eufy_home_tuya` device.
+ *
+ * Messages arrive in the same `{head, payload}` envelope the AIoT path uses, where `payload` is a
+ * JSON **string**:
+ * ```json
+ * { "head": { "cmd": 65537, "cmd_status": 2, "sign_code": 0, ... },
+ *   "payload": "{\"t\":\"…\",\"protocol\":2,\"data\":{\"104\":80,\"106\":0}}" }
+ * ```
+ * Two DP layouts inside the decoded payload are handled: Tuya-native (`data.dps`) and AIoT-direct
+ * (`data` with integer-keyed DP ids). Falls back to flat `envelope.dps` / `envelope.data.dps`
+ * shapes for any pre-parsed delivery. Returns `undefined` when no recognised shape is found.
+ *
+ * @internal
+ */
+export function parseTuyaDpReport(raw: unknown): Record<string, unknown> | undefined {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const envelope = raw as Record<string, unknown>;
+
+  // Primary path: Anker MQTT {head, payload} envelope — payload is a JSON string.
+  const payloadObj = jsonObject(envelope.payload);
+  if (payloadObj) {
+    const data = payloadObj.data;
+    if (data && typeof data === "object" && !Array.isArray(data)) {
+      const dataObj = data as Record<string, unknown>;
+      // Tuya-native shape: data.dps = { "<dpId>": value }
+      const dps = dataObj.dps;
+      if (dps && typeof dps === "object" && !Array.isArray(dps)) return dps as Record<string, unknown>;
+      // AIoT-direct shape: data = { "<dpId>": value }
+      return dataObj;
+    }
+  }
+
+  // Fallback: flat envelope shapes (pre-parsed or direct delivery without the Anker wrapper).
+  const topDps = envelope.dps;
+  if (topDps && typeof topDps === "object" && !Array.isArray(topDps)) return topDps as Record<string, unknown>;
+  const data = envelope.data;
+  if (data && typeof data === "object" && !Array.isArray(data)) {
+    const dataDps = (data as Record<string, unknown>).dps;
+    if (dataDps && typeof dataDps === "object" && !Array.isArray(dataDps)) return dataDps as Record<string, unknown>;
+  }
+  return undefined;
 }
 
 /**
