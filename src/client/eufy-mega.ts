@@ -639,7 +639,7 @@ export class EufyMega extends EventEmitter {
       if (this.storedImageAccount && this.storedImageAccount !== result.session.userId) this.storedImages?.clear();
       this.storedImageAccount = result.session.userId;
       const auth = this.mega.auth;
-      if (auth?.userId) this.tuya.bind(auth.userId, this.mega.regionShard);
+      if (auth?.userId) this.tuya.bind(auth.userId, this.mega.regionShard, this.opts.countryCode);
       if (this.opts.autoRealtime !== false) void this.ensureRealtime();
     }
     return result;

@@ -12,6 +12,7 @@
  * decorrelation invariant. Sibling tuya/* imports are same-layer (transport).
  */
 import type { Command } from "../../core/contracts.js";
+import { resolveCountryCode } from "./account.js";
 import { HmacSigner } from "./sign.js";
 import { TuyaClient } from "./client.js";
 
@@ -24,18 +25,6 @@ interface TuyaDeviceIds {
    * hub's devId. Confirmed from `DPBusiness.java`: `gwId = devId` for direct devices.
    */
   gwId: string;
-}
-
-/**
- * Map a mega region shard string (`"eu-pr"`, `"us-pr"`, `"cn-pr"`) to the Tuya `countryCode`
- * numeric dial code. Used as the Tuya login countryCode when the caller does not supply one
- * directly.
- */
-function dialCodeFromRegion(regionShard: string): string {
-  const r = regionShard.toLowerCase();
-  if (r.startsWith("eu")) return "44";
-  if (r.startsWith("cn")) return "86";
-  return "1";
 }
 
 export class TuyaCommandRouter {
@@ -56,12 +45,14 @@ export class TuyaCommandRouter {
   /**
    * Supply credentials for lazy Tuya login. Called by the facade after a successful mega login.
    * The router logs into Tuya on the first {@link dispatchCommand}, not immediately.
-   * `regionShard` is the mega shard string (`"eu-pr"`, `"us-pr"`, …) used to derive the Tuya
-   * `countryCode` dial code when the account's phone code is not explicitly configured.
+   *
+   * `regionShard` is the mega shard string (`"eu-pr"`, `"us-pr"`, …) used as a coarse fallback;
+   * `isoCode` is the ISO 3166-1 alpha-2 country code from {@link MegaClientConfig} (e.g. `"DE"`)
+   * and takes precedence — a German user on the EU shard gets dial code `"49"`, not `"44"`.
    */
-  bind(userId: string, regionShard?: string): void {
+  bind(userId: string, regionShard?: string, isoCode?: string): void {
     this.userId = userId;
-    this.dialCode = regionShard ? dialCodeFromRegion(regionShard) : undefined;
+    this.dialCode = resolveCountryCode(undefined, regionShard, isoCode);
     // Reset so next dispatch re-logs with the new credentials (handles re-login after logout).
     this.client = null;
     this.loginOnce = null;
