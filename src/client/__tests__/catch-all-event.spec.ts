@@ -166,9 +166,15 @@ describe("catch-all event tag", () => {
     vi.spyOn((eufy as any).registry, "require").mockReturnValue({ params: { 1224: "63" } });
     vi.spyOn((eufy as any).registry, "getDevices").mockResolvedValue([]);
     vi.spyOn(eufy as any, "routeCommand").mockResolvedValue(undefined);
-    const reset = vi.spyOn((eufy as any).p2p, "resetStandaloneSession").mockResolvedValue(undefined);
+    const order: string[] = [];
+    const reset = vi.spyOn((eufy as any).p2p, "resetStandaloneSession").mockImplementation(async () => {
+      order.push("reset");
+    });
     const seen: number[] = [];
-    eufy.on("armingModeChanged", () => seen.push(mode));
+    eufy.on("armingModeChanged", () => {
+      seen.push(mode);
+      order.push("event");
+    });
     const command = observeCommand(
       { kind: "set-param", param: 1224, value: 63, form: "auto", channel: 0 },
       {
@@ -185,6 +191,7 @@ describe("catch-all event tag", () => {
 
     expect((eufy as any).routeCommand).toHaveBeenCalledOnce();
     await vi.waitFor(() => expect(seen).toEqual([63]));
+    expect(order).toEqual(["event", "reset"]);
     expect(reset).toHaveBeenCalledExactlyOnceWith("T8000P0000000000");
   });
 

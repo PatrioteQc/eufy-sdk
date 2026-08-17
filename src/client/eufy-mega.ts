@@ -824,8 +824,8 @@ export class EufyMega extends EventEmitter {
             acknowledge();
             const refreshed = await this.refreshEventState(sn, observation);
             if (!refreshed || epoch !== this.realtimeEpoch) return;
-            if (observation.resetStandaloneSession) await this.p2p.resetStandaloneSession(sn);
             if (epoch === this.realtimeEpoch) this.emitSemantic(observation.event, { deviceSn: sn });
+            if (observation.resetStandaloneSession) await this.p2p.resetStandaloneSession(sn);
           } catch (error) {
             if (!acknowledged) reject(error);
             else this.reportError(error);
