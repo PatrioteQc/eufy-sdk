@@ -75,27 +75,28 @@ describe("swapMd5", () => {
 });
 
 describe("HmacSigner (recovered native digest)", () => {
-  // The live-captured (preimage -> sign) pair; sign = HMAC-SHA256(recovered key, preimage).
+  // The live-captured (preimage -> sign) pair; sign = HMAC-SHA256(TUYA_SIGN_K, preimage).
+  // This is the load-bearing test that proves TUYA_SIGN_K is the correct app key.
   const PREIMAGE =
     "a=smartlife.p.time.get||appVersion=6.0.51_26722||chKey=7cbfe6d8||clientId=w8x4ppqkdxvqnd73ahj9||" +
     "deviceId=7932c5202387dffd14f2e2d75e0fbb8efa1cf7f28be5||et=3||lang=en_GB||os=Android||" +
     "requestId=5b5e39e5-4bfa-475c-ab6d-63170ac6f22f||" +
     "sid=eu17712350978973Mm5DV9a39459fdcdcb2ee61bbec8b7dda373c18c||time=1783934864||ttid=android||v=1.0";
   const KNOWN_SIGN = "97a78b35ce00fcd7cf90f428a3ff2150acc45a8b6ce3f6de4126a0514a7f8c84";
-  // K is no longer baked into the source (moved to the TUYA_SIGN_KEY env var — see sign.ts). This
-  // regression only runs when the recovered key is supplied out-of-band; it is skipped otherwise so
-  // CI without the secret stays green (the key must NOT be committed to reconstruct it here).
-  const K = process.env.TUYA_SIGN_KEY;
-  it.skipIf(!K)("reproduces the live-captured sign from its preimage (HMAC-SHA256 with the recovered key)", () => {
-    expect(new HmacSigner(K).sign(PREIMAGE)).toBe(KNOWN_SIGN);
+
+  it("reproduces the live-captured sign from its preimage (HMAC-SHA256 with the built-in key)", () => {
+    expect(new HmacSigner().sign(PREIMAGE)).toBe(KNOWN_SIGN);
   });
-  it("throws loudly when no key is supplied (no env, no explicit key)", () => {
+
+  it("env var TUYA_SIGN_KEY overrides the built-in key when set", () => {
     const saved = process.env.TUYA_SIGN_KEY;
-    delete process.env.TUYA_SIGN_KEY;
+    process.env.TUYA_SIGN_KEY = "custom-key";
     try {
-      expect(() => new HmacSigner()).toThrow(/TUYA_SIGN_KEY/);
+      // wrong key → wrong sign
+      expect(new HmacSigner().sign(PREIMAGE)).not.toBe(KNOWN_SIGN);
     } finally {
       if (saved !== undefined) process.env.TUYA_SIGN_KEY = saved;
+      else delete process.env.TUYA_SIGN_KEY;
     }
   });
 });
