@@ -23,8 +23,9 @@ describe("WebRTC engine boundary (Ask G)", () => {
     }
   });
 
+  // werift's ICE gathering has a hardcoded 5 s per-candidate timeout — allow 10 s here.
   it("builds a valid recvonly SDP offer", async () => {
-    const peer = await createWebRtcPeer({ iceAdditionalHostAddresses: ["127.0.0.1"] });
+    const peer = await createWebRtcPeer();
     try {
       const offer = await peer.createOffer();
       expect(offer.type).toBe("offer");
@@ -33,7 +34,7 @@ describe("WebRTC engine boundary (Ask G)", () => {
     } finally {
       await peer.close();
     }
-  });
+  }, 10_000);
 
   // Belt-and-suspenders for the CI guard: the built peer .d.ts must not inline a werift type. Self-
   // skips when the lib hasn't been built (the authoritative check is the CI `.d.ts` grep step).

@@ -100,8 +100,8 @@ export class StubSigner implements TuyaSigner {
  *   - stego value: extracted from `libthing_security.so + 0x384f0` (keyed BMP steganography)
  *   - manifest app secret (also in {@link TUYA_APP_SECRET} in `request.ts`)
  *
- * All four components are public constants or documented in `docs/tuya-protocol.md`. The env var
- * `TUYA_SIGN_KEY` can override this for non-standard builds.
+ * All four components are public (APK manifest, cert fingerprint, SO stego, manifest secret).
+ * The env var `TUYA_SIGN_KEY` can override this for non-standard builds.
  */
 export const TUYA_SIGN_K =
   "com.oceanwing.battery.cam_" +
