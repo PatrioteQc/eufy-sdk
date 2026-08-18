@@ -61,14 +61,32 @@ describe("vacuumProductTypeFor — product-code lookup", () => {
     expect(vacuumProductTypeFor("T1241")).toBeUndefined();
   });
 
-  it("VACUUM_PRODUCT_CODES contains all 5 confirmed vacuum T-codes", () => {
-    expect(VACUUM_PRODUCT_CODES.size).toBe(5);
+  it("VACUUM_PRODUCT_CODES covers all registry vacuum models", () => {
+    // decompile-confirmed entries
     expect(VACUUM_PRODUCT_CODES.get("T2268")).toBe(VacuumProductType.T218X);
     expect(VACUUM_PRODUCT_CODES.has("T2278")).toBe(true);
     expect(VACUUM_PRODUCT_CODES.has("T2750")).toBe(true);
     expect(VACUUM_PRODUCT_CODES.has("T2770")).toBe(true);
     expect(VACUUM_PRODUCT_CODES.has("T1240")).toBe(true);
-    expect(VACUUM_PRODUCT_CODES.has("T1241")).toBe(false); // speaker, not a vacuum
+    // X/L/G/C/E/S-series inferred from registry names
+    expect(VACUUM_PRODUCT_CODES.get("T2351")).toBe(VacuumProductType.X10);
+    expect(VACUUM_PRODUCT_CODES.get("T2320")).toBe(VacuumProductType.X9);
+    expect(VACUUM_PRODUCT_CODES.get("T2266")).toBe(VacuumProductType.X8_PRO);
+    expect(VACUUM_PRODUCT_CODES.get("T2267")).toBe(VacuumProductType.L60);
+    expect(VACUUM_PRODUCT_CODES.get("T2210")).toBe(VacuumProductType.G50);
+    expect(VACUUM_PRODUCT_CODES.get("T2280")).toBe(VacuumProductType.C20);
+    expect(VACUUM_PRODUCT_CODES.get("T2352")).toBe(VacuumProductType.E28);
+    expect(VACUUM_PRODUCT_CODES.get("T2353")).toBe(VacuumProductType.E25);
+    expect(VACUUM_PRODUCT_CODES.get("T2080")).toBe(VacuumProductType.S1);
+    expect(VACUUM_PRODUCT_CODES.get("T2081")).toBe(VacuumProductType.S2);
+    // LR-series and legacy numbered RoboVacs carry undefined (no matching enum member)
+    expect(VACUUM_PRODUCT_CODES.get("T2181")).toBeUndefined();
+    expect(VACUUM_PRODUCT_CODES.get("T2103")).toBeUndefined();
+    // mowers and speaker are excluded
+    expect(VACUUM_PRODUCT_CODES.has("T280B")).toBe(false);
+    expect(VACUUM_PRODUCT_CODES.has("T1241")).toBe(false);
+    // total count matches the 52 registry vacuum entries (mowers excluded)
+    expect(VACUUM_PRODUCT_CODES.size).toBe(52);
   });
 });
 

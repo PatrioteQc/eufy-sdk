@@ -163,24 +163,89 @@ export enum VacuumProductType {
 }
 
 /**
- * Known product-code (T-code) → `VacuumProductType` mappings, sourced from
- * `ICleanBridgeDeviceInterface.java` (`PRODUCT_CODE_*`) in `eufy_decompiled` v6.0.41.
+ * All known vacuum product-code (T-code) → `VacuumProductType` mappings, covering every model
+ * in the device registry. Sources:
+ *  - `ICleanBridgeDeviceInterface.java` (`PRODUCT_CODE_*`) in `eufy_decompiled` v6.0.41 for
+ *    the five decompile-confirmed entries (T2268 confirmed integer; T2278/T2750/T2770/T1240
+ *    confirmed as codes but type integer unresolved).
+ *  - Registry product names for all remaining models: types inferred by matching the model name
+ *    against the `VacuumProductType` family names (e.g. "G40" → `G40`, "X10" → `X10`). Models
+ *    whose family has no matching enum member carry `undefined`.
  *
- * All T-codes confirmed in the decompile are included. T-codes whose `PRODUCT_TYPE_*` integer
- * is not yet resolved carry `undefined` — the map presence distinguishes "known vacuum, type
- * unresolved" from "unknown model entirely":
- *  - **T2268 → T218X (18)**: explicitly mapped in `ICleanBridgeDeviceInterface.java`.
- *  - **T2278, T2750, T2770, T1240**: T-codes confirmed in the decompile; type integer not yet
- *    resolved from a live capture — `vacuumProductTypeFor` returns the caller's `fallback`.
- *
- * T1241 (EufyGenie) is a smart speaker, not a vacuum — intentionally excluded.
+ * Map presence distinguishes "known vacuum, type unresolved" from "unknown model entirely" so
+ * `vacuumProductTypeFor` can return the caller's `fallback` instead of `undefined` for the
+ * former. Mowers (T280B, T2801, T2880) and T1241 (EufyGenie speaker) are intentionally excluded.
  */
 export const VACUUM_PRODUCT_CODES: ReadonlyMap<string, VacuumProductType | undefined> = new Map([
-  ["T2268", VacuumProductType.T218X],
-  ["T2278", undefined],
-  ["T2750", undefined],
-  ["T2770", undefined],
-  ["T1240", undefined],
+  // ── Decompile-confirmed PRODUCT_CODE_* entries ─────────────────────────────────────────────
+  ["T2268", VacuumProductType.T218X], // L60 Hybrid — integer confirmed in ICleanBridgeDeviceInterface.java
+  ["T2278", undefined], // L60 Hybrid SES — code confirmed; type integer unresolved
+  ["T2750", undefined], // code confirmed; type integer unresolved
+  ["T2770", undefined], // code confirmed; type integer unresolved
+  ["T1240", undefined], // code confirmed; type integer unresolved
+
+  // ── X-series ────────────────────────────────────────────────────────────────────────────────
+  ["T2351", VacuumProductType.X10], // Clean X10 Pro Omni
+  ["T2320", VacuumProductType.X9], // X9 Pro
+  ["T2266", VacuumProductType.X8_PRO], // X8 Pro
+  ["T2276", VacuumProductType.X8_PRO], // X8 Pro SES
+  ["T2262", VacuumProductType.X8], // X8
+  ["T2261", VacuumProductType.X8], // X8 Hybrid
+
+  // ── L-series ────────────────────────────────────────────────────────────────────────────────
+  ["T2267", VacuumProductType.L60], // L60
+  ["T2277", VacuumProductType.L60], // L60 SES
+  ["T2190", undefined], // L70 Hybrid — L70 has no VacuumProductType member
+
+  // ── G-series ────────────────────────────────────────────────────────────────────────────────
+  ["T2210", VacuumProductType.G50], // G50
+  ["T2273", VacuumProductType.G40], // G40 Hybrid+
+  ["T2256", VacuumProductType.G40], // G40 Hybrid
+  ["T2255", VacuumProductType.G40], // G40
+  ["T2270", VacuumProductType.G35], // G35+
+  ["T2254", VacuumProductType.G35], // G35
+  ["T2259", VacuumProductType.G32_PRO], // G32
+  ["T2272", VacuumProductType.G30], // G30+ SES
+  ["T2253", VacuumProductType.G30], // G30 Hybrid
+  ["T2252", VacuumProductType.G30], // G30 Verge
+  ["T2251", VacuumProductType.G30], // G30
+  ["T2250", VacuumProductType.G30], // G30
+  ["T2258", VacuumProductType.G20], // G20 Hybrid
+  ["T2257", VacuumProductType.G20], // G20
+
+  // ── C-series ────────────────────────────────────────────────────────────────────────────────
+  ["T211A", VacuumProductType.C28], // C28
+  ["T2280", VacuumProductType.C20], // C20
+  ["T2292", VacuumProductType.C10], // C10
+
+  // ── E-series ────────────────────────────────────────────────────────────────────────────────
+  ["T2352", VacuumProductType.E28], // E28
+  ["T2353", VacuumProductType.E25], // E25
+  ["T2070", VacuumProductType.E20], // 3-in-1 E20
+
+  // ── S-series ────────────────────────────────────────────────────────────────────────────────
+  ["T2080", VacuumProductType.S1], // S1
+  ["T2081", VacuumProductType.S2], // S2
+
+  // ── LR-series — no matching VacuumProductType member ────────────────────────────────────────
+  ["T2194", undefined], // LR35 Hybrid
+  ["T2193", undefined], // LR30 Hybrid
+  ["T2182", undefined], // LR35 Hybrid+
+  ["T2181", undefined], // LR30 Hybrid+
+  ["T2192", undefined], // LR20
+
+  // ── Legacy RoboVac (G10, pre-G20 letter-series, numbered) ───────────────────────────────────
+  ["T2150", undefined], // G10 Hybrid — G10 has no VacuumProductType member
+  ["T2132", undefined], // RoboVac 25C
+  ["T2130", undefined], // RoboVac 30C MAX
+  ["T2128", undefined], // RoboVac 15C MAX
+  ["T2123", undefined], // RoboVac 25C
+  ["T2120", undefined], // RoboVac 15C MAX
+  ["T2119", undefined], // RoboVac 11S
+  ["T2118", undefined], // RoboVac 30C
+  ["T2117", undefined], // RoboVac 35C
+  ["T2103", undefined], // RoboVac 11C
+  ["T1250", undefined], // RoboVac 35C (T1xxx prefix, pre-T2 numbering)
 ]);
 
 /**
