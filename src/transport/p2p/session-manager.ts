@@ -42,7 +42,7 @@ interface SessionEntry {
   users: number;
   holds: number;
   resetPending: boolean;
-  resetWaiters: Array<() => void>;
+  resetWaiters: Array<{ resolve: () => void; reject: (error: unknown) => void }>;
   idle: Timer;
   powered: PowerTier;
   idleMs: number;
@@ -174,7 +174,9 @@ export class SessionManager {
     if (!e) return;
     e.users = Math.max(0, e.users - 1);
     if (e.resetPending && e.users <= e.holds) {
-      void this.close(parentSn);
+      void this.close(parentSn).catch((error) =>
+        this.logger.error(`[session ${parentSn}] deferred reset failed`, error),
+      );
       return;
     }
     if (e.users === 0) this.armIdle(parentSn, e);
@@ -228,20 +230,19 @@ export class SessionManager {
     if (!e) return;
     if (e.users > 0) return;
     this.logger.debug(`[session ${parentSn}] idle window elapsed — disconnecting now (device can sleep)`);
-    void this.close(parentSn);
+    void this.close(parentSn).catch((error) => this.logger.error(`[session ${parentSn}] idle detach failed`, error));
   }
 
   /** Drop a station's entry + timer (called from the session's `close` handler). Idempotent. */
   remove(parentSn: string): void {
     const entry = this.discard(parentSn);
-    for (const resolve of entry?.resetWaiters ?? []) resolve();
+    if (entry) this.settleResetWaiters(entry);
   }
 
   /** Close one station now and discard its lifecycle entry. */
   async close(parentSn: string): Promise<void> {
     const entry = this.discard(parentSn);
-    await entry?.session?.close();
-    for (const resolve of entry?.resetWaiters ?? []) resolve();
+    if (entry) await this.closeEntry(entry);
   }
 
   /** Reset after active consumers detach, ignoring only expiring command holds. */
@@ -253,7 +254,27 @@ export class SessionManager {
       return;
     }
     entry.resetPending = true;
-    return new Promise<void>((resolve) => entry.resetWaiters.push(resolve));
+    return new Promise<void>((resolve, reject) => entry.resetWaiters.push({ resolve, reject }));
+  }
+
+  /** Settle a discarded entry's reset callers with the same outcome as its session close. */
+  private settleResetWaiters(entry: SessionEntry, failure?: { error: unknown }): void {
+    const waiters = entry.resetWaiters.splice(0);
+    for (const waiter of waiters) {
+      if (failure) waiter.reject(failure.error);
+      else waiter.resolve();
+    }
+  }
+
+  /** Close one discarded entry and settle only its own reset callers before preserving any failure. */
+  private async closeEntry(entry: SessionEntry): Promise<void> {
+    try {
+      await entry.session?.close();
+      this.settleResetWaiters(entry);
+    } catch (error) {
+      this.settleResetWaiters(entry, { error });
+      throw error;
+    }
   }
 
   /** Discard one lifecycle entry and return it for bounded close/reset completion. */
@@ -272,7 +293,9 @@ export class SessionManager {
       const entry = this.discard(parentSn);
       return entry ? [entry] : [];
     });
-    await Promise.all(entries.map(({ session }) => session?.close()));
-    for (const entry of entries) for (const resolve of entry.resetWaiters) resolve();
+    const results = await Promise.allSettled(entries.map((entry) => this.closeEntry(entry)));
+    const failures = results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "multiple P2P sessions failed to close");
   }
 }

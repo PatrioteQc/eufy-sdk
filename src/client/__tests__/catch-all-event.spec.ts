@@ -236,6 +236,51 @@ describe("catch-all event tag", () => {
     expect(reset).toHaveBeenCalledTimes(2);
   });
 
+  it("rejects a queued observed command before routing when disconnect supersedes it", async () => {
+    const eufy = client();
+    let mode = 1;
+    let cloudMode = "1";
+    let finishReset!: () => void;
+    const resetGate = new Promise<void>((resolve) => {
+      finishReset = resolve;
+    });
+    const device = {
+      getProperty: () => ({ value: mode }),
+      applyParams: (params: Record<number, string>) => {
+        mode = Number(params[1224]);
+      },
+    };
+    (eufy as any).liveDevices.set("T8000P0000000000", new WeakRef(device));
+    vi.spyOn((eufy as any).registry, "require").mockImplementation(() => ({ params: { 1224: cloudMode } }));
+    vi.spyOn((eufy as any).registry, "getDevices").mockResolvedValue([]);
+    const route = vi.spyOn(eufy as any, "routeCommand").mockImplementation(async (...args: unknown[]) => {
+      cloudMode = String(commandObservation(args[1] as never)!.expected);
+    });
+    vi.spyOn((eufy as any).p2p, "resetStandaloneSession").mockReturnValue(resetGate);
+    const command = (expected: number) =>
+      observeCommand(
+        { kind: "set-param", param: 1224, value: expected, form: "auto", channel: 0 },
+        {
+          event: "armingModeChanged",
+          expected,
+          param: 1224,
+          property: "armingMode",
+          resetStandaloneSession: true,
+          timeoutMs: 20_000,
+        },
+      );
+    const sink = (eufy as any).commandSinkFor("T8000P0000000000");
+
+    await sink.dispatch(command(63));
+    const queued = sink.dispatch(command(1));
+    const queuedResult = expect(queued).rejects.toThrow(/superseded by disconnect/);
+    await eufy.disconnect();
+    finishReset();
+
+    await queuedResult;
+    expect(route).toHaveBeenCalledOnce();
+  });
+
   it("acknowledges an observed command without failing when authoritative readback expires", async () => {
     vi.useFakeTimers();
     const eufy = client();

@@ -820,11 +820,12 @@ export class EufyMega extends EventEmitter {
         };
         const transaction = this.enqueueStateTransition(key, async () => {
           try {
+            if (epoch !== this.realtimeEpoch) throw new Error("observed command superseded by disconnect");
             await this.routeCommand(sn, cmd);
             acknowledge();
             const refreshed = await this.refreshEventState(sn, observation);
             if (!refreshed || epoch !== this.realtimeEpoch) return;
-            if (epoch === this.realtimeEpoch) this.emitSemantic(observation.event, { deviceSn: sn });
+            this.emitSemantic(observation.event, { deviceSn: sn });
             if (observation.resetStandaloneSession) await this.p2p.resetStandaloneSession(sn);
           } catch (error) {
             if (!acknowledged) reject(error);
