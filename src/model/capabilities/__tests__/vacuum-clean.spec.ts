@@ -267,13 +267,22 @@ describe("vacuum_clean — AIoT vs legacy guard (negative exclusion)", () => {
     expect(acts.startCleaning).toBeDefined();
   });
 
-  it("write actions are absent for eufy_home_tuya — Tuya control DPs unverified (no live capture)", () => {
-    // Control writes (start/pause/dock) on the Tuya path have not been confirmed from a live capture.
-    // The methods throw on Tuya and their available guard is restricted to isAiotVacuum.
-    const { acts } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, "eufy_home_tuya"));
-    expect(acts.startCleaning).toBeUndefined();
-    expect(acts.returnToDock).toBeUndefined();
-    expect(acts.pauseCleaning).toBeUndefined();
+  it("write actions are present for eufy_home_tuya and dispatch legacy bool DPs", async () => {
+    // startCleaning → DP 2 = true, returnToDock → DP 101 = true, pauseCleaning → DP 2 = false.
+    // Confirmed from DeviceHomeModule.java (PLAY_PAUSE / goHomeCmd).
+    const { acts, sent } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, "eufy_home_tuya"));
+    expect(acts.startCleaning).toBeDefined();
+    expect(acts.returnToDock).toBeDefined();
+    expect(acts.pauseCleaning).toBeDefined();
+
+    await acts.startCleaning!();
+    expect(sent.at(-1)).toMatchObject({ kind: "aiot-dp", dp: 2, value: true });
+
+    await acts.returnToDock!();
+    expect(sent.at(-1)).toMatchObject({ kind: "aiot-dp", dp: 101, value: true });
+
+    await acts.pauseCleaning!();
+    expect(sent.at(-1)).toMatchObject({ kind: "aiot-dp", dp: 2, value: false });
   });
 
   it("setPower is absent for eufy_home_tuya — no confirmed power DP on the legacy Tuya clean line", () => {

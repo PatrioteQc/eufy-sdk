@@ -347,7 +347,7 @@ export class EufyMega extends EventEmitter {
         await transport.publish(topic, body, { qos: 1 });
       },
     });
-    this.tuya = new TuyaCommandRouter();
+    this.tuya = new TuyaCommandRouter({ allowUnverified: this.opts.tuyaAllowUnverified });
     this.tuyaDpRouter = new TuyaDpRouter();
     this.tuyaDpRouter.setListener(this.makeTuyaDpInbound());
   }
@@ -1388,6 +1388,16 @@ export class EufyMega extends EventEmitter {
       try {
         await transport.subscribeDevice(d);
         await this.sendRealtimeInit(d.sn);
+        // For Tuya clean-line devices, poll cached DPs immediately after subscribe so the
+        // capability getters have state before the first realtime push arrives.
+        if (d.category === "eufy_home_tuya") {
+          this.tuya
+            .fetchDps(d.sn)
+            .then((dps) => {
+              if (dps) this.tuyaDpRouter.deliver(d.sn, dps);
+            })
+            .catch((e) => this.reportError(e));
+        }
       } catch (e) {
         this.reportError(e);
       }
