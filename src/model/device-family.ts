@@ -124,6 +124,68 @@ export const isHomeBase = (ctx: FamilyContext): boolean => has(HOMEBASE_TYPES, c
 /** Wired doorbell (DeviceType.DOORBELL). */
 export const isWiredDoorbell = (ctx: FamilyContext): boolean => ctx.deviceType === DeviceType.DOORBELL;
 
+// ── Vacuum product-type classification ──────────────────────────────────────────────────────────
+
+/**
+ * Integer product-family constants for the clean line, sourced verbatim from
+ * `ICleanBridgeDeviceInterface.java` (`PRODUCT_TYPE_*`) in `eufy_decompiled` v6.0.41.
+ *
+ * These integers gate per-model capability restrictions (e.g. which ModeCtrl methods a model
+ * supports). The values are read-only classification data — no write path depends on them.
+ */
+export enum VacuumProductType {
+  X9 = 0,
+  X10 = 1,
+  G50 = 2,
+  X8_PRO = 3,
+  L50 = 4,
+  L60 = 5,
+  C20 = 6,
+  S1 = 7,
+  RACCOON = 8,
+  E20 = 9,
+  X8 = 10,
+  G40 = 11,
+  G35 = 12,
+  G32_PRO = 13,
+  G30 = 14,
+  C10 = 15,
+  E28 = 16,
+  E25 = 17,
+  T218X = 18,
+  G20 = 19,
+  S2 = 20,
+  C28 = 21,
+  E35 = 22,
+  C30 = 23,
+  C30_LITE = 24,
+  S2_PRO = 25,
+}
+
+/**
+ * Known product-code (T-code) → `VacuumProductType` mappings, sourced from
+ * `ICleanBridgeDeviceInterface.java` (`PRODUCT_CODE_*`) in `eufy_decompiled` v6.0.41.
+ *
+ * Only codes whose integer type is confirmed from the decompile are included:
+ *  - **T2268 → T218X (18)**: explicitly mapped in the decompile.
+ *
+ * Codes whose type integer is not yet confirmed (T2278, T2750, T2770, T1240) are omitted until
+ * a live device capture or further decompile analysis resolves them. T1241 (EufyGenie) is a
+ * smart speaker, not a vacuum — it is intentionally excluded from this map.
+ */
+export const VACUUM_PRODUCT_CODES: ReadonlyMap<string, VacuumProductType> = new Map([
+  ["T2268", VacuumProductType.T218X],
+]);
+
+/**
+ * Look up the `VacuumProductType` for a vacuum's product-model string (T-code).
+ * Returns `undefined` for any model not yet mapped — capabilities composing on this MUST treat
+ * `undefined` as "unknown" and fall back to their safe default, never guess a type.
+ */
+export function vacuumProductTypeFor(model: string): VacuumProductType | undefined {
+  return VACUUM_PRODUCT_CODES.get(model);
+}
+
 /**
  * Whether a vacuum uses the **Anker AIoT MQTT** transport (modern DP 150–180 protobuf scheme).
  *

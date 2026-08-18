@@ -90,7 +90,7 @@ export function secureTopic(device: EufyDevice, leg: "req" | "res"): string {
  *   - `cmd/…/res` — device→app DP reports and command replies (confirmed live on T2351)
  *   - `biz/…/res` — cloud→app business-layer responses (TopicManager.getBizReqTopic())
  *   - `biz/…/req` — cloud ACKs for app→cloud business requests (subscribe for ACKs)
- *   - `dt/…/param_info` — device-twin parameter push (_research/02_mqtt_push.md · topic table)
+ *   - `dt/…/param_info` — device-twin parameter push (eufy_decompiled TopicManager · param_info topic)
  *
  * Every other line subscribes `/res` alone.
  */
@@ -101,12 +101,7 @@ export function subscribeTopics(device: EufyDevice): readonly string[] {
   }
   if (device.deviceClass === "vacuum" || device.deviceClass === "mower") {
     const base = `${EUFY_HOME}/${device.model}/${device.sn}`;
-    return [
-      `cmd/${base}/res`,
-      `biz/${base}/res`,
-      `biz/${base}/req`,
-      `dt/${base}/param_info`,
-    ];
+    return [`cmd/${base}/res`, `biz/${base}/res`, `biz/${base}/req`, `dt/${base}/param_info`];
   }
   return [secureTopic(device, "res")];
 }
