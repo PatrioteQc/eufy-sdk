@@ -979,6 +979,8 @@ export type { DoorbellActions, QuickResponse } from "./doorbell.js";
 export { parseQuickResponses } from "./doorbell.js";
 export { DoorbellRingtone, type DoorbellRingtoneValue } from "./doorbell.js";
 export type { AudioActions } from "./audio.js";
+export { VACUUM_DOCK_MEMBERS } from "./vacuum-dock.js";
+export type { VacuumDockActions } from "./vacuum-dock.js";
 export { HubAlarmTone, type HubAlarmToneValue } from "./siren.js";
 /**
  * RoboVac activity and clean type are the declared returns of the public `dev.vacuumClean()` getters,

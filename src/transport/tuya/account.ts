@@ -144,7 +144,7 @@ export function isoToDialCode(iso: string): string | undefined {
 /**
  * Resolve the Tuya `countryCode` login field. Priority:
  *  1. `phoneCode` — an explicit numeric dial code (e.g. `"49"`) when the caller already has one.
- *  2. `isoCode` — an ISO 3166-1 alpha-2 code (e.g. `"DE"` from {@link MegaClientConfig}) looked up
+ *  2. `isoCode` — an ISO 3166-1 alpha-2 code (e.g. `"DE"` from `MegaClientConfig.countryCode`) looked up
  *     via {@link isoToDialCode}. Covers the full eufy market range, so a German user on the EU
  *     shard correctly receives `"49"` rather than the old region-fallback `"44"`.
  *  3. `region` — coarse mega shard prefix fallback: `"EU"`→`"44"`, `"CN"`→`"86"`, else `"1"`.

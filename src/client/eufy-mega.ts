@@ -757,8 +757,8 @@ export class EufyMega extends EventEmitter {
    * + realtime transport. Camera/HomeBase records still appear here for inventory; driving them is
    * P2P. Delegates to `DeviceRegistry` (the house-scoped merge/dedupe lives there).
    *
-   * Side-effect: registers `eufy_home_tuya` devices with the {@link TuyaCommandRouter} so
-   * {@link dispatchCommand} can resolve a eufy SN → Tuya devId without a separate lookup.
+   * Side-effect: registers `eufy_home_tuya` devices with the Tuya command router so
+   * the command dispatcher can resolve a eufy SN → Tuya devId without a separate lookup.
    * The Tuya id is extracted from the device's raw cloud record (`tuya_uuid`, `tuya_virtual_id`,
    * `tuya_device_id`, or `virtualId` fields — whichever is non-empty).
    */
