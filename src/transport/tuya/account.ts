@@ -10,9 +10,8 @@
  *   password = UPPERCASE-HEX( AES-128-CBC-NoPadding( pad16("eufyhome-"+eufyUserId, '0'), KEY, IV ) )
  *
  * where the plaintext is **leading**-zero-padded ('0', 0x30) up to the next multiple of 16 bytes
- * (V6 APK `TuyaAccountUtils.c()` builds the StringBuilder in `padStart` order — zeros first, string
- * after — matching eufy-clean `TuyaCloud.loginEx()` which calls `padStart`), and KEY / IV are the
- * fixed vectors below.
+ * (the app builds the string in `padStart` order — zeros first, string after — wire-confirmed), and
+ * KEY / IV are the fixed vectors below.
  */
 import { createCipheriv } from "node:crypto";
 
@@ -38,7 +37,7 @@ export function tuyaUsername(eufyUserId: string): string {
  * Pad a UTF-8 string with LEADING '0' (0x30) characters up to the next multiple of 16 bytes.
  * A string whose length is already a multiple of 16 is returned unchanged (NO extra full block —
  * this is character padding to satisfy the no-padding cipher, not PKCS#7).
- * Leading-zero order confirmed from V6 APK `TuyaAccountUtils.c()` and eufy-clean `padStart`.
+ * Leading-zero order wire-confirmed from the V6 app.
  */
 function zeroPadTo16(s: string): Buffer {
   const buf = Buffer.from(s, "utf-8");

@@ -72,8 +72,10 @@ export function parseTuyaDpReport(raw: unknown): Record<string, unknown> | undef
       // Tuya-native shape: data.dps = { "<dpId>": value }
       const dps = dataObj.dps;
       if (dps && typeof dps === "object" && !Array.isArray(dps)) return dps as Record<string, unknown>;
-      // AIoT-direct shape: data = { "<dpId>": value }
-      return dataObj;
+      // AIoT-direct shape: data = { "<dpId>": value } — filter to integer-keyed entries only,
+      // as the data object may also carry non-DP metadata (e.g. "t", "protocol").
+      const filtered = Object.fromEntries(Object.entries(dataObj).filter(([k]) => Number.isInteger(Number(k))));
+      return Object.keys(filtered).length > 0 ? filtered : undefined;
     }
   }
 

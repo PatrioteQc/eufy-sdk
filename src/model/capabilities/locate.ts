@@ -1,7 +1,7 @@
 import { pickDpParams, aiotDp } from "./access.js";
 import { method, propertiesOf, type Members, type Surface } from "./members.js";
 import type { CapabilityModule } from "./types.js";
-import { isAiotVacuum, isTuyaVacuum } from "../device-family.js";
+import { isAiotVacuum } from "../device-family.js";
 
 /** DP id for the locate (find-robot) toggle. */
 const LOCATE_DP = 160 as const;
@@ -13,8 +13,7 @@ const LEGACY_LOCATE_DP = 103 as const;
  *
  * `locate()` is a `method` rather than a derived setter because its argument is OPTIONAL — the
  * common call is a bare `locate()` meaning "start beeping" — and a derived setter always takes its
- * value. It is installed on any bound robot: dispatches DP 103 for legacy Tuya (G-series/X8) or
- * DP 160 for AIoT.
+ * value. It is installed on any AIoT robot: dispatches DP 160.
  *
  * Exported so a caller can name the table its `*Actions` type is derived from, but NOT published:
  * each entry states its wire id and the evidence it was confirmed on, which the reference site
@@ -63,11 +62,11 @@ export const LOCATE_MEMBERS = {
    */
   locate: {
     ...method(
-      ({ sink, ctx }) =>
+      ({ sink }) =>
         (on = true): Promise<void> =>
-          sink.dispatch(aiotDp(isTuyaVacuum(ctx) ? LEGACY_LOCATE_DP : LOCATE_DP, on)),
+          sink.dispatch(aiotDp(LOCATE_DP, on)),
       "Trigger the find-robot beep; pass false to cancel one in progress.",
-      (ctx) => isAiotVacuum(ctx) || isTuyaVacuum(ctx),
+      (ctx) => isAiotVacuum(ctx),
     ),
     args: [{ name: "on", kind: "boolean", optional: true, description: "False cancels a beep in progress." }],
   },

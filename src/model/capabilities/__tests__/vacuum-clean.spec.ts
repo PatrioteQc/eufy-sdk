@@ -9,6 +9,7 @@ import {
   type VacuumCleanActions,
   type VacuumActivity,
   type VacuumCleanType,
+  type X8CleanTypeTuya,
 } from "../vacuum-clean.js";
 import { bind } from "./bind.js";
 
@@ -83,13 +84,11 @@ describe("vacuum_clean capability module", () => {
       "volume",
       "battery",
       "cleanType",
-      "batteryLegacy",
       "errorCode",
       "workStatus",
       "workMode",
       "cleaningStrength",
       "mopWater",
-      "x8CleanType",
       "clearTime",
       "clearArea",
       "loudness",
@@ -226,7 +225,7 @@ declare const vac: VacuumCleanActions;
 const _power: Exact<typeof vac.power, boolean | undefined> = true;
 const _battery: Exact<typeof vac.battery, number | undefined> = true;
 const _activity: Exact<typeof vac.activity, VacuumActivity | undefined> = true;
-const _cleanType: Exact<typeof vac.cleanType, VacuumCleanType | undefined> = true;
+const _cleanType: Exact<typeof vac.cleanType, VacuumCleanType | X8CleanTypeTuya | undefined> = true;
 
 // setPower is gated by available: isAiotVacuum || isTuyaVacuum — optional on the surface (present only when category is known).
 const _setPowerOptional: Exact<undefined extends typeof vac.setPower ? true : false, true> = true;
@@ -236,11 +235,10 @@ const _setPowerArg: Exact<Parameters<NonNullable<typeof vac.setPower>>[0], boole
 const _noSetActivity: Exact<"setActivity" extends keyof VacuumCleanActions ? true : false, false> = true;
 const _noSetBattery: Exact<"setBattery" extends keyof VacuumCleanActions ? true : false, false> = true;
 
-// startCleaning is a MethodMember with available: isAiotVacuum || isTuyaVacuum — optional on unknown-category devices.
+// startCleaning is a MethodMember with available: isAiotVacuum — optional on unknown-category devices.
 const _startCleaning: Exact<typeof vac.startCleaning, (() => Promise<void>) | undefined> = true;
 
-// batteryLegacy and errorCode are evidence-gated reads for the legacy Tuya clean line.
-const _batteryLegacy: Exact<typeof vac.batteryLegacy, number | undefined> = true;
+// errorCode is an evidence-gated read for the legacy Tuya clean line.
 const _errorCode: Exact<typeof vac.errorCode, number | undefined> = true;
 
 export const _surfaceAssertions = [
@@ -253,7 +251,6 @@ export const _surfaceAssertions = [
   _noSetActivity,
   _noSetBattery,
   _startCleaning,
-  _batteryLegacy,
   _errorCode,
 ];
 
@@ -270,19 +267,13 @@ describe("vacuum_clean — AIoT vs legacy guard (negative exclusion)", () => {
     expect(acts.startCleaning).toBeDefined();
   });
 
-  it("write actions are present for eufy_home_tuya and dispatch legacy Tuya DPs", async () => {
-    // routeCommand in eufy-mega.ts sends aiot-dp to TuyaCommandRouter for eufy_home_tuya;
-    // X8 legacy clean line: start/pause = DP 2 bool, dock = DP 101 bool.
-    const { acts, sent } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, "eufy_home_tuya"));
-    expect(acts.startCleaning).toBeDefined();
-    expect(acts.returnToDock).toBeDefined();
-    expect(acts.pauseCleaning).toBeDefined();
-    await acts.startCleaning!();
-    expect(sent[0]).toMatchObject({ kind: "aiot-dp", dp: 2, value: true });
-    await acts.returnToDock!();
-    expect(sent[1]).toMatchObject({ kind: "aiot-dp", dp: 101, value: true });
-    await acts.pauseCleaning!();
-    expect(sent[2]).toMatchObject({ kind: "aiot-dp", dp: 2, value: false });
+  it("write actions are absent for eufy_home_tuya — Tuya control DPs unverified (no live capture)", () => {
+    // Control writes (start/pause/dock) on the Tuya path have not been confirmed from a live capture.
+    // The methods throw on Tuya and their available guard is restricted to isAiotVacuum.
+    const { acts } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, "eufy_home_tuya"));
+    expect(acts.startCleaning).toBeUndefined();
+    expect(acts.returnToDock).toBeUndefined();
+    expect(acts.pauseCleaning).toBeUndefined();
   });
 
   it("setPower is absent for eufy_home_tuya — no confirmed power DP on the legacy Tuya clean line", () => {

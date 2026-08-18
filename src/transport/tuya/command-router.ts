@@ -28,7 +28,6 @@ interface TuyaDeviceIds {
 }
 
 export class TuyaCommandRouter {
-  /** Ready-to-use signer; works out of the box — the HMAC key is a constant from the APK. */
   private userId: string | undefined;
   private dialCode: string | undefined;
   private client: TuyaClient | null = null;

@@ -233,8 +233,8 @@ export function buildGetDeviceDpsAction(devId: string, dpCacheType = 1): TuyaAct
 
 /**
  * LOGIN step 1: fetch a pre-login RSA token for a Tuya uid.
- * Confirmed from the eufy Security APK (`com.oceanwing.battery.cam`) decompile:
- * `pqdbppq.bdpdqbp()` → wire action `smartlife.m.user.username.token.get`, v=2.0.
+ * Wire-confirmed from the eufy Security app (`com.oceanwing.battery.cam`):
+ * wire action `smartlife.m.user.username.token.get`, v=2.0.
  * Returns `{ token, publicKey, exponent }` (RSA-2048 modulus + exponent as decimal strings).
  */
 export function buildUsernameTokenGetAction(countryCode: string, username: string): TuyaAction {
@@ -247,7 +247,7 @@ export function buildUsernameTokenGetAction(countryCode: string, username: strin
 
 /**
  * LOGIN step 2: uid password login + auto-register.
- * Confirmed from the eufy Security APK decompile: wire action
+ * Wire-confirmed from the eufy Security app: wire action
  * `smartlife.m.user.uid.password.login.reg`, v=1.0. `passwd` = hex of RSA-PKCS1-encrypt(MD5hex(aesPassword)).
  * On success returns `{ sid, uid }`.
  */
@@ -267,7 +267,7 @@ export function buildPasswordLoginRegAction(
 /**
  * Older Tuya API path that auto-creates a shadow account if it does not yet exist.
  * Used only by `tuya-login-diag.mjs` as a last-resort re-provisioning probe — not part of the
- * normal login flow confirmed from the APK (`smartlife.m.user.username.token.get` is step 1).
+ * normal login flow (`smartlife.m.user.username.token.get` is step 1).
  */
 export function buildUidTokenCreateAction(countryCode: string, uid: string): TuyaAction {
   return {

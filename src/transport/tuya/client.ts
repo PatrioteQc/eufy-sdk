@@ -39,7 +39,7 @@ export interface TuyaClientConfig {
   signer?: TuyaSigner;
   /**
    * Channel key — defaults to {@link TUYA_CHKEY} (`"7cbfe6d8"`), the constant extracted from
-   * the eufy Security/Mega APK. Override only for non-standard builds.
+   * the eufy Security/Mega app. Override only for non-standard builds.
    */
   chKey?: string;
   /** Per-install device id; a random 44-hex one is generated if omitted (see {@link genDeviceId}). */
@@ -65,7 +65,7 @@ export function genDeviceId(): string {
 
 /**
  * RSA-PKCS1-encrypt a Tuya login password using the server-supplied key parameters.
- * Confirmed from APK: `Cipher.getInstance("RSA/ECB/PKCS1Padding")`, modulus + exponent as decimal.
+ * Wire-confirmed: RSA/ECB/PKCS1Padding, modulus + exponent as decimal strings.
  * Returns the hex-encoded ciphertext (the `passwd` field in the login.reg request).
  */
 function rsaEncryptPassword(password: string, publicKeyDecimal: string, exponentDecimal: string): string {
@@ -128,7 +128,7 @@ export class TuyaClient {
   }
 
   /**
-   * Log into the Tuya cloud from a eufy user id (confirmed from eufy Security APK decompile).
+   * Log into the Tuya cloud from a eufy user id (wire-confirmed from the eufy Security app).
    *
    * Flow:
    *  1. `smartlife.m.user.username.token.get` → `{ token, publicKey, exponent }` (RSA-2048 key).
@@ -137,7 +137,7 @@ export class TuyaClient {
    *  2. Derive password: RSA/PKCS1-encrypt( MD5hex(aesPassword), serverKey ) → hex.
    *  3. `smartlife.m.user.uid.password.login.reg` → `{ sid, uid }`.
    *     On USER_PASSWD_WRONG: re-fetch a token and retry once with the hardcoded fallback
-   *     password `"12345678"` (LibTuyaUser.loginOrRegisterWithUid$lambda$2 in the APK).
+   *     password `"12345678"` (wire-confirmed from the app).
    */
   async login(eufyUserId: string, phoneCode?: string): Promise<TuyaLoginResult> {
     const account: TuyaAccount = deriveTuyaAccount(eufyUserId, phoneCode);

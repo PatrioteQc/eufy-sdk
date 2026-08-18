@@ -35,13 +35,11 @@ describe("locate — AIoT vs legacy guard (negative exclusion)", () => {
     expect(acts.locate).toBeDefined();
   });
 
-  it("locate is present for eufy_home_tuya and dispatches DP 103 (legacy Tuya find-robot)", async () => {
-    // T2266 = X8 Pro, category from live API dump (2026-08-04); routeCommand sends aiot-dp to TuyaCommandRouter.
-    // Legacy Tuya clean line uses DP 103 for find-robot, not DP 160 (AIoT).
-    const { acts, sent } = bind<LocateActions>("locate", locateCtx("T2266", "eufy_home_tuya"));
-    expect(acts.locate).toBeDefined();
-    await acts.locate!();
-    expect(sent).toEqual([{ kind: "aiot-dp", dp: 103, value: true }]);
+  it("locate is absent for eufy_home_tuya — Tuya locate write unverified (no live capture)", () => {
+    // The Tuya locate write direction has not been confirmed from a live capture.
+    // The locate method's available guard is restricted to isAiotVacuum.
+    const { acts } = bind<LocateActions>("locate", locateCtx("T2266", "eufy_home_tuya"));
+    expect(acts.locate).toBeUndefined();
   });
 
   it("dispatches DP 160 = true for eufy_home category (Anker AIoT MQTT)", async () => {

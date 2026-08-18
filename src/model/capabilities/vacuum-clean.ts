@@ -29,8 +29,8 @@ export const VACUUM_DP = {
 
 /**
  * Legacy Tuya DP ids for the G-series / X8 / L-series clean line.
- * DP 101 confirmed from DeviceHomeModule.java (`goHomeCmd` → bool). DP 2 type confirmed (bool
- * play/pause). DPs 104 and 106 confirmed as integer read-only values from protocol inspection.
+ * DP 101 confirmed (`goHome` → bool). DP 2 type confirmed (bool play/pause).
+ * DPs 104 and 106 confirmed as integer read-only values from protocol inspection.
  * @internal
  */
 export const LEGACY_VACUUM_DP = {
@@ -332,8 +332,11 @@ const CLEAN_PARAM_FIELD = {
 export function decodeCleanType(
   raw: ParamValue | undefined,
   codec: RawDpCodec | undefined,
-): VacuumCleanType | undefined {
-  if (typeof raw !== "string" || !codec) return undefined;
+): VacuumCleanType | X8CleanTypeTuya | undefined {
+  if (typeof raw !== "string") return undefined;
+  // Tuya X8 DP 113 is a plain string enum — detect by value set membership (no overlap with AIoT).
+  if ((X8_CLEAN_TYPES as readonly string[]).includes(raw)) return raw as X8CleanTypeTuya;
+  if (!codec) return undefined;
   const configured = codec.decode(raw)?.find((f) => f.field === CLEAN_PARAM_FIELD.CONFIGURED);
   if (configured?.kind !== "bytes" || !configured.value.length) return undefined;
   const cleanType = codec.nested(configured.value)?.find((f) => f.field === CLEAN_PARAM_FIELD.CLEAN_TYPE);
@@ -429,9 +432,10 @@ export const VACUUM_CLEAN_MEMBERS = {
     description: "Speaker volume 0-100 (DP 161, Value).",
   },
   /**
-   * Charge percentage on the clean-line DP 163 — deliberately NOT the security param 1101 the `battery`
-   * capability reads, so a robot's charge is here rather than on `dev.battery()`. Read-only, and
-   * populated only once a realtime report lands, since the cloud record carries no DPs.
+   * Charge percentage — DP 163 for the AIoT clean line; DP 104 for the legacy Tuya (G-series/X8)
+   * via a `readAliases` entry gated on {@link isTuyaVacuum}. Deliberately NOT the security param 1101
+   * the `battery` capability reads, so a robot's charge is here rather than on `dev.battery()`.
+   * Read-only, populated only once a realtime report lands.
    */
   battery: {
     param: VACUUM_DP.BATTERY,
@@ -439,7 +443,8 @@ export const VACUUM_CLEAN_MEMBERS = {
     unit: "%",
     kind: "percent",
     provenance: "mega",
-    description: "Battery level 0-100 (DP 163). NOTE: clean namespace — not param 1101.",
+    readAliases: [{ paramType: LEGACY_VACUUM_DP.BATTERY_LEVEL, available: isTuyaVacuum }],
+    description: "Battery level 0-100 (DP 163 AIoT / DP 104 Tuya). NOTE: clean namespace — not param 1101.",
   },
   /**
    * The SETTING for what to do with a surface, not what a running job is doing — the two disagree while
@@ -447,6 +452,7 @@ export const VACUUM_CLEAN_MEMBERS = {
    * lifted out by `decode`: the injected codec turns the DP into a field tree and this capability names
    * which field means what, which is why the transport never has to know DP 154. The decode's own
    * return type wins on the surface, so the getter answers the named `VacuumCleanType` union.
+   * For Tuya devices, DP 113 (Enum: "Sweep"|"SweepMop"|"Mop") is read via a `readAliases` entry.
    */
   cleanType: {
     param: VACUUM_DP.CLEAN_PARAM,
@@ -454,21 +460,9 @@ export const VACUUM_CLEAN_MEMBERS = {
     provenance: "mega",
     decode: (raw, codec) => decodeCleanType(raw as ParamValue | undefined, codec),
     decodedKind: "enum",
-    decodedValues: VACUUM_CLEAN_TYPES,
-    description: "Configured cleaning type from CleanParam.clean_type (DP 154 clean params, Raw protobuf).",
-  },
-  /**
-   * Battery level 0-100 for the legacy Tuya clean line (DP 104, Int ro). This getter installs only
-   * when the device reports DP 104 — the X8/G-series does via its realtime feed. Distinct from
-   * {@link VACUUM_DP.BATTERY} (DP 163), which the modern AIoT clean line reports instead.
-   */
-  batteryLegacy: {
-    param: LEGACY_VACUUM_DP.BATTERY_LEVEL,
-    type: "number",
-    unit: "%",
-    kind: "percent",
-    provenance: "mega",
-    description: "Battery level 0-100 (DP 104, Int ro). Legacy Tuya G-series/X8 clean line.",
+    decodedValues: [...VACUUM_CLEAN_TYPES, ...X8_CLEAN_TYPES] as readonly string[],
+    readAliases: [{ paramType: X8_VACUUM_DP.CLEAN_TYPE, available: isTuyaVacuum }],
+    description: "Configured cleaning type from CleanParam.clean_type (DP 154 AIoT protobuf) or DP 113 Tuya Enum.",
   },
   /**
    * Error code from the legacy Tuya clean line (DP 106, Int ro). 0 = ok; non-zero is a device fault.
@@ -558,26 +552,6 @@ export const VACUUM_CLEAN_MEMBERS = {
       "Mop water flow level from DP 105 (MopWater, Enum). X8 Pro Tuya clean line. Live-confirmed Mid. Write unverified.",
   },
   /**
-   * Configured cleaning type (DP 113, Enum string). Live-confirmed "Sweep" at rest.
-   * Write direction is unverified — no live publishDps capture.
-   *
-   * Distinct from {@link cleanType} (DP 154, protobuf CleanParam), which the AIoT T2351 reports.
-   * Known values from schemaInfo.schema: {@link X8_CLEAN_TYPES}.
-   */
-  x8CleanType: {
-    param: X8_VACUUM_DP.CLEAN_TYPE,
-    type: "string",
-    provenance: "mega",
-    decode: (raw): X8CleanTypeTuya | undefined => {
-      const s = typeof raw === "string" ? raw : undefined;
-      return s !== undefined && (X8_CLEAN_TYPES as readonly string[]).includes(s) ? (s as X8CleanTypeTuya) : undefined;
-    },
-    decodedKind: "enum",
-    decodedValues: X8_CLEAN_TYPES,
-    description:
-      "Configured clean type from DP 113 (CleanType, Enum). X8 Pro Tuya clean line. Live-confirmed Sweep. Write unverified.",
-  },
-  /**
    * Session cleaning duration in seconds (DP 109, Value). Live-confirmed 4200 (= 70 min) at rest.
    * Read-only — no write is expected for a session counter.
    */
@@ -612,44 +586,50 @@ export const VACUUM_CLEAN_MEMBERS = {
     provenance: "mega",
     description: "Speaker loudness 0-100 from DP 111 (Loudness). X8 Pro Tuya clean line. Live-confirmed.",
   },
-  /** Start an auto-clean run — DP 2 = true for Tuya; ModeCtrlRequest method 0 over DP 152 for AIoT. */
+  /** Start an auto-clean run — ModeCtrlRequest method 0 over DP 152 (AIoT only; Tuya write unverified). */
   startCleaning: method(
     ({ sink, ctx }) => {
       if (isTuyaVacuum(ctx)) {
-        return (): Promise<void> => sink.dispatch(aiotDp(LEGACY_VACUUM_DP.PLAY_PAUSE, true));
+        return (): Promise<void> => {
+          throw new Error("startCleaning: Tuya write path not yet verified — no live publishDps capture");
+        };
       }
       let seq = 111;
       return (): Promise<void> =>
         sink.dispatch(aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.START_AUTO_CLEAN, ++seq)));
     },
-    "Start an auto-clean run (DP 2 = true for Tuya; ModeCtrlRequest method 0, DP 152 for AIoT).",
-    (ctx) => isAiotVacuum(ctx) || isTuyaVacuum(ctx),
+    "Start an auto-clean run (ModeCtrlRequest method 0, DP 152 for AIoT).",
+    (ctx) => isAiotVacuum(ctx),
   ),
-  /** Return to the dock — DP 101 = true for Tuya; ModeCtrlRequest method 6 over DP 152 for AIoT. */
+  /** Return to the dock — ModeCtrlRequest method 6 over DP 152 (AIoT only; Tuya write unverified). */
   returnToDock: method(
     ({ sink, ctx }) => {
       if (isTuyaVacuum(ctx)) {
-        return (): Promise<void> => sink.dispatch(aiotDp(LEGACY_VACUUM_DP.GO_HOME, true));
+        return (): Promise<void> => {
+          throw new Error("returnToDock: Tuya write path not yet verified — no live publishDps capture");
+        };
       }
       let seq = 111;
       return (): Promise<void> =>
         sink.dispatch(aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.START_GOHOME, ++seq)));
     },
-    "Return to the dock (DP 101 = true for Tuya; ModeCtrlRequest method 6, DP 152 for AIoT).",
-    (ctx) => isAiotVacuum(ctx) || isTuyaVacuum(ctx),
+    "Return to the dock (ModeCtrlRequest method 6, DP 152 for AIoT).",
+    (ctx) => isAiotVacuum(ctx),
   ),
-  /** Pause the current cleaning task — DP 2 = false for Tuya; ModeCtrlRequest method 13 over DP 152 for AIoT. */
+  /** Pause the current cleaning task — ModeCtrlRequest method 13 over DP 152 (AIoT only; Tuya write unverified). */
   pauseCleaning: method(
     ({ sink, ctx }) => {
       if (isTuyaVacuum(ctx)) {
-        return (): Promise<void> => sink.dispatch(aiotDp(LEGACY_VACUUM_DP.PLAY_PAUSE, false));
+        return (): Promise<void> => {
+          throw new Error("pauseCleaning: Tuya write path not yet verified — no live publishDps capture");
+        };
       }
       let seq = 111;
       return (): Promise<void> =>
         sink.dispatch(aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.PAUSE_TASK, ++seq)));
     },
-    "Pause the current cleaning task (DP 2 = false for Tuya; ModeCtrlRequest method 13, DP 152 for AIoT).",
-    (ctx) => isAiotVacuum(ctx) || isTuyaVacuum(ctx),
+    "Pause the current cleaning task (ModeCtrlRequest method 13, DP 152 for AIoT).",
+    (ctx) => isAiotVacuum(ctx),
   ),
 } as const satisfies Members;
 

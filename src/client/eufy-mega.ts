@@ -1174,8 +1174,10 @@ export class EufyMega extends EventEmitter {
         const dev = this.registry.list().find((d) => d.sn === m.deviceSn);
         if (dev?.category === "eufy_home_tuya") {
           const dps = parseTuyaDpReport(m.raw);
-          if (dps) this.tuyaDpRouter.deliver(m.deviceSn, dps);
-          return;
+          if (dps) {
+            this.tuyaDpRouter.deliver(m.deviceSn, dps);
+            return;
+          }
         }
       }
       if (m.topic) this.processAvailabilityMessage(m.topic, m.raw);

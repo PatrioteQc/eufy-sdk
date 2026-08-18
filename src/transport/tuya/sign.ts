@@ -94,13 +94,13 @@ export class StubSigner implements TuyaSigner {
 
 /**
  * App-wide HMAC-SHA256 signing key **K** (`package_cert_stego_appSecret`), assembled from four
- * public per-app-build components (confirmed from the eufy Security/Mega APK + native memory dump):
+ * public per-build constants (wire-confirmed from the eufy Security/Mega app + native memory dump):
  *   - package name: `com.oceanwing.battery.cam`
  *   - developer signing-cert SHA-256 (colon-hex UPPER, verified from running app memory)
  *   - stego value: extracted from `libthing_security.so + 0x384f0` (keyed BMP steganography)
  *   - manifest app secret (also in {@link TUYA_APP_SECRET} in `request.ts`)
  *
- * All four components are public (APK manifest, cert fingerprint, SO stego, manifest secret).
+ * All four components are public per-build constants.
  * The env var `TUYA_SIGN_KEY` can override this for non-standard builds.
  */
 export const TUYA_SIGN_K =
@@ -128,7 +128,7 @@ export class HmacSigner implements TuyaSigner {
 
 /**
  * Channel key sent on every request as `chKey`.
- * Extracted from the eufy Security/Mega APK (`com.oceanwing.battery.cam`); present in the sign
+ * Extracted from the eufy Security/Mega app (`com.oceanwing.battery.cam`); present in the sign
  * preimage — confirmed from the live-captured golden vector (`smartlife.p.time.get`).
  */
 export const TUYA_CHKEY = "7cbfe6d8";
