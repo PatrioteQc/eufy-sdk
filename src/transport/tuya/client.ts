@@ -137,7 +137,9 @@ export class TuyaClient {
    *  2. Derive password: RSA/PKCS1-encrypt( MD5hex(aesPassword), serverKey ) → hex.
    *  3. `smartlife.m.user.uid.password.login.reg` → `{ sid, uid }`.
    *     On USER_PASSWD_WRONG: re-fetch a token and retry once with the hardcoded fallback
-   *     password `"12345678"` (wire-confirmed from the app).
+   *     password `"12345678"` (wire-confirmed from the eufy Security app).
+   *     ⚠️ Two failed attempts in a row can contribute to Tuya-side rate-limiting or lockout — do not
+   *     add further retry loops on top of this one.
    */
   async login(eufyUserId: string, phoneCode?: string): Promise<TuyaLoginResult> {
     const account: TuyaAccount = deriveTuyaAccount(eufyUserId, phoneCode);

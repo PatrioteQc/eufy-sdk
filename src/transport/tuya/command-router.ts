@@ -6,7 +6,7 @@
  * `eufy_home_tuya` device (the facade does both). On the first {@link dispatchCommand} the router
  * logs into the Tuya cloud lazily (once, shared across all subsequent sends). The dp.publish write
  * is sent via `TuyaClient.publishDps` — note the `dp.publish` param shape is not yet confirmed from
- * a live eufy Home/Clean capture (guarded by `allowUnverified: true` until a capture confirms it).
+ * a live eufy Home/Clean capture (gated by {@link TuyaCommandRouterConfig.allowUnverified}, default `false`).
  *
  * Layering: imports `../../core` only — no `model/` import, consistent with the capability↔transport
  * decorrelation invariant. Sibling tuya/* imports are same-layer (transport).
@@ -15,6 +15,15 @@ import type { Command } from "../../core/contracts.js";
 import { resolveCountryCode } from "./account.js";
 import { HmacSigner } from "./sign.js";
 import { TuyaClient } from "./client.js";
+
+export interface TuyaCommandRouterConfig {
+  /**
+   * Opt-in to unverified Tuya DP writes. Defaults to `false` — {@link dispatchCommand} will throw
+   * until a live `publishDps` capture confirms the dp.publish round-trip. Set `true` only after that
+   * confirmation and remove the gate when the write is shipped as verified.
+   */
+  allowUnverified?: boolean;
+}
 
 /** eufy SN → Tuya device identity needed for DP reads and writes. */
 interface TuyaDeviceIds {
@@ -28,6 +37,7 @@ interface TuyaDeviceIds {
 }
 
 export class TuyaCommandRouter {
+  private readonly allowUnverified: boolean;
   private userId: string | undefined;
   private dialCode: string | undefined;
   private client: TuyaClient | null = null;
@@ -40,6 +50,10 @@ export class TuyaCommandRouter {
    * `tuya_virtual_id`, `tuya_device_id`, `virtualId`) and registers it once the device list loads.
    */
   private readonly snMap = new Map<string, TuyaDeviceIds>();
+
+  constructor(config: TuyaCommandRouterConfig = {}) {
+    this.allowUnverified = config.allowUnverified ?? false;
+  }
 
   /**
    * Supply credentials for lazy Tuya login. Called by the facade after a successful mega login.
@@ -88,9 +102,9 @@ export class TuyaCommandRouter {
    * Logs in lazily on first call. The eufy SN must have been registered via {@link registerDevice}
    * before dispatch — the facade does this when the device list is loaded.
    *
-   * ⚠️ `dp.publish` param shape is sent with `{ allowUnverified: true }` — the wire shape is
-   * implemented from the documented protocol but not yet confirmed from a live eufy Home/Clean
-   * capture. Remove the guard once a capture confirms the full round-trip.
+   * ⚠️ `dp.publish` is unverified — see {@link TuyaCommandRouterConfig.allowUnverified}. By default
+   * this throws. Pass `allowUnverified: true` in the router config only after a live capture
+   * confirms the full round-trip, then remove the gate.
    */
   async dispatchCommand(sn: string, cmd: Command): Promise<void> {
     if (cmd.kind !== "aiot-dp") {
@@ -104,6 +118,11 @@ export class TuyaCommandRouter {
           "Ensure getDevices() was called and the cloud record includes a tuya_uuid / tuya_virtual_id field.",
       );
     }
-    await this.client!.publishDps(ids.devId, ids.gwId, { [cmd.dp]: cmd.value }, { allowUnverified: true });
+    await this.client!.publishDps(
+      ids.devId,
+      ids.gwId,
+      { [cmd.dp]: cmd.value },
+      { allowUnverified: this.allowUnverified },
+    );
   }
 }

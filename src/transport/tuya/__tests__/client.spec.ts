@@ -122,6 +122,37 @@ describe("TuyaClient", () => {
     expect(pd.passwd).toMatch(/^[0-9a-f]+$/);
   });
 
+  it("login retries with fallback password '12345678' on USER_PASSWD_WRONG, then succeeds", async () => {
+    const { n, e } = makeTestRsaKey();
+    const tokenReply = { success: true, result: { token: "TOK-FB", publicKey: n, exponent: e } };
+    const { http, calls } = stubHttp([
+      tokenReply, // step 1: token.get for derived password
+      { success: false, errorMsg: "USER_PASSWD_WRONG" }, // step 2: login with derived password fails
+      tokenReply, // step 3: token.get again for fallback attempt
+      { success: true, result: { sid: "fb-sid", uid: "fb-uid" } }, // step 4: login with "12345678"
+    ]);
+    const c = new TuyaClient({ signer: new FixedSigner(), chKey: "7cbfe6d8", http });
+    const res = await c.login("99999");
+    expect(res).toEqual({ sid: "fb-sid", uid: "fb-uid" });
+    expect(calls).toHaveLength(4);
+    // The fallback attempt's login.reg carries a different encrypted password (MD5 of "12345678").
+    // We don't check the exact ciphertext — just confirm a second login.reg was sent.
+    expect(new URLSearchParams(calls[3].body).get("a")).toBe("smartlife.m.user.uid.password.login.reg");
+  });
+
+  it("login throws when both derived password and fallback fail with USER_PASSWD_WRONG", async () => {
+    const { n, e } = makeTestRsaKey();
+    const tokenReply = { success: true, result: { token: "TOK-X", publicKey: n, exponent: e } };
+    const { http } = stubHttp([
+      tokenReply,
+      { success: false, errorMsg: "USER_PASSWD_WRONG" },
+      tokenReply,
+      { success: false, errorMsg: "USER_PASSWD_WRONG" },
+    ]);
+    const c = new TuyaClient({ signer: new FixedSigner(), chKey: "7cbfe6d8", http });
+    await expect(c.login("99999")).rejects.toThrow(/USER_PASSWD_WRONG.*derived.*fallback/i);
+  });
+
   it("login throws when username.token.get yields no token", async () => {
     const { http } = stubHttp([{ success: false, errorMsg: "boom" }]);
     const c = new TuyaClient({ signer: new FixedSigner(), chKey: "7cbfe6d8", http });
