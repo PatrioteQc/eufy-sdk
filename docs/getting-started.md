@@ -14,7 +14,10 @@ eufy-sdk is not affiliated with, endorsed by, or sponsored by Anker Innovations 
 - **Runtime dependencies — four:** `mqtt`, `protobufjs`, `werift`, and `jpeg-js` (a pure-JS,
   zero-transitive-dependency, BSD-3-Clause baseline JPEG codec — required to reconstruct v2 push
   thumbnails, which must be decoded and re-encoded; there is no Node built-in JPEG codec). Everything
-  else is Node built-ins (`fetch`, `node:crypto`, `BigInt`).
+  else is Node built-ins (`fetch`, `node:crypto`, `BigInt`). `jpeg-js` is synchronous: reconstructing a
+  v2 thumbnail performs repeated candidate decodes and blocks the Node.js event loop until that image
+  finishes. The synthetic 176×144 and 264×200 fixtures each took about one second on one Node 24 test
+  host; timing varies by image and hardware.
 - **`ffmpeg` — optional, on `PATH`.** Needed only for the convenience decode/mux sinks: JPEG
   `snapshotLive()`, the one-shot `record(seconds)` buffer, and WebRTC container output (`.mp4`/`.mkv`;
   falls back to raw when absent). The core paths — `live()`, `openReadable()`, `recordFragments()`

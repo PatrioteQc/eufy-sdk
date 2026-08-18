@@ -19,8 +19,7 @@ SYNTHETIC_SERIAL = b"v2_eufysecurity:T8000TEST00000002:0000000000:"
 
 
 def synthetic_image(w: int, h: int) -> Image.Image:
-    # Photo-like content with strong horizontal continuity so the width search (min row-shear) locks
-    # onto the true width: a smooth diagonal luma gradient plus a few horizontal bands and a box.
+    """Build photo-like content whose horizontal continuity makes row-shear identify the true width."""
     img = Image.new("RGB", (w, h))
     px = img.load()
     for y in range(h):
@@ -37,11 +36,11 @@ def synthetic_image(w: int, h: int) -> Image.Image:
 
 
 def main() -> None:
+    """Write a 4:4:4 baseline JPEG with the split DHT layout expected by the decoder."""
     w, h, out = int(sys.argv[1]), int(sys.argv[2]), sys.argv[3]
     from io import BytesIO
 
     buf = BytesIO()
-    # subsampling=0 → 4:4:4; keep standard Huffman/quant tables (no optimize) for the split DHT layout.
     synthetic_image(w, h).save(buf, format="JPEG", quality=85, subsampling=0)
     blob = SYNTHETIC_SERIAL + buf.getvalue()
     with open(out, "w") as f:

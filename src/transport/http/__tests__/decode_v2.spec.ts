@@ -5,15 +5,11 @@ import { decode as jpegDecode } from "jpeg-js";
 import { autoContrast, decodeImageV2, isV2Image } from "../decodeImageV2.js";
 import { normalizePushImage } from "../decodeImageV1.js";
 
-// Both fixtures are FULLY SYNTHETIC (no captured device data / real serials): the ascii
-// `v2_eufysecurity:` wrapper + a synthetic serial + a standard baseline 4:4:4 JPEG, whose plaintext
-// tail from `FF C4 00 1F 01` is exactly what a real v2 blob leaves in the clear. Regenerate with
-// `scripts/dev/gen_v2_fixture.py <w> <h> <out.b64>`.
+/** Both fixtures are FULLY SYNTHETIC (no captured device data / real serials). Regenerate with `scripts/dev/gen_v2_fixture.py <w> <h> <out.b64>`. */
 const FIXTURE_DIR = join(dirname(fileURLToPath(import.meta.url)), "fixtures");
 const readFixture = (name: string) => Buffer.from(readFileSync(join(FIXTURE_DIR, name), "utf-8"), "base64");
 const v2Blob = readFixture("v2_thumbnail_176x144.b64");
-// A synthetic non-ladder geometry (264×200 is not on the search's coarse ladder), to prove the
-// width/height search recovers an arbitrary size.
+/** Synthetic non-ladder geometry (264×200 is not on the search's coarse ladder). */
 const v2Blob264 = readFixture("v2_thumbnail_264x200.b64");
 
 /** Read a baseline JPEG's SOF0 dimensions, to check the reconstructed geometry. */
@@ -34,15 +30,13 @@ describe("decodeImageV2 (keyless v2_eufysecurity)", () => {
     expect(isV2Image(v2Blob)).toBe(true);
     expect(isV2Image(Buffer.from("eufysecurity:T8:CODE:xxxx"))).toBe(false);
     expect(isV2Image(Buffer.from([0xff, 0xd8, 0xff, 0xe0]))).toBe(false);
-    // The prefix match includes the trailing colon, so a longer look-alike token is NOT a v2 blob.
     expect(isV2Image(Buffer.from("v2_eufysecurityX:garbage"))).toBe(false);
   });
 
   it("reconstructs a decodable JPEG at the original geometry", () => {
     const jpeg = decodeImageV2(v2Blob);
     expect(jpeg).not.toBeNull();
-    expect(jpeg!.subarray(0, 2)).toEqual(Buffer.from([0xff, 0xd8])); // SOI — a real JPEG
-    // Geometry recovered by the search (width refined, height pinned to the scan's fill).
+    expect(jpeg!.subarray(0, 2)).toEqual(Buffer.from([0xff, 0xd8]));
     expect(jpegSize(jpeg!)).toEqual({ width: 176, height: 144 });
   });
 
@@ -50,7 +44,7 @@ describe("decodeImageV2 (keyless v2_eufysecurity)", () => {
     const jpeg = decodeImageV2(v2Blob264);
     expect(jpeg).not.toBeNull();
     expect(jpeg!.subarray(0, 2)).toEqual(Buffer.from([0xff, 0xd8]));
-    expect(jpeg!.subarray(-2)).toEqual(Buffer.from([0xff, 0xd9])); // EOI — a complete JPEG
+    expect(jpeg!.subarray(-2)).toEqual(Buffer.from([0xff, 0xd9]));
     expect(jpegSize(jpeg!)).toEqual({ width: 264, height: 200 });
   });
 
@@ -71,11 +65,6 @@ describe("decodeImageV2 (keyless v2_eufysecurity)", () => {
 });
 
 describe("decodeImageV2 end-to-end de-fog (full decode → re-encode path)", () => {
-  // The complete pipeline (geometry search → decode → autoContrast → JPEG re-encode) is
-  // deterministic, so we decode the *emitted* JPEG and assert the de-fog survived the round-trip:
-  // every channel is stretched across the full 0..255 range, and the per-channel mean matches the
-  // reference produced by this exact pipeline (jpeg-js 0.4.x encode is deterministic). This covers the
-  // whole path, not autoContrast in isolation — remove the de-fog step and these assertions fail.
   const cases = [
     { file: "v2_thumbnail_176x144.b64", width: 176, height: 144, means: [126.45, 128.36, 127.3] },
     { file: "v2_thumbnail_264x200.b64", width: 264, height: 200, means: [147.2, 124.59, 125.06] },
@@ -97,10 +86,8 @@ describe("decodeImageV2 end-to-end de-fog (full decode → re-encode path)", () 
           max = Math.max(max, v);
           sum += v;
         }
-        // De-fog stretched this channel across (near) the full range, end-to-end.
         expect(min).toBeLessThanOrEqual(2);
         expect(max).toBeGreaterThanOrEqual(253);
-        // Deterministic pipeline mean, within lossy re-encode tolerance.
         expect(sum / n).toBeCloseTo(means[c], 0);
       }
     });
@@ -108,8 +95,6 @@ describe("decodeImageV2 end-to-end de-fog (full decode → re-encode path)", () 
 });
 
 describe("autoContrast (PIL ImageOps.autocontrast parity, cutoff 0.5%)", () => {
-  // A deterministic 20×20 RGBA buffer (400 px → the cutoff trims 2 samples/end, so the trimming path
-  // is exercised, not just a plain min/max stretch). Per-channel ramps plus a few outliers.
   const W = 20;
   const H = 20;
   const N = W * H;
@@ -122,7 +107,6 @@ describe("autoContrast (PIL ImageOps.autocontrast parity, cutoff 0.5%)", () => {
       data[i * 4 + 2] = (i * 13) % 200;
       data[i * 4 + 3] = 255;
     }
-    // Outliers so the 0.5% cutoff has something to trim off each end.
     data[0] = 5;
     data[4] = 250;
     data[1] = 2;
@@ -135,11 +119,9 @@ describe("autoContrast (PIL ImageOps.autocontrast parity, cutoff 0.5%)", () => {
   it("matches PIL's per-channel output statistics exactly", () => {
     const data = buildInput();
     autoContrast(data, W, H);
-    // Reference values computed by Pillow 10 ImageOps.autocontrast(cutoff=0.5) on the same buffer.
-    expect(channelSum(data, 0, N)).toBe(50090); // R
-    expect(channelSum(data, 1, N)).toBe(50907); // G
-    expect(channelSum(data, 2, N)).toBe(50788); // B
-    // The stretch reaches full black/white on every channel.
+    expect(channelSum(data, 0, N)).toBe(50090);
+    expect(channelSum(data, 1, N)).toBe(50907);
+    expect(channelSum(data, 2, N)).toBe(50788);
     for (let c = 0; c < 3; c++) {
       let min = 255;
       let max = 0;

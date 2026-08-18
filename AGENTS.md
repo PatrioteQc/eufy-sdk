@@ -11,7 +11,7 @@ Setup, the dev workflow and the PR process are in [CONTRIBUTING.md](./CONTRIBUTI
 - **TypeScript** (strict), `module`/`moduleResolution` **nodenext**, `"type": "module"` → **ESM emit**
   (explicit `.js` import specifiers), target ES2024, `dist/` output. No framework.
 - **Node.js ≥ 24.5.0** required (see `.nvmrc`), not just recommended.
-- Runtime deps: **mqtt, protobufjs, werift** — that's all. HTTP is native `fetch`, hashing and ciphers
+- Runtime deps: **mqtt, protobufjs, werift, jpeg-js** — that's all. HTTP is native `fetch`, hashing and ciphers
   are `node:crypto`, 64-bit integers are `BigInt`.
 - Tests: **Vitest** (esbuild type-strip, specs run as real ESM). Type safety is `tsc`'s job via
   `npm run typecheck`, not the test runner's. Formatting: Prettier. No linter.

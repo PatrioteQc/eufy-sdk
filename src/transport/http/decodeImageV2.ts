@@ -28,6 +28,11 @@
  * the precise signal the geometry search below depends on — libjpeg/mozjpeg-based codecs (`@jsquash`,
  * `sharp`) grey-fill instead, which would silently break the search.
  *
+ * **CPU blocking:** `jpeg-js` is synchronous pure JS. Each v2 thumbnail runs repeated candidate
+ * decodes on the event loop until reconstruction finishes. The synthetic 176×144 and 264×200 fixtures
+ * each took about one second on one Node 24 test host; timing varies by image and hardware, and
+ * simultaneous thumbnails queue behind this work.
+ *
  * @module transport/http/decodeImageV2
  */
 import { decode as jpegDecode, encode as jpegEncode } from "jpeg-js";
@@ -108,8 +113,8 @@ function dqtSegment(table: readonly number[], id: number, quality: number): Buff
   return Buffer.concat([Buffer.from([0xff, 0xdb, 0x00, 0x43]), body]);
 }
 
+/** Build the SOF0 segment for a baseline JPEG of the given geometry. */
 function sofSegment(width: number, height: number, subsampling: number): Buffer {
-  // Y sampling factors; Cb/Cr are 1×1.
   const samplingFactors = subsampling === 2 ? 0x22 : subsampling === 1 ? 0x21 : 0x11;
   // prettier-ignore
   return Buffer.from([
@@ -192,7 +197,6 @@ export function autoContrast(data: Uint8Array, width: number, height: number, cu
     const hist = new Array<number>(256).fill(0);
     for (let i = 0; i < total; i++) hist[data[i * 4 + channel]]++;
 
-    // Trim `cutoff%` of samples off the low end, then (with a fresh count) off the high end.
     let remaining = Math.floor((total * cutoff) / 100);
     for (let bin = 0; bin < 256 && remaining > 0; bin++) {
       if (remaining > hist[bin]) {
@@ -247,7 +251,9 @@ export function isV2Image(data: Buffer): boolean {
 
 /**
  * Decode a v2 blob to a plain JPEG buffer by reconstructing its header, or null if it isn't v2 or the
- * plaintext scan can't be located. See the module doc for the keyless-splice rationale.
+ * plaintext scan can't be located. The search first chooses subsampling and coarse geometry, derives
+ * the fixed MCU count, refines width by row shear, and pins the exact fill height before applying
+ * auto-contrast and re-encoding. See the module doc for the keyless-splice rationale.
  */
 export function decodeImageV2(data: Buffer): Buffer | null {
   if (!isV2Image(data)) return null;
@@ -255,8 +261,6 @@ export function decodeImageV2(data: Buffer): Buffer | null {
   if (cut < 0) return null;
   const tail = data.subarray(cut);
 
-  // Step 1 — subsampling + coarse geometry: the largest ladder frame that decodes (the scan fills it),
-  // tie-broken across subsamplings by the lowest colour spread.
   let best: { spread: number; subsampling: number; width: number; height: number } | null = null;
   for (const subsampling of [2, 0, 1]) {
     let filled: { width: number; height: number; img: Decoded } | null = null;
@@ -273,11 +277,9 @@ export function decodeImageV2(data: Buffer): Buffer | null {
   const { subsampling, width: coarseWidth } = best;
   const [mcuWidth, mcuHeight] = MCU[subsampling];
 
-  // The scan holds a fixed MCU count; measure it once, then each candidate width's height follows.
   const coarseHeight = maxHeight(tail, coarseWidth, subsampling, best.height);
   const totalMcus = (coarseWidth / mcuWidth) * (coarseHeight / mcuHeight);
 
-  // Step 2 — refine width in a ±25% band: the true width minimises row shear.
   let width = coarseWidth;
   let height = coarseHeight;
   let bestShear = Number.POSITIVE_INFINITY;
@@ -296,12 +298,10 @@ export function decodeImageV2(data: Buffer): Buffer | null {
     }
   }
 
-  // Step 3 — pin the exact fill height at the chosen width (the derived height rounds a partial last row).
   height = maxHeight(tail, width, subsampling, height);
   const img = decodeCandidate(tail, width, height, subsampling);
   if (!img) return null;
 
-  // De-fog (the lost quant tables leave it low-contrast) and re-encode to a clean baseline JPEG.
   autoContrast(img.data, img.width, img.height);
   return Buffer.from(jpegEncode({ data: img.data, width: img.width, height: img.height }, 90).data);
 }
