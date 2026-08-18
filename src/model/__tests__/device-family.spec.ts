@@ -32,21 +32,43 @@ describe("VacuumProductType enum — integer values match ICleanBridgeDeviceInte
 });
 
 describe("vacuumProductTypeFor — product-code lookup", () => {
-  it("T2268 → T218X (18) — only confirmed mapping from the decompile", () => {
+  it("T2268 → T218X (18) — confirmed integer from ICleanBridgeDeviceInterface.java", () => {
     expect(vacuumProductTypeFor("T2268")).toBe(VacuumProductType.T218X);
   });
 
-  it("returns undefined for an unknown model", () => {
+  it("T-codes with unresolved type return undefined without fallback", () => {
+    expect(vacuumProductTypeFor("T2278")).toBeUndefined();
+    expect(vacuumProductTypeFor("T2750")).toBeUndefined();
+    expect(vacuumProductTypeFor("T2770")).toBeUndefined();
+    expect(vacuumProductTypeFor("T1240")).toBeUndefined();
+  });
+
+  it("T-codes with unresolved type return the fallback when supplied", () => {
+    expect(vacuumProductTypeFor("T2278", VacuumProductType.X9)).toBe(VacuumProductType.X9);
+    expect(vacuumProductTypeFor("T2750", VacuumProductType.L60)).toBe(VacuumProductType.L60);
+  });
+
+  it("fallback is also returned for a completely unknown model", () => {
     expect(vacuumProductTypeFor("T9999")).toBeUndefined();
+    expect(vacuumProductTypeFor("T9999", VacuumProductType.G50)).toBe(VacuumProductType.G50);
+  });
+
+  it("fallback is NOT used when the type is already resolved (T2268)", () => {
+    expect(vacuumProductTypeFor("T2268", VacuumProductType.X9)).toBe(VacuumProductType.T218X);
   });
 
   it("T1241 (EufyGenie speaker) is not in the map", () => {
     expect(vacuumProductTypeFor("T1241")).toBeUndefined();
   });
 
-  it("VACUUM_PRODUCT_CODES contains exactly the confirmed mappings", () => {
-    expect(VACUUM_PRODUCT_CODES.size).toBe(1);
+  it("VACUUM_PRODUCT_CODES contains all 5 confirmed vacuum T-codes", () => {
+    expect(VACUUM_PRODUCT_CODES.size).toBe(5);
     expect(VACUUM_PRODUCT_CODES.get("T2268")).toBe(VacuumProductType.T218X);
+    expect(VACUUM_PRODUCT_CODES.has("T2278")).toBe(true);
+    expect(VACUUM_PRODUCT_CODES.has("T2750")).toBe(true);
+    expect(VACUUM_PRODUCT_CODES.has("T2770")).toBe(true);
+    expect(VACUUM_PRODUCT_CODES.has("T1240")).toBe(true);
+    expect(VACUUM_PRODUCT_CODES.has("T1241")).toBe(false); // speaker, not a vacuum
   });
 });
 

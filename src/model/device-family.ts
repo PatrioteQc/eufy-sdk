@@ -166,24 +166,41 @@ export enum VacuumProductType {
  * Known product-code (T-code) → `VacuumProductType` mappings, sourced from
  * `ICleanBridgeDeviceInterface.java` (`PRODUCT_CODE_*`) in `eufy_decompiled` v6.0.41.
  *
- * Only codes whose integer type is confirmed from the decompile are included:
- *  - **T2268 → T218X (18)**: explicitly mapped in the decompile.
+ * All T-codes confirmed in the decompile are included. T-codes whose `PRODUCT_TYPE_*` integer
+ * is not yet resolved carry `undefined` — the map presence distinguishes "known vacuum, type
+ * unresolved" from "unknown model entirely":
+ *  - **T2268 → T218X (18)**: explicitly mapped in `ICleanBridgeDeviceInterface.java`.
+ *  - **T2278, T2750, T2770, T1240**: T-codes confirmed in the decompile; type integer not yet
+ *    resolved from a live capture — `vacuumProductTypeFor` returns the caller's `fallback`.
  *
- * Codes whose type integer is not yet confirmed (T2278, T2750, T2770, T1240) are omitted until
- * a live device capture or further decompile analysis resolves them. T1241 (EufyGenie) is a
- * smart speaker, not a vacuum — it is intentionally excluded from this map.
+ * T1241 (EufyGenie) is a smart speaker, not a vacuum — intentionally excluded.
  */
-export const VACUUM_PRODUCT_CODES: ReadonlyMap<string, VacuumProductType> = new Map([
+export const VACUUM_PRODUCT_CODES: ReadonlyMap<string, VacuumProductType | undefined> = new Map([
   ["T2268", VacuumProductType.T218X],
+  ["T2278", undefined],
+  ["T2750", undefined],
+  ["T2770", undefined],
+  ["T1240", undefined],
 ]);
 
 /**
  * Look up the `VacuumProductType` for a vacuum's product-model string (T-code).
- * Returns `undefined` for any model not yet mapped — capabilities composing on this MUST treat
- * `undefined` as "unknown" and fall back to their safe default, never guess a type.
+ *
+ * Three outcomes:
+ *  - Model is in the map **with a resolved type** → returns that type.
+ *  - Model is in the map **with `undefined`** (T-code confirmed, type unresolved) → returns
+ *    `fallback` when supplied, otherwise `undefined`.
+ *  - Model is **not in the map** (unknown) → returns `fallback` when supplied, otherwise
+ *    `undefined`.
+ *
+ * Capabilities composing on this MUST treat `undefined` as "unknown" and fall back to their
+ * safe default, never guess a type.
  */
-export function vacuumProductTypeFor(model: string): VacuumProductType | undefined {
-  return VACUUM_PRODUCT_CODES.get(model);
+export function vacuumProductTypeFor(model: string, fallback?: VacuumProductType): VacuumProductType | undefined {
+  if (VACUUM_PRODUCT_CODES.has(model)) {
+    return VACUUM_PRODUCT_CODES.get(model) ?? fallback;
+  }
+  return fallback;
 }
 
 /**
