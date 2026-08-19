@@ -45,7 +45,7 @@ export const LEGACY_VACUUM_DP = {
 } as const;
 
 /**
- * Tuya DP ids for the X8 Pro (T2266) / X-series hybrid clean line.
+ * Tuya DP ids for the `eufy_home_tuya` vacuum category (X8 Pro, X-series, and future Tuya clean-line models).
  *
  * Full schema sourced from `thing.m.device.ref.info.list` v5.4 for product `wahqax6ifjgs1c4n`
  * (schemaInfo.schema, 39 DPs). Only the DPs with confirmed read-side values from a live
@@ -53,7 +53,7 @@ export const LEGACY_VACUUM_DP = {
  * no live publishDps capture has been made yet.
  * @internal
  */
-export const X8_VACUUM_DP = {
+export const TUYA_VACUUM_DP = {
   /** Power on/off (DP 1, Bool). */
   POWER: 1,
   /** Play/pause toggle (DP 2, Bool rw) — true = start, false = pause. Shared with {@link LEGACY_VACUUM_DP.PLAY_PAUSE}. */
@@ -467,7 +467,7 @@ export const VACUUM_CLEAN_MEMBERS = {
     decode: (raw, codec) => decodeCleanType(raw as ParamValue | undefined, codec),
     decodedKind: "enum",
     decodedValues: [...VACUUM_CLEAN_TYPES, ...X8_CLEAN_TYPES] as readonly string[],
-    readAliases: [{ paramType: X8_VACUUM_DP.CLEAN_TYPE, available: isTuyaVacuum }],
+    readAliases: [{ paramType: TUYA_VACUUM_DP.CLEAN_TYPE, available: isTuyaVacuum }],
     description: "Configured cleaning type from CleanParam.clean_type (DP 154 AIoT protobuf) or DP 113 Tuya Enum.",
   },
   /**
@@ -489,7 +489,7 @@ export const VACUUM_CLEAN_MEMBERS = {
    * Distinct from {@link activity} (DP 153, protobuf), which the AIoT T2351 reports instead.
    */
   workStatus: {
-    param: X8_VACUUM_DP.WORK_STATUS,
+    param: TUYA_VACUUM_DP.WORK_STATUS,
     type: "string",
     provenance: "mega",
     decode: (raw) => decodeX8WorkStatus(raw as ParamValue | undefined),
@@ -504,7 +504,7 @@ export const VACUUM_CLEAN_MEMBERS = {
    * Known values from schemaInfo.schema: {@link X8_WORK_MODES}.
    */
   workMode: {
-    param: X8_VACUUM_DP.MODE,
+    param: TUYA_VACUUM_DP.MODE,
     type: "string",
     provenance: "mega",
     decode: (raw): X8WorkMode | undefined => {
@@ -522,7 +522,7 @@ export const VACUUM_CLEAN_MEMBERS = {
    * Known values from schemaInfo.schema: {@link X8_CLEANING_STRENGTHS}.
    */
   cleaningStrength: {
-    param: X8_VACUUM_DP.CLEANING_STRENGTH,
+    param: TUYA_VACUUM_DP.CLEANING_STRENGTH,
     type: "string",
     provenance: "mega",
     decode: (raw): X8CleaningStrength | undefined => {
@@ -543,7 +543,7 @@ export const VACUUM_CLEAN_MEMBERS = {
    * Known values from schemaInfo.schema: {@link X8_MOP_WATER_LEVELS}.
    */
   mopWater: {
-    param: X8_VACUUM_DP.MOP_WATER,
+    param: TUYA_VACUUM_DP.MOP_WATER,
     type: "string",
     provenance: "mega",
     decode: (raw): X8MopWaterLevel | undefined => {
@@ -562,7 +562,7 @@ export const VACUUM_CLEAN_MEMBERS = {
    * Read-only — no write is expected for a session counter.
    */
   clearTime: {
-    param: X8_VACUUM_DP.CLEAR_TIME,
+    param: TUYA_VACUUM_DP.CLEAR_TIME,
     type: "number",
     unit: "s",
     kind: "seconds",
@@ -574,7 +574,7 @@ export const VACUUM_CLEAN_MEMBERS = {
    * Session cleaned area in m² (DP 110, Value). Live-confirmed 54 at rest. Read-only.
    */
   clearArea: {
-    param: X8_VACUUM_DP.CLEAR_AREA,
+    param: TUYA_VACUUM_DP.CLEAR_AREA,
     type: "number",
     kind: "scalar",
     provenance: "mega",
@@ -585,7 +585,7 @@ export const VACUUM_CLEAN_MEMBERS = {
    * Distinct from {@link volume} (DP 161), which the AIoT T2351 reports.
    */
   loudness: {
-    param: X8_VACUUM_DP.LOUDNESS,
+    param: TUYA_VACUUM_DP.LOUDNESS,
     type: "number",
     unit: "%",
     kind: "percent",
@@ -598,7 +598,7 @@ export const VACUUM_CLEAN_MEMBERS = {
    * product `wahqax6ifjgs1c4n`). Read-only accumulator — no write expected.
    */
   lifetimeCleanTime: {
-    param: X8_VACUUM_DP.CLEAR_TOTAL_TIME,
+    param: TUYA_VACUUM_DP.CLEAR_TOTAL_TIME,
     type: "number",
     unit: "s",
     kind: "seconds",
@@ -612,7 +612,7 @@ export const VACUUM_CLEAN_MEMBERS = {
    * product `wahqax6ifjgs1c4n`). Read-only accumulator — no write expected.
    */
   lifetimeCleanArea: {
-    param: X8_VACUUM_DP.CLEAR_TOTAL_AREA,
+    param: TUYA_VACUUM_DP.CLEAR_TOTAL_AREA,
     type: "number",
     kind: "scalar",
     provenance: "mega",
@@ -625,7 +625,7 @@ export const VACUUM_CLEAN_MEMBERS = {
    * reports this, the app does not write it.
    */
   waterTank: {
-    param: X8_VACUUM_DP.WATER_TANK_STATUS,
+    param: TUYA_VACUUM_DP.WATER_TANK_STATUS,
     type: "bool",
     kind: "boolean",
     provenance: "mega",
@@ -636,7 +636,7 @@ export const VACUUM_CLEAN_MEMBERS = {
    * `true` when the mop pad is mounted; `false` when removed. Read-only sensor.
    */
   mopPad: {
-    param: X8_VACUUM_DP.MOP_STATUS,
+    param: TUYA_VACUUM_DP.MOP_STATUS,
     type: "bool",
     kind: "boolean",
     provenance: "mega",
@@ -648,20 +648,20 @@ export const VACUUM_CLEAN_MEMBERS = {
    * settings screen. Tuya clean line only — no equivalent DP confirmed on AIoT.
    */
   doNotDisturb: {
-    param: X8_VACUUM_DP.FORBID_MODE,
+    param: TUYA_VACUUM_DP.FORBID_MODE,
     type: "bool",
     kind: "boolean",
     provenance: "mega",
     description: "Do-not-disturb mode (DP 107, Bool rw). X8 Pro Tuya clean line. Live-confirmed.",
     available: isTuyaVacuum,
-    write: (v: unknown) => aiotDp(X8_VACUUM_DP.FORBID_MODE, asBool(v)),
+    write: (v: unknown) => aiotDp(TUYA_VACUUM_DP.FORBID_MODE, asBool(v)),
   },
   /**
    * WiFi RSSI in dBm (DP 134, Value ro). Schema-confirmed from `thing.m.device.ref.info.list` v5.4.
    * Negative integer; closer to zero is stronger. Useful for diagnostics. Tuya clean line only.
    */
   rssi: {
-    param: X8_VACUUM_DP.RSSI,
+    param: TUYA_VACUUM_DP.RSSI,
     type: "number",
     kind: "scalar",
     provenance: "mega",
@@ -676,7 +676,7 @@ export const VACUUM_CLEAN_MEMBERS = {
   findRobot: method(
     ({ sink }) =>
       (): Promise<void> =>
-        sink.dispatch(aiotDp(X8_VACUUM_DP.LOOK_FOR_SWEEPER, true)),
+        sink.dispatch(aiotDp(TUYA_VACUUM_DP.LOOK_FOR_SWEEPER, true)),
     "Trigger the robot's buzzer to help locate it (DP 103 = true). X8 Pro Tuya clean line.",
     isTuyaVacuum,
   ),
@@ -735,7 +735,7 @@ export const VACUUM_CLEAN: CapabilityModule = {
     const params = pickDpParams(signal.source === "mqtt" ? signal.dpParams : undefined, [
       ...Object.values(VACUUM_DP),
       ...Object.values(LEGACY_VACUUM_DP),
-      ...Object.values(X8_VACUUM_DP),
+      ...Object.values(TUYA_VACUUM_DP),
     ]);
     return params ? { params } : null;
   },
