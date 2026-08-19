@@ -254,9 +254,6 @@ const _errorCode: Exact<typeof vac.errorCode, number | undefined> = true;
 const _doNotDisturb: Exact<typeof vac.doNotDisturb, boolean | undefined> = true;
 const _rssi: Exact<typeof vac.rssi, number | undefined> = true;
 
-// findRobot is a DP-gated MethodMember — absent until DP 103 is reported.
-const _findRobot: Exact<typeof vac.findRobot, (() => Promise<void>) | undefined> = true;
-
 export const _surfaceAssertions = [
   _power,
   _battery,
@@ -270,7 +267,6 @@ export const _surfaceAssertions = [
   _errorCode,
   _doNotDisturb,
   _rssi,
-  _findRobot,
 ];
 
 describe("vacuum_clean — DP-based action routing", () => {
@@ -295,7 +291,6 @@ describe("vacuum_clean — DP-based action routing", () => {
 
   it("write actions dispatch legacy bool DPs when DP 2/101 are in paramIds — Tuya path", async () => {
     // startCleaning → DP 2 = true, returnToDock → DP 101 = true, pauseCleaning → DP 2 = false.
-    // Confirmed from DeviceHomeModule.java (PLAY_PAUSE / goHomeCmd).
     const { acts, sent } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, undefined, tuyaDps));
     expect(acts.startCleaning).toBeDefined();
     expect(acts.returnToDock).toBeDefined();
@@ -327,19 +322,6 @@ describe("vacuum_clean — DP-based action routing", () => {
     const { acts, sent } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, undefined, aiotDps));
     await acts.startCleaning!();
     expect(sent[0]).toMatchObject({ kind: "aiot-dp", dp: 152 });
-  });
-
-  it("findRobot is present when DP 103 is in paramIds and dispatches DP 103 = true", async () => {
-    const dps = new Set([TUYA_VACUUM_DP.LOOK_FOR_SWEEPER]);
-    const { acts, sent } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, undefined, dps));
-    expect(acts.findRobot).toBeDefined();
-    await acts.findRobot!();
-    expect(sent.at(-1)).toMatchObject({ kind: "aiot-dp", dp: 103, value: true });
-  });
-
-  it("findRobot is absent when DP 103 is not in paramIds", () => {
-    const { acts } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, undefined, aiotDps));
-    expect(acts.findRobot).toBeUndefined();
   });
 
   it("doNotDisturb is present when DP 107 is in paramIds and dispatches DP 107", async () => {

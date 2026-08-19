@@ -3560,7 +3560,7 @@ export const CLEAN_PARAMS: Record<number, ParamDef> = {
     type: "number",
     writable: false,
     provenance: "mega",
-    observed: false,
+    observed: true,
     note: "X8 Pro DP 119 (ClearTotalTime, Value). Lifetime total cleaning time in seconds. Schema-confirmed.",
   },
   120: {
@@ -3569,7 +3569,7 @@ export const CLEAN_PARAMS: Record<number, ParamDef> = {
     type: "number",
     writable: false,
     provenance: "mega",
-    observed: false,
+    observed: true,
     note: "X8 Pro DP 120 (ClearTotalArea, Value). Lifetime total cleaned area in m². Schema-confirmed.",
   },
   127: {
@@ -3578,7 +3578,7 @@ export const CLEAN_PARAMS: Record<number, ParamDef> = {
     type: "bool",
     writable: false,
     provenance: "mega",
-    observed: false,
+    observed: true,
     note: "X8 Pro DP 127 (water_tank_status, Bool ro). Water tank attached. Schema-confirmed.",
   },
   129: {
@@ -3587,7 +3587,7 @@ export const CLEAN_PARAMS: Record<number, ParamDef> = {
     type: "bool",
     writable: false,
     provenance: "mega",
-    observed: false,
+    observed: true,
     note: "X8 Pro DP 129 (mop_status, Bool ro). Mop pad attached. Schema-confirmed.",
   },
   134: {
@@ -3596,7 +3596,7 @@ export const CLEAN_PARAMS: Record<number, ParamDef> = {
     type: "number",
     writable: false,
     provenance: "mega",
-    observed: false,
+    observed: true,
     note: "X8 Pro DP 134 (rssi, Value ro). WiFi RSSI in dBm. Schema-confirmed.",
   },
 };

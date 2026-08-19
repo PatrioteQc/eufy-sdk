@@ -67,8 +67,6 @@ export const TUYA_VACUUM_DP = {
   GO_HOME: 101,
   /** Suction/cleaning strength (DP 102, Enum: "Off"|"Quiet"|"Standard"|"Turbo"|"Max"). Live-confirmed "Off". */
   CLEANING_STRENGTH: 102,
-  /** Trigger the robot's buzzer to locate it (DP 103, Bool rw). Schema-confirmed. */
-  LOOK_FOR_SWEEPER: 103,
   /** Battery level 0-100 (DP 104, Value ro). Shared with {@link LEGACY_VACUUM_DP.BATTERY_LEVEL}. */
   BATTERY_LEVEL: 104,
   /** Mop water flow (DP 105, Enum: "Dry"|"Low"|"Mid"|"High"). Live-confirmed "Mid". */
@@ -385,14 +383,14 @@ export type VacuumCleanActions = Surface<typeof VACUUM_CLEAN_MEMBERS>;
  * mode-control verbs (`startCleaning`, `returnToDock`, `pauseCleaning`) are gated by the presence of
  * DP 2/101 (Tuya path) or DP 152 (AIoT path) in `paramIds` and dispatch different DP shapes per
  * platform: legacy Tuya dispatches DP 2 (bool, start=true/pause=false) / DP 101 (bool, return=true),
- * both confirmed from DeviceHomeModule.java; AIoT dispatches DP 152 (ModeCtrlRequest protobuf). Each
+ * AIoT dispatches DP 152 (ModeCtrlRequest protobuf). Each
  * AIoT mode-control verb carries its own `seq` counter per bind (the T2351 accepts per-closure
  * counters — two separately-obtained action objects both starting at 112 do not cause the device to
  * complain, so the seq is not enforced as globally monotonic).
  *
  * DP-gated additions: `doNotDisturb` (DP 107, Bool rw, suppresses voice prompts), `rssi` (DP 134,
- * WiFi signal strength), `findRobot` action (DP 103 = true, triggers the buzzer so the user can
- * locate the device) — present only when the device has reported those DPs.
+ * WiFi signal strength) — present only when the device has reported those DPs. The `locate` action
+ * (DP 103 / DP 160) is owned by the `locate` capability module.
  *
  * Exported so a caller can name the table its `*Actions` type is derived from, but NOT published:
  * each entry states its wire id and the evidence it was confirmed on, which the reference site
@@ -643,9 +641,9 @@ export const VACUUM_CLEAN_MEMBERS = {
     description: "Mop pad attached (DP 129, Bool ro). X8 Pro Tuya clean line. Schema-confirmed.",
   },
   /**
-   * Do-not-disturb mode (DP 107, Bool rw). Live-confirmed `false` from a T2351 idle report.
-   * When `true` the robot suppresses voice announcements; the app allows toggling this from its
-   * settings screen. Tuya clean line only — no equivalent DP confirmed on AIoT.
+   * Do-not-disturb mode (DP 107, Bool rw). When `true` the robot suppresses voice announcements;
+   * the app allows toggling this from its settings screen. Tuya clean line only — no equivalent
+   * DP confirmed on AIoT. Schema-confirmed from `thing.m.device.ref.info.list` v5.4 (forbid_mode).
    */
   doNotDisturb: {
     param: TUYA_VACUUM_DP.FORBID_MODE,
@@ -663,26 +661,15 @@ export const VACUUM_CLEAN_MEMBERS = {
   rssi: {
     param: TUYA_VACUUM_DP.RSSI,
     type: "number",
-    kind: "scalar",
+    unit: "dBm",
+    kind: "dbm",
     provenance: "mega",
     description: "WiFi RSSI in dBm (DP 134, Value ro). Schema-confirmed.",
     available: (ctx: AvailabilityContext) => ctx.paramIds?.has(TUYA_VACUUM_DP.RSSI) ?? false,
   },
   /**
-   * Locate the robot by triggering its buzzer (DP 103 = true). Schema-confirmed from
-   * `thing.m.device.ref.info.list` v5.4. The device responds with a short audible tone so the user
-   * can find it under furniture.
-   */
-  findRobot: method(
-    ({ sink }) =>
-      (): Promise<void> =>
-        sink.dispatch(aiotDp(TUYA_VACUUM_DP.LOOK_FOR_SWEEPER, true)),
-    "Trigger the robot's buzzer to help locate it (DP 103 = true).",
-    (ctx) => ctx.paramIds?.has(TUYA_VACUUM_DP.LOOK_FOR_SWEEPER) ?? false,
-  ),
-  /**
    * Start an auto-clean run.
-   * Tuya (DP 2 reported): DP 2 = true (PLAY_PAUSE bool, confirmed from DeviceHomeModule.java).
+   * Tuya (DP 2 reported): DP 2 = true (PLAY_PAUSE bool).
    * AIoT (DP 152 reported): ModeCtrlRequest method 0 over DP 152.
    */
   startCleaning: method(
@@ -694,12 +681,12 @@ export const VACUUM_CLEAN_MEMBERS = {
       return (): Promise<void> =>
         sink.dispatch(aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.START_AUTO_CLEAN, ++seq)));
     },
-    "Start an auto-clean run (DP 2 bool for Tuya; DP 152 ModeCtrlRequest for AIoT).",
+    "Start an auto-clean run (DP 2 = true for Tuya; DP 152 ModeCtrlRequest for AIoT).",
     (ctx) => (ctx.paramIds?.has(LEGACY_VACUUM_DP.PLAY_PAUSE) || ctx.paramIds?.has(VACUUM_DP.MODE_CTRL)) ?? false,
   ),
   /**
    * Return to the dock.
-   * Tuya (DP 101 reported): DP 101 = true (GO_HOME bool, confirmed from DeviceHomeModule.java).
+   * Tuya (DP 101 reported): DP 101 = true (GO_HOME bool).
    * AIoT (DP 152 reported): ModeCtrlRequest method 6 over DP 152.
    */
   returnToDock: method(
@@ -716,7 +703,7 @@ export const VACUUM_CLEAN_MEMBERS = {
   ),
   /**
    * Pause the current cleaning task.
-   * Tuya (DP 2 reported): DP 2 = false (PLAY_PAUSE bool, confirmed from DeviceHomeModule.java).
+   * Tuya (DP 2 reported): DP 2 = false (PLAY_PAUSE bool).
    * AIoT (DP 152 reported): ModeCtrlRequest method 13 over DP 152.
    */
   pauseCleaning: method(

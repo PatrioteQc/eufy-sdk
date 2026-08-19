@@ -1,7 +1,6 @@
 import { pickDpParams, aiotDp } from "./access.js";
 import { method, propertiesOf, type Members, type Surface } from "./members.js";
 import type { CapabilityModule } from "./types.js";
-import { isAiotVacuum, isTuyaVacuum } from "../device-family.js";
 
 /** DP id for the locate (find-robot) toggle. */
 const LOCATE_DP = 160 as const;
@@ -13,7 +12,7 @@ const LEGACY_LOCATE_DP = 103 as const;
  *
  * `locate()` is a `method` rather than a derived setter because its argument is OPTIONAL — the
  * common call is a bare `locate()` meaning "start beeping" — and a derived setter always takes its
- * value. It is installed on any AIoT robot: dispatches DP 160.
+ * value. Dispatches DP 103 (legacy Tuya) or DP 160 (AIoT) based on which DP the device has reported.
  *
  * Exported so a caller can name the table its `*Actions` type is derived from, but NOT published:
  * each entry states its wire id and the evidence it was confirmed on, which the reference site
@@ -33,7 +32,7 @@ export const LOCATE_MEMBERS = {
     kind: "boolean",
     provenance: "mega",
     writtenElsewhere: true,
-    readAliases: [{ paramType: LEGACY_LOCATE_DP, available: isTuyaVacuum }],
+    readAliases: [{ paramType: LEGACY_LOCATE_DP }],
     description:
       "Find-robot trigger (DP 160 AIoT / DP 103 Tuya). A momentary write trigger — the device sends it to begin or " +
       "cancel a beep but holds no durable state, so this may never be observed true in practice.",
@@ -49,11 +48,14 @@ export const LOCATE_MEMBERS = {
    */
   locate: {
     ...method(
-      ({ sink }) =>
-        (on = true): Promise<void> =>
-          sink.dispatch(aiotDp(LOCATE_DP, on)),
+      ({ sink, ctx }) => {
+        if (ctx.paramIds.has(LEGACY_LOCATE_DP)) {
+          return (on = true): Promise<void> => sink.dispatch(aiotDp(LEGACY_LOCATE_DP, on));
+        }
+        return (on = true): Promise<void> => sink.dispatch(aiotDp(LOCATE_DP, on));
+      },
       "Trigger the find-robot beep; pass false to cancel one in progress.",
-      (ctx) => isAiotVacuum(ctx),
+      (ctx) => (ctx.paramIds?.has(LEGACY_LOCATE_DP) || ctx.paramIds?.has(LOCATE_DP)) ?? false,
     ),
     args: [{ name: "on", kind: "boolean", optional: true, description: "False cancels a beep in progress." }],
   },
