@@ -5,29 +5,10 @@ import {
   isOutdoorPanTilt,
   isFloodLight,
   isWiredDoorbell,
-  VacuumProductType,
 } from "../device-family.js";
 import { DeviceType } from "../device-types.js";
 
 const ctx = (deviceType?: number, model?: string) => ({ deviceType, model });
-
-describe("VacuumProductType enum — integer values match ICleanBridgeDeviceInterface.java", () => {
-  it("has the correct integer values for boundary and spot-check members", () => {
-    expect(VacuumProductType.X9).toBe(0);
-    expect(VacuumProductType.X10).toBe(1);
-    expect(VacuumProductType.T218X).toBe(18);
-    expect(VacuumProductType.C30_LITE).toBe(24);
-    expect(VacuumProductType.S2_PRO).toBe(25);
-  });
-
-  it("has 26 distinct integer values (0–25)", () => {
-    const values = Object.values(VacuumProductType).filter((v) => typeof v === "number") as number[];
-    expect(values.length).toBe(26);
-    expect(Math.min(...values)).toBe(0);
-    expect(Math.max(...values)).toBe(25);
-    expect(new Set(values).size).toBe(26); // all distinct
-  });
-});
 
 describe("device-family — classification", () => {
   it("isIndoorCamera covers indoor variants incl. PT / S350 / mini", () => {

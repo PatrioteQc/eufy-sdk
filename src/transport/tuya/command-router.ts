@@ -16,6 +16,7 @@ import { resolveCountryCode } from "./account.js";
 import { HmacSigner } from "./sign.js";
 import { TuyaClient } from "./client.js";
 import type { TuyaHttpPost } from "./request.js";
+import { parseTuyaDpEvent } from "./dp-codec.js";
 
 export interface TuyaCommandRouterConfig {
   /**
@@ -105,6 +106,31 @@ export class TuyaCommandRouter {
       this.loginOnce = p;
     }
     return this.loginOnce;
+  }
+
+  /**
+   * Fetch a device's cached DPs from the Tuya cloud (`thing.m.device.cache.dp.get`) and deliver
+   * the raw DP map to the caller. Used for initial state hydration after MQTT subscribe — gets the
+   * last-known state without waiting for the first realtime push.
+   *
+   * The response shape from `getDeviceDps` is not yet pinned from a live capture. The defensive
+   * extraction tries both `result.dps` (a nested map) and bare `result` (a flat map), and returns
+   * `null` when neither yields a non-empty record so the caller can skip the delivery safely.
+   */
+  async fetchDps(sn: string): Promise<Record<string, unknown> | null> {
+    const ids = this.snMap.get(sn);
+    if (!ids) return null;
+    await this.ensureLoggedIn();
+    const res = await this.client!.getDeviceDps<Record<string, unknown>>(ids.devId);
+    if (!res.success || !res.result) return null;
+
+    // Try result.dps first (Tuya-native shape), then bare result filtered to integer DP keys.
+    const nested = (res.result as Record<string, unknown>).dps;
+    if (nested && typeof nested === "object" && !Array.isArray(nested)) {
+      return nested as Record<string, unknown>;
+    }
+    const flat = parseTuyaDpEvent(res.result);
+    return flat ? (flat as unknown as Record<string, unknown>) : null;
   }
 
   /**

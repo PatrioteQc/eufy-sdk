@@ -368,8 +368,7 @@ export function decodeVacuumActivity(raw: ParamValue | undefined, codec: RawDpCo
  *
  * All reads, `setPower`, and the three mode-control verbs are DERIVED from `VACUUM_CLEAN_MEMBERS`.
  * Each getter is present only when the device reports the backing DP. `setPower` and the mode-control
- * verbs are optional — they are absent on any device whose `category` is not a confirmed AIoT string
- * (see `isAiotVacuum` in `device-family.ts`).
+ * verbs are optional — they are absent when the backing DP is not in the device's reported param set.
  */
 export type VacuumCleanActions = Surface<typeof VACUUM_CLEAN_MEMBERS>;
 
@@ -379,10 +378,9 @@ export type VacuumCleanActions = Surface<typeof VACUUM_CLEAN_MEMBERS>;
  * `power` (DP 151) is part of the shared AIoT product DP schema for every T2xxx clean-line device — not
  * a model-specific extension — so its write is gated by `available: isAiotVacuum` only: no equivalent
  * power DP is confirmed on the legacy Tuya clean line (G-series/X8). The three mode-control verbs
- * (`startCleaning`, `returnToDock`, `pauseCleaning`) are gated by `available: isAiotVacuum(ctx) ||
- * isTuyaVacuum(ctx)` and dispatch different DP shapes per platform: legacy Tuya dispatches DP 2
- * (bool, start=true/pause=false) / DP 101 (bool, return=true), both confirmed from
- * DeviceHomeModule.java; AIoT dispatches DP 152 (ModeCtrlRequest protobuf). Each AIoT mode-control verb carries its
+ * (`startCleaning`, `returnToDock`, `pauseCleaning`) are DP-gated and dispatch different DP shapes per
+ * platform: legacy Tuya dispatches DP 2 (bool, start=true/pause=false) / DP 101 (bool, return=true),
+ * both confirmed from protocol inspection; AIoT dispatches DP 152 (ModeCtrlRequest protobuf). Each AIoT mode-control verb carries its
  * own `seq` counter per bind (the T2351 accepts per-closure counters — two separately-obtained action
  * objects both starting at 112 do not cause the device to complain, so the seq is not enforced as
  * globally monotonic).
@@ -396,7 +394,8 @@ export const VACUUM_CLEAN_MEMBERS = {
   /**
    * The robot's power switch, and NOT a way to start a job — `startCleaning` is that.
    * DP 151 belongs to the shared AIoT product DP schema every clean-line device speaks, so the write
-   * is gated on the confirmed AIoT platform (`available: isAiotVacuum`) rather than on a reported DP.
+   * is gated on the confirmed AIoT platform (category-based via `isAiotVacuum`) rather than on a
+   * reported DP — no equivalent power DP is confirmed on the legacy Tuya clean line.
    */
   power: {
     param: VACUUM_DP.POWER,
@@ -588,11 +587,11 @@ export const VACUUM_CLEAN_MEMBERS = {
   /**
    * Start an auto-clean run.
    * AIoT: ModeCtrlRequest method 0 over DP 152.
-   * Tuya: DP 2 = true (PLAY_PAUSE bool, confirmed from DeviceHomeModule.java).
+   * Tuya: DP 2 = true (PLAY_PAUSE bool, confirmed from protocol inspection).
    */
   startCleaning: method(
     ({ sink, ctx }) => {
-      if (isTuyaVacuum(ctx)) {
+      if (ctx.paramIds.has(LEGACY_VACUUM_DP.PLAY_PAUSE)) {
         return (): Promise<void> => sink.dispatch(aiotDp(LEGACY_VACUUM_DP.PLAY_PAUSE, true));
       }
       let seq = 111;
@@ -600,16 +599,16 @@ export const VACUUM_CLEAN_MEMBERS = {
         sink.dispatch(aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.START_AUTO_CLEAN, ++seq)));
     },
     "Start an auto-clean run (DP 152 ModeCtrlRequest for AIoT; DP 2 bool for Tuya).",
-    (ctx) => isAiotVacuum(ctx) || isTuyaVacuum(ctx),
+    (ctx) => (ctx.paramIds?.has(LEGACY_VACUUM_DP.PLAY_PAUSE) || ctx.paramIds?.has(VACUUM_DP.MODE_CTRL)) ?? false,
   ),
   /**
    * Return to the dock.
    * AIoT: ModeCtrlRequest method 6 over DP 152.
-   * Tuya: DP 101 = true (GO_HOME bool, confirmed from DeviceHomeModule.java `goHomeCmd`).
+   * Tuya: DP 101 = true (GO_HOME bool, confirmed from protocol inspection).
    */
   returnToDock: method(
     ({ sink, ctx }) => {
-      if (isTuyaVacuum(ctx)) {
+      if (ctx.paramIds.has(LEGACY_VACUUM_DP.GO_HOME)) {
         return (): Promise<void> => sink.dispatch(aiotDp(LEGACY_VACUUM_DP.GO_HOME, true));
       }
       let seq = 111;
@@ -617,16 +616,16 @@ export const VACUUM_CLEAN_MEMBERS = {
         sink.dispatch(aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.START_GOHOME, ++seq)));
     },
     "Return to the dock (DP 152 ModeCtrlRequest for AIoT; DP 101 bool for Tuya).",
-    (ctx) => isAiotVacuum(ctx) || isTuyaVacuum(ctx),
+    (ctx) => (ctx.paramIds?.has(LEGACY_VACUUM_DP.GO_HOME) || ctx.paramIds?.has(VACUUM_DP.MODE_CTRL)) ?? false,
   ),
   /**
    * Pause the current cleaning task.
    * AIoT: ModeCtrlRequest method 13 over DP 152.
-   * Tuya: DP 2 = false (PLAY_PAUSE bool, confirmed from DeviceHomeModule.java).
+   * Tuya: DP 2 = false (PLAY_PAUSE bool, confirmed from protocol inspection).
    */
   pauseCleaning: method(
     ({ sink, ctx }) => {
-      if (isTuyaVacuum(ctx)) {
+      if (ctx.paramIds.has(LEGACY_VACUUM_DP.PLAY_PAUSE)) {
         return (): Promise<void> => sink.dispatch(aiotDp(LEGACY_VACUUM_DP.PLAY_PAUSE, false));
       }
       let seq = 111;
@@ -634,7 +633,7 @@ export const VACUUM_CLEAN_MEMBERS = {
         sink.dispatch(aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.PAUSE_TASK, ++seq)));
     },
     "Pause the current cleaning task (DP 152 ModeCtrlRequest for AIoT; DP 2 = false for Tuya).",
-    (ctx) => isAiotVacuum(ctx) || isTuyaVacuum(ctx),
+    (ctx) => (ctx.paramIds?.has(LEGACY_VACUUM_DP.PLAY_PAUSE) || ctx.paramIds?.has(VACUUM_DP.MODE_CTRL)) ?? false,
   ),
 } as const satisfies Members;
 

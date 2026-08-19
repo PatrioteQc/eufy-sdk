@@ -12,8 +12,6 @@
 
 /** The parsed DP capability catalog for one product SKU. */
 export interface DpCatalog {
-  /** DP ids present in this product's catalog. */
-  readonly dpIds: ReadonlySet<number>;
   /**
    * For enum-type DPs: the valid integer values as declared in the catalog.
    * Absent for non-enum DPs (bool, raw, integer, string).
@@ -23,7 +21,6 @@ export interface DpCatalog {
 
 /** Returned whenever the API call fails or the response shape is not recognised. */
 export const EMPTY_DP_CATALOG: DpCatalog = {
-  dpIds: new Set(),
   enumRanges: new Map(),
 };
 
@@ -31,6 +28,7 @@ export const EMPTY_DP_CATALOG: DpCatalog = {
  * Defensively parse a raw `get_product_data_point` response into a {@link DpCatalog}.
  *
  * Handles both known response variants:
+ *  - `data_point_list` or `dp_list` (alternate key name observed in some responses)
  *  - `dp_id` (Tuya-native integer field) or `id` (alternate field name)
  *  - `values` as a plain `number[]` array, a JSON-stringified `"[0,1,2,3]"`, or a
  *    JSON-stringified `"{\"range\":[\"0\",\"1\",\"2\",\"3\"]}"` object
@@ -40,10 +38,10 @@ export const EMPTY_DP_CATALOG: DpCatalog = {
 export function parseDpCatalog(raw: unknown): DpCatalog {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return EMPTY_DP_CATALOG;
   const r = raw as Record<string, unknown>;
-  const list = r.data_point_list;
+  const list = r.data_point_list ?? r.dp_list;
   if (!Array.isArray(list) || list.length === 0) return EMPTY_DP_CATALOG;
 
-  const dpIds = new Set<number>();
+  let found = 0;
   const enumRanges = new Map<number, readonly number[]>();
 
   for (const entry of list) {
@@ -55,7 +53,7 @@ export function parseDpCatalog(raw: unknown): DpCatalog {
     const dpId = typeof rawId === "number" ? rawId : typeof rawId === "string" ? parseInt(rawId, 10) : NaN;
     if (!Number.isFinite(dpId) || dpId <= 0) continue;
 
-    dpIds.add(dpId);
+    found++;
 
     // For enum-type DPs, parse the valid integer values
     const type = typeof e.type === "string" ? e.type.toLowerCase() : "";
@@ -65,8 +63,8 @@ export function parseDpCatalog(raw: unknown): DpCatalog {
     }
   }
 
-  if (dpIds.size === 0) return EMPTY_DP_CATALOG;
-  return { dpIds, enumRanges };
+  if (found === 0) return EMPTY_DP_CATALOG;
+  return { enumRanges };
 }
 
 /** Parse the `values` field of an enum DP entry into an integer array. */

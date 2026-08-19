@@ -124,45 +124,6 @@ export const isHomeBase = (ctx: FamilyContext): boolean => has(HOMEBASE_TYPES, c
 /** Wired doorbell (DeviceType.DOORBELL). */
 export const isWiredDoorbell = (ctx: FamilyContext): boolean => ctx.deviceType === DeviceType.DOORBELL;
 
-// ── Vacuum product-type classification ──────────────────────────────────────────────────────────
-
-/**
- * Integer product-family constants for the clean line, sourced verbatim from
- * `ICleanBridgeDeviceInterface.java` (`PRODUCT_TYPE_*`).
- *
- * Retained as a reference for capability code that may need to branch on product family.
- * Per-model feature availability is resolved dynamically via `get_product_data_point` rather
- * than a static T-code lookup table.
- */
-export enum VacuumProductType {
-  X9 = 0,
-  X10 = 1,
-  G50 = 2,
-  X8_PRO = 3,
-  L50 = 4,
-  L60 = 5,
-  C20 = 6,
-  S1 = 7,
-  RACCOON = 8,
-  E20 = 9,
-  X8 = 10,
-  G40 = 11,
-  G35 = 12,
-  G32_PRO = 13,
-  G30 = 14,
-  C10 = 15,
-  E28 = 16,
-  E25 = 17,
-  T218X = 18,
-  G20 = 19,
-  S2 = 20,
-  C28 = 21,
-  E35 = 22,
-  C30 = 23,
-  C30_LITE = 24,
-  S2_PRO = 25,
-}
-
 /**
  * Whether a vacuum uses the **Anker AIoT MQTT** transport (modern DP 150–180 protobuf scheme).
  *
