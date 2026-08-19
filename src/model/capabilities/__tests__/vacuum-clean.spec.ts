@@ -4,6 +4,7 @@ import {
   VACUUM_CLEAN,
   VACUUM_DP,
   LEGACY_VACUUM_DP,
+  TUYA_VACUUM_DP,
   decodeVacuumActivity,
   decodeCleanType,
   encodeModeCtrl,
@@ -72,8 +73,8 @@ describe("encodeModeCtrl", () => {
   });
 });
 
-/** Minimal `CommandContext` for a given model and/or category. */
-function fakeCtx(model?: string, category?: string, paramIds: ReadonlySet<number> = new Set()): CommandContext {
+/** Minimal `CommandContext` for a given model/category and optional DP id set. */
+function fakeCtx(model?: string, category?: string, paramIds: Set<number> = new Set()): CommandContext {
   return { channel: 0, codec: "vacuum", model, category, paramIds };
 }
 
@@ -235,7 +236,7 @@ const _battery: Exact<typeof vac.battery, number | undefined> = true;
 const _activity: Exact<typeof vac.activity, VacuumActivity | undefined> = true;
 const _cleanType: Exact<typeof vac.cleanType, VacuumCleanType | TuyaCleanType | undefined> = true;
 
-// setPower is gated by available: isAiotVacuum — optional on the surface (present only when category is known).
+// setPower is gated by paramIds.has(151) — optional on the surface (absent until DP 151 is reported).
 const _setPowerOptional: Exact<undefined extends typeof vac.setPower ? true : false, true> = true;
 const _setPowerArg: Exact<Parameters<NonNullable<typeof vac.setPower>>[0], boolean> = true;
 
@@ -243,17 +244,17 @@ const _setPowerArg: Exact<Parameters<NonNullable<typeof vac.setPower>>[0], boole
 const _noSetActivity: Exact<"setActivity" extends keyof VacuumCleanActions ? true : false, false> = true;
 const _noSetBattery: Exact<"setBattery" extends keyof VacuumCleanActions ? true : false, false> = true;
 
-// startCleaning is DP-gated — optional when the device has not reported its control DPs.
+// startCleaning is a MethodMember gated by DP 2 or DP 152 in paramIds — absent until those DPs are reported.
 const _startCleaning: Exact<typeof vac.startCleaning, (() => Promise<void>) | undefined> = true;
 
 // errorCode is an evidence-gated read for the legacy Tuya clean line.
 const _errorCode: Exact<typeof vac.errorCode, number | undefined> = true;
 
-// Tuya-only reads — present only when category is known as eufy_home_tuya.
+// doNotDisturb and rssi are DP-gated reads — absent until DPs 107 / 134 are reported.
 const _doNotDisturb: Exact<typeof vac.doNotDisturb, boolean | undefined> = true;
 const _rssi: Exact<typeof vac.rssi, number | undefined> = true;
 
-// findRobot is a Tuya-only MethodMember — absent on unknown-category and AIoT devices.
+// findRobot is a DP-gated MethodMember — absent until DP 103 is reported.
 const _findRobot: Exact<typeof vac.findRobot, (() => Promise<void>) | undefined> = true;
 
 export const _surfaceAssertions = [
@@ -272,55 +273,78 @@ export const _surfaceAssertions = [
   _findRobot,
 ];
 
-describe("vacuum_clean — DP-based guards", () => {
-  const TUYA_DPS = new Set([LEGACY_VACUUM_DP.PLAY_PAUSE, LEGACY_VACUUM_DP.GO_HOME]);
+describe("vacuum_clean — DP-based action routing", () => {
+  // AIoT device: has reported DP 151 (power) and DP 152 (mode control).
+  const aiotDps = new Set([VACUUM_DP.POWER, VACUUM_DP.MODE_CTRL]);
+  // Tuya device: has reported DP 2 (play/pause) and DP 101 (go home).
+  const tuyaDps = new Set([LEGACY_VACUUM_DP.PLAY_PAUSE, LEGACY_VACUUM_DP.GO_HOME]);
 
-  it("write actions are absent on Tuya vacuums — Tuya write path not yet verified", () => {
-    const { acts } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, "eufy_home_tuya"));
-    expect(acts.startCleaning).toBeUndefined();
-    expect(acts.returnToDock).toBeUndefined();
-    expect(acts.pauseCleaning).toBeUndefined();
-  });
-
-  it("write actions are present on AIoT vacuums (eufy_home category)", () => {
-    const { acts } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, "eufy_home"));
+  it("write actions are present when DP 152 (MODE_CTRL) is in paramIds — AIoT path", () => {
+    const { acts } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx("T2250", undefined, aiotDps));
     expect(acts.startCleaning).toBeDefined();
     expect(acts.returnToDock).toBeDefined();
     expect(acts.pauseCleaning).toBeDefined();
   });
 
-  it("setPower is absent when POWER DP is not reported", () => {
-    const { acts } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, "eufy_home_tuya", TUYA_DPS));
+  it("write actions are absent when paramIds is empty — bootstrapping window before first DP report", () => {
+    const { acts } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined));
+    expect(acts.startCleaning).toBeUndefined();
+    expect(acts.returnToDock).toBeUndefined();
+    expect(acts.pauseCleaning).toBeUndefined();
+  });
+
+  it("write actions dispatch legacy bool DPs when DP 2/101 are in paramIds — Tuya path", async () => {
+    // startCleaning → DP 2 = true, returnToDock → DP 101 = true, pauseCleaning → DP 2 = false.
+    // Confirmed from DeviceHomeModule.java (PLAY_PAUSE / goHomeCmd).
+    const { acts, sent } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, undefined, tuyaDps));
+    expect(acts.startCleaning).toBeDefined();
+    expect(acts.returnToDock).toBeDefined();
+    expect(acts.pauseCleaning).toBeDefined();
+
+    await acts.startCleaning!();
+    expect(sent.at(-1)).toMatchObject({ kind: "aiot-dp", dp: 2, value: true });
+
+    await acts.returnToDock!();
+    expect(sent.at(-1)).toMatchObject({ kind: "aiot-dp", dp: 101, value: true });
+
+    await acts.pauseCleaning!();
+    expect(sent.at(-1)).toMatchObject({ kind: "aiot-dp", dp: 2, value: false });
+  });
+
+  it("setPower is absent when DP 151 is not in paramIds — no confirmed power DP on the Tuya clean line", () => {
+    const { acts } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, undefined, tuyaDps));
     expect(acts.setPower).toBeUndefined();
   });
 
-  it("dispatches DP 151 for setPower on eufy_home category (Anker AIoT MQTT)", async () => {
-    const { acts, sent } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, "eufy_home"));
+  it("dispatches DP 151 for setPower when DP 151 is in paramIds — AIoT clean line", async () => {
+    const { acts, sent } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, undefined, aiotDps));
     await acts.setPower!(true);
     expect(sent).toHaveLength(1);
     expect(sent[0]).toMatchObject({ kind: "aiot-dp", dp: 151, value: true });
   });
 
-  it("dispatches a ModeCtrlRequest for startCleaning on AIoT vacuums", async () => {
-    const { acts, sent } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, "eufy_home"));
+  it("dispatches a ModeCtrlRequest for startCleaning when DP 152 is in paramIds — AIoT path", async () => {
+    const { acts, sent } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, undefined, aiotDps));
     await acts.startCleaning!();
     expect(sent[0]).toMatchObject({ kind: "aiot-dp", dp: 152 });
   });
 
-  it("findRobot is present for eufy_home_tuya and dispatches DP 103 = true", async () => {
-    const { acts, sent } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, "eufy_home_tuya"));
+  it("findRobot is present when DP 103 is in paramIds and dispatches DP 103 = true", async () => {
+    const dps = new Set([TUYA_VACUUM_DP.LOOK_FOR_SWEEPER]);
+    const { acts, sent } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, undefined, dps));
     expect(acts.findRobot).toBeDefined();
     await acts.findRobot!();
     expect(sent.at(-1)).toMatchObject({ kind: "aiot-dp", dp: 103, value: true });
   });
 
-  it("findRobot is absent for AIoT (eufy_home) — no equivalent DP confirmed", () => {
-    const { acts } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, "eufy_home"));
+  it("findRobot is absent when DP 103 is not in paramIds", () => {
+    const { acts } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, undefined, aiotDps));
     expect(acts.findRobot).toBeUndefined();
   });
 
-  it("doNotDisturb is present for eufy_home_tuya and dispatches DP 107", async () => {
-    const { acts, sent } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, "eufy_home_tuya"));
+  it("doNotDisturb is present when DP 107 is in paramIds and dispatches DP 107", async () => {
+    const dps = new Set([TUYA_VACUUM_DP.FORBID_MODE]);
+    const { acts, sent } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, undefined, dps));
     expect(acts.setDoNotDisturb).toBeDefined();
     await acts.setDoNotDisturb!(true);
     expect(sent.at(-1)).toMatchObject({ kind: "aiot-dp", dp: 107, value: true });
@@ -328,8 +352,8 @@ describe("vacuum_clean — DP-based guards", () => {
     expect(sent.at(-1)).toMatchObject({ kind: "aiot-dp", dp: 107, value: false });
   });
 
-  it("doNotDisturb is absent for eufy_home — no confirmed DND DP on AIoT", () => {
-    const { acts } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, "eufy_home"));
+  it("doNotDisturb is absent when DP 107 is not in paramIds", () => {
+    const { acts } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, undefined, aiotDps));
     expect(acts.setDoNotDisturb).toBeUndefined();
   });
 });

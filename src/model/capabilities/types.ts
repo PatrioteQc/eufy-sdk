@@ -198,6 +198,12 @@ export interface AvailabilityContext {
    * its absence there changes nothing.
    */
   hasP2p?: boolean;
+  /**
+   * The param_type / DP ids this device has actually reported. Present at bind time (a real
+   * `CommandContext`); absent on the manifest path. DP-based availability gates should treat
+   * `undefined` as an empty set — `ctx.paramIds?.has(dp) ?? false`.
+   */
+  paramIds?: ReadonlySet<number>;
 }
 
 export interface CommandContext extends AvailabilityContext {
