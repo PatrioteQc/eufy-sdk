@@ -7,6 +7,7 @@
  * production push thumbnail: the decrypted result is a structurally valid, viewable JPEG.
  */
 import { createDecipheriv, createHash } from "node:crypto";
+import { decodeImageV2, isV2Image } from "./decodeImageV2.js";
 
 export const V1_PREFIX = "eufysecurity";
 
@@ -96,8 +97,9 @@ export function decodeImageV1(data: Buffer, p2pDid: string): Buffer | null {
   return otherData;
 }
 
-/** Decrypt a recognized v1 wrapper when its device key input is available; leave other media unchanged. */
+/** Decode a recognized v1 (device-key) or v2 (keyless) wrapper; leave other media unchanged. */
 export function normalizePushImage(data: Buffer, p2pDid?: string): Buffer {
+  if (isV2Image(data)) return decodeImageV2(data) ?? data;
   if (!p2pDid || !isV1Image(data)) return data;
   return decodeImageV1(data, p2pDid) ?? data;
 }
