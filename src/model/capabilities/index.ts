@@ -72,6 +72,7 @@ import { STORAGE } from "./storage.js";
 import { VACUUM_CLEAN } from "./vacuum-clean.js";
 import { VACUUM_DOCK } from "./vacuum-dock.js";
 import { SUCTION } from "./suction.js";
+export { type DpCatalog, EMPTY_DP_CATALOG } from "./dp-catalog.js";
 import { LOCATE } from "./locate.js";
 import { INFO } from "./info.js";
 
