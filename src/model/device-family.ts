@@ -128,7 +128,7 @@ export const isWiredDoorbell = (ctx: FamilyContext): boolean => ctx.deviceType =
 
 /**
  * Integer product-family constants for the clean line, sourced verbatim from
- * `ICleanBridgeDeviceInterface.java` (`PRODUCT_TYPE_*`) in `eufy_decompiled` v6.0.41.
+ * `ICleanBridgeDeviceInterface.java` (`PRODUCT_TYPE_*`).
  *
  * Retained as a reference for capability code that may need to branch on product family.
  * Per-model feature availability is resolved dynamically via `get_product_data_point` rather
