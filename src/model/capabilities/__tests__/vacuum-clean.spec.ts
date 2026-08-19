@@ -98,6 +98,8 @@ describe("vacuum_clean capability module", () => {
       "lifetimeCleanArea",
       "waterTank",
       "mopPad",
+      "doNotDisturb",
+      "rssi",
     ]);
   });
 
@@ -247,6 +249,13 @@ const _startCleaning: Exact<typeof vac.startCleaning, (() => Promise<void>) | un
 // errorCode is an evidence-gated read for the legacy Tuya clean line.
 const _errorCode: Exact<typeof vac.errorCode, number | undefined> = true;
 
+// Tuya-only reads — present only when category is known as eufy_home_tuya.
+const _doNotDisturb: Exact<typeof vac.doNotDisturb, boolean | undefined> = true;
+const _rssi: Exact<typeof vac.rssi, number | undefined> = true;
+
+// findRobot is a Tuya-only MethodMember — absent on unknown-category and AIoT devices.
+const _findRobot: Exact<typeof vac.findRobot, (() => Promise<void>) | undefined> = true;
+
 export const _surfaceAssertions = [
   _power,
   _battery,
@@ -258,6 +267,9 @@ export const _surfaceAssertions = [
   _noSetBattery,
   _startCleaning,
   _errorCode,
+  _doNotDisturb,
+  _rssi,
+  _findRobot,
 ];
 
 describe("vacuum_clean — DP-based guards", () => {
@@ -293,5 +305,31 @@ describe("vacuum_clean — DP-based guards", () => {
     const { acts, sent } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, "eufy_home"));
     await acts.startCleaning!();
     expect(sent[0]).toMatchObject({ kind: "aiot-dp", dp: 152 });
+  });
+
+  it("findRobot is present for eufy_home_tuya and dispatches DP 103 = true", async () => {
+    const { acts, sent } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, "eufy_home_tuya"));
+    expect(acts.findRobot).toBeDefined();
+    await acts.findRobot!();
+    expect(sent.at(-1)).toMatchObject({ kind: "aiot-dp", dp: 103, value: true });
+  });
+
+  it("findRobot is absent for AIoT (eufy_home) — no equivalent DP confirmed", () => {
+    const { acts } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, "eufy_home"));
+    expect(acts.findRobot).toBeUndefined();
+  });
+
+  it("doNotDisturb is present for eufy_home_tuya and dispatches DP 107", async () => {
+    const { acts, sent } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, "eufy_home_tuya"));
+    expect(acts.setDoNotDisturb).toBeDefined();
+    await acts.setDoNotDisturb!(true);
+    expect(sent.at(-1)).toMatchObject({ kind: "aiot-dp", dp: 107, value: true });
+    await acts.setDoNotDisturb!(false);
+    expect(sent.at(-1)).toMatchObject({ kind: "aiot-dp", dp: 107, value: false });
+  });
+
+  it("doNotDisturb is absent for eufy_home — no confirmed DND DP on AIoT", () => {
+    const { acts } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, "eufy_home"));
+    expect(acts.setDoNotDisturb).toBeUndefined();
   });
 });

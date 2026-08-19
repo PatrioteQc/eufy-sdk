@@ -3590,4 +3590,13 @@ export const CLEAN_PARAMS: Record<number, ParamDef> = {
     observed: false,
     note: "X8 Pro DP 129 (mop_status, Bool ro). Mop pad attached. Schema-confirmed.",
   },
+  134: {
+    paramType: 134,
+    name: "rssi",
+    type: "number",
+    writable: false,
+    provenance: "mega",
+    observed: false,
+    note: "X8 Pro DP 134 (rssi, Value ro). WiFi RSSI in dBm. Schema-confirmed.",
+  },
 };

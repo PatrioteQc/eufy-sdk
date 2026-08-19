@@ -389,6 +389,10 @@ export type VacuumCleanActions = Surface<typeof VACUUM_CLEAN_MEMBERS>;
  * objects both starting at 112 do not cause the device to complain, so the seq is not enforced as
  * globally monotonic).
  *
+ * Tuya-only additions (gated by `available: isTuyaVacuum`): `doNotDisturb` (DP 107, Bool rw,
+ * suppresses voice prompts), `rssi` (DP 134, WiFi signal strength), `findRobot` action (DP 103 =
+ * true, triggers the buzzer so the user can locate the device).
+ *
  * Exported so a caller can name the table its `*Actions` type is derived from, but NOT published:
  * each entry states its wire id and the evidence it was confirmed on, which the reference site
  * does not carry.
@@ -638,6 +642,44 @@ export const VACUUM_CLEAN_MEMBERS = {
     provenance: "mega",
     description: "Mop pad attached (DP 129, Bool ro). X8 Pro Tuya clean line. Schema-confirmed.",
   },
+  /**
+   * Do-not-disturb mode (DP 107, Bool rw). Live-confirmed `false` from a T2351 idle report.
+   * When `true` the robot suppresses voice announcements; the app allows toggling this from its
+   * settings screen. Tuya clean line only — no equivalent DP confirmed on AIoT.
+   */
+  doNotDisturb: {
+    param: X8_VACUUM_DP.FORBID_MODE,
+    type: "bool",
+    kind: "boolean",
+    provenance: "mega",
+    description: "Do-not-disturb mode (DP 107, Bool rw). X8 Pro Tuya clean line. Live-confirmed.",
+    available: isTuyaVacuum,
+    write: (v: unknown) => aiotDp(X8_VACUUM_DP.FORBID_MODE, asBool(v)),
+  },
+  /**
+   * WiFi RSSI in dBm (DP 134, Value ro). Schema-confirmed from `thing.m.device.ref.info.list` v5.4.
+   * Negative integer; closer to zero is stronger. Useful for diagnostics. Tuya clean line only.
+   */
+  rssi: {
+    param: X8_VACUUM_DP.RSSI,
+    type: "number",
+    kind: "scalar",
+    provenance: "mega",
+    description: "WiFi RSSI in dBm (DP 134, Value ro). X8 Pro Tuya clean line. Schema-confirmed.",
+    available: isTuyaVacuum,
+  },
+  /**
+   * Locate the robot by triggering its buzzer (DP 103 = true). Schema-confirmed from
+   * `thing.m.device.ref.info.list` v5.4. The device responds with a short audible tone so the user
+   * can find it under furniture. Tuya clean line only — no equivalent DP confirmed on AIoT.
+   */
+  findRobot: method(
+    ({ sink }) =>
+      (): Promise<void> =>
+        sink.dispatch(aiotDp(X8_VACUUM_DP.LOOK_FOR_SWEEPER, true)),
+    "Trigger the robot's buzzer to help locate it (DP 103 = true). X8 Pro Tuya clean line.",
+    isTuyaVacuum,
+  ),
   /**
    * Start an auto-clean run.
    * AIoT: ModeCtrlRequest method 0 over DP 152.
