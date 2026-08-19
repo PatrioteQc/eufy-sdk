@@ -11,35 +11,25 @@
  * payload will be AES-128-ECB encrypted with the device's localKey before the JSON can be parsed.
  */
 import type { TuyaDpInbound } from "../../core/contracts.js";
-
-/** Parse `text` as a JSON object, or `undefined` on any failure — never throws. */
-function jsonObject(text: unknown): Record<string, unknown> | undefined {
-  if (typeof text !== "string") return undefined;
-  try {
-    const v: unknown = JSON.parse(text);
-    return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : undefined;
-  } catch {
-    return undefined;
-  }
-}
+import { jsonObject } from "../../core/util.js";
 
 /**
  * Validate and convert a raw ThingClips DP callback payload to a numeric-keyed record.
  *
  * The callback delivers `{ "<dpId>": <value>, … }` with string keys and typed values; this
- * normalises the keys to positive integer DP ids. Returns `null` when the input is not a valid
- * non-empty DP map: non-object, array, empty object, any non-positive-integer key, any non-scalar
- * value (null/object/array), or a completely empty result.
+ * normalises the keys to positive integer DP ids. Unrecognised keys (non-positive-integer, non-scalar
+ * values) are skipped rather than rejecting the whole map — the same defensive posture as
+ * {@link parseAiotDpReport}. Returns `null` only when the input is not a non-empty object or when no
+ * valid DP entry was found.
  */
 export function parseTuyaDpEvent(payload: unknown): Record<number, boolean | number | string> | null {
   if (typeof payload !== "object" || payload === null || Array.isArray(payload)) return null;
   const record = payload as Record<string, unknown>;
   const result: Record<number, boolean | number | string> = {};
   for (const [key, value] of Object.entries(record)) {
-    const dp = Number(key);
-    if (!Number.isInteger(dp) || dp <= 0) return null;
-    if (typeof value !== "boolean" && typeof value !== "number" && typeof value !== "string") return null;
-    result[dp] = value;
+    if (!/^[1-9]\d*$/.test(key)) continue;
+    if (typeof value !== "boolean" && typeof value !== "number" && typeof value !== "string") continue;
+    result[Number(key)] = value;
   }
   return Object.keys(result).length > 0 ? result : null;
 }
@@ -74,7 +64,7 @@ export function parseTuyaDpReport(raw: unknown): Record<string, unknown> | undef
       if (dps && typeof dps === "object" && !Array.isArray(dps)) return dps as Record<string, unknown>;
       // AIoT-direct shape: data = { "<dpId>": value } — filter to integer-keyed entries only,
       // as the data object may also carry non-DP metadata (e.g. "t", "protocol").
-      const filtered = Object.fromEntries(Object.entries(dataObj).filter(([k]) => Number.isInteger(Number(k))));
+      const filtered = Object.fromEntries(Object.entries(dataObj).filter(([k]) => /^[1-9]\d*$/.test(k)));
       return Object.keys(filtered).length > 0 ? filtered : undefined;
     }
   }

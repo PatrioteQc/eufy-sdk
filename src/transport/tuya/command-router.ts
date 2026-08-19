@@ -15,6 +15,7 @@ import type { Command } from "../../core/contracts.js";
 import { resolveCountryCode } from "./account.js";
 import { HmacSigner } from "./sign.js";
 import { TuyaClient } from "./client.js";
+import type { TuyaHttpPost } from "./request.js";
 
 export interface TuyaCommandRouterConfig {
   /**
@@ -23,6 +24,8 @@ export interface TuyaCommandRouterConfig {
    * confirmation and remove the gate when the write is shipped as verified.
    */
   allowUnverified?: boolean;
+  /** Inject a POST transport (test stub); default = native fetch. Forwarded to the internal TuyaClient. */
+  http?: TuyaHttpPost;
 }
 
 /** eufy SN → Tuya device identity needed for DP reads and writes. */
@@ -31,13 +34,14 @@ interface TuyaDeviceIds {
   devId: string;
   /**
    * Gateway device id — for standalone devices equals `devId`; for hub-attached sub-devices is the
-   * hub's devId. Confirmed from `DPBusiness.java`: `gwId = devId` for direct devices.
+   * hub's devId.
    */
   gwId: string;
 }
 
 export class TuyaCommandRouter {
   private readonly allowUnverified: boolean;
+  private readonly http: TuyaHttpPost | undefined;
   private userId: string | undefined;
   private dialCode: string | undefined;
   private client: TuyaClient | null = null;
@@ -53,6 +57,7 @@ export class TuyaCommandRouter {
 
   constructor(config: TuyaCommandRouterConfig = {}) {
     this.allowUnverified = config.allowUnverified ?? false;
+    this.http = config.http;
   }
 
   /**
@@ -75,24 +80,30 @@ export class TuyaCommandRouter {
    * Register a eufy SN → Tuya devId mapping. Called by the facade for each `eufy_home_tuya`
    * device after the cloud device list loads. The facade extracts the Tuya id from the device's
    * raw record (`tuya_uuid` / `tuya_virtual_id` / `tuya_device_id` / `virtualId` fields).
-   * `gwId` defaults to `devId` — standalone devices share the two (confirmed from `DPBusiness.java`).
+   * `gwId` defaults to `devId` — standalone devices share the two.
    */
   registerDevice(sn: string, devId: string, gwId = devId): void {
     this.snMap.set(sn, { devId, gwId });
   }
 
   private ensureLoggedIn(): Promise<void> {
-    this.loginOnce ??= (async () => {
-      if (!this.userId) {
-        throw new Error(
-          "TuyaCommandRouter: bind(userId) was not called before dispatch — " +
-            "the facade must call bind() after a successful mega login",
-        );
-      }
-      const client = new TuyaClient({ signer: new HmacSigner() });
-      await client.login(this.userId, this.dialCode);
-      this.client = client;
-    })();
+    if (!this.loginOnce) {
+      const p = (async () => {
+        if (!this.userId) {
+          throw new Error(
+            "TuyaCommandRouter: bind(userId) was not called before dispatch — " +
+              "the facade must call bind() after a successful mega login",
+          );
+        }
+        const client = new TuyaClient({ signer: new HmacSigner(), http: this.http });
+        await client.login(this.userId, this.dialCode);
+        this.client = client;
+      })();
+      p.catch(() => {
+        if (this.loginOnce === p) this.loginOnce = null;
+      });
+      this.loginOnce = p;
+    }
     return this.loginOnce;
   }
 

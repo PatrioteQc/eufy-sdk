@@ -131,6 +131,20 @@ export function enumLabels(enumObj: Readonly<Record<string, number>>): Record<nu
   return Object.fromEntries(Object.entries(enumObj).map(([name, value]) => [value, name]));
 }
 
+/**
+ * Parse `text` as a JSON object, or `undefined` on any failure — never throws. Shared by the MQTT
+ * and Tuya transport layers; sits here so each module doesn't define its own copy.
+ */
+export function jsonObject(text: unknown): Record<string, unknown> | undefined {
+  if (typeof text !== "string") return undefined;
+  try {
+    const v: unknown = JSON.parse(text);
+    return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 // ── Fixed-width integer encoders → a fresh Buffer ────────────────────────────────────────────────
 // The wire protocols pack scalars as little/big-endian words; these return a standalone Buffer to
 // `Buffer.concat` into a frame. Values are masked/coerced so an out-of-range or signed input can't

@@ -60,6 +60,8 @@ describe("Tuya account derivation", () => {
     expect(resolveCountryCode(undefined, "EU", "DE")).toBe("49"); // ISO beats EU→44
     expect(resolveCountryCode(undefined, undefined, "SG")).toBe("65"); // ISO, no region
     expect(resolveCountryCode(undefined, "EU")).toBe("44"); // region fallback (no ISO)
+    expect(resolveCountryCode(undefined, "eu-pr")).toBe("44"); // real shard string — split before compare
+    expect(resolveCountryCode(undefined, "us-pr")).toBe("1"); // us-pr → "US" → fallback "1"
     expect(resolveCountryCode("", "CN")).toBe("86"); // empty phoneCode → region
     expect(resolveCountryCode(undefined, "US")).toBe("1");
     expect(resolveCountryCode()).toBe("1");

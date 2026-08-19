@@ -420,7 +420,6 @@ const writtenByAMember = (property: string): boolean =>
 const SETTER_ELSEWHERE: Record<string, string> = {
   "rtsp.recordingMode": "setRecordingMode",
   "locate.locating": "locate",
-  "locate.locatingLegacy": "locate",
   "lock.locked": "lock",
 };
 

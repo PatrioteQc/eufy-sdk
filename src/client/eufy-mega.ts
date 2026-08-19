@@ -91,8 +91,8 @@ function recordString(raw: Record<string, unknown>, key: string): string | undef
  */
 function tuyaDevIdFrom(raw: Record<string, unknown>): string | undefined {
   for (const field of ["tuya_uuid", "tuya_virtual_id", "tuya_device_id", "virtualId"]) {
-    const v = raw[field];
-    if (typeof v === "string" && v) return v;
+    const v = recordString(raw, field);
+    if (v) return v;
   }
   return undefined;
 }

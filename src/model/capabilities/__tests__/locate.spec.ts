@@ -9,7 +9,7 @@ function locateCtx(model?: string, category?: string): CommandContext {
 describe("locate capability module", () => {
   it("declares the capability + schema", () => {
     expect(LOCATE.capability).toBe("locate");
-    expect(LOCATE.properties.map((p) => p.name)).toEqual(["locating", "locatingLegacy"]);
+    expect(LOCATE.properties.map((p) => p.name)).toEqual(["locating"]);
   });
 
   it("every property has a string name + numeric paramType", () => {

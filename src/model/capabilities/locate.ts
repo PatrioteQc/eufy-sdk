@@ -1,7 +1,7 @@
 import { pickDpParams, aiotDp } from "./access.js";
 import { method, propertiesOf, type Members, type Surface } from "./members.js";
 import type { CapabilityModule } from "./types.js";
-import { isAiotVacuum } from "../device-family.js";
+import { isAiotVacuum, isTuyaVacuum } from "../device-family.js";
 
 /** DP id for the locate (find-robot) toggle. */
 const LOCATE_DP = 160 as const;
@@ -33,28 +33,15 @@ export const LOCATE_MEMBERS = {
     kind: "boolean",
     provenance: "mega",
     writtenElsewhere: true,
+    readAliases: [{ paramType: LEGACY_LOCATE_DP, available: isTuyaVacuum }],
     description:
-      "Find-robot trigger (DP 160, Bool). A momentary write trigger — the device sends it to begin or " +
+      "Find-robot trigger (DP 160 AIoT / DP 103 Tuya). A momentary write trigger — the device sends it to begin or " +
       "cancel a beep but holds no durable state, so this may never be observed true in practice.",
   },
   /**
-   * The find-robot DP read back for the legacy Tuya clean line (DP 103, Bool). Same semantics as
-   * {@link locating} (DP 160) — a momentary trigger, so the device may never report a durable state.
-   */
-  locatingLegacy: {
-    param: LEGACY_LOCATE_DP,
-    type: "bool",
-    kind: "boolean",
-    provenance: "mega",
-    writtenElsewhere: true,
-    description:
-      "Find-robot trigger (DP 103, Bool). Legacy Tuya G-series/X8 counterpart of DP 160 — " +
-      "a momentary write trigger that may never be observed true in practice.",
-  },
-  /**
-   * Writes DP 103 (legacy Tuya) or DP 160 (AIoT) — `true` starts the beep, `false` cancels one
-   * already sounding. The default argument is what makes this a `method`: a bare `locate()` is the
-   * call that matters, and a derived setter always demands its value.
+   * Writes DP 160 (AIoT) — `true` starts the beep, `false` cancels one already sounding. The default
+   * argument is what makes this a `method`: a bare `locate()` is the call that matters, and a derived
+   * setter always demands its value.
    *
    * That default is also why the argument is named here: it is absent from the function's arity, so the
    * description would otherwise derive as taking NO arguments and a caller would never learn the beep can

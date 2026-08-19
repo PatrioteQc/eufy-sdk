@@ -8,7 +8,7 @@
  *    real owned device in the sweep (so the ID is real/accepted); `provenance` is the trust of the
  *    NAME/meaning: "verified" (our captures) > "apk" (the app's own decompiled constant name) >
  *    "guessed" (no name source — needs toggle-diff).
- *  - CLEAN_PARAMS — RoboVac Tuya DP space (ids ~150-180), names from the cloud
+ *  - CLEAN_PARAMS — RoboVac Tuya DP space (ids 1 and above), names from the cloud
  *    `get_product_data_point` data_point_list (provenance "mega" — authoritative).
  */
 import type { PropertyValueType, PropertySource, ParamEncoding } from "./types.js";
@@ -3423,10 +3423,10 @@ export const CLEAN_PARAMS: Record<number, ParamDef> = {
     paramType: 2,
     name: "play_pause",
     type: "bool",
-    writable: true,
+    writable: false,
     provenance: "mega",
     observed: true,
-    note: "X8 Pro DP 2 (play_pause, Bool). Live-confirmed. Start = true, pause = false.",
+    note: "X8 Pro DP 2 (play_pause, Bool). Read-confirmed. Write direction unverified — no live publishDps capture yet.",
   },
   3: {
     paramType: 3,

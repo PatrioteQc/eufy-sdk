@@ -2,7 +2,7 @@ import type { AvailabilityContext, CapabilityModule, CapabilityActions, CommandC
 import { asBool, enumLabels } from "../../core/util.js";
 import { pickDpParams, aiotDp } from "./access.js";
 import { propertiesOf, type Members, type Surface } from "./members.js";
-import { isAiotVacuum, isTuyaVacuum } from "../device-family.js";
+import { isAiotVacuum } from "../device-family.js";
 
 /**
  * RoboVac suction Tuya **DP ids** — this capability's own wire vocabulary (clean namespace, from the

@@ -155,7 +155,7 @@ export function resolveCountryCode(phoneCode?: string, region?: string, isoCode?
     const dial = isoToDialCode(isoCode);
     if (dial) return dial;
   }
-  switch ((region ?? "").toUpperCase()) {
+  switch ((region ?? "").split("-")[0].toUpperCase()) {
     case "EU":
       return "44";
     case "CN":

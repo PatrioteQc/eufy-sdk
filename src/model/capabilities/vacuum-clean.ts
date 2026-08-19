@@ -36,7 +36,7 @@ export const VACUUM_DP = {
 export const LEGACY_VACUUM_DP = {
   /** Play/pause toggle (DP 2, Bool rw) — true = start, false = pause. */
   PLAY_PAUSE: 2,
-  /** Go home (DP 101, Bool rw) — confirmed from DeviceHomeModule.java (`goHomeCmd`). */
+  /** Go home (DP 101, Bool rw). */
   GO_HOME: 101,
   /** Battery level 0-100 (DP 104, Int ro). */
   BATTERY_LEVEL: 104,
@@ -68,8 +68,6 @@ export const X8_VACUUM_DP = {
   GO_HOME: 101,
   /** Suction/cleaning strength (DP 102, Enum: "Off"|"Quiet"|"Standard"|"Turbo"|"Max"). Live-confirmed "Off". */
   CLEANING_STRENGTH: 102,
-  /** Find-the-robot locator (DP 103, Bool). */
-  LOOK_FOR_SWEEPER: 103,
   /** Battery level 0-100 (DP 104, Value ro). Shared with {@link LEGACY_VACUUM_DP.BATTERY_LEVEL}. */
   BATTERY_LEVEL: 104,
   /** Mop water flow (DP 105, Enum: "Dry"|"Low"|"Mid"|"High"). Live-confirmed "Mid". */
