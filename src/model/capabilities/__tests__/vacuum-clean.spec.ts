@@ -94,6 +94,10 @@ describe("vacuum_clean capability module", () => {
       "clearTime",
       "clearArea",
       "loudness",
+      "lifetimeCleanTime",
+      "lifetimeCleanArea",
+      "waterTank",
+      "mopPad",
     ]);
   });
 

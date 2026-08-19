@@ -367,8 +367,12 @@ export function decodeVacuumActivity(raw: ParamValue | undefined, codec: RawDpCo
  * Bound RoboVac reads and controls — the object returned by `dev.vacuumClean()`.
  *
  * All reads, `setPower`, and the three mode-control verbs are DERIVED from `VACUUM_CLEAN_MEMBERS`.
- * Each getter is present only when the device reports the backing DP. `setPower` and the mode-control
- * verbs are optional — they are absent when the backing DP is not in the device's reported param set.
+ * Each getter is present only when the device reports the backing DP. `setPower` is absent on
+ * `eufy_home_tuya` devices (no confirmed power DP). The three mode-control verbs are present on
+ * both AIoT and Tuya devices — they dispatch different DP shapes per platform.
+ *
+ * X8 Pro read members (`lifetimeCleanTime`, `lifetimeCleanArea`, `waterTank`, `mopPad`)
+ * are populated only once the device has reported those DPs over MQTT or the initial Tuya DP poll.
  */
 export type VacuumCleanActions = Surface<typeof VACUUM_CLEAN_MEMBERS>;
 
@@ -584,7 +588,61 @@ export const VACUUM_CLEAN_MEMBERS = {
     provenance: "mega",
     description: "Speaker loudness 0-100 from DP 111 (Loudness). X8 Pro Tuya clean line. Live-confirmed.",
   },
-  /** Start an auto-clean run via ModeCtrlRequest method 0 (DP 152). AIoT only — Tuya write unverified. */
+  /**
+   * Lifetime total cleaning time in seconds (DP 119, Value). Counts across all sessions.
+   * Confirmed from `thing.m.device.ref.info.list` v5.4 schemaInfo.schema (X8 Pro,
+   * product `wahqax6ifjgs1c4n`). Read-only accumulator — no write expected.
+   */
+  lifetimeCleanTime: {
+    param: X8_VACUUM_DP.CLEAR_TOTAL_TIME,
+    type: "number",
+    unit: "s",
+    kind: "seconds",
+    provenance: "mega",
+    description:
+      "Lifetime total cleaning time in seconds from DP 119 (ClearTotalTime). X8 Pro Tuya clean line. Schema-confirmed.",
+  },
+  /**
+   * Lifetime total cleaned area in m² (DP 120, Value). Counts across all sessions.
+   * Confirmed from `thing.m.device.ref.info.list` v5.4 schemaInfo.schema (X8 Pro,
+   * product `wahqax6ifjgs1c4n`). Read-only accumulator — no write expected.
+   */
+  lifetimeCleanArea: {
+    param: X8_VACUUM_DP.CLEAR_TOTAL_AREA,
+    type: "number",
+    kind: "scalar",
+    provenance: "mega",
+    description:
+      "Lifetime total cleaned area in m² from DP 120 (ClearTotalArea). X8 Pro Tuya clean line. Schema-confirmed.",
+  },
+  /**
+   * Water tank attached (DP 127, Bool ro). Confirmed from `thing.m.device.ref.info.list` v5.4.
+   * `true` when the water tank is mounted; `false` when removed. Read-only sensor — the device
+   * reports this, the app does not write it.
+   */
+  waterTank: {
+    param: X8_VACUUM_DP.WATER_TANK_STATUS,
+    type: "bool",
+    kind: "boolean",
+    provenance: "mega",
+    description: "Water tank attached (DP 127, Bool ro). X8 Pro Tuya clean line. Schema-confirmed.",
+  },
+  /**
+   * Mop pad attached (DP 129, Bool ro). Confirmed from `thing.m.device.ref.info.list` v5.4.
+   * `true` when the mop pad is mounted; `false` when removed. Read-only sensor.
+   */
+  mopPad: {
+    param: X8_VACUUM_DP.MOP_STATUS,
+    type: "bool",
+    kind: "boolean",
+    provenance: "mega",
+    description: "Mop pad attached (DP 129, Bool ro). X8 Pro Tuya clean line. Schema-confirmed.",
+  },
+  /**
+   * Start an auto-clean run.
+   * AIoT: ModeCtrlRequest method 0 over DP 152.
+   * Tuya: DP 2 = true (PLAY_PAUSE bool, confirmed from DeviceHomeModule.java).
+   */
   startCleaning: method(
     ({ sink }) => {
       let seq = 111;
