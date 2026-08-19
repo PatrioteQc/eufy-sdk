@@ -43,6 +43,7 @@ const EXPECTED_ACCESSORS = [
   "smoke",
   "storage",
   "vacuumClean",
+  "vacuumDock",
 ] as const;
 
 describe("fluent capability accessors — type/runtime coupling", () => {

@@ -9,6 +9,7 @@ import {
   type VacuumCleanActions,
   type VacuumActivity,
   type VacuumCleanType,
+  type X8CleanTypeTuya,
 } from "../vacuum-clean.js";
 import { bind } from "./bind.js";
 
@@ -77,7 +78,21 @@ function fakeCtx(model?: string, category?: string): CommandContext {
 describe("vacuum_clean capability module", () => {
   it("declares the capability + schema", () => {
     expect(VACUUM_CLEAN.capability).toBe("vacuum_clean");
-    expect(VACUUM_CLEAN.properties.map((p) => p.name)).toEqual(["power", "activity", "volume", "battery", "cleanType"]);
+    expect(VACUUM_CLEAN.properties.map((p) => p.name)).toEqual([
+      "power",
+      "activity",
+      "volume",
+      "battery",
+      "cleanType",
+      "errorCode",
+      "workStatus",
+      "workMode",
+      "cleaningStrength",
+      "mopWater",
+      "clearTime",
+      "clearArea",
+      "loudness",
+    ]);
   });
 
   it("every property has a string name + numeric paramType", () => {
@@ -210,9 +225,9 @@ declare const vac: VacuumCleanActions;
 const _power: Exact<typeof vac.power, boolean | undefined> = true;
 const _battery: Exact<typeof vac.battery, number | undefined> = true;
 const _activity: Exact<typeof vac.activity, VacuumActivity | undefined> = true;
-const _cleanType: Exact<typeof vac.cleanType, VacuumCleanType | undefined> = true;
+const _cleanType: Exact<typeof vac.cleanType, VacuumCleanType | X8CleanTypeTuya | undefined> = true;
 
-// setPower is gated by available: isAiotVacuum — absent on eufy_home_tuya devices, optional on the surface.
+// setPower is gated by available: isAiotVacuum || isTuyaVacuum — optional on the surface (present only when category is known).
 const _setPowerOptional: Exact<undefined extends typeof vac.setPower ? true : false, true> = true;
 const _setPowerArg: Exact<Parameters<NonNullable<typeof vac.setPower>>[0], boolean> = true;
 
@@ -220,8 +235,11 @@ const _setPowerArg: Exact<Parameters<NonNullable<typeof vac.setPower>>[0], boole
 const _noSetActivity: Exact<"setActivity" extends keyof VacuumCleanActions ? true : false, false> = true;
 const _noSetBattery: Exact<"setBattery" extends keyof VacuumCleanActions ? true : false, false> = true;
 
-// startCleaning is a MethodMember with available: isAiotVacuum — optional on non-AIoT devices.
+// startCleaning is a MethodMember with available: isAiotVacuum — optional on unknown-category devices.
 const _startCleaning: Exact<typeof vac.startCleaning, (() => Promise<void>) | undefined> = true;
+
+// errorCode is an evidence-gated read for the legacy Tuya clean line.
+const _errorCode: Exact<typeof vac.errorCode, number | undefined> = true;
 
 export const _surfaceAssertions = [
   _power,
@@ -233,6 +251,7 @@ export const _surfaceAssertions = [
   _noSetActivity,
   _noSetBattery,
   _startCleaning,
+  _errorCode,
 ];
 
 describe("vacuum_clean — AIoT vs legacy guard (negative exclusion)", () => {
@@ -248,11 +267,18 @@ describe("vacuum_clean — AIoT vs legacy guard (negative exclusion)", () => {
     expect(acts.startCleaning).toBeDefined();
   });
 
-  it("write actions are absent for eufy_home_tuya — absent rather than present-and-rejecting", () => {
+  it("write actions are absent for eufy_home_tuya — Tuya control DPs unverified (no live capture)", () => {
+    // Control writes (start/pause/dock) on the Tuya path have not been confirmed from a live capture.
+    // The methods throw on Tuya and their available guard is restricted to isAiotVacuum.
     const { acts } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, "eufy_home_tuya"));
     expect(acts.startCleaning).toBeUndefined();
     expect(acts.returnToDock).toBeUndefined();
     expect(acts.pauseCleaning).toBeUndefined();
+  });
+
+  it("setPower is absent for eufy_home_tuya — no confirmed power DP on the legacy Tuya clean line", () => {
+    const { acts } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, "eufy_home_tuya"));
+    expect(acts.setPower).toBeUndefined();
   });
 
   it("dispatches DP 151 for setPower on eufy_home category (Anker AIoT MQTT)", async () => {

@@ -1,17 +1,19 @@
 import { pickDpParams, aiotDp } from "./access.js";
 import { method, propertiesOf, type Members, type Surface } from "./members.js";
 import type { CapabilityModule } from "./types.js";
-import { isAiotVacuum } from "../device-family.js";
+import { isAiotVacuum, isTuyaVacuum } from "../device-family.js";
 
 /** DP id for the locate (find-robot) toggle. */
 const LOCATE_DP = 160 as const;
+/** DP id for the locate (find-robot) toggle on the legacy Tuya clean line (G-series/X8). */
+const LEGACY_LOCATE_DP = 103 as const;
 
 /**
  * Every `locate` feature, declared once.
  *
  * `locate()` is a `method` rather than a derived setter because its argument is OPTIONAL — the
  * common call is a bare `locate()` meaning "start beeping" — and a derived setter always takes its
- * value. It is installed on any bound robot: DP 160 is part of the shared clean-line DP schema.
+ * value. It is installed on any AIoT robot: dispatches DP 160.
  *
  * Exported so a caller can name the table its `*Actions` type is derived from, but NOT published:
  * each entry states its wire id and the evidence it was confirmed on, which the reference site
@@ -31,15 +33,15 @@ export const LOCATE_MEMBERS = {
     kind: "boolean",
     provenance: "mega",
     writtenElsewhere: true,
+    readAliases: [{ paramType: LEGACY_LOCATE_DP, available: isTuyaVacuum }],
     description:
-      "Find-robot trigger (DP 160, Bool). A momentary write trigger — the device sends it to begin or " +
+      "Find-robot trigger (DP 160 AIoT / DP 103 Tuya). A momentary write trigger — the device sends it to begin or " +
       "cancel a beep but holds no durable state, so this may never be observed true in practice.",
   },
   /**
-   * Writes DP 160 — `true` starts the beep, `false` cancels one already sounding. The default argument
-   * is what makes this a `method`: a bare `locate()` is the call that matters, and a derived setter
-   * always demands its value. Present on any bound robot, since DP 160 belongs to the shared clean-line
-   * DP schema rather than to one model.
+   * Writes DP 160 (AIoT) — `true` starts the beep, `false` cancels one already sounding. The default
+   * argument is what makes this a `method`: a bare `locate()` is the call that matters, and a derived
+   * setter always demands its value.
    *
    * That default is also why the argument is named here: it is absent from the function's arity, so the
    * description would otherwise derive as taking NO arguments and a caller would never learn the beep can
@@ -51,7 +53,7 @@ export const LOCATE_MEMBERS = {
         (on = true): Promise<void> =>
           sink.dispatch(aiotDp(LOCATE_DP, on)),
       "Trigger the find-robot beep; pass false to cancel one in progress.",
-      isAiotVacuum,
+      (ctx) => isAiotVacuum(ctx),
     ),
     args: [{ name: "on", kind: "boolean", optional: true, description: "False cancels a beep in progress." }],
   },
@@ -73,7 +75,7 @@ export const LOCATE: CapabilityModule = {
   // Locate is a vacuum-codec baseline.
   detection: { codecs: ["vacuum"] },
   decodeState(signal) {
-    const params = pickDpParams(signal.source === "mqtt" ? signal.dpParams : undefined, [LOCATE_DP]);
+    const params = pickDpParams(signal.source === "mqtt" ? signal.dpParams : undefined, [LOCATE_DP, LEGACY_LOCATE_DP]);
     return params ? { params } : null;
   },
 };

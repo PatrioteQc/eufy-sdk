@@ -1,4 +1,5 @@
 import { parseSecureTopic } from "./topics.js";
+import { jsonObject } from "../../core/util.js";
 
 /** Verified fields decoded from the `state_info` wire, before the client assigns domain semantics. */
 export interface StateInfoSignal {
@@ -6,19 +7,6 @@ export interface StateInfoSignal {
   readonly status: boolean;
   readonly observedAt?: number;
   readonly sequence?: number;
-}
-
-/** Parse a JSON string into an object without accepting arrays or throwing on an unrelated message. */
-function jsonObject(value: unknown): Record<string, unknown> | undefined {
-  if (typeof value !== "string") return undefined;
-  try {
-    const parsed: unknown = JSON.parse(value);
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-      ? (parsed as Record<string, unknown>)
-      : undefined;
-  } catch {
-    return undefined;
-  }
 }
 
 /**

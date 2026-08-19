@@ -70,6 +70,7 @@ import { KEYPAD } from "./keypad.js";
 import { ARMING } from "./arming.js";
 import { STORAGE } from "./storage.js";
 import { VACUUM_CLEAN } from "./vacuum-clean.js";
+import { VACUUM_DOCK } from "./vacuum-dock.js";
 import { SUCTION } from "./suction.js";
 import { LOCATE } from "./locate.js";
 import { INFO } from "./info.js";
@@ -95,6 +96,7 @@ import type { KeypadActions } from "./keypad.js";
 import type { StorageActions } from "./storage.js";
 import type { RtspActions } from "./rtsp.js";
 import type { VacuumCleanActions } from "./vacuum-clean.js";
+import type { VacuumDockActions } from "./vacuum-dock.js";
 import type { SuctionActions } from "./suction.js";
 import type { LocateActions } from "./locate.js";
 import type { PersonDetectionActions } from "./person-detection.js";
@@ -124,6 +126,7 @@ const MODULES: CapabilityModule[] = [
   ARMING,
   STORAGE,
   VACUUM_CLEAN,
+  VACUUM_DOCK,
   SUCTION,
   LOCATE,
   INFO,
@@ -718,6 +721,8 @@ export interface DeviceActionMap {
   rtsp: RtspActions;
   /** RoboVac core state and controls: `power`, `activity` (WorkStatus), `volume`, `battery`, `cleanType`; `setPower`, `startCleaning`, `returnToDock`, `pauseCleaning`. */
   vacuumClean: VacuumCleanActions;
+  /** RoboVac Omni dock controls: `emptyDust`, `washMops`, `dryMops`; raw `dockState` unexposed until wire confirmed. */
+  vacuumDock: VacuumDockActions;
   /** RoboVac suction: `level`, `boostIq`, `supportedLevels`; `setSuctionLevel`, `setBoostIq`. */
   suction: SuctionActions;
   /** RoboVac locate (find-robot beep): `locating`; `locate(on?)`. */
@@ -1005,6 +1010,8 @@ export type { DoorbellActions, QuickResponse } from "./doorbell.js";
 export { parseQuickResponses } from "./doorbell.js";
 export { DoorbellRingtone, type DoorbellRingtoneValue } from "./doorbell.js";
 export type { AudioActions } from "./audio.js";
+export { VACUUM_DOCK_MEMBERS } from "./vacuum-dock.js";
+export type { VacuumDockActions } from "./vacuum-dock.js";
 export { HubAlarmTone, type HubAlarmToneValue } from "./siren.js";
 /**
  * RoboVac activity and clean type are the declared returns of the public `dev.vacuumClean()` getters,

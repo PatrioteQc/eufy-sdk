@@ -60,6 +60,7 @@ export type Capability =
   | "audio"
   // --- vacuum / clean line (Tuya DP namespace) ---
   | "vacuum_clean"
+  | "vacuum_dock"
   | "suction"
   | "locate"
   // eufy_life smart lighting (own secure-MQTT DP namespace) — the T8L0x line's on/off/brightness/

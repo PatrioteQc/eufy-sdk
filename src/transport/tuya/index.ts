@@ -1,24 +1,26 @@
 /**
- * Tuya / Thingclips cloud-protocol client (FOUNDATION).
+ * Tuya / Thingclips cloud-protocol client.
  *
  * A clean, typed base for the eufy app's Tuya backbone: deterministic eufy→Tuya account derivation,
- * exact `api.json` request assembly, the sign, and a small {@link TuyaClient}. Both native seams are
- * SOLVED and transport-confirmed against `a1.tuyaeu.com`:
- *   - the final `sign` = `HMAC-SHA256(K, preimage)` ({@link HmacSigner}; K is supplied via the
- *     `TUYA_SIGN_KEY` env var — see `sign.ts`). Reproduces a captured signature exactly.
- *   - the per-install `chKey` is a per-appId CONSTANT (`"7cbfe6d8"` for this build).
+ * exact `api.json` request assembly, the sign, and a small {@link TuyaClient}. No configuration is
+ * required — the built-in signing key ({@link TUYA_SIGN_K}) works out of the box.
  *
- * This module is re-exported NAMESPACED from the package root (`export * as tuya`), so:
+ * Quick start:
  *
  *   import { tuya } from "@mega-yfue/eufy-sdk";
- *   // login() is a stub (token.create returns an RSA envelope we don't decrypt) — inject a sid:
- *   const client = new tuya.TuyaClient({ signer: new tuya.HmacSigner(), chKey: "7cbfe6d8", sid });
- *   await client.getDeviceDps(devId);
+ *   const client = new tuya.TuyaClient();           // zero-config
+ *   await client.login(eufyUserId, phoneCode);       // derives Tuya account + logs in
+ *   const dps = await client.getDeviceDps(devId);   // read DPs with the live sid
  *
- * STATUS: transport + signing are live-verified (token.create returns a valid encrypted result, no
- * SIGN_INVALID). NOT done: token.create returns an RSA envelope we don't decrypt, so `login()` can't
- * mint a `sid` and control writes (`publishDps`) stay gated behind `allowUnverified`. Remaining work:
- * decrypt the token envelope → finish password.login → drive dp.get / dp.publish with the real sid.
+ *   // Or inject a previously obtained sid to skip login:
+ *   const client = new tuya.TuyaClient({ sid });
+ *
+ * STATUS:
+ *   ✅ sign = HMAC-SHA256(TUYA_SIGN_K, preimage) — reproduces a live-captured signature
+ *   ✅ chKey = "7cbfe6d8" per-appId constant
+ *   ✅ login() — username.token.get → RSA-encrypt(MD5(password)) → password.login.reg
+ *      (shadow account must be provisioned via eufy Security app first)
+ *   ✅ getDeviceDps / publishDps builders ready; publishDps gated behind allowUnverified
  */
 export * from "./account.js";
 export * from "./sign.js";

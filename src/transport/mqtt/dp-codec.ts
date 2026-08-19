@@ -15,6 +15,7 @@
  */
 import { randomUUID } from "node:crypto";
 import type { DpInboundFrame } from "../../core/contracts.js";
+import { jsonObject } from "../../core/util.js";
 
 const DP_MAGIC = [0xff, 0x09] as const;
 
@@ -94,17 +95,6 @@ export function buildDpEnvelope(opts: {
     sign_code: 0,
   };
   return JSON.stringify({ head, payload: JSON.stringify(inner) });
-}
-
-/** Parse JSON, or `undefined` on anything that isn't a JSON object — never throws. */
-function jsonObject(text: unknown): Record<string, unknown> | undefined {
-  if (typeof text !== "string") return undefined;
-  try {
-    const v: unknown = JSON.parse(text);
-    return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : undefined;
-  } catch {
-    return undefined;
-  }
 }
 
 /**

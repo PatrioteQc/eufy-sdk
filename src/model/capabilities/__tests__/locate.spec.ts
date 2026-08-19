@@ -35,8 +35,9 @@ describe("locate — AIoT vs legacy guard (negative exclusion)", () => {
     expect(acts.locate).toBeDefined();
   });
 
-  it("locate is absent for eufy_home_tuya — absent rather than present-and-rejecting", () => {
-    // T2266 = X8 Pro, category from live API dump (2026-08-04)
+  it("locate is absent for eufy_home_tuya — Tuya locate write unverified (no live capture)", () => {
+    // The Tuya locate write direction has not been confirmed from a live capture.
+    // The locate method's available guard is restricted to isAiotVacuum.
     const { acts } = bind<LocateActions>("locate", locateCtx("T2266", "eufy_home_tuya"));
     expect(acts.locate).toBeUndefined();
   });

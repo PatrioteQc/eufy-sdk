@@ -23,6 +23,7 @@ import { type P2PSession, type P2PFrame } from "../transport/p2p/p2p-session.js"
 import { P2PCommandRouter } from "../transport/p2p/command-router.js";
 import { MqttCommandRouter } from "../transport/mqtt/command-router.js";
 import { TuyaCommandRouter } from "../transport/tuya/command-router.js";
+import { TuyaDpRouter, parseTuyaDpReport } from "../transport/tuya/dp-codec.js";
 import { rawDpCodec } from "../transport/raw-dp.js";
 import { resolveLightEffect as resolveLightEffectHttp } from "../transport/http/light-catalog.js";
 import {
@@ -45,6 +46,7 @@ import {
   type CommandSink,
   type Ff09SettingsReader,
   type MediaProvider,
+  type TuyaDpInbound,
 } from "../core/contracts.js";
 import { noopLogger } from "../core/logger.js";
 import { PushClient } from "../transport/push/push-client.js";
@@ -92,6 +94,19 @@ function recordString(raw: Record<string, unknown>, key: string): string | undef
   const nested = (raw.deviceParams as Record<string, unknown> | undefined)?.[key];
   const v = typeof nested === "string" && nested ? nested : raw[key];
   return typeof v === "string" && v ? v : undefined;
+}
+
+/**
+ * Extract the Tuya device id from a `eufy_home_tuya` device's raw cloud record.
+ * The cloud `get_devs_list` response embeds the Tuya id under one of several field names
+ * (naming varied across firmware generations). Returns the first non-empty string found.
+ */
+function tuyaDevIdFrom(raw: Record<string, unknown>): string | undefined {
+  for (const field of ["tuya_uuid", "tuya_virtual_id", "tuya_device_id", "virtualId"]) {
+    const v = recordString(raw, field);
+    if (v) return v;
+  }
+  return undefined;
 }
 
 /**
@@ -238,6 +253,8 @@ export class EufyMega extends EventEmitter {
   private readonly mqtt: MqttCommandRouter;
   /** Transport-side owner of the legacy Tuya REST command path for non-AIoT vacuums (G-series). */
   private readonly tuya: TuyaCommandRouter;
+
+  private readonly tuyaDpRouter: TuyaDpRouter;
   /**
    * Last state value announced per `deviceSn:event`, for the edge-trigger in {@link isRepeatState}.
    * Realtime-only: the poll path deliberately bypasses it so an unchanged state is still re-asserted.
@@ -328,6 +345,28 @@ export class EufyMega extends EventEmitter {
       },
     });
     this.tuya = new TuyaCommandRouter();
+    this.tuyaDpRouter = new TuyaDpRouter();
+    this.tuyaDpRouter.setListener(this.makeTuyaDpInbound());
+  }
+
+  /**
+   * Builds the inbound listener that converts ThingClips DP maps to realtime capability state.
+   * DP values arrive as booleans, numbers, or strings; they are normalised to the string form
+   * the param store uses, then applied through the standard realtime-report path.
+   */
+  private makeTuyaDpInbound(): TuyaDpInbound {
+    return {
+      onDps: (sn, dps) => {
+        const dpParams: Record<number, string> = {};
+        for (const [id, value] of Object.entries(dps)) {
+          dpParams[Number(id)] = typeof value === "boolean" ? (value ? "1" : "0") : String(value);
+        }
+        if (!Object.keys(dpParams).length) return;
+        const caps = this.capsForEvent(sn);
+        const signal = { source: "mqtt" as const, deviceSn: sn, topic: "", raw: {}, dpParams };
+        this.applyRealtimeReport(sn, decodeCapabilityState(signal, caps));
+      },
+    };
   }
 
   /**
@@ -725,6 +764,8 @@ export class EufyMega extends EventEmitter {
     if (result.status === LoginStatus.Ok) {
       if (this.storedImageAccount && this.storedImageAccount !== result.session.userId) this.storedImages?.clear();
       this.storedImageAccount = result.session.userId;
+      const auth = this.mega.auth;
+      if (auth?.userId) this.tuya.bind(auth.userId, this.mega.regionShard, this.opts.countryCode);
       if (this.opts.autoRealtime !== false) void this.ensureRealtime();
     }
     return result;
@@ -891,9 +932,21 @@ export class EufyMega extends EventEmitter {
    * List + classify devices across all houses (mega API). Each device is tagged with its API backend
    * + realtime transport. Camera/HomeBase records still appear here for inventory; driving them is
    * P2P. Delegates to `DeviceRegistry` (the house-scoped merge/dedupe lives there).
+   *
+   * Side-effect: registers `eufy_home_tuya` devices with the Tuya command router so
+   * the command dispatcher can resolve a eufy SN → Tuya devId without a separate lookup.
+   * The Tuya id is extracted from the device's raw cloud record (`tuya_uuid`, `tuya_virtual_id`,
+   * `tuya_device_id`, or `virtualId` fields — whichever is non-empty).
    */
-  getDevices(): Promise<EufyDevice[]> {
-    return this.registry.getDevices();
+  async getDevices(): Promise<EufyDevice[]> {
+    const devices = await this.registry.getDevices();
+    for (const dev of devices) {
+      if (dev.category !== "eufy_home_tuya") continue;
+      const raw = (dev.raw ?? {}) as Record<string, unknown>;
+      const devId = tuyaDevIdFrom(raw);
+      if (devId) this.tuya.registerDevice(dev.sn, devId);
+    }
+    return devices;
   }
 
   /** Devices that this client drives over MQTT (transport ≠ p2p). */
@@ -1293,6 +1346,16 @@ export class EufyMega extends EventEmitter {
     transport.on("disconnect", (r) => this.emit("disconnect", r));
     transport.on("message", (m) => {
       this.emit("message", m); // raw MQTT message (low-level escape hatch)
+      if (m.deviceSn) {
+        const dev = this.registry.list().find((d) => d.sn === m.deviceSn);
+        if (dev?.category === "eufy_home_tuya") {
+          const dps = parseTuyaDpReport(m.raw);
+          if (dps) {
+            this.tuyaDpRouter.deliver(m.deviceSn, dps);
+            return;
+          }
+        }
+      }
       if (m.topic) this.processAvailabilityMessage(m.topic, m.raw);
       const signal = {
         source: "mqtt" as const,

@@ -1,6 +1,7 @@
 import {
   deriveTuyaAccount,
   deriveTuyaPassword,
+  isoToDialCode,
   tuyaUsername,
   resolveCountryCode,
   TUYA_PASSWORD_KEY,
@@ -37,11 +38,31 @@ describe("Tuya account derivation", () => {
     expect(deriveTuyaPassword("1234567890abcdef").length % 32).toBe(0);
   });
 
-  it("resolveCountryCode prefers phoneCode, else region fallback, else '1'", () => {
-    expect(resolveCountryCode("49")).toBe("49");
-    expect(resolveCountryCode("  33 ")).toBe("33");
-    expect(resolveCountryCode(undefined, "EU")).toBe("44");
-    expect(resolveCountryCode("", "CN")).toBe("86");
+  it("isoToDialCode maps common ISO codes to their E.164 dial code", () => {
+    expect(isoToDialCode("GB")).toBe("44");
+    expect(isoToDialCode("DE")).toBe("49");
+    expect(isoToDialCode("NL")).toBe("31");
+    expect(isoToDialCode("US")).toBe("1");
+    expect(isoToDialCode("AU")).toBe("61");
+    expect(isoToDialCode("CN")).toBe("86");
+    expect(isoToDialCode("SG")).toBe("65");
+  });
+
+  it("isoToDialCode is case-insensitive and returns undefined for unknown codes", () => {
+    expect(isoToDialCode("de")).toBe("49");
+    expect(isoToDialCode("Gb")).toBe("44");
+    expect(isoToDialCode("XX")).toBeUndefined();
+  });
+
+  it("resolveCountryCode: explicit phoneCode > ISO code > region fallback", () => {
+    expect(resolveCountryCode("49")).toBe("49"); // explicit phoneCode
+    expect(resolveCountryCode("  33 ")).toBe("33"); // trimmed phoneCode
+    expect(resolveCountryCode(undefined, "EU", "DE")).toBe("49"); // ISO beats EU→44
+    expect(resolveCountryCode(undefined, undefined, "SG")).toBe("65"); // ISO, no region
+    expect(resolveCountryCode(undefined, "EU")).toBe("44"); // region fallback (no ISO)
+    expect(resolveCountryCode(undefined, "eu-pr")).toBe("44"); // real shard string — split before compare
+    expect(resolveCountryCode(undefined, "us-pr")).toBe("1"); // us-pr → "US" → fallback "1"
+    expect(resolveCountryCode("", "CN")).toBe("86"); // empty phoneCode → region
     expect(resolveCountryCode(undefined, "US")).toBe("1");
     expect(resolveCountryCode()).toBe("1");
   });

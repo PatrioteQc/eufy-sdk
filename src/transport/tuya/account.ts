@@ -10,9 +10,8 @@
  *   password = UPPERCASE-HEX( AES-128-CBC-NoPadding( pad16("eufyhome-"+eufyUserId, '0'), KEY, IV ) )
  *
  * where the plaintext is **leading**-zero-padded ('0', 0x30) up to the next multiple of 16 bytes
- * (V6 APK `TuyaAccountUtils.c()` builds the StringBuilder in `padStart` order — zeros first, string
- * after — matching eufy-clean `TuyaCloud.loginEx()` which calls `padStart`), and KEY / IV are the
- * fixed vectors below.
+ * (the app builds the string in `padStart` order — zeros first, string after — wire-confirmed), and
+ * KEY / IV are the fixed vectors below.
  */
 import { createCipheriv } from "node:crypto";
 
@@ -38,7 +37,7 @@ export function tuyaUsername(eufyUserId: string): string {
  * Pad a UTF-8 string with LEADING '0' (0x30) characters up to the next multiple of 16 bytes.
  * A string whose length is already a multiple of 16 is returned unchanged (NO extra full block —
  * this is character padding to satisfy the no-padding cipher, not PKCS#7).
- * Leading-zero order confirmed from V6 APK `TuyaAccountUtils.c()` and eufy-clean `padStart`.
+ * Leading-zero order wire-confirmed from the V6 app.
  */
 function zeroPadTo16(s: string): Buffer {
   const buf = Buffer.from(s, "utf-8");
@@ -60,14 +59,103 @@ export function deriveTuyaPassword(eufyUserId: string): string {
 }
 
 /**
- * Resolve the Tuya `countryCode` login field. The eufy account's phone country code wins when set;
- * otherwise fall back by eufy server region — EU→"44", CN→"86", everything else→"1".
- * ({@link deriveTuyaAccount} passes only `phoneCode`; callers that know the region can use this
- * directly to get the region fallback.)
+ * ISO 3166-1 alpha-2 → E.164 numeric dial code for the eufy device markets.
+ * Used by {@link isoToDialCode} and {@link resolveCountryCode}.
  */
-export function resolveCountryCode(phoneCode?: string, region?: string): string {
+const ISO_TO_DIAL: Readonly<Record<string, string>> = {
+  // Europe
+  AT: "43",
+  BE: "32",
+  BG: "359",
+  CH: "41",
+  CY: "357",
+  CZ: "420",
+  DE: "49",
+  DK: "45",
+  EE: "372",
+  ES: "34",
+  FI: "358",
+  FR: "33",
+  GB: "44",
+  GR: "30",
+  HR: "385",
+  HU: "36",
+  IE: "353",
+  IT: "39",
+  LT: "370",
+  LU: "352",
+  LV: "371",
+  MT: "356",
+  NL: "31",
+  NO: "47",
+  PL: "48",
+  PT: "351",
+  RO: "40",
+  RS: "381",
+  SE: "46",
+  SI: "386",
+  SK: "421",
+  UA: "380",
+  // Americas
+  AR: "54",
+  BR: "55",
+  CA: "1",
+  CL: "56",
+  CO: "57",
+  MX: "52",
+  PE: "51",
+  US: "1",
+  // Asia-Pacific
+  AU: "61",
+  HK: "852",
+  ID: "62",
+  IN: "91",
+  JP: "81",
+  KR: "82",
+  MY: "60",
+  NZ: "64",
+  PH: "63",
+  SG: "65",
+  TH: "66",
+  TW: "886",
+  VN: "84",
+  // China (own Tuya region)
+  CN: "86",
+  // Middle East / Africa
+  AE: "971",
+  EG: "20",
+  IL: "972",
+  NG: "234",
+  RU: "7",
+  SA: "966",
+  TR: "90",
+  ZA: "27",
+};
+
+/**
+ * Map an ISO 3166-1 alpha-2 country code (e.g. `"GB"`, `"DE"`) to its E.164 numeric dial code.
+ * Covers the main eufy device markets. Returns `undefined` for unlisted codes — callers fall back
+ * to the region-based heuristic.
+ */
+export function isoToDialCode(iso: string): string | undefined {
+  return ISO_TO_DIAL[iso.toUpperCase().trim()];
+}
+
+/**
+ * Resolve the Tuya `countryCode` login field. Priority:
+ *  1. `phoneCode` — an explicit numeric dial code (e.g. `"49"`) when the caller already has one.
+ *  2. `isoCode` — an ISO 3166-1 alpha-2 code (e.g. `"DE"` from `MegaClientConfig.countryCode`) looked up
+ *     via {@link isoToDialCode}. Covers the full eufy market range, so a German user on the EU
+ *     shard correctly receives `"49"` rather than the old region-fallback `"44"`.
+ *  3. `region` — coarse mega shard prefix fallback: `"EU"`→`"44"`, `"CN"`→`"86"`, else `"1"`.
+ */
+export function resolveCountryCode(phoneCode?: string, region?: string, isoCode?: string): string {
   if (phoneCode && phoneCode.trim() !== "") return phoneCode.trim();
-  switch ((region ?? "").toUpperCase()) {
+  if (isoCode) {
+    const dial = isoToDialCode(isoCode);
+    if (dial) return dial;
+  }
+  switch ((region ?? "").split("-")[0].toUpperCase()) {
     case "EU":
       return "44";
     case "CN":

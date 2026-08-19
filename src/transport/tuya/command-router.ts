@@ -1,42 +1,139 @@
 /**
- * `TuyaCommandRouter` — the transport-side command router for legacy-Tuya vacuum devices (G-series
- * and other RoboVacs that use the ThingClips / Tuya IoT SDK rather than Anker AIoT MQTT).
+ * `TuyaCommandRouter` — the transport-side command router for eufy Home/Clean Tuya vacuums (X8,
+ * G-series and other `eufy_home_tuya` category devices).
  *
- * SCAFFOLDING: the Tuya REST path is proven at the request/sign layer (transport-confirmed against
- * `a1.tuyaeu.com`), but the end-to-end write path is NOT yet live. Two things are needed before
- * `dispatchCommand` can send:
- *   1. `TuyaClient.login()` — the `token.create` response is an RSA-encrypted envelope whose decrypt
- *      is not implemented, so no session id (`sid`) can be minted yet.
- *   2. G-series DP IDs confirmed from a live V6 APK capture — the capability layer throws for legacy
- *      vacuums until those are known.
- *
- * When both are done: add a `TuyaClient` field, wire a Tuya-devId/gwId resolver (maps eufy SN →
- * Tuya device ids), call `this.client.publishDps(devId, gwId, { [cmd.dp]: cmd.value })` for
- * `aiot-dp` commands, and drop the stub throw here.
+ * Usage: call {@link bind} after a successful mega login, then {@link registerDevice} for each
+ * `eufy_home_tuya` device (the facade does both). On the first {@link dispatchCommand} the router
+ * logs into the Tuya cloud lazily (once, shared across all subsequent sends). The dp.publish write
+ * is sent via `TuyaClient.publishDps` — note the `dp.publish` param shape is not yet confirmed from
+ * a live eufy Home/Clean capture (gated by {@link TuyaCommandRouterConfig.allowUnverified}, default `false`).
  *
  * Layering: imports `../../core` only — no `model/` import, consistent with the capability↔transport
- * decorrelation invariant.
+ * decorrelation invariant. Sibling tuya/* imports are same-layer (transport).
  */
 import type { Command } from "../../core/contracts.js";
+import { resolveCountryCode } from "./account.js";
+import { HmacSigner } from "./sign.js";
+import { TuyaClient } from "./client.js";
+import type { TuyaHttpPost } from "./request.js";
+
+export interface TuyaCommandRouterConfig {
+  /**
+   * Opt-in to unverified Tuya DP writes. Defaults to `false` — {@link dispatchCommand} will throw
+   * until a live `publishDps` capture confirms the dp.publish round-trip. Set `true` only after that
+   * confirmation and remove the gate when the write is shipped as verified.
+   */
+  allowUnverified?: boolean;
+  /** Inject a POST transport (test stub); default = native fetch. Forwarded to the internal TuyaClient. */
+  http?: TuyaHttpPost;
+}
+
+/** eufy SN → Tuya device identity needed for DP reads and writes. */
+interface TuyaDeviceIds {
+  /** Primary device id (the `devId` Tuya field). */
+  devId: string;
+  /**
+   * Gateway device id — for standalone devices equals `devId`; for hub-attached sub-devices is the
+   * hub's devId.
+   */
+  gwId: string;
+}
 
 export class TuyaCommandRouter {
+  private readonly allowUnverified: boolean;
+  private readonly http: TuyaHttpPost | undefined;
+  private userId: string | undefined;
+  private dialCode: string | undefined;
+  private client: TuyaClient | null = null;
+  /** Promise that resolves once Tuya login has completed. Reset by {@link bind}. */
+  private loginOnce: Promise<void> | null = null;
+
   /**
-   * Route a `Command` to the Tuya REST API. Only `aiot-dp` is meaningful here; any other kind is a
-   * routing bug from the facade and fails loud.
-   *
-   * STUB — always throws. The login round-trip (`token.create` RSA envelope decrypt) is not
-   * implemented, so no `sid` is available and `publishDps` cannot complete. Once login is proven and
-   * G-series DP IDs are confirmed from a live V6 capture, replace the stub throw with the real
-   * `TuyaClient.publishDps` call (see module doc).
+   * eufy SN → Tuya device ids, populated by the facade via {@link registerDevice}.
+   * The facade extracts the Tuya id from the `raw` device record fields (`tuya_uuid`,
+   * `tuya_virtual_id`, `tuya_device_id`, `virtualId`) and registers it once the device list loads.
    */
-  async dispatchCommand(_sn: string, cmd: Command): Promise<void> {
+  private readonly snMap = new Map<string, TuyaDeviceIds>();
+
+  constructor(config: TuyaCommandRouterConfig = {}) {
+    this.allowUnverified = config.allowUnverified ?? false;
+    this.http = config.http;
+  }
+
+  /**
+   * Supply credentials for lazy Tuya login. Called by the facade after a successful mega login.
+   * The router logs into Tuya on the first {@link dispatchCommand}, not immediately.
+   *
+   * `regionShard` is the mega shard string (`"eu-pr"`, `"us-pr"`, …) used as a coarse fallback;
+   * `isoCode` is the ISO 3166-1 alpha-2 country code from {@link MegaClientConfig} (e.g. `"DE"`)
+   * and takes precedence — a German user on the EU shard gets dial code `"49"`, not `"44"`.
+   */
+  bind(userId: string, regionShard?: string, isoCode?: string): void {
+    this.userId = userId;
+    this.dialCode = resolveCountryCode(undefined, regionShard, isoCode);
+    // Reset so next dispatch re-logs with the new credentials (handles re-login after logout).
+    this.client = null;
+    this.loginOnce = null;
+  }
+
+  /**
+   * Register a eufy SN → Tuya devId mapping. Called by the facade for each `eufy_home_tuya`
+   * device after the cloud device list loads. The facade extracts the Tuya id from the device's
+   * raw record (`tuya_uuid` / `tuya_virtual_id` / `tuya_device_id` / `virtualId` fields).
+   * `gwId` defaults to `devId` — standalone devices share the two.
+   */
+  registerDevice(sn: string, devId: string, gwId = devId): void {
+    this.snMap.set(sn, { devId, gwId });
+  }
+
+  private ensureLoggedIn(): Promise<void> {
+    if (!this.loginOnce) {
+      const p = (async () => {
+        if (!this.userId) {
+          throw new Error(
+            "TuyaCommandRouter: bind(userId) was not called before dispatch — " +
+              "the facade must call bind() after a successful mega login",
+          );
+        }
+        const client = new TuyaClient({ signer: new HmacSigner(), http: this.http });
+        await client.login(this.userId, this.dialCode);
+        this.client = client;
+      })();
+      p.catch(() => {
+        if (this.loginOnce === p) this.loginOnce = null;
+      });
+      this.loginOnce = p;
+    }
+    return this.loginOnce;
+  }
+
+  /**
+   * Route an `aiot-dp` {@link Command} to the Tuya REST API.
+   *
+   * Logs in lazily on first call. The eufy SN must have been registered via {@link registerDevice}
+   * before dispatch — the facade does this when the device list is loaded.
+   *
+   * ⚠️ `dp.publish` is unverified — see {@link TuyaCommandRouterConfig.allowUnverified}. By default
+   * this throws. Pass `allowUnverified: true` in the router config only after a live capture
+   * confirms the full round-trip, then remove the gate.
+   */
+  async dispatchCommand(sn: string, cmd: Command): Promise<void> {
     if (cmd.kind !== "aiot-dp") {
       throw new Error(`TuyaCommandRouter received an unroutable command (${cmd.kind}) — only aiot-dp belongs here`);
     }
-    throw new Error(
-      "legacy Tuya command path is a STUB: token.create returns an RSA-encrypted envelope " +
-        "(decrypt not implemented) so login cannot complete and dp.publish cannot be sent — " +
-        "see transport/tuya/client.ts TuyaClient.login() for remaining work",
+    await this.ensureLoggedIn();
+    const ids = this.snMap.get(sn);
+    if (!ids) {
+      throw new Error(
+        `TuyaCommandRouter: no Tuya device id registered for ${sn}. ` +
+          "Ensure getDevices() was called and the cloud record includes a tuya_uuid / tuya_virtual_id field.",
+      );
+    }
+    await this.client!.publishDps(
+      ids.devId,
+      ids.gwId,
+      { [cmd.dp]: cmd.value },
+      { allowUnverified: this.allowUnverified },
     );
   }
 }

@@ -1,6 +1,16 @@
+import { generateKeyPairSync } from "node:crypto";
 import { TuyaClient, genDeviceId } from "../client.js";
 import type { TuyaSigner } from "../sign.js";
 import type { TuyaHttpPost } from "../request.js";
+
+/** Generate a minimal RSA public key and return its modulus/exponent as decimal strings. */
+function makeTestRsaKey(): { n: string; e: string } {
+  const { publicKey } = generateKeyPairSync("rsa", { modulusLength: 512 });
+  const jwk = publicKey.export({ format: "jwk" }) as { n: string; e: string };
+  const n = BigInt("0x" + Buffer.from(jwk.n, "base64url").toString("hex")).toString(10);
+  const e = BigInt("0x" + Buffer.from(jwk.e, "base64url").toString("hex")).toString(10);
+  return { n, e };
+}
 
 class FixedSigner implements TuyaSigner {
   sign(): string {
@@ -79,9 +89,10 @@ describe("TuyaClient", () => {
     });
   });
 
-  it("login runs token.create then password.login and stores the sid", async () => {
+  it("login runs username.token.get then password.login.reg and stores the sid", async () => {
+    const { n, e } = makeTestRsaKey();
     const { http, calls } = stubHttp([
-      { success: true, result: { token: "TOK-1" } },
+      { success: true, result: { token: "TOK-1", publicKey: n, exponent: e } },
       { success: true, result: { sid: "eu-sid-xyz", uid: "tuya-uid-9" } },
     ]);
     const c = new TuyaClient({ signer: new FixedSigner(), chKey: "7cbfe6d8", http });
@@ -91,22 +102,60 @@ describe("TuyaClient", () => {
     expect(c.loggedIn).toBe(true);
     expect(c.getSession().sid).toBe("eu-sid-xyz");
 
-    // step 1 = token.create with the derived username, step 2 = password.login carrying the token
+    // step 1 = username.token.get with the derived username
     const step1 = new URLSearchParams(calls[0].body);
-    expect(step1.get("a")).toBe("thing.m.user.uid.token.create");
-    expect(JSON.parse(step1.get("postData")!)).toEqual({ countryCode: "44", uid: "eufyhome-12345" });
+    expect(step1.get("a")).toBe("smartlife.m.user.username.token.get");
+    expect(JSON.parse(step1.get("postData")!)).toEqual({
+      countryCode: "44",
+      username: "eufyhome-12345",
+      isUid: true,
+    });
 
+    // step 2 = password.login.reg carrying RSA-encrypted password + token
     const step2 = new URLSearchParams(calls[1].body);
-    expect(step2.get("a")).toBe("thing.m.user.uid.password.login");
+    expect(step2.get("a")).toBe("smartlife.m.user.uid.password.login.reg");
     const pd = JSON.parse(step2.get("postData")!);
     expect(pd.token).toBe("TOK-1");
     expect(pd.uid).toBe("eufyhome-12345");
-    expect(pd.passwd).toBe("1774D45DA407A2B5D2D60C7AEDA64A74"); // derived password vector
+    expect(pd.ifencrypt).toBe(1);
+    // passwd = RSA-PKCS1-encrypt(MD5hex(aesPassword)) — non-deterministic, check shape only
+    expect(pd.passwd).toMatch(/^[0-9a-f]+$/);
   });
 
-  it("login throws when token.create yields no token", async () => {
+  it("login retries with fallback password '12345678' on USER_PASSWD_WRONG, then succeeds", async () => {
+    const { n, e } = makeTestRsaKey();
+    const tokenReply = { success: true, result: { token: "TOK-FB", publicKey: n, exponent: e } };
+    const { http, calls } = stubHttp([
+      tokenReply, // step 1: token.get for derived password
+      { success: false, errorMsg: "USER_PASSWD_WRONG" }, // step 2: login with derived password fails
+      tokenReply, // step 3: token.get again for fallback attempt
+      { success: true, result: { sid: "fb-sid", uid: "fb-uid" } }, // step 4: login with "12345678"
+    ]);
+    const c = new TuyaClient({ signer: new FixedSigner(), chKey: "7cbfe6d8", http });
+    const res = await c.login("99999");
+    expect(res).toEqual({ sid: "fb-sid", uid: "fb-uid" });
+    expect(calls).toHaveLength(4);
+    // The fallback attempt's login.reg carries a different encrypted password (MD5 of "12345678").
+    // We don't check the exact ciphertext — just confirm a second login.reg was sent.
+    expect(new URLSearchParams(calls[3].body).get("a")).toBe("smartlife.m.user.uid.password.login.reg");
+  });
+
+  it("login throws when both derived password and fallback fail with USER_PASSWD_WRONG", async () => {
+    const { n, e } = makeTestRsaKey();
+    const tokenReply = { success: true, result: { token: "TOK-X", publicKey: n, exponent: e } };
+    const { http } = stubHttp([
+      tokenReply,
+      { success: false, errorMsg: "USER_PASSWD_WRONG" },
+      tokenReply,
+      { success: false, errorMsg: "USER_PASSWD_WRONG" },
+    ]);
+    const c = new TuyaClient({ signer: new FixedSigner(), chKey: "7cbfe6d8", http });
+    await expect(c.login("99999")).rejects.toThrow(/USER_PASSWD_WRONG.*derived.*fallback/i);
+  });
+
+  it("login throws when username.token.get yields no token", async () => {
     const { http } = stubHttp([{ success: false, errorMsg: "boom" }]);
     const c = new TuyaClient({ signer: new FixedSigner(), chKey: "7cbfe6d8", http });
-    await expect(c.login("12345")).rejects.toThrow(/token.create failed: boom/);
+    await expect(c.login("12345")).rejects.toThrow(/username.token.get failed: boom/);
   });
 });

@@ -2,8 +2,8 @@ import {
   buildApiParams,
   buildGetDeviceDpsAction,
   buildPublishDpsAction,
-  buildTokenCreateAction,
-  buildPasswordLoginAction,
+  buildUsernameTokenGetAction,
+  buildPasswordLoginRegAction,
   DEFAULT_TUYA_ENV,
   type TuyaSession,
 } from "../request.js";
@@ -104,16 +104,23 @@ describe("dp action builders", () => {
   });
 
   it("login action builders shape their postData", () => {
-    expect(JSON.parse(buildTokenCreateAction("44", "eufyhome-42").postData!)).toEqual({
-      countryCode: "44",
-      uid: "eufyhome-42",
-    });
-    expect(JSON.parse(buildPasswordLoginAction("44", "eufyhome-42", "PW", "TOK").postData!)).toEqual({
+    // step 1: username.token.get
+    const step1 = buildUsernameTokenGetAction("44", "eufyhome-42");
+    expect(step1.a).toBe("smartlife.m.user.username.token.get");
+    expect(step1.v).toBe("2.0");
+    expect(JSON.parse(step1.postData!)).toEqual({ countryCode: "44", username: "eufyhome-42", isUid: true });
+
+    // step 2: password.login.reg
+    const step2 = buildPasswordLoginRegAction("44", "eufyhome-42", "PW", "TOK");
+    expect(step2.a).toBe("smartlife.m.user.uid.password.login.reg");
+    expect(step2.v).toBe("1.0");
+    expect(JSON.parse(step2.postData!)).toEqual({
       countryCode: "44",
       uid: "eufyhome-42",
       passwd: "PW",
       token: "TOK",
       ifencrypt: 1,
+      createGroup: true,
     });
   });
 });

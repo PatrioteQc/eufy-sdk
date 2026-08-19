@@ -2,21 +2,19 @@
  * {@link TuyaClient} — the foundation glue that ties account derivation, request assembly, signing,
  * and transport into a small typed API: `login()`, `getDeviceDps()`, `publishDps()`.
  *
- * FOUNDATION status: request assembly, the `sign` (✅ cracked — {@link HmacSigner} reproduces a live
- * capture), and `chKey` (✅ solved per-appId constant `"7cbfe6d8"`) are all wired and transport-verified
- * against `a1.tuyaeu.com`. What is NOT proven end-to-end is the LOGIN round-trip: `token.create` returns
- * an undecrypted RSA envelope, so a real `sid` cannot be obtained yet — meaning `login()`, and the
- * `getDeviceDps()` / `publishDps()` calls that need a `sid`, are not live-confirmed (see their docs).
+ * No configuration is required for signing: {@link HmacSigner} uses the built-in app key
+ * ({@link TUYA_SIGN_K}) by default. `new TuyaClient({})` is a valid zero-config construction.
+ * Pass a `sid` to skip login and read DPs directly with a previously obtained session.
  */
-import { randomBytes } from "node:crypto";
+import { randomBytes, createHash, createPublicKey, publicEncrypt, constants } from "node:crypto";
 import { deriveTuyaAccount, type TuyaAccount } from "./account.js";
-import { type TuyaSigner } from "./sign.js";
+import { TUYA_CHKEY, HmacSigner, type TuyaSigner } from "./sign.js";
 import {
   buildApiParams,
   buildGetDeviceDpsAction,
-  buildPasswordLoginAction,
+  buildPasswordLoginRegAction,
   buildPublishDpsAction,
-  buildTokenCreateAction,
+  buildUsernameTokenGetAction,
   sendApiRequest,
   DEFAULT_TUYA_ENV,
   type TuyaAction,
@@ -34,13 +32,16 @@ export interface TuyaLoginResult {
 }
 
 export interface TuyaClientConfig {
-  /** The native sign seam. Required for any real call; use a fake in tests. */
-  signer: TuyaSigner;
   /**
-   * 8-hex `chKey`. ✅ SOLVED (see {@link TuyaSession.chKey}): a pure function of the appId only, so a
-   * per-appId CONSTANT — `"7cbfe6d8"` for this build. Pass that literal.
+   * The native sign seam. Defaults to {@link HmacSigner} with the built-in app key — no config
+   * needed. Override only for tests (pass a {@link StubSigner} or custom impl).
    */
-  chKey: string;
+  signer?: TuyaSigner;
+  /**
+   * Channel key — defaults to {@link TUYA_CHKEY} (`"7cbfe6d8"`), the constant extracted from
+   * the eufy Security/Mega app. Override only for non-standard builds.
+   */
+  chKey?: string;
   /** Per-install device id; a random 44-hex one is generated if omitted (see {@link genDeviceId}). */
   deviceId?: string;
   /** Restore a prior session id (skip login). */
@@ -54,14 +55,34 @@ export interface TuyaClientConfig {
 }
 
 /**
- * Generate a per-install `deviceId`. The capture shows a 44-hex-char id
- * (`7932c5202387dffd14f2e2d75e0fbb8efa1cf7f28be5`); the app derives it deterministically per
- * install, but the scheme is not reversed, so we mint a random 44-hex id and keep it stable for the
- * client's lifetime.
+ * Generate a per-install `deviceId` (44 hex chars). The app derives it deterministically per
+ * install from device fingerprints, but the scheme is not reversed — we mint a random id instead.
  * TODO(scheme): replace with the app's real derivation once known.
  */
 export function genDeviceId(): string {
   return randomBytes(22).toString("hex"); // 22 bytes → 44 hex chars
+}
+
+/**
+ * RSA-PKCS1-encrypt a Tuya login password using the server-supplied key parameters.
+ * Wire-confirmed: RSA/ECB/PKCS1Padding, modulus + exponent as decimal strings.
+ * Returns the hex-encoded ciphertext (the `passwd` field in the login.reg request).
+ */
+function rsaEncryptPassword(password: string, publicKeyDecimal: string, exponentDecimal: string): string {
+  const bigintToBuffer = (n: bigint): Buffer => {
+    const hex = n.toString(16);
+    return Buffer.from(hex.length % 2 === 0 ? hex : "0" + hex, "hex");
+  };
+  const rsaKey = createPublicKey({
+    key: {
+      kty: "RSA",
+      n: bigintToBuffer(BigInt(publicKeyDecimal)).toString("base64url"),
+      e: bigintToBuffer(BigInt(exponentDecimal)).toString("base64url"),
+    },
+    format: "jwk",
+  });
+  const md5Hex = createHash("md5").update(password).digest("hex");
+  return publicEncrypt({ key: rsaKey, padding: constants.RSA_PKCS1_PADDING }, Buffer.from(md5Hex)).toString("hex");
 }
 
 export class TuyaClient {
@@ -71,15 +92,15 @@ export class TuyaClient {
   private readonly http?: TuyaHttpPost;
   private session: TuyaSession;
 
-  constructor(config: TuyaClientConfig) {
-    this.signer = config.signer;
+  constructor(config: TuyaClientConfig = {}) {
+    this.signer = config.signer ?? new HmacSigner();
     this.env = config.env ?? DEFAULT_TUYA_ENV;
     this.endpoint = config.endpoint;
     this.http = config.http;
     this.session = {
       sid: config.sid ?? "",
       deviceId: config.deviceId ?? genDeviceId(),
-      chKey: config.chKey,
+      chKey: config.chKey ?? TUYA_CHKEY,
     };
   }
 
@@ -107,45 +128,58 @@ export class TuyaClient {
   }
 
   /**
-   * Log into the Tuya cloud from a eufy user id: derive the Tuya account
-   * ({@link deriveTuyaAccount}), create a pre-login token, then password-login (auto-registers on
-   * first login). On success the session id is stored and returned with the Tuya uid.
+   * Log into the Tuya cloud from a eufy user id (wire-confirmed from the eufy Security app).
    *
-   * ⚠️ STUB — currently always throws. `token.create` succeeds at the transport/sign level, but its
-   * `result` is an **RSA-encrypted envelope**, not a plaintext `{ token }`, so no usable pre-login
-   * token can be extracted yet (the envelope decrypt is not implemented). Until that lands `login()`
-   * cannot complete; a `sid`-bearing call must use an injected `sid` (see {@link TuyaClientConfig.sid}).
-   * TODO(verify): the response field names (`token`/`sid`/`uid`) and any passwd⊕token transform were
-   * not pinned from the capture — see the action builders in `request.ts`.
+   * Flow:
+   *  1. `smartlife.m.user.username.token.get` → `{ token, publicKey, exponent }` (RSA-2048 key).
+   *     If this returns USER_NOT_EXIST the shadow account has never been provisioned — the vacuum
+   *     must be added via the eufy Security app (`com.oceanwing.battery.cam`) at least once.
+   *  2. Derive password: RSA/PKCS1-encrypt( MD5hex(aesPassword), serverKey ) → hex.
+   *  3. `smartlife.m.user.uid.password.login.reg` → `{ sid, uid }`.
+   *     On USER_PASSWD_WRONG: re-fetch a token and retry once with the hardcoded fallback
+   *     password `"12345678"` (wire-confirmed from the eufy Security app).
+   *     ⚠️ Two failed attempts in a row can contribute to Tuya-side rate-limiting or lockout — do not
+   *     add further retry loops on top of this one.
    */
   async login(eufyUserId: string, phoneCode?: string): Promise<TuyaLoginResult> {
     const account: TuyaAccount = deriveTuyaAccount(eufyUserId, phoneCode);
 
-    const tokenRes = await this.call<{ token?: string }>(buildTokenCreateAction(account.countryCode, account.username));
-    const token = tokenRes.result?.token;
-    if (!token) {
-      if (tokenRes.errorMsg ?? tokenRes.errorCode) {
-        throw new Error(`tuya token.create failed: ${tokenRes.errorMsg ?? tokenRes.errorCode}`);
+    const attempt = async (password: string): Promise<TuyaLoginResult | "PASSWD_WRONG"> => {
+      const tokenRes = await this.call<{ token?: string; publicKey?: string; exponent?: string }>(
+        buildUsernameTokenGetAction(account.countryCode, account.username),
+      );
+      if (!tokenRes.success || !tokenRes.result?.token) {
+        const code = tokenRes.errorCode ?? tokenRes.errorMsg ?? "unknown";
+        if (code === "USER_NOT_EXIST") {
+          throw new Error(
+            "Tuya shadow account not provisioned (USER_NOT_EXIST). Open the eufy Security app " +
+              "(com.oceanwing.battery.cam), add the vacuum, then retry.",
+          );
+        }
+        throw new Error(`tuya username.token.get failed: ${code}`);
       }
-      throw new Error(
-        "tuya login is a STUB: token.create returned an RSA-encrypted envelope (no plaintext `token`) — " +
-          "decrypting it is not implemented, so login cannot complete. Inject a `sid` instead.",
+      const { token, publicKey, exponent } = tokenRes.result;
+      if (!publicKey || !exponent) throw new Error("tuya token.get: missing publicKey/exponent");
+
+      const encPasswd = rsaEncryptPassword(password, publicKey, exponent);
+      const loginRes = await this.call<{ sid?: string; uid?: string }>(
+        buildPasswordLoginRegAction(account.countryCode, account.username, encPasswd, token),
       );
+      if (loginRes.success && loginRes.result?.sid && loginRes.result?.uid) {
+        return { sid: loginRes.result.sid, uid: loginRes.result.uid };
+      }
+      if ((loginRes.errorCode ?? loginRes.errorMsg) === "USER_PASSWD_WRONG") return "PASSWD_WRONG";
+      throw new Error(`tuya password.login.reg failed: ${loginRes.errorMsg ?? loginRes.errorCode ?? "no sid/uid"}`);
+    };
+
+    let result = await attempt(account.password);
+    if (result === "PASSWD_WRONG") result = await attempt("12345678");
+    if (result === "PASSWD_WRONG") {
+      throw new Error("tuya login: USER_PASSWD_WRONG on both derived password and fallback '12345678'");
     }
 
-    const loginRes = await this.call<{ sid?: string; uid?: string }>(
-      buildPasswordLoginAction(account.countryCode, account.username, account.password, token),
-    );
-    const sid = loginRes.result?.sid;
-    const uid = loginRes.result?.uid;
-    if (!sid || !uid) {
-      throw new Error(
-        `tuya password.login failed: ${loginRes.errorMsg ?? loginRes.errorCode ?? "no sid/uid in result"}`,
-      );
-    }
-
-    this.session = { ...this.session, sid };
-    return { sid, uid };
+    this.session = { ...this.session, sid: result.sid };
+    return result;
   }
 
   /**

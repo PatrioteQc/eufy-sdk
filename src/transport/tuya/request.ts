@@ -232,26 +232,47 @@ export function buildGetDeviceDpsAction(devId: string, dpCacheType = 1): TuyaAct
 }
 
 /**
- * LOGIN step 1: create a pre-login token for a uid.
- * TODO(verify): action version `"1.0"` not pinned from the capture.
+ * LOGIN step 1: fetch a pre-login RSA token for a Tuya uid.
+ * Wire-confirmed from the eufy Security app (`com.oceanwing.battery.cam`):
+ * wire action `smartlife.m.user.username.token.get`, v=2.0.
+ * Returns `{ token, publicKey, exponent }` (RSA-2048 modulus + exponent as decimal strings).
  */
-export function buildTokenCreateAction(countryCode: string, uid: string): TuyaAction {
+export function buildUsernameTokenGetAction(countryCode: string, username: string): TuyaAction {
   return {
-    a: "thing.m.user.uid.token.create",
-    v: "1.0",
-    postData: JSON.stringify({ countryCode, uid }),
+    a: "smartlife.m.user.username.token.get",
+    v: "2.0",
+    postData: JSON.stringify({ countryCode, username, isUid: true }),
   };
 }
 
 /**
- * LOGIN step 2: uid password login (auto-registers on first login).
- * TODO(verify): action version `"1.0"` and whether `passwd` is further transformed with `token`
- * were not pinned from the capture — `ifencrypt` signals the passwd is the AES-derived value.
+ * LOGIN step 2: uid password login + auto-register.
+ * Wire-confirmed from the eufy Security app: wire action
+ * `smartlife.m.user.uid.password.login.reg`, v=1.0. `passwd` = hex of RSA-PKCS1-encrypt(MD5hex(aesPassword)).
+ * On success returns `{ sid, uid }`.
  */
-export function buildPasswordLoginAction(countryCode: string, uid: string, passwd: string, token: string): TuyaAction {
+export function buildPasswordLoginRegAction(
+  countryCode: string,
+  uid: string,
+  passwd: string,
+  token: string,
+): TuyaAction {
   return {
-    a: "thing.m.user.uid.password.login",
+    a: "smartlife.m.user.uid.password.login.reg",
     v: "1.0",
-    postData: JSON.stringify({ countryCode, uid, passwd, token, ifencrypt: 1 }),
+    postData: JSON.stringify({ countryCode, uid, passwd, token, ifencrypt: 1, createGroup: true }),
+  };
+}
+
+/**
+ * Older Tuya API path that auto-creates a shadow account if it does not yet exist.
+ * Used only by `tuya-login-diag.mjs` as a last-resort re-provisioning probe — not part of the
+ * normal login flow (`smartlife.m.user.username.token.get` is step 1).
+ */
+export function buildUidTokenCreateAction(countryCode: string, uid: string): TuyaAction {
+  return {
+    a: "tuya.m.user.uid.token.create",
+    v: "1.0",
+    postData: JSON.stringify({ countryCode, uid }),
   };
 }
