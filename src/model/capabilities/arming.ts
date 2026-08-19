@@ -266,6 +266,10 @@ export const ARMING_MEMBERS = {
    *
    * The setter takes either vocabulary — see `armingModeOf` — because the getter answers the wire integer,
    * and a value a caller just read has to be one it can write back.
+   *
+   * MODE_SWITCH carries no value. Live qualification on a standalone camera showed that authoritative
+   * readback requires a bounded cloud-list refresh, and that its P2P session must be reset after
+   * convergence before a following mode write; an attached device must never reset its shared HomeBase.
    */
   mode: {
     param: ARMING_CMD.SET_ARMING,
@@ -280,6 +284,12 @@ export const ARMING_MEMBERS = {
       "the app defines; SETS only the 3 whose write is wire-captured (away/home/disarmed) — " +
       "schedule/custom1/custom2/custom3/off/geo are named by the app but no capture shows one being sent, " +
       "so they are refused rather than guessed; see ARMING_MODE_WIRE in arming.ts for the breakdown.",
+    observation: {
+      event: "armingModeChanged",
+      expected: (value) => ARMING_MODE_WIRE[armingModeOf(value)!],
+      resetStandaloneSession: true,
+      timeoutMs: 20_000,
+    },
     write: (v, ctx) => {
       const mode = armingModeOf(v);
       return mode ? armingCommand(mode, ctx) : undefined;
@@ -337,7 +347,12 @@ export const ARMING: CapabilityModule = {
    * transition and a host re-reads the mode rather than trusting a decoded field.
    */
   events: [
-    { source: "push", match: CusPushEvent.MODE_SWITCH, emit: "armingModeChanged" },
+    {
+      source: "push",
+      match: CusPushEvent.MODE_SWITCH,
+      emit: "armingModeChanged",
+      refresh: { member: "mode" },
+    },
     { source: "push", match: CusPushEvent.ALARM, emit: "alarm", payload: { phase: "triggered" } },
     { source: "push", match: CusPushEvent.ALARM_DELAY, emit: "alarm", payload: { phase: "delayed" } },
   ],
