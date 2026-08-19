@@ -39,7 +39,15 @@ import {
 import type { DeviceEventMap } from "../model/capabilities/index.js";
 import type { CommandContext } from "../model/capabilities/types.js";
 import { CapabilityNotSupportedError } from "../model/capabilities/types.js";
-import type { Command, CommandSink, Ff09SettingsReader, MediaProvider, TuyaDpInbound } from "../core/contracts.js";
+import {
+  commandObservation,
+  type Command,
+  type CommandObservation,
+  type CommandSink,
+  type Ff09SettingsReader,
+  type MediaProvider,
+  type TuyaDpInbound,
+} from "../core/contracts.js";
 import { noopLogger } from "../core/logger.js";
 import { PushClient } from "../transport/push/push-client.js";
 import { FcmRegistrar } from "../transport/push/fcm.js";
@@ -72,6 +80,10 @@ export type {
   RealtimeReadiness,
   WaitForRealtimeOptions,
 } from "./types.js";
+
+type SemanticEventRefresh = Pick<CommandObservation, "param" | "property" | "resetStandaloneSession" | "timeoutMs"> & {
+  expected?: CommandObservation["expected"];
+};
 
 /**
  * Read a non-empty string field off a raw device record, tolerating the app's `deviceParams` nesting
@@ -223,6 +235,10 @@ export class EufyMega extends EventEmitter {
    * this map must never be what keeps one alive.
    */
   private readonly liveDevices = new Map<string, WeakRef<Device>>();
+  /** Serialized state-transition transactions keyed by device and reflected member. */
+  private readonly stateTransitions = new Map<string, Promise<unknown>>();
+  /** Local writes already awaiting the same semantic transition, counted per reflected member. */
+  private readonly commandRefreshes = new Map<string, { epoch: number; count: number }>();
   /**
    * The param ids each bound device's read getters were built from — the evidence the gate saw at bind
    * time. Compared against an incoming report to notice when one carries an id the getters do not cover
@@ -533,12 +549,119 @@ export class EufyMega extends EventEmitter {
    * and must still update what is known, or the next realtime signal carrying that same value would
    * read as a change and be announced a second time.
    */
-  private emitSemantic(event: string, payload: Record<string, unknown>, opts: { edge?: boolean } = {}): void {
+  private emitSemantic(
+    event: string,
+    payload: Record<string, unknown>,
+    opts: {
+      edge?: boolean;
+      refresh?: SemanticEventRefresh;
+    } = {},
+  ): void {
+    const refresh = opts.refresh;
+    const deviceSn = payload.deviceSn;
+    if (refresh && typeof deviceSn === "string") {
+      const key = this.eventRefreshKey(deviceSn, refresh);
+      const commandOwner = this.commandRefreshes.get(key);
+      if (commandOwner?.epoch === this.realtimeEpoch && commandOwner.count > 0) return;
+      const device = this.liveDevices.get(deviceSn)?.deref();
+      if (device) {
+        const emission = this.enqueueStateTransition(key, () => this.refreshEventState(deviceSn, refresh))
+          .then(async (refreshed) => {
+            if (!refreshed) return;
+            this.emitSemantic(event, payload, { edge: opts.edge });
+          })
+          .catch((error) => this.reportError(error));
+        void emission;
+        return;
+      }
+    }
     const repeat = this.noteState(event, payload);
     if (opts.edge && repeat) return;
     const emit = this.emit as (e: string, p: unknown) => boolean;
     emit.call(this, event, payload); // the named listener (eufy.on("motion", …))
     emit.call(this, "event", { ...payload, eventName: event }); // the catch-all (eufy.on("event", …)); avoids colliding with payload.name
+  }
+
+  /** Await one capability-declared reflected param before publishing its valueless transition event. */
+  private refreshEventState(sn: string, refresh: SemanticEventRefresh): Promise<boolean> {
+    const epoch = this.realtimeEpoch;
+    return (async (): Promise<boolean> => {
+      if (epoch !== this.realtimeEpoch) return false;
+      const initialDevice = this.liveDevices.get(sn)?.deref();
+      const before = initialDevice?.getProperty(refresh.property)?.value;
+      const rawBefore = this.registry.require(sn).params?.[refresh.param];
+      const deadline = Date.now() + refresh.timeoutMs;
+      while (Date.now() < deadline) {
+        const remaining = deadline - Date.now();
+        await this.beforeDeadline(this.registry.getDevices(), remaining);
+        if (epoch !== this.realtimeEpoch) return false;
+        const device = this.liveDevices.get(sn)?.deref();
+        const record = this.registry.require(sn);
+        const rawValue = record.params?.[refresh.param];
+        const converged =
+          refresh.expected === undefined
+            ? device
+              ? String(rawValue) !== String(before)
+              : rawValue !== rawBefore
+            : String(rawValue) === String(refresh.expected);
+        if (converged && device) {
+          device.applyParams(record.params ?? {});
+          if (this.matchesObservation(device.getProperty(refresh.property)?.value, refresh, before)) return true;
+        } else if (converged) {
+          return true;
+        }
+        const delay = Math.min(500, deadline - Date.now());
+        if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
+      }
+      throw new Error("device state did not converge before semantic event deadline");
+    })();
+  }
+
+  /** Serialize one complete state-transition transaction behind its keyed predecessor. */
+  private enqueueStateTransition<T>(key: string, operation: () => Promise<T>): Promise<T> {
+    const predecessor = this.stateTransitions.get(key);
+    const current = (async (): Promise<T> => {
+      if (predecessor) {
+        try {
+          await predecessor;
+        } catch {}
+      }
+      return operation();
+    })();
+    const tracked = current.finally(() => {
+      if (this.stateTransitions.get(key) === tracked) this.stateTransitions.delete(key);
+    });
+    this.stateTransitions.set(key, tracked);
+    return tracked;
+  }
+
+  private matchesObservation(
+    value: unknown,
+    refresh: SemanticEventRefresh & { expected?: boolean | number | string },
+    before: unknown,
+  ): boolean {
+    return refresh.expected === undefined ? value !== before : String(value) === String(refresh.expected);
+  }
+
+  private eventRefreshKey(sn: string, refresh: Pick<CommandObservation, "param">): string {
+    return `${sn}:${refresh.param}`;
+  }
+
+  /** Limit waiting on an unabortable dependency operation to the remaining semantic-event refresh window. */
+  private beforeDeadline<T>(operation: Promise<T>, timeoutMs: number): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error("semantic event refresh timed out")), Math.max(0, timeoutMs));
+      operation.then(
+        (value) => {
+          clearTimeout(timeout);
+          resolve(value);
+        },
+        (error) => {
+          clearTimeout(timeout);
+          reject(error);
+        },
+      );
+    });
   }
 
   /**
@@ -568,7 +691,10 @@ export class EufyMega extends EventEmitter {
     if (f.params) this.applyRealtimeState(deviceSn, f.params);
     this.applyRealtimeReport(deviceSn, decodeCapabilityState(signal, caps));
     for (const ev of decodeCapabilityEvent(signal, caps))
-      this.emitSemantic(ev.event, deviceSn ? { deviceSn, ...ev.payload } : ev.payload, { edge: true });
+      this.emitSemantic(ev.event, deviceSn ? { deviceSn, ...ev.payload } : ev.payload, {
+        edge: true,
+        refresh: ev.refresh,
+      });
   }
 
   /**
@@ -705,7 +831,57 @@ export class EufyMega extends EventEmitter {
    */
   private commandSinkFor(sn: string): CommandSink {
     return {
-      dispatch: (cmd: Command) => this.routeCommand(sn, cmd),
+      dispatch: async (cmd: Command) => {
+        const observation = commandObservation(cmd);
+        if (!observation) {
+          await this.routeCommand(sn, cmd);
+          return;
+        }
+        const key = this.eventRefreshKey(sn, observation);
+        const epoch = this.realtimeEpoch;
+        const owner = this.commandRefreshes.get(key);
+        const currentOwner = owner?.epoch === epoch ? owner : { epoch, count: 0 };
+        currentOwner.count += 1;
+        this.commandRefreshes.set(key, currentOwner);
+        let acknowledge!: () => void;
+        let reject!: (error: unknown) => void;
+        let acknowledged = false;
+        const acknowledgement = new Promise<void>((resolve, rejectPromise) => {
+          acknowledge = () => {
+            acknowledged = true;
+            resolve();
+          };
+          reject = rejectPromise;
+        });
+        const release = (): void => {
+          if (this.commandRefreshes.get(key) === currentOwner) {
+            currentOwner.count -= 1;
+            if (currentOwner.count === 0) this.commandRefreshes.delete(key);
+          }
+        };
+        const transaction = this.enqueueStateTransition(key, async () => {
+          try {
+            if (epoch !== this.realtimeEpoch) throw new Error("observed command superseded by disconnect");
+            await this.routeCommand(sn, cmd);
+            acknowledge();
+            const refreshed = await this.refreshEventState(sn, observation);
+            if (!refreshed || epoch !== this.realtimeEpoch) return;
+            this.emitSemantic(observation.event, { deviceSn: sn });
+            if (observation.resetStandaloneSession) await this.p2p.resetStandaloneSession(sn);
+          } catch (error) {
+            if (!acknowledged) reject(error);
+            else this.reportError(error);
+          } finally {
+            release();
+          }
+        });
+        void transaction.catch((error) => {
+          if (!acknowledged) reject(error);
+          else this.reportError(error);
+          release();
+        });
+        return acknowledgement;
+      },
     };
   }
 
@@ -1051,7 +1227,7 @@ export class EufyMega extends EventEmitter {
       for (const dev of diff.removed) this.emit("deviceRemoved", dev);
       for (const change of diff.params)
         for (const out of decodeCapabilityEvent({ source: "poll", ...change }))
-          this.emitSemantic(out.event, out.payload);
+          this.emitSemantic(out.event, out.payload, { refresh: out.refresh });
       for (const dev of diff.reported) this.emit("deviceState", this.stateOf(dev));
       for (const change of diff.params) await this.widenCapabilities(change.deviceSn);
     } catch (e) {
@@ -1191,7 +1367,8 @@ export class EufyMega extends EventEmitter {
       };
       const caps = m.deviceSn ? this.capsForEvent(m.deviceSn) : undefined;
       this.applyRealtimeReport(m.deviceSn, decodeCapabilityState(signal, caps));
-      for (const out of decodeCapabilityEvent(signal, caps)) this.emitSemantic(out.event, out.payload, { edge: true });
+      for (const out of decodeCapabilityEvent(signal, caps))
+        this.emitSemantic(out.event, out.payload, { edge: true, refresh: out.refresh });
     });
     transport.on("error", (e) => this.reportError(e));
 
@@ -1529,7 +1706,7 @@ export class EufyMega extends EventEmitter {
         payload: ev.payload as Record<string, unknown>,
       };
       for (const out of decodeCapabilityEvent(signal, this.capsForEvent(ev.deviceSn))) {
-        this.emitSemantic(out.event, out.payload, { edge: true });
+        this.emitSemantic(out.event, out.payload, { edge: true, refresh: out.refresh });
         if (this.opts.autoRealtime !== false && this.prewarmEvents.has(out.event)) {
           const dsn = (out.payload.deviceSn as string | undefined) ?? ev.deviceSn;
           if (dsn) void this.p2p.prewarm(this.p2p.stationKeyOf(dsn), this.opts.prewarmMs);
@@ -1591,6 +1768,8 @@ export class EufyMega extends EventEmitter {
    */
   async disconnect(): Promise<void> {
     this.realtimeEpoch++;
+    this.stateTransitions.clear();
+    this.commandRefreshes.clear();
     if (this.realtimeGeneration) {
       const generation = this.realtimeGeneration;
       generation.superseded = readinessSnapshot(generation.result ?? generation.readiness, "superseded");

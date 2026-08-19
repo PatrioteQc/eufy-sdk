@@ -238,6 +238,14 @@ export class P2PCommandRouter {
     return dev ? this.stationKeyFor(dev) : sn;
   }
 
+  /** Reset only a standalone device's session; an attached device must not close its shared HomeBase. */
+  async resetStandaloneSession(sn: string): Promise<void> {
+    const device = this.deps.listDevices().find((candidate) => candidate.sn === sn);
+    if (!device) return;
+    const station = this.stationKeyFor(device);
+    if (station === sn) await this.manager.resetWhenUnused(station);
+  }
+
   /**
    * Open (or reuse) the P2P session for a station **on demand**, coalescing concurrent cold opens via
    * the {@link SessionManager}. A command / stream / pre-warm opens only the station it targets; idle

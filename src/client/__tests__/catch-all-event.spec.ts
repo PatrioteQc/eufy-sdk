@@ -1,4 +1,5 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
+import { commandObservation, observeCommand } from "../../core/contracts.js";
 import { EufyMega } from "../eufy-mega.js";
 import type { AnyDeviceEvent } from "../types.js";
 
@@ -63,5 +64,251 @@ describe("catch-all event tag", () => {
 
     expect(seen).toHaveLength(1);
     expect(seen[0].eventName).toBeUndefined();
+  });
+
+  it("refreshes retained device state before emitting an event that requires a re-read", async () => {
+    const eufy = client();
+    const sequence: string[] = [];
+    let mode = 1;
+    const device = {
+      getProperty: () => ({ value: mode }),
+      applyParams: vi.fn((params: Record<number, string>) => {
+        mode = Number(params[1224]);
+        sequence.push("refresh");
+      }),
+    };
+    (eufy as any).liveDevices.set("T8000P0000000000", new WeakRef(device));
+    vi.spyOn((eufy as any).registry, "require").mockReturnValue({ params: { 1224: "63" } });
+    vi.spyOn((eufy as any).registry, "getDevices").mockResolvedValue([]);
+    eufy.on("armingModeChanged", () => sequence.push("event"));
+
+    (eufy as any).emitSemantic(
+      "armingModeChanged",
+      { deviceSn: "T8000P0000000000" },
+      { refresh: { param: 1224, property: "armingMode", timeoutMs: 20_000 } },
+    );
+
+    expect(sequence).toEqual([]);
+    await vi.waitFor(() => expect(sequence).toEqual(["refresh", "event"]));
+    expect(device.applyParams).toHaveBeenCalledExactlyOnceWith({ 1224: "63" });
+  });
+
+  it("applies a converged cloud record once after unchanged refresh attempts", async () => {
+    vi.useFakeTimers();
+    const eufy = client();
+    let mode = 1;
+    let cloudMode = "1";
+    let polls = 0;
+    const device = {
+      getProperty: () => ({ value: mode }),
+      applyParams: vi.fn((params: Record<number, string>) => {
+        mode = Number(params[1224]);
+      }),
+    };
+    (eufy as any).liveDevices.set("T8000P0000000000", new WeakRef(device));
+    vi.spyOn((eufy as any).registry, "require").mockImplementation(() => ({ params: { 1224: cloudMode } }));
+    vi.spyOn((eufy as any).registry, "getDevices").mockImplementation(async () => {
+      polls += 1;
+      if (polls === 3) cloudMode = "63";
+      return [];
+    });
+    const seen: number[] = [];
+    eufy.on("armingModeChanged", () => seen.push(mode));
+
+    (eufy as any).emitSemantic(
+      "armingModeChanged",
+      { deviceSn: "T8000P0000000000" },
+      { refresh: { param: 1224, property: "armingMode", timeoutMs: 20_000 } },
+    );
+    await vi.advanceTimersByTimeAsync(1000);
+
+    expect(seen).toEqual([63]);
+    expect(device.applyParams).toHaveBeenCalledExactlyOnceWith({ 1224: "63" });
+    vi.useRealTimers();
+  });
+
+  it("serializes consecutive valueless transitions so each event observes its own state", async () => {
+    const eufy = client();
+    let mode = 1;
+    let cloudMode = "1";
+    const device = {
+      getProperty: () => ({ value: mode }),
+      applyParams: (params: Record<number, string>) => {
+        mode = Number(params[1224]);
+      },
+    };
+    (eufy as any).liveDevices.set("T8000P0000000000", new WeakRef(device));
+    vi.spyOn((eufy as any).registry, "require").mockImplementation(() => ({ params: { 1224: cloudMode } }));
+    vi.spyOn((eufy as any).registry, "getDevices").mockImplementation(async () => {
+      cloudMode = cloudMode === "1" ? "63" : "1";
+      return [];
+    });
+    const seen: number[] = [];
+    eufy.on("armingModeChanged", () => seen.push(mode));
+    const options = { refresh: { param: 1224, property: "armingMode", timeoutMs: 20_000 } };
+
+    (eufy as any).emitSemantic("armingModeChanged", { deviceSn: "T8000P0000000000" }, options);
+    (eufy as any).emitSemantic("armingModeChanged", { deviceSn: "T8000P0000000000" }, options);
+
+    await vi.waitFor(() => expect(seen).toEqual([63, 1]));
+  });
+
+  it("refreshes and emits after an observed command even when no push event arrives", async () => {
+    const eufy = client();
+    let mode = 1;
+    const device = {
+      getProperty: () => ({ value: mode }),
+      applyParams: (params: Record<number, string>) => {
+        mode = Number(params[1224]);
+      },
+    };
+    (eufy as any).liveDevices.set("T8000P0000000000", new WeakRef(device));
+    vi.spyOn((eufy as any).registry, "require").mockReturnValue({ params: { 1224: "63" } });
+    vi.spyOn((eufy as any).registry, "getDevices").mockResolvedValue([]);
+    vi.spyOn(eufy as any, "routeCommand").mockResolvedValue(undefined);
+    const order: string[] = [];
+    const reset = vi.spyOn((eufy as any).p2p, "resetStandaloneSession").mockImplementation(async () => {
+      order.push("reset");
+    });
+    const seen: number[] = [];
+    eufy.on("armingModeChanged", () => {
+      seen.push(mode);
+      order.push("event");
+    });
+    const command = observeCommand(
+      { kind: "set-param", param: 1224, value: 63, form: "auto", channel: 0 },
+      {
+        event: "armingModeChanged",
+        expected: 63,
+        param: 1224,
+        property: "armingMode",
+        resetStandaloneSession: true,
+        timeoutMs: 20_000,
+      },
+    );
+
+    await (eufy as any).commandSinkFor("T8000P0000000000").dispatch(command);
+
+    expect((eufy as any).routeCommand).toHaveBeenCalledOnce();
+    await vi.waitFor(() => expect(seen).toEqual([63]));
+    expect(order).toEqual(["event", "reset"]);
+    expect(reset).toHaveBeenCalledExactlyOnceWith("T8000P0000000000");
+  });
+
+  it("completes convergence and standalone reset before dispatching the next observed command", async () => {
+    const eufy = client();
+    let mode = 1;
+    let cloudMode = "1";
+    const device = {
+      getProperty: () => ({ value: mode }),
+      applyParams: (params: Record<number, string>) => {
+        mode = Number(params[1224]);
+      },
+    };
+    (eufy as any).liveDevices.set("T8000P0000000000", new WeakRef(device));
+    vi.spyOn((eufy as any).registry, "require").mockImplementation(() => ({ params: { 1224: cloudMode } }));
+    vi.spyOn((eufy as any).registry, "getDevices").mockResolvedValue([]);
+    vi.spyOn(eufy as any, "routeCommand").mockImplementation(async (...args: unknown[]) => {
+      cloudMode = String(commandObservation(args[1] as never)!.expected);
+    });
+    const reset = vi.spyOn((eufy as any).p2p, "resetStandaloneSession").mockResolvedValue(undefined);
+    const seen: number[] = [];
+    eufy.on("armingModeChanged", () => seen.push(mode));
+    const command = (expected: number) =>
+      observeCommand(
+        { kind: "set-param", param: 1224, value: expected, form: "auto", channel: 0 },
+        {
+          event: "armingModeChanged",
+          expected,
+          param: 1224,
+          property: "armingMode",
+          resetStandaloneSession: true,
+          timeoutMs: 20_000,
+        },
+      );
+    const sink = (eufy as any).commandSinkFor("T8000P0000000000");
+
+    const disarm = sink.dispatch(command(63));
+    const home = sink.dispatch(command(1));
+    await Promise.all([disarm, home]);
+
+    await vi.waitFor(() => expect(seen).toEqual([63, 1]));
+    expect(reset).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects a queued observed command before routing when disconnect supersedes it", async () => {
+    const eufy = client();
+    let mode = 1;
+    let cloudMode = "1";
+    let finishReset!: () => void;
+    const resetGate = new Promise<void>((resolve) => {
+      finishReset = resolve;
+    });
+    const device = {
+      getProperty: () => ({ value: mode }),
+      applyParams: (params: Record<number, string>) => {
+        mode = Number(params[1224]);
+      },
+    };
+    (eufy as any).liveDevices.set("T8000P0000000000", new WeakRef(device));
+    vi.spyOn((eufy as any).registry, "require").mockImplementation(() => ({ params: { 1224: cloudMode } }));
+    vi.spyOn((eufy as any).registry, "getDevices").mockResolvedValue([]);
+    const route = vi.spyOn(eufy as any, "routeCommand").mockImplementation(async (...args: unknown[]) => {
+      cloudMode = String(commandObservation(args[1] as never)!.expected);
+    });
+    vi.spyOn((eufy as any).p2p, "resetStandaloneSession").mockReturnValue(resetGate);
+    const command = (expected: number) =>
+      observeCommand(
+        { kind: "set-param", param: 1224, value: expected, form: "auto", channel: 0 },
+        {
+          event: "armingModeChanged",
+          expected,
+          param: 1224,
+          property: "armingMode",
+          resetStandaloneSession: true,
+          timeoutMs: 20_000,
+        },
+      );
+    const sink = (eufy as any).commandSinkFor("T8000P0000000000");
+
+    await sink.dispatch(command(63));
+    const queued = sink.dispatch(command(1));
+    const queuedResult = expect(queued).rejects.toThrow(/superseded by disconnect/);
+    await eufy.disconnect();
+    finishReset();
+
+    await queuedResult;
+    expect(route).toHaveBeenCalledOnce();
+  });
+
+  it("acknowledges an observed command without failing when authoritative readback expires", async () => {
+    vi.useFakeTimers();
+    const eufy = client();
+    const device = { getProperty: () => ({ value: 1 }), applyParams: vi.fn() };
+    (eufy as any).liveDevices.set("T8000P0000000000", new WeakRef(device));
+    vi.spyOn((eufy as any).registry, "require").mockReturnValue({ params: { 1224: "1" } });
+    vi.spyOn((eufy as any).registry, "getDevices").mockResolvedValue([]);
+    vi.spyOn(eufy as any, "routeCommand").mockResolvedValue(undefined);
+    const reportError = vi.spyOn(eufy as any, "reportError").mockImplementation(() => undefined);
+    const command = observeCommand(
+      { kind: "set-param", param: 1224, value: 63, form: "auto", channel: 0 },
+      { event: "armingModeChanged", expected: 63, param: 1224, property: "armingMode", timeoutMs: 20_000 },
+    );
+
+    await expect((eufy as any).commandSinkFor("T8000P0000000000").dispatch(command)).resolves.toBeUndefined();
+    await vi.advanceTimersByTimeAsync(20_000);
+
+    expect(reportError).toHaveBeenCalledOnce();
+    vi.useRealTimers();
+  });
+
+  it("allows observation policy to be replaced on a reused command object", () => {
+    const command = { kind: "set-param", param: 1224, value: 63, form: "auto", channel: 0 } as const;
+    const first = { event: "armingModeChanged", expected: 63, param: 1224, property: "armingMode", timeoutMs: 1 };
+    const second = { ...first, expected: 1 };
+
+    observeCommand(command, first);
+    expect(() => observeCommand(command, second)).not.toThrow();
+    expect(commandObservation(command)).toEqual(second);
   });
 });

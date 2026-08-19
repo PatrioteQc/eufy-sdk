@@ -70,6 +70,7 @@
     "node": ">=24.5.0"
   },
   "dependencies": {
+    "jpeg-js": "^0.4.4",
     "mqtt": "^5.15.2",
     "protobufjs": "^8.7.2",
     "werift": "^0.24.4"
