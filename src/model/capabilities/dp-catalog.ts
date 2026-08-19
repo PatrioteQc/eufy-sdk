@@ -50,8 +50,8 @@ export function parseDpCatalog(raw: unknown): DpCatalog {
 
     // DP id: try dp_id first, then id
     const rawId = e.dp_id ?? e.id;
-    const dpId = typeof rawId === "number" ? rawId : typeof rawId === "string" ? parseInt(rawId, 10) : NaN;
-    if (!Number.isFinite(dpId) || dpId <= 0) continue;
+    const dpId = typeof rawId === "number" ? rawId : typeof rawId === "string" ? Number(rawId) : NaN;
+    if (!Number.isInteger(dpId) || dpId <= 0) continue;
 
     found++;
 
@@ -91,8 +91,8 @@ function parseEnumRange(values: unknown): readonly number[] {
 function toNumberArray(arr: unknown[]): readonly number[] {
   const result: number[] = [];
   for (const v of arr) {
-    const n = typeof v === "number" ? v : typeof v === "string" ? parseInt(v, 10) : NaN;
-    if (Number.isFinite(n)) result.push(n);
+    const n = typeof v === "number" ? v : typeof v === "string" ? Number(v) : NaN;
+    if (Number.isInteger(n)) result.push(n);
   }
   return result;
 }

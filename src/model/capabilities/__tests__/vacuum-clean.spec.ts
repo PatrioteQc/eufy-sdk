@@ -257,37 +257,20 @@ export const _surfaceAssertions = [
 ];
 
 describe("vacuum_clean — DP-based guards", () => {
-  const AIOT_DPS = new Set([VACUUM_DP.MODE_CTRL]);
   const TUYA_DPS = new Set([LEGACY_VACUUM_DP.PLAY_PAUSE, LEGACY_VACUUM_DP.GO_HOME]);
 
-  it("write actions are absent when no control DPs are reported", () => {
-    const { acts } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx("T2250"));
+  it("write actions are absent on Tuya vacuums — Tuya write path not yet verified", () => {
+    const { acts } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, "eufy_home_tuya"));
     expect(acts.startCleaning).toBeUndefined();
     expect(acts.returnToDock).toBeUndefined();
     expect(acts.pauseCleaning).toBeUndefined();
   });
 
-  it("write actions are present when AIoT MODE_CTRL DP is reported", () => {
-    const { acts } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx("T2250", undefined, AIOT_DPS));
+  it("write actions are present on AIoT vacuums (eufy_home category)", () => {
+    const { acts } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, "eufy_home"));
     expect(acts.startCleaning).toBeDefined();
     expect(acts.returnToDock).toBeDefined();
     expect(acts.pauseCleaning).toBeDefined();
-  });
-
-  it("write actions are present and dispatch legacy bool DPs when Tuya DPs are reported", async () => {
-    const { acts, sent } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, "eufy_home_tuya", TUYA_DPS));
-    expect(acts.startCleaning).toBeDefined();
-    expect(acts.returnToDock).toBeDefined();
-    expect(acts.pauseCleaning).toBeDefined();
-
-    await acts.startCleaning!();
-    expect(sent.at(-1)).toMatchObject({ kind: "aiot-dp", dp: 2, value: true });
-
-    await acts.returnToDock!();
-    expect(sent.at(-1)).toMatchObject({ kind: "aiot-dp", dp: 101, value: true });
-
-    await acts.pauseCleaning!();
-    expect(sent.at(-1)).toMatchObject({ kind: "aiot-dp", dp: 2, value: false });
   });
 
   it("setPower is absent when POWER DP is not reported", () => {
@@ -302,8 +285,8 @@ describe("vacuum_clean — DP-based guards", () => {
     expect(sent[0]).toMatchObject({ kind: "aiot-dp", dp: 151, value: true });
   });
 
-  it("dispatches a ModeCtrlRequest for startCleaning when AIoT MODE_CTRL DP is reported", async () => {
-    const { acts, sent } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, "eufy_home", AIOT_DPS));
+  it("dispatches a ModeCtrlRequest for startCleaning on AIoT vacuums", async () => {
+    const { acts, sent } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, "eufy_home"));
     await acts.startCleaning!();
     expect(sent[0]).toMatchObject({ kind: "aiot-dp", dp: 152 });
   });

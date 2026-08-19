@@ -584,56 +584,35 @@ export const VACUUM_CLEAN_MEMBERS = {
     provenance: "mega",
     description: "Speaker loudness 0-100 from DP 111 (Loudness). X8 Pro Tuya clean line. Live-confirmed.",
   },
-  /**
-   * Start an auto-clean run.
-   * AIoT: ModeCtrlRequest method 0 over DP 152.
-   * Tuya: DP 2 = true (PLAY_PAUSE bool, confirmed from protocol inspection).
-   */
+  /** Start an auto-clean run via ModeCtrlRequest method 0 (DP 152). AIoT only — Tuya write unverified. */
   startCleaning: method(
-    ({ sink, ctx }) => {
-      if (ctx.paramIds.has(LEGACY_VACUUM_DP.PLAY_PAUSE)) {
-        return (): Promise<void> => sink.dispatch(aiotDp(LEGACY_VACUUM_DP.PLAY_PAUSE, true));
-      }
+    ({ sink }) => {
       let seq = 111;
       return (): Promise<void> =>
         sink.dispatch(aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.START_AUTO_CLEAN, ++seq)));
     },
-    "Start an auto-clean run (DP 152 ModeCtrlRequest for AIoT; DP 2 bool for Tuya).",
-    (ctx) => (ctx.paramIds?.has(LEGACY_VACUUM_DP.PLAY_PAUSE) || ctx.paramIds?.has(VACUUM_DP.MODE_CTRL)) ?? false,
+    "Start an auto-clean run (ModeCtrlRequest method 0 over DP 152).",
+    isAiotVacuum,
   ),
-  /**
-   * Return to the dock.
-   * AIoT: ModeCtrlRequest method 6 over DP 152.
-   * Tuya: DP 101 = true (GO_HOME bool, confirmed from protocol inspection).
-   */
+  /** Return to the dock via ModeCtrlRequest method 6 (DP 152). AIoT only — Tuya write unverified. */
   returnToDock: method(
-    ({ sink, ctx }) => {
-      if (ctx.paramIds.has(LEGACY_VACUUM_DP.GO_HOME)) {
-        return (): Promise<void> => sink.dispatch(aiotDp(LEGACY_VACUUM_DP.GO_HOME, true));
-      }
+    ({ sink }) => {
       let seq = 111;
       return (): Promise<void> =>
         sink.dispatch(aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.START_GOHOME, ++seq)));
     },
-    "Return to the dock (DP 152 ModeCtrlRequest for AIoT; DP 101 bool for Tuya).",
-    (ctx) => (ctx.paramIds?.has(LEGACY_VACUUM_DP.GO_HOME) || ctx.paramIds?.has(VACUUM_DP.MODE_CTRL)) ?? false,
+    "Return to the dock (ModeCtrlRequest method 6 over DP 152).",
+    isAiotVacuum,
   ),
-  /**
-   * Pause the current cleaning task.
-   * AIoT: ModeCtrlRequest method 13 over DP 152.
-   * Tuya: DP 2 = false (PLAY_PAUSE bool, confirmed from protocol inspection).
-   */
+  /** Pause the current cleaning task via ModeCtrlRequest method 13 (DP 152). AIoT only — Tuya write unverified. */
   pauseCleaning: method(
-    ({ sink, ctx }) => {
-      if (ctx.paramIds.has(LEGACY_VACUUM_DP.PLAY_PAUSE)) {
-        return (): Promise<void> => sink.dispatch(aiotDp(LEGACY_VACUUM_DP.PLAY_PAUSE, false));
-      }
+    ({ sink }) => {
       let seq = 111;
       return (): Promise<void> =>
         sink.dispatch(aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.PAUSE_TASK, ++seq)));
     },
-    "Pause the current cleaning task (DP 152 ModeCtrlRequest for AIoT; DP 2 = false for Tuya).",
-    (ctx) => (ctx.paramIds?.has(LEGACY_VACUUM_DP.PLAY_PAUSE) || ctx.paramIds?.has(VACUUM_DP.MODE_CTRL)) ?? false,
+    "Pause the current cleaning task (ModeCtrlRequest method 13 over DP 152).",
+    isAiotVacuum,
   ),
 } as const satisfies Members;
 

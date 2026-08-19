@@ -1607,6 +1607,7 @@ export class EufyMega extends EventEmitter {
       this.dpCatalogCache.set(model, catalog);
       return catalog;
     } catch {
+      this.dpCatalogCache.set(model, EMPTY_DP_CATALOG);
       return EMPTY_DP_CATALOG;
     }
   }

@@ -126,7 +126,7 @@ export class TuyaCommandRouter {
 
     // Try result.dps first (Tuya-native shape), then bare result filtered to integer DP keys.
     const nested = (res.result as Record<string, unknown>).dps;
-    if (nested && typeof nested === "object" && !Array.isArray(nested)) {
+    if (nested && typeof nested === "object" && !Array.isArray(nested) && Object.keys(nested).length > 0) {
       return nested as Record<string, unknown>;
     }
     const flat = parseTuyaDpEvent(res.result);
