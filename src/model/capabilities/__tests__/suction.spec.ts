@@ -1,9 +1,10 @@
 import type { CommandContext } from "../types.js";
+import type { DpCatalog } from "../dp-catalog.js";
 import { SUCTION, SUCTION_DP, SuctionLevel, type SuctionActions } from "../suction.js";
 import { bind } from "./bind.js";
 
-function suctionCtx(model?: string, category?: string): CommandContext {
-  return { channel: 0, codec: "vacuum", model, category, paramIds: new Set() };
+function suctionCtx(model?: string, category?: string, dpCatalog?: DpCatalog): CommandContext {
+  return { channel: 0, codec: "vacuum", model, category, paramIds: new Set(), dpCatalog };
 }
 
 describe("suction capability module", () => {
@@ -58,5 +59,30 @@ describe("suction — AIoT vs legacy guard (negative exclusion)", () => {
     const { acts, sent } = bind<SuctionActions>("suction", suctionCtx(undefined, "eufy_home"));
     await acts.setBoostIq!(true);
     expect(sent).toEqual([{ kind: "aiot-dp", dp: SUCTION_DP.BOOST_IQ, value: true }]);
+  });
+});
+
+describe("suction — supportedLevels from dpCatalog", () => {
+  it("returns the catalog range for DP 158 when present", () => {
+    const catalog: DpCatalog = { enumRanges: new Map([[SUCTION_DP.SUCTION, [0, 1, 2, 3]]]) };
+    const { acts } = bind<SuctionActions>("suction", suctionCtx("T2351", "eufy_home", catalog));
+    expect(acts.supportedLevels).toEqual([0, 1, 2, 3]);
+  });
+
+  it("filters out catalog values that are not valid SuctionLevel entries", () => {
+    const catalog: DpCatalog = { enumRanges: new Map([[SUCTION_DP.SUCTION, [0, 1, 2, 99]]]) };
+    const { acts } = bind<SuctionActions>("suction", suctionCtx(undefined, "eufy_home", catalog));
+    expect(acts.supportedLevels).toEqual([0, 1, 2]);
+  });
+
+  it("returns undefined when the catalog has no entry for DP 158", () => {
+    const catalog: DpCatalog = { enumRanges: new Map() };
+    const { acts } = bind<SuctionActions>("suction", suctionCtx(undefined, "eufy_home", catalog));
+    expect(acts.supportedLevels).toBeUndefined();
+  });
+
+  it("returns undefined when no catalog is provided", () => {
+    const { acts } = bind<SuctionActions>("suction", suctionCtx(undefined, "eufy_home"));
+    expect(acts.supportedLevels).toBeUndefined();
   });
 });
