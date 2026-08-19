@@ -11,7 +11,7 @@ import {
   type VacuumCleanActions,
   type VacuumActivity,
   type VacuumCleanType,
-  type X8CleanTypeTuya,
+  type TuyaCleanType,
 } from "../vacuum-clean.js";
 import { bind } from "./bind.js";
 
@@ -233,7 +233,7 @@ declare const vac: VacuumCleanActions;
 const _power: Exact<typeof vac.power, boolean | undefined> = true;
 const _battery: Exact<typeof vac.battery, number | undefined> = true;
 const _activity: Exact<typeof vac.activity, VacuumActivity | undefined> = true;
-const _cleanType: Exact<typeof vac.cleanType, VacuumCleanType | X8CleanTypeTuya | undefined> = true;
+const _cleanType: Exact<typeof vac.cleanType, VacuumCleanType | TuyaCleanType | undefined> = true;
 
 // setPower is gated by available: isAiotVacuum — optional on the surface (present only when category is known).
 const _setPowerOptional: Exact<undefined extends typeof vac.setPower ? true : false, true> = true;

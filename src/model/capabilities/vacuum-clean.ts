@@ -103,7 +103,7 @@ export const TUYA_VACUUM_DP = {
  * union that matters externally.
  * @internal
  */
-export const X8_WORK_STATUS_VALUES = [
+export const TUYA_WORK_STATUS_VALUES = [
   "standby",
   "Running",
   "Sleeping",
@@ -122,33 +122,33 @@ export const X8_WORK_STATUS_VALUES = [
  * Confirmed values for DP 5 (mode) from schemaInfo.schema.
  * @internal
  */
-export const X8_WORK_MODES = ["auto", "room", "zone", "spot", "fast_mapping"] as const;
+export const TUYA_WORK_MODES = ["auto", "room", "zone", "spot", "fast_mapping"] as const;
 /** @internal */
-export type X8WorkMode = (typeof X8_WORK_MODES)[number];
+export type TuyaWorkMode = (typeof TUYA_WORK_MODES)[number];
 
 /**
  * Confirmed values for DP 102 (cleaning_strength) from schemaInfo.schema. Live-confirmed "Off".
  * @internal
  */
-export const X8_CLEANING_STRENGTHS = ["Off", "Quiet", "Standard", "Turbo", "Max"] as const;
+export const TUYA_CLEANING_STRENGTHS = ["Off", "Quiet", "Standard", "Turbo", "Max"] as const;
 /** @internal */
-export type X8CleaningStrength = (typeof X8_CLEANING_STRENGTHS)[number];
+export type TuyaCleaningStrength = (typeof TUYA_CLEANING_STRENGTHS)[number];
 
 /**
  * Confirmed values for DP 105 (MopWater) from schemaInfo.schema. Live-confirmed "Mid".
  * @internal
  */
-export const X8_MOP_WATER_LEVELS = ["Dry", "Low", "Mid", "High"] as const;
+export const TUYA_MOP_WATER_LEVELS = ["Dry", "Low", "Mid", "High"] as const;
 /** @internal */
-export type X8MopWaterLevel = (typeof X8_MOP_WATER_LEVELS)[number];
+export type TuyaMopWaterLevel = (typeof TUYA_MOP_WATER_LEVELS)[number];
 
 /**
  * Confirmed values for DP 113 (CleanType) from schemaInfo.schema. Live-confirmed "Sweep".
  * @internal
  */
-export const X8_CLEAN_TYPES = ["Sweep", "SweepMop", "Mop"] as const;
+export const TUYA_CLEAN_TYPES = ["Sweep", "SweepMop", "Mop"] as const;
 /** @internal */
-export type X8CleanTypeTuya = (typeof X8_CLEAN_TYPES)[number];
+export type TuyaCleanType = (typeof TUYA_CLEAN_TYPES)[number];
 
 /**
  * `ModeCtrlRequest.method` values for DP 152. Live-verified on T2351: START_AUTO_CLEAN → 0
@@ -236,7 +236,7 @@ const X8_STATUS_TO_ACTIVITY: Record<string, VacuumActivity> = {
  * a typed result rather than `undefined`.
  * @internal
  */
-export function decodeX8WorkStatus(raw: ParamValue | undefined): VacuumActivity {
+export function decodeTuyaWorkStatus(raw: ParamValue | undefined): VacuumActivity {
   if (typeof raw !== "string") return "unknown";
   return X8_STATUS_TO_ACTIVITY[raw] ?? "unknown";
 }
@@ -330,10 +330,10 @@ const CLEAN_PARAM_FIELD = {
 export function decodeCleanType(
   raw: ParamValue | undefined,
   codec: RawDpCodec | undefined,
-): VacuumCleanType | X8CleanTypeTuya | undefined {
+): VacuumCleanType | TuyaCleanType | undefined {
   if (typeof raw !== "string") return undefined;
   // Tuya X8 DP 113 is a plain string enum — detect by value set membership (no overlap with AIoT).
-  if ((X8_CLEAN_TYPES as readonly string[]).includes(raw)) return raw as X8CleanTypeTuya;
+  if ((TUYA_CLEAN_TYPES as readonly string[]).includes(raw)) return raw as TuyaCleanType;
   if (!codec) return undefined;
   const configured = codec.decode(raw)?.find((f) => f.field === CLEAN_PARAM_FIELD.CONFIGURED);
   if (configured?.kind !== "bytes" || !configured.value.length) return undefined;
@@ -466,7 +466,7 @@ export const VACUUM_CLEAN_MEMBERS = {
     provenance: "mega",
     decode: (raw, codec) => decodeCleanType(raw as ParamValue | undefined, codec),
     decodedKind: "enum",
-    decodedValues: [...VACUUM_CLEAN_TYPES, ...X8_CLEAN_TYPES] as readonly string[],
+    decodedValues: [...VACUUM_CLEAN_TYPES, ...TUYA_CLEAN_TYPES] as readonly string[],
     readAliases: [{ paramType: TUYA_VACUUM_DP.CLEAN_TYPE, available: isTuyaVacuum }],
     description: "Configured cleaning type from CleanParam.clean_type (DP 154 AIoT protobuf) or DP 113 Tuya Enum.",
   },
@@ -483,7 +483,7 @@ export const VACUUM_CLEAN_MEMBERS = {
   },
   /**
    * High-level activity for the X8 Pro Tuya clean line (DP 15, Enum string). Decoded from the device's
-   * `status` string to a {@link VacuumActivity} via {@link decodeX8WorkStatus}. Live-confirmed "Sleeping"
+   * `status` string to a {@link VacuumActivity} via {@link decodeTuyaWorkStatus}. Live-confirmed "Sleeping"
    * at rest. `"unknown"` covers any value absent from the schema-confirmed set.
    *
    * Distinct from {@link activity} (DP 153, protobuf), which the AIoT T2351 reports instead.
@@ -492,7 +492,7 @@ export const VACUUM_CLEAN_MEMBERS = {
     param: TUYA_VACUUM_DP.WORK_STATUS,
     type: "string",
     provenance: "mega",
-    decode: (raw) => decodeX8WorkStatus(raw as ParamValue | undefined),
+    decode: (raw) => decodeTuyaWorkStatus(raw as ParamValue | undefined),
     decodedKind: "enum",
     decodedValues: VACUUM_ACTIVITIES,
     description: "High-level activity from DP 15 (status, Enum). X8 Pro Tuya clean line. Live-confirmed Sleeping.",
@@ -501,38 +501,38 @@ export const VACUUM_CLEAN_MEMBERS = {
    * Cleaning mode (DP 5, Enum string). Live-confirmed "auto". Distinct from the AIoT suction/mode
    * controls. Write direction is unverified — no live publishDps capture.
    *
-   * Known values from schemaInfo.schema: {@link X8_WORK_MODES}.
+   * Known values from schemaInfo.schema: {@link TUYA_WORK_MODES}.
    */
   workMode: {
     param: TUYA_VACUUM_DP.MODE,
     type: "string",
     provenance: "mega",
-    decode: (raw): X8WorkMode | undefined => {
+    decode: (raw): TuyaWorkMode | undefined => {
       const s = typeof raw === "string" ? raw : undefined;
-      return s !== undefined && (X8_WORK_MODES as readonly string[]).includes(s) ? (s as X8WorkMode) : undefined;
+      return s !== undefined && (TUYA_WORK_MODES as readonly string[]).includes(s) ? (s as TuyaWorkMode) : undefined;
     },
     decodedKind: "enum",
-    decodedValues: X8_WORK_MODES,
+    decodedValues: TUYA_WORK_MODES,
     description: "Cleaning mode from DP 5 (mode, Enum). X8 Pro Tuya clean line. Live-confirmed auto. Write unverified.",
   },
   /**
    * Suction / cleaning strength (DP 102, Enum string). Live-confirmed "Off" at rest.
    * Write direction is unverified — no live publishDps capture.
    *
-   * Known values from schemaInfo.schema: {@link X8_CLEANING_STRENGTHS}.
+   * Known values from schemaInfo.schema: {@link TUYA_CLEANING_STRENGTHS}.
    */
   cleaningStrength: {
     param: TUYA_VACUUM_DP.CLEANING_STRENGTH,
     type: "string",
     provenance: "mega",
-    decode: (raw): X8CleaningStrength | undefined => {
+    decode: (raw): TuyaCleaningStrength | undefined => {
       const s = typeof raw === "string" ? raw : undefined;
-      return s !== undefined && (X8_CLEANING_STRENGTHS as readonly string[]).includes(s)
-        ? (s as X8CleaningStrength)
+      return s !== undefined && (TUYA_CLEANING_STRENGTHS as readonly string[]).includes(s)
+        ? (s as TuyaCleaningStrength)
         : undefined;
     },
     decodedKind: "enum",
-    decodedValues: X8_CLEANING_STRENGTHS,
+    decodedValues: TUYA_CLEANING_STRENGTHS,
     description:
       "Suction/cleaning strength from DP 102 (cleaning_strength, Enum). X8 Pro Tuya clean line. Live-confirmed Off. Write unverified.",
   },
@@ -540,20 +540,20 @@ export const VACUUM_CLEAN_MEMBERS = {
    * Mop water flow level (DP 105, Enum string). Live-confirmed "Mid" at rest.
    * Write direction is unverified — no live publishDps capture.
    *
-   * Known values from schemaInfo.schema: {@link X8_MOP_WATER_LEVELS}.
+   * Known values from schemaInfo.schema: {@link TUYA_MOP_WATER_LEVELS}.
    */
   mopWater: {
     param: TUYA_VACUUM_DP.MOP_WATER,
     type: "string",
     provenance: "mega",
-    decode: (raw): X8MopWaterLevel | undefined => {
+    decode: (raw): TuyaMopWaterLevel | undefined => {
       const s = typeof raw === "string" ? raw : undefined;
-      return s !== undefined && (X8_MOP_WATER_LEVELS as readonly string[]).includes(s)
-        ? (s as X8MopWaterLevel)
+      return s !== undefined && (TUYA_MOP_WATER_LEVELS as readonly string[]).includes(s)
+        ? (s as TuyaMopWaterLevel)
         : undefined;
     },
     decodedKind: "enum",
-    decodedValues: X8_MOP_WATER_LEVELS,
+    decodedValues: TUYA_MOP_WATER_LEVELS,
     description:
       "Mop water flow level from DP 105 (MopWater, Enum). X8 Pro Tuya clean line. Live-confirmed Mid. Write unverified.",
   },
