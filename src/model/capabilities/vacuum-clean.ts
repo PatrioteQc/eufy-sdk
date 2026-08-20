@@ -2,6 +2,7 @@ import type { RawDpCodec } from "../../core/contracts.js";
 import type { ParamValue } from "../types.js";
 import type { AvailabilityContext, CapabilityModule } from "./types.js";
 import { asBool } from "../../core/util.js";
+import { isAiotVacuum } from "../device-family.js";
 import { pickDpParams, aiotDp } from "./access.js";
 import { method, propertiesOf, type Members, type Surface } from "./members.js";
 
@@ -650,9 +651,8 @@ export const VACUUM_CLEAN_MEMBERS = {
     type: "bool",
     kind: "boolean",
     provenance: "mega",
-    description: "Do-not-disturb mode (DP 107, Bool rw). X8 Pro Tuya clean line. Live-confirmed.",
+    description: "Do-not-disturb mode (DP 107, Bool ro). X8 Pro Tuya clean line. Live-confirmed.",
     available: (ctx: AvailabilityContext) => ctx.paramIds?.has(TUYA_VACUUM_DP.FORBID_MODE) ?? false,
-    write: (v: unknown) => aiotDp(TUYA_VACUUM_DP.FORBID_MODE, asBool(v)),
   },
   /**
    * WiFi RSSI in dBm (DP 134, Value ro). Schema-confirmed from `thing.m.device.ref.info.list` v5.4.
@@ -682,7 +682,7 @@ export const VACUUM_CLEAN_MEMBERS = {
         sink.dispatch(aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.START_AUTO_CLEAN, ++seq)));
     },
     "Start an auto-clean run (DP 2 = true for Tuya; DP 152 ModeCtrlRequest for AIoT).",
-    (ctx) => (ctx.paramIds?.has(LEGACY_VACUUM_DP.PLAY_PAUSE) || ctx.paramIds?.has(VACUUM_DP.MODE_CTRL)) ?? false,
+    (ctx) => isAiotVacuum(ctx) || (ctx.paramIds?.has(LEGACY_VACUUM_DP.PLAY_PAUSE) ?? false),
   ),
   /**
    * Return to the dock.
@@ -699,7 +699,7 @@ export const VACUUM_CLEAN_MEMBERS = {
         sink.dispatch(aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.START_GOHOME, ++seq)));
     },
     "Return to the dock (DP 101 bool for Tuya; DP 152 ModeCtrlRequest for AIoT).",
-    (ctx) => (ctx.paramIds?.has(LEGACY_VACUUM_DP.GO_HOME) || ctx.paramIds?.has(VACUUM_DP.MODE_CTRL)) ?? false,
+    (ctx) => isAiotVacuum(ctx) || (ctx.paramIds?.has(LEGACY_VACUUM_DP.GO_HOME) ?? false),
   ),
   /**
    * Pause the current cleaning task.
@@ -716,7 +716,7 @@ export const VACUUM_CLEAN_MEMBERS = {
         sink.dispatch(aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.PAUSE_TASK, ++seq)));
     },
     "Pause the current cleaning task (DP 2 = false for Tuya; DP 152 ModeCtrlRequest for AIoT).",
-    (ctx) => (ctx.paramIds?.has(LEGACY_VACUUM_DP.PLAY_PAUSE) || ctx.paramIds?.has(VACUUM_DP.MODE_CTRL)) ?? false,
+    (ctx) => isAiotVacuum(ctx) || (ctx.paramIds?.has(LEGACY_VACUUM_DP.PLAY_PAUSE) ?? false),
   ),
 } as const satisfies Members;
 

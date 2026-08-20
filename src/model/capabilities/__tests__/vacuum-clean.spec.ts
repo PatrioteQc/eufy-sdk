@@ -244,7 +244,7 @@ const _setPowerArg: Exact<Parameters<NonNullable<typeof vac.setPower>>[0], boole
 const _noSetActivity: Exact<"setActivity" extends keyof VacuumCleanActions ? true : false, false> = true;
 const _noSetBattery: Exact<"setBattery" extends keyof VacuumCleanActions ? true : false, false> = true;
 
-// startCleaning is a MethodMember gated by DP 2 or DP 152 in paramIds — absent until those DPs are reported.
+// startCleaning is a MethodMember gated by isAiotVacuum or DP 2 in paramIds — absent only on Tuya-category devices that haven't reported DP 2.
 const _startCleaning: Exact<typeof vac.startCleaning, (() => Promise<void>) | undefined> = true;
 
 // errorCode is an evidence-gated read for the legacy Tuya clean line.
@@ -270,20 +270,20 @@ export const _surfaceAssertions = [
 ];
 
 describe("vacuum_clean — DP-based action routing", () => {
-  // AIoT device: has reported DP 151 (power) and DP 152 (mode control).
-  const aiotDps = new Set([VACUUM_DP.POWER, VACUUM_DP.MODE_CTRL]);
+  // AIoT device: has reported DP 151 (power) and DP 153 (work status). DP 152 (MODE_CTRL) is write-only and never in paramIds.
+  const aiotDps = new Set([VACUUM_DP.POWER, VACUUM_DP.WORK_STATUS]);
   // Tuya device: has reported DP 2 (play/pause) and DP 101 (go home).
   const tuyaDps = new Set([LEGACY_VACUUM_DP.PLAY_PAUSE, LEGACY_VACUUM_DP.GO_HOME]);
 
-  it("write actions are present when DP 152 (MODE_CTRL) is in paramIds — AIoT path", () => {
+  it("write actions are present for non-Tuya-category devices — AIoT path (isAiotVacuum)", () => {
     const { acts } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx("T2250", undefined, aiotDps));
     expect(acts.startCleaning).toBeDefined();
     expect(acts.returnToDock).toBeDefined();
     expect(acts.pauseCleaning).toBeDefined();
   });
 
-  it("write actions are absent when paramIds is empty — bootstrapping window before first DP report", () => {
-    const { acts } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined));
+  it("write actions are absent for Tuya-category device with no Tuya DPs — bootstrapping window", () => {
+    const { acts } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, "eufy_home_tuya"));
     expect(acts.startCleaning).toBeUndefined();
     expect(acts.returnToDock).toBeUndefined();
     expect(acts.pauseCleaning).toBeUndefined();
@@ -318,24 +318,20 @@ describe("vacuum_clean — DP-based action routing", () => {
     expect(sent[0]).toMatchObject({ kind: "aiot-dp", dp: 151, value: true });
   });
 
-  it("dispatches a ModeCtrlRequest for startCleaning when DP 152 is in paramIds — AIoT path", async () => {
+  it("dispatches a ModeCtrlRequest for startCleaning — AIoT path (isAiotVacuum, no legacy DP 2)", async () => {
     const { acts, sent } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, undefined, aiotDps));
     await acts.startCleaning!();
     expect(sent[0]).toMatchObject({ kind: "aiot-dp", dp: 152 });
   });
 
-  it("doNotDisturb is present when DP 107 is in paramIds and dispatches DP 107", async () => {
+  it("doNotDisturb is read-only — setter absent even when DP 107 is in paramIds", () => {
     const dps = new Set([TUYA_VACUUM_DP.FORBID_MODE]);
-    const { acts, sent } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, undefined, dps));
-    expect(acts.setDoNotDisturb).toBeDefined();
-    await acts.setDoNotDisturb!(true);
-    expect(sent.at(-1)).toMatchObject({ kind: "aiot-dp", dp: 107, value: true });
-    await acts.setDoNotDisturb!(false);
-    expect(sent.at(-1)).toMatchObject({ kind: "aiot-dp", dp: 107, value: false });
+    const { acts } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, undefined, dps));
+    expect((acts as Record<string, unknown>).setDoNotDisturb).toBeUndefined();
   });
 
-  it("doNotDisturb is absent when DP 107 is not in paramIds", () => {
+  it("doNotDisturb getter is absent when DP 107 is not in paramIds", () => {
     const { acts } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, undefined, aiotDps));
-    expect(acts.setDoNotDisturb).toBeUndefined();
+    expect(acts.doNotDisturb).toBeUndefined();
   });
 });

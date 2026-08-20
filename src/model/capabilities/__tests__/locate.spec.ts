@@ -25,9 +25,21 @@ describe("locate capability module", () => {
 });
 
 describe("locate — DP-based routing", () => {
-  it("locate is absent when neither DP 103 nor DP 160 is in paramIds", () => {
+  it("locate is present on AIoT device without any DPs — isAiotVacuum gate (always available)", () => {
     const { acts } = bind<LocateActions>("locate", locateCtx(new Set()));
+    expect(acts.locate).toBeDefined();
+  });
+
+  it("locate is absent for Tuya-category device when DP 103 is not in paramIds", () => {
+    const ctx = { ...locateCtx(new Set()), category: "eufy_home_tuya" };
+    const { acts } = bind<LocateActions>("locate", ctx);
     expect(acts.locate).toBeUndefined();
+  });
+
+  it("locate is present for Tuya-category device when DP 103 is in paramIds", () => {
+    const ctx = { ...locateCtx(new Set([103])), category: "eufy_home_tuya" };
+    const { acts } = bind<LocateActions>("locate", ctx);
+    expect(acts.locate).toBeDefined();
   });
 
   it("locate is present when DP 160 is in paramIds — AIoT path", () => {

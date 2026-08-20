@@ -1,3 +1,4 @@
+import { isAiotVacuum } from "../device-family.js";
 import { pickDpParams, aiotDp } from "./access.js";
 import { method, propertiesOf, type Members, type Surface } from "./members.js";
 import type { CapabilityModule } from "./types.js";
@@ -55,7 +56,7 @@ export const LOCATE_MEMBERS = {
         return (on = true): Promise<void> => sink.dispatch(aiotDp(LOCATE_DP, on));
       },
       "Trigger the find-robot beep; pass false to cancel one in progress.",
-      (ctx) => (ctx.paramIds?.has(LEGACY_LOCATE_DP) || ctx.paramIds?.has(LOCATE_DP)) ?? false,
+      (ctx) => isAiotVacuum(ctx) || (ctx.paramIds?.has(LEGACY_LOCATE_DP) ?? false),
     ),
     args: [{ name: "on", kind: "boolean", optional: true, description: "False cancels a beep in progress." }],
   },
