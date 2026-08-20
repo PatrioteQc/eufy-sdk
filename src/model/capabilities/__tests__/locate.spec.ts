@@ -24,61 +24,43 @@ describe("locate capability module", () => {
   });
 });
 
-describe("locate — DP-based routing", () => {
-  it("locate is present on AIoT device without any DPs — isAiotVacuum gate (always available)", () => {
+describe("locate — platform routing", () => {
+  it("is present on an AIoT device that has reported no DPs at all", () => {
     const { acts } = bind<LocateActions>("locate", locateCtx(new Set()));
     expect(acts.locate).toBeDefined();
   });
 
-  it("locate is absent for Tuya-category device when DP 103 is not in paramIds", () => {
-    const ctx = { ...locateCtx(new Set()), category: "eufy_home_tuya" };
-    const { acts } = bind<LocateActions>("locate", ctx);
-    expect(acts.locate).toBeUndefined();
+  it("is present on an AIoT device regardless of whether DP 160 was reported", () => {
+    // DP 160 is a momentary write trigger. A device never reports it in its param set, so gating the
+    // verb on its presence would make locate() vanish on every real AIoT vacuum.
+    expect(bind<LocateActions>("locate", locateCtx(new Set([160]))).acts.locate).toBeDefined();
+    expect(bind<LocateActions>("locate", locateCtx(new Set())).acts.locate).toBeDefined();
   });
 
-  it("locate is present for Tuya-category device when DP 103 is in paramIds", () => {
-    const ctx = { ...locateCtx(new Set([103])), category: "eufy_home_tuya" };
-    const { acts } = bind<LocateActions>("locate", ctx);
-    expect(acts.locate).toBeDefined();
+  it("is absent on a Tuya device — the DP 103 write is unconfirmed, so none is offered", () => {
+    // Dispatching DP 103 would route through the Tuya command router, which refuses unverified
+    // writes by default. A verb that is advertised and then throws is worse than an absent one.
+    const reported = { ...locateCtx(new Set([103])), category: "eufy_home_tuya" };
+    const silent = { ...locateCtx(new Set()), category: "eufy_home_tuya" };
+    expect(bind<LocateActions>("locate", reported).acts.locate).toBeUndefined();
+    expect(bind<LocateActions>("locate", silent).acts.locate).toBeUndefined();
   });
 
-  it("locate is present when DP 160 is in paramIds — AIoT path", () => {
-    const { acts } = bind<LocateActions>("locate", locateCtx(new Set([160])));
-    expect(acts.locate).toBeDefined();
-  });
-
-  it("locate is present when DP 103 is in paramIds — Tuya path", () => {
-    const { acts } = bind<LocateActions>("locate", locateCtx(new Set([103])));
-    expect(acts.locate).toBeDefined();
-  });
-
-  it("dispatches DP 160 = true when DP 160 is in paramIds — AIoT path", async () => {
+  it("dispatches DP 160 = true", async () => {
     const { acts, sent } = bind<LocateActions>("locate", locateCtx(new Set([160])));
     await acts.locate!();
     expect(sent).toEqual([{ kind: "aiot-dp", dp: 160, value: true }]);
   });
 
-  it("dispatches DP 160 = false when called with false — AIoT path", async () => {
+  it("dispatches DP 160 = false to cancel a beep in progress", async () => {
     const { acts, sent } = bind<LocateActions>("locate", locateCtx(new Set([160])));
     await acts.locate!(false);
     expect(sent).toEqual([{ kind: "aiot-dp", dp: 160, value: false }]);
   });
 
-  it("dispatches DP 103 = true when DP 103 is in paramIds — Tuya path", async () => {
-    const { acts, sent } = bind<LocateActions>("locate", locateCtx(new Set([103])));
-    await acts.locate!();
-    expect(sent).toEqual([{ kind: "aiot-dp", dp: 103, value: true }]);
-  });
-
-  it("dispatches DP 103 = false when called with false — Tuya path", async () => {
-    const { acts, sent } = bind<LocateActions>("locate", locateCtx(new Set([103])));
-    await acts.locate!(false);
-    expect(sent).toEqual([{ kind: "aiot-dp", dp: 103, value: false }]);
-  });
-
-  it("prefers DP 103 when both DP 103 and DP 160 are in paramIds", async () => {
+  it("never dispatches the legacy Tuya DP 103, even when the device reported it", async () => {
     const { acts, sent } = bind<LocateActions>("locate", locateCtx(new Set([103, 160])));
     await acts.locate!();
-    expect(sent).toEqual([{ kind: "aiot-dp", dp: 103, value: true }]);
+    expect(sent).toEqual([{ kind: "aiot-dp", dp: 160, value: true }]);
   });
 });

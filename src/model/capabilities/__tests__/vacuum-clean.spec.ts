@@ -289,26 +289,34 @@ describe("vacuum_clean — DP-based action routing", () => {
     expect(acts.pauseCleaning).toBeUndefined();
   });
 
-  it("write actions dispatch legacy bool DPs when DP 2/101 are in paramIds — Tuya path", async () => {
-    // startCleaning → DP 2 = true, returnToDock → DP 101 = true, pauseCleaning → DP 2 = false.
-    const { acts, sent } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, undefined, tuyaDps));
-    expect(acts.startCleaning).toBeDefined();
-    expect(acts.returnToDock).toBeDefined();
-    expect(acts.pauseCleaning).toBeDefined();
-
-    await acts.startCleaning!();
-    expect(sent.at(-1)).toMatchObject({ kind: "aiot-dp", dp: 2, value: true });
-
-    await acts.returnToDock!();
-    expect(sent.at(-1)).toMatchObject({ kind: "aiot-dp", dp: 101, value: true });
-
-    await acts.pauseCleaning!();
-    expect(sent.at(-1)).toMatchObject({ kind: "aiot-dp", dp: 2, value: false });
+  it("write actions are absent on a Tuya device, even when it reported DP 2 and DP 101", () => {
+    // No Tuya clean-line write has been confirmed on a device, and dispatching one would route
+    // through the Tuya command router, which refuses unverified writes by default. An advertised
+    // verb that throws on the happy path is worse than an absent one.
+    const { acts } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx("T2266", "eufy_home_tuya", tuyaDps));
+    expect(acts.startCleaning).toBeUndefined();
+    expect(acts.returnToDock).toBeUndefined();
+    expect(acts.pauseCleaning).toBeUndefined();
   });
 
-  it("setPower is absent when DP 151 is not in paramIds — no confirmed power DP on the Tuya clean line", () => {
-    const { acts } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, undefined, tuyaDps));
+  it("dispatches the AIoT ModeCtrl frame, never a legacy bool DP", async () => {
+    const { acts, sent } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx("T2351", undefined, tuyaDps));
+    await acts.startCleaning!();
+    await acts.returnToDock!();
+    await acts.pauseCleaning!();
+    expect(sent.every((c) => (c as { dp: number }).dp === VACUUM_DP.MODE_CTRL)).toBe(true);
+  });
+
+  it("setPower is absent on the Tuya clean line — no confirmed power DP there", () => {
+    const { acts } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx("T2266", "eufy_home_tuya", tuyaDps));
     expect(acts.setPower).toBeUndefined();
+  });
+
+  it("setPower is present on an AIoT device that has not reported DP 151", () => {
+    // DP 151 belongs to the shared AIoT product schema rather than to a device's reported set, so the
+    // write is gated on the platform. Gating it on the reported DP hid it on real devices.
+    const { acts } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx("T2351", undefined, new Set()));
+    expect(acts.setPower).toBeDefined();
   });
 
   it("dispatches DP 151 for setPower when DP 151 is in paramIds — AIoT clean line", async () => {
