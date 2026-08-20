@@ -437,7 +437,7 @@ export const VACUUM_CLEAN_MEMBERS = {
   },
   /**
    * Charge percentage — DP 163 for the AIoT clean line; DP 104 for the legacy Tuya (G-series/X8)
-   * via a `readAliases` entry gated on {@link isTuyaVacuum}. Deliberately NOT the security param 1101
+   * via a `readAliases` entry gated on `isTuyaVacuum`. Deliberately NOT the security param 1101
    * the `battery` capability reads, so a robot's charge is here rather than on `dev.battery()`.
    * Read-only, populated only once a realtime report lands.
    */
@@ -481,7 +481,7 @@ export const VACUUM_CLEAN_MEMBERS = {
   },
   /**
    * High-level activity for the X8 Pro Tuya clean line (DP 15, Enum string). Decoded from the device's
-   * `status` string to a {@link VacuumActivity} via {@link decodeTuyaWorkStatus}. Live-confirmed "Sleeping"
+   * `status` string to a {@link VacuumActivity} via `decodeTuyaWorkStatus`. Live-confirmed "Sleeping"
    * at rest. `"unknown"` covers any value absent from the schema-confirmed set.
    *
    * Distinct from {@link activity} (DP 153, protobuf), which the AIoT T2351 reports instead.
@@ -499,7 +499,7 @@ export const VACUUM_CLEAN_MEMBERS = {
    * Cleaning mode (DP 5, Enum string). Live-confirmed "auto". Distinct from the AIoT suction/mode
    * controls. Write direction is unverified — no live publishDps capture.
    *
-   * Known values from schemaInfo.schema: {@link TUYA_WORK_MODES}.
+   * Known values from schemaInfo.schema: `TUYA_WORK_MODES`.
    */
   workMode: {
     param: TUYA_VACUUM_DP.MODE,
@@ -517,7 +517,7 @@ export const VACUUM_CLEAN_MEMBERS = {
    * Suction / cleaning strength (DP 102, Enum string). Live-confirmed "Off" at rest.
    * Write direction is unverified — no live publishDps capture.
    *
-   * Known values from schemaInfo.schema: {@link TUYA_CLEANING_STRENGTHS}.
+   * Known values from schemaInfo.schema: `TUYA_CLEANING_STRENGTHS`.
    */
   cleaningStrength: {
     param: TUYA_VACUUM_DP.CLEANING_STRENGTH,
@@ -538,7 +538,7 @@ export const VACUUM_CLEAN_MEMBERS = {
    * Mop water flow level (DP 105, Enum string). Live-confirmed "Mid" at rest.
    * Write direction is unverified — no live publishDps capture.
    *
-   * Known values from schemaInfo.schema: {@link TUYA_MOP_WATER_LEVELS}.
+   * Known values from schemaInfo.schema: `TUYA_MOP_WATER_LEVELS`.
    */
   mopWater: {
     param: TUYA_VACUUM_DP.MOP_WATER,
