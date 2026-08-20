@@ -129,6 +129,15 @@ export interface EufyMegaOptions extends MegaClientConfig {
    * — so you also need a `logger` that shows `debug`. Independent of the SDK's own log level.
    */
   ffmpegLogLevel?: FfmpegLevel;
+  /**
+   * Opt into unverified Tuya DP writes for `eufy_home_tuya` clean-line devices (G-series / X8).
+   *
+   * By default `TuyaCommandRouter` refuses to send `dp.publish` because the request shape
+   * has been reversed but not yet confirmed from a live on-device capture — a wrong shape comes back
+   * as a generic Tuya error indistinguishable from an actual device rejection. Set `true` only once
+   * you have confirmed the full round-trip on a real device, or have accepted that ambiguity.
+   */
+  tuyaAllowUnverified?: boolean;
 }
 
 /**

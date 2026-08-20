@@ -39,6 +39,7 @@ import {
 import type { DeviceEventMap } from "../model/capabilities/index.js";
 import type { CommandContext } from "../model/capabilities/types.js";
 import { CapabilityNotSupportedError } from "../model/capabilities/types.js";
+import { type DpCatalog, EMPTY_DP_CATALOG, parseDpCatalog } from "../model/capabilities/dp-catalog.js";
 import {
   commandObservation,
   type Command,
@@ -245,6 +246,8 @@ export class EufyMega extends EventEmitter {
    * yet, which is the signal to rebuild them (see {@link rebindReads}).
    */
   private readonly boundParamIds = new Map<string, ReadonlySet<number>>();
+  /** Per-SKU DP catalog cache — keyed on model/T-code, fetched lazily via `get_product_data_point`. */
+  private readonly dpCatalogCache = new Map<string, DpCatalog>();
   /** Semantic event names that speculatively pre-warm P2P (resolved once from the options). */
   private readonly prewarmEvents: ReadonlySet<string>;
   /** Transport-side owner of the P2P sessions + all wire senders. */
@@ -344,7 +347,7 @@ export class EufyMega extends EventEmitter {
         await transport.publish(topic, body, { qos: 1 });
       },
     });
-    this.tuya = new TuyaCommandRouter();
+    this.tuya = new TuyaCommandRouter({ allowUnverified: this.opts.tuyaAllowUnverified });
     this.tuyaDpRouter = new TuyaDpRouter();
     this.tuyaDpRouter.setListener(this.makeTuyaDpInbound());
   }
@@ -1385,6 +1388,16 @@ export class EufyMega extends EventEmitter {
       try {
         await transport.subscribeDevice(d);
         await this.sendRealtimeInit(d.sn);
+        // For Tuya clean-line devices, poll cached DPs immediately after subscribe so the
+        // capability getters have state before the first realtime push arrives.
+        if (d.category === "eufy_home_tuya") {
+          this.tuya
+            .fetchDps(d.sn)
+            .then((dps) => {
+              if (dps) this.tuyaDpRouter.deliver(d.sn, dps);
+            })
+            .catch((e) => this.reportError(e));
+        }
       } catch (e) {
         this.reportError(e);
       }
@@ -1585,6 +1598,20 @@ export class EufyMega extends EventEmitter {
    * gate behind the typed read getters, so a line whose state only ever arrives live still advertises
    * exactly the reads it has.
    */
+  private async fetchDpCatalog(model: string): Promise<DpCatalog> {
+    const cached = this.dpCatalogCache.get(model);
+    if (cached) return cached;
+    try {
+      const raw = await this.mega.getProductDataPoint(model);
+      const catalog = parseDpCatalog(raw);
+      this.dpCatalogCache.set(model, catalog);
+      return catalog;
+    } catch {
+      this.dpCatalogCache.set(model, EMPTY_DP_CATALOG);
+      return EMPTY_DP_CATALOG;
+    }
+  }
+
   private async commandContext(sn: string): Promise<CommandContext> {
     const rec = await this.registry.record(sn);
     // Resolve the record synchronously from the registry (already loaded by `record()`) — the same
@@ -1595,6 +1622,10 @@ export class EufyMega extends EventEmitter {
     const channel = typeof rawChannel === "number" ? rawChannel : 0;
     const member = (raw.member ?? {}) as Record<string, any>;
     const resolved = resolveDevice(rec);
+    const dpCatalog =
+      (resolved.codec === "vacuum" || resolved.codec === "mower") && rec.model
+        ? await this.fetchDpCatalog(rec.model)
+        : undefined;
     return {
       channel,
       codec: resolved.codec,
@@ -1623,6 +1654,7 @@ export class EufyMega extends EventEmitter {
       hasP2p: P2PCommandRouter.claimsDevice(dev),
       // Topology as the record states it: a parent that isn't the device itself means HomeBase-attached.
       homeBaseAttached: !!raw.parent_sn && raw.parent_sn !== dev.sn,
+      dpCatalog,
     };
   }
 

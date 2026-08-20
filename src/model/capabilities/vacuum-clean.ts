@@ -368,8 +368,7 @@ export function decodeVacuumActivity(raw: ParamValue | undefined, codec: RawDpCo
  *
  * All reads, `setPower`, and the three mode-control verbs are DERIVED from `VACUUM_CLEAN_MEMBERS`.
  * Each getter is present only when the device reports the backing DP. `setPower` and the mode-control
- * verbs are optional — they are absent on any device whose `category` is not a confirmed AIoT string
- * (see `isAiotVacuum` in `device-family.ts`).
+ * verbs are optional — they are absent when the backing DP is not in the device's reported param set.
  */
 export type VacuumCleanActions = Surface<typeof VACUUM_CLEAN_MEMBERS>;
 
@@ -379,9 +378,9 @@ export type VacuumCleanActions = Surface<typeof VACUUM_CLEAN_MEMBERS>;
  * `power` (DP 151) is part of the shared AIoT product DP schema for every T2xxx clean-line device — not
  * a model-specific extension — so its write is gated by `available: isAiotVacuum` only: no equivalent
  * power DP is confirmed on the legacy Tuya clean line (G-series/X8). The three mode-control verbs
- * (`startCleaning`, `returnToDock`, `pauseCleaning`) are gated by `available: isAiotVacuum ||
- * isTuyaVacuum` and dispatch different DP shapes per platform: legacy Tuya dispatches DP 2 / DP 101
- * (bool), AIoT dispatches DP 152 (ModeCtrlRequest protobuf). Each AIoT mode-control verb carries its
+ * (`startCleaning`, `returnToDock`, `pauseCleaning`) are DP-gated and dispatch different DP shapes per
+ * platform: legacy Tuya dispatches DP 2 (bool, start=true/pause=false) / DP 101 (bool, return=true),
+ * both confirmed from protocol inspection; AIoT dispatches DP 152 (ModeCtrlRequest protobuf). Each AIoT mode-control verb carries its
  * own `seq` counter per bind (the T2351 accepts per-closure counters — two separately-obtained action
  * objects both starting at 112 do not cause the device to complain, so the seq is not enforced as
  * globally monotonic).
@@ -395,7 +394,8 @@ export const VACUUM_CLEAN_MEMBERS = {
   /**
    * The robot's power switch, and NOT a way to start a job — `startCleaning` is that.
    * DP 151 belongs to the shared AIoT product DP schema every clean-line device speaks, so the write
-   * is gated on the confirmed AIoT platform (`available: isAiotVacuum`) rather than on a reported DP.
+   * is gated on the confirmed AIoT platform (category-based via `isAiotVacuum`) rather than on a
+   * reported DP — no equivalent power DP is confirmed on the legacy Tuya clean line.
    */
   power: {
     param: VACUUM_DP.POWER,
@@ -584,50 +584,35 @@ export const VACUUM_CLEAN_MEMBERS = {
     provenance: "mega",
     description: "Speaker loudness 0-100 from DP 111 (Loudness). X8 Pro Tuya clean line. Live-confirmed.",
   },
-  /** Start an auto-clean run — ModeCtrlRequest method 0 over DP 152 (AIoT only; Tuya write unverified). */
+  /** Start an auto-clean run via ModeCtrlRequest method 0 (DP 152). AIoT only — Tuya write unverified. */
   startCleaning: method(
-    ({ sink, ctx }) => {
-      if (isTuyaVacuum(ctx)) {
-        return (): Promise<void> => {
-          throw new Error("startCleaning: Tuya write path not yet verified — no live publishDps capture");
-        };
-      }
+    ({ sink }) => {
       let seq = 111;
       return (): Promise<void> =>
         sink.dispatch(aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.START_AUTO_CLEAN, ++seq)));
     },
-    "Start an auto-clean run (ModeCtrlRequest method 0, DP 152 for AIoT).",
-    (ctx) => isAiotVacuum(ctx),
+    "Start an auto-clean run (ModeCtrlRequest method 0 over DP 152).",
+    isAiotVacuum,
   ),
-  /** Return to the dock — ModeCtrlRequest method 6 over DP 152 (AIoT only; Tuya write unverified). */
+  /** Return to the dock via ModeCtrlRequest method 6 (DP 152). AIoT only — Tuya write unverified. */
   returnToDock: method(
-    ({ sink, ctx }) => {
-      if (isTuyaVacuum(ctx)) {
-        return (): Promise<void> => {
-          throw new Error("returnToDock: Tuya write path not yet verified — no live publishDps capture");
-        };
-      }
+    ({ sink }) => {
       let seq = 111;
       return (): Promise<void> =>
         sink.dispatch(aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.START_GOHOME, ++seq)));
     },
-    "Return to the dock (ModeCtrlRequest method 6, DP 152 for AIoT).",
-    (ctx) => isAiotVacuum(ctx),
+    "Return to the dock (ModeCtrlRequest method 6 over DP 152).",
+    isAiotVacuum,
   ),
-  /** Pause the current cleaning task — ModeCtrlRequest method 13 over DP 152 (AIoT only; Tuya write unverified). */
+  /** Pause the current cleaning task via ModeCtrlRequest method 13 (DP 152). AIoT only — Tuya write unverified. */
   pauseCleaning: method(
-    ({ sink, ctx }) => {
-      if (isTuyaVacuum(ctx)) {
-        return (): Promise<void> => {
-          throw new Error("pauseCleaning: Tuya write path not yet verified — no live publishDps capture");
-        };
-      }
+    ({ sink }) => {
       let seq = 111;
       return (): Promise<void> =>
         sink.dispatch(aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.PAUSE_TASK, ++seq)));
     },
-    "Pause the current cleaning task (ModeCtrlRequest method 13, DP 152 for AIoT).",
-    (ctx) => isAiotVacuum(ctx),
+    "Pause the current cleaning task (ModeCtrlRequest method 13 over DP 152).",
+    isAiotVacuum,
   ),
 } as const satisfies Members;
 

@@ -40,24 +40,7 @@ export type SuctionLevelValue = (typeof SuctionLevel)[keyof typeof SuctionLevel]
 /** The `suction` property's `enumValues`, derived from {@link SuctionLevel} so the scale is named once. */
 const SUCTION_LABEL: Record<number, string> = enumLabels(SuctionLevel);
 
-/**
- * Per-model suction level availability, sourced from each SKU's `get_product_data_point` catalog
- * `range` for DP 158.
- *
- * **Verified entries only** — a model is added here once its catalog range has been confirmed against
- * `get_product_data_point` or a live capture. When a model is absent, `actions()` falls back to the
- * full 0–5 scale. A host can always consult `supportedLevels` at runtime rather
- * than branching on the model code itself.
- *
- * | Model  | Range  | Source                              |
- * | ------ | ------ | ----------------------------------- |
- * | T2351  | 0–3    | ✅ `get_product_data_point` catalog + live write verified |
- */
-const SUCTION_LEVELS_BY_MODEL: Record<string, readonly SuctionLevelValue[]> = {
-  T2351: [0, 1, 2, 3],
-};
-
-/** All six levels — the fallback when the model is not in the table above. */
+/** All six levels — the fallback when the catalog is absent or doesn't cover DP 158. */
 const ALL_SUCTION_LEVELS: readonly SuctionLevelValue[] = [0, 1, 2, 3, 4, 5];
 
 /**
@@ -80,8 +63,9 @@ export type SuctionActions = Surface<typeof SUCTION_MEMBERS> & {
    * range for DP 158. Use this to build a picker — do not assume all six {@link SuctionLevel} values
    * are available. For example, a T2351 reports `[0, 1, 2, 3]`.
    *
-   * Falls back to all six levels `[0…5]` when the model is not in the known-range table.
-   * Always present; only meaningful on devices where `setSuctionLevel` is installed (AIoT vacuums).
+   * `undefined` when the catalog is absent or does not cover DP 158 — fall back to the full scale or
+   * hide the picker until a catalog is loaded. Only meaningful on devices where `setSuctionLevel` is
+   * installed (AIoT vacuums).
    */
   readonly supportedLevels?: readonly SuctionLevelValue[];
 };
@@ -158,13 +142,14 @@ export const SUCTION: CapabilityModule = {
     return params ? { params } : null;
   },
   /**
-   * The per-model level range — sourced from the SKU's `get_product_data_point` range for DP 158.
-   * Returned unconditionally: `setSuctionLevel` is only installed on AIoT devices (gated by
-   * `available: isAiotVacuum` on the `level` entry), so `supportedLevels` is harmless data on a
-   * non-AIoT device where no setter exists to consume it.
+   * The per-model level range — sourced from the SKU's `get_product_data_point` catalog for DP 158
+   * when available. `undefined` when no catalog entry exists for DP 158. `setSuctionLevel` is only
+   * installed on AIoT devices (gated by `available: isAiotVacuum` on the `level` entry), so
+   * `supportedLevels` is harmless data on a non-AIoT device.
    */
   actions(ctx: CommandContext): CapabilityActions {
-    const supportedLevels = (ctx.model ? SUCTION_LEVELS_BY_MODEL[ctx.model] : undefined) ?? ALL_SUCTION_LEVELS;
+    const catalogRange = ctx.dpCatalog?.enumRanges.get(SUCTION_DP.SUCTION);
+    const supportedLevels = catalogRange?.filter((v): v is SuctionLevelValue => v in SUCTION_LABEL);
     return { supportedLevels } as unknown as CapabilityActions;
   },
 };
