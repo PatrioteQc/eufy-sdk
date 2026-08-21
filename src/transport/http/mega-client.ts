@@ -87,6 +87,27 @@ export class SessionExpiredError extends Error {
 }
 
 /**
+ * eufy cloud gateway error codes — the numeric `code` carried in a response envelope alongside the
+ * HTTP status.
+ *
+ * PROVENANCE — backend-only. These numbers are NOT hardcoded anywhere in the app: verified absent from
+ * the v6 APK's Java sources, resources, every native `.so` (including the Flutter `libapp.so`) and the
+ * Hermes bundles. The app reacts to the *condition* via generic logout handling + user-facing strings
+ * (e.g. `account_login_log_out_notice` — "logged in on another device"), not by matching the code. So a
+ * code here is known only from an observed live response; add new ones the same way.
+ */
+export const EufyCloudErrorCode = {
+  /**
+   * Session kicked out — the account logged in on another device (eufy enforces ~one active session
+   * per account). Arrives as HTTP 401 with this `code`; the human message wording varies across
+   * endpoints ("...kicked out", "token error", ...), which is why the classifier keys off this code
+   * and only falls back to message parsing.
+   */
+  SESSION_KICKED: 26084,
+} as const;
+export type EufyCloudErrorCode = (typeof EufyCloudErrorCode)[keyof typeof EufyCloudErrorCode];
+
+/**
  * The raw login reply shape — internal; a host reads the `LoginResult` union.
  * @internal
  */
@@ -441,7 +462,7 @@ export class MegaHttpClient {
     const authFailure =
       authed &&
       last?.status === 401 &&
-      (last.code === 26084 ||
+      (last.code === EufyCloudErrorCode.SESSION_KICKED ||
         /user_id is empty|invalid.*token|token.*(expired|error)|kicked|does not exist|unauthor/i.test(
           last?.msg ?? "",
         ));
