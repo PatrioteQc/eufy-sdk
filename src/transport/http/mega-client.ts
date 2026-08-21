@@ -104,6 +104,22 @@ export const EufyCloudErrorCode = {
    * and only falls back to message parsing.
    */
   SESSION_KICKED: 26084,
+  /**
+   * "get identity error" (usually HTTP 463) — the gateway no longer knows our `x-key-ident`; the ECDH
+   * session key was rotated/expired server-side (common after a restored session sits idle for days).
+   * The auth token may still be fine, so this triggers a one-shot key re-exchange before the request
+   * is treated as a dead session.
+   */
+  IDENTITY_KEY_STALE: 4404,
+  /** Signature invalid — the wrong per-host `content-type` was tried; expected during the content-type
+   *  probe and retried on the alternate type (not a real failure). */
+  SIGNATURE_INVALID: 4416,
+  /** Generic gateway "try again" seen during the same content-type probe; retried, not surfaced. */
+  PROBE_RETRY: 10000,
+  /** Captcha required before login can proceed — fetch a challenge and solve it. */
+  CAPTCHA_REQUIRED: 100032,
+  /** Captcha answer was wrong — fetch a fresh challenge and re-solve. */
+  CAPTCHA_WRONG: 100033,
 } as const;
 export type EufyCloudErrorCode = (typeof EufyCloudErrorCode)[keyof typeof EufyCloudErrorCode];
 
@@ -425,7 +441,10 @@ export class MegaHttpClient {
         }
       }
       last = { code: env?.code, msg: detail, status: res.status };
-      const retryable = (res.status === 403 && env?.code === 4416) || env?.code === 10000 || res.status === 400;
+      const retryable =
+        (res.status === 403 && env?.code === EufyCloudErrorCode.SIGNATURE_INVALID) ||
+        env?.code === EufyCloudErrorCode.PROBE_RETRY ||
+        res.status === 400;
       // 4416/10000 on the first content-type is expected probing — don't log it as
       // an error; only surface genuinely unexpected envelopes in debug.
       if (env?.code !== 0 && !retryable)
@@ -437,7 +456,8 @@ export class MegaHttpClient {
     // (common after a restored session sits idle for days). The token may still
     // be fine, so first re-run the key exchange ONCE and retry; only if that
     // fails too do we treat it as a dead session.
-    const identityError = authed && (last?.code === 4404 || /get identity error|identity error/i.test(last?.msg ?? ""));
+    const identityError =
+      authed && (last?.code === EufyCloudErrorCode.IDENTITY_KEY_STALE || /get identity error|identity error/i.test(last?.msg ?? ""));
     if (identityError && !_identityRetried && this.auth_) {
       this.logger.debug("[mega] identity error → re-exchanging session key and retrying");
       if (host.includes(".eufylife.com")) this.sessionKeys.delete(host);
@@ -787,12 +807,15 @@ export class MegaHttpClient {
       res = await this.postSigned<Record<string, unknown>>(passportHost, "/passport/login", body, !!this.auth_);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      // 100032 = captcha required; 100033 = captcha answer wrong. Fetch a fresh challenge and hand
-      // it back for (re)solving — hold the id for solveCaptcha().
-      if (/\b100032\b|\b100033\b/.test(msg)) {
+      // Captcha required (CAPTCHA_REQUIRED) or wrong answer (CAPTCHA_WRONG): fetch a fresh challenge
+      // and hand it back for (re)solving — hold the id for solveCaptcha(). The code is matched inside
+      // the thrown message (postSigned embeds `(status/code)`), so the patterns are built from the consts.
+      const captchaWrong = new RegExp(`\\b${EufyCloudErrorCode.CAPTCHA_WRONG}\\b`);
+      const captchaAny = new RegExp(`\\b${EufyCloudErrorCode.CAPTCHA_REQUIRED}\\b|\\b${EufyCloudErrorCode.CAPTCHA_WRONG}\\b`);
+      if (captchaAny.test(msg)) {
         const cap = await this.generateCaptcha();
         this.pendingCaptchaId = cap.captchaId;
-        return { status: LoginStatus.Captcha, image: cap.image, retry: /\b100033\b/.test(msg) };
+        return { status: LoginStatus.Captcha, image: cap.image, retry: captchaWrong.test(msg) };
       }
       throw e;
     }
