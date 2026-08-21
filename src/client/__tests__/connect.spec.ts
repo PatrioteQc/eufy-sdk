@@ -1,7 +1,7 @@
 import { EventEmitter } from "node:events";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { EufyMega } from "../eufy-mega.js";
-import { LoginStatus } from "../../transport/http/mega-client.js";
+import { LoginStatus, SessionExpiredError } from "../../transport/http/mega-client.js";
 import { PushClient } from "../../transport/push/push-client.js";
 import type { EufyDevice } from "../../core/types.js";
 
@@ -430,5 +430,31 @@ describe("EufyMega auto-realtime", () => {
     vi.spyOn((c.eufy as any).mega, "login").mockResolvedValue({ status: LoginStatus.Captcha, image: "x" });
     await c.eufy.login();
     expect(ensure).not.toHaveBeenCalled();
+  });
+});
+
+describe("EufyMega sessionExpired event", () => {
+  beforeEach(() => vi.restoreAllMocks());
+
+  it("emits sessionExpired (and error) for a SessionExpiredError, only error for anything else", () => {
+    const c = makeClient({ mqtt: 0 });
+    const errors: Error[] = [];
+    const expired: Error[] = [];
+    c.eufy.on("error", (e) => errors.push(e));
+    c.eufy.on("sessionExpired", (e) => expired.push(e));
+
+    (c.eufy as any).reportError(new SessionExpiredError("token kicked out"));
+    (c.eufy as any).reportError(new Error("transient boom"));
+
+    // Auth loss fires the dedicated event exactly once; a plain error does not.
+    expect(expired).toHaveLength(1);
+    expect(expired[0]?.name).toBe("SessionExpiredError");
+    // Both still reach the generic error bus (back-compat).
+    expect(errors).toHaveLength(2);
+  });
+
+  it("sessionExpired is a no-op (no throw) when nothing listens", () => {
+    const c = makeClient({ mqtt: 0 });
+    expect(() => (c.eufy as any).reportError(new SessionExpiredError("kicked"))).not.toThrow();
   });
 });

@@ -380,6 +380,10 @@ export class EufyMega extends EventEmitter {
    */
   private reportError(e: unknown): void {
     const err = e instanceof Error ? e : new Error(String(e));
+    // Auth loss (a kicked/expired token) gets its own event so a host can react without string-matching
+    // the generic error bus. A normal event, so emitting with no listener is a harmless no-op (unlike
+    // `error`, which throws when unhandled). Matched by name to survive an error crossing a module edge.
+    if (err.name === "SessionExpiredError") this.emit("sessionExpired", err);
     if (this.listenerCount("error")) this.emit("error", err);
     else this.opts.logger?.warn?.(`[eufy] ${err.message}`);
   }

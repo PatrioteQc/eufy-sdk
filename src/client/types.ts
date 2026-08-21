@@ -253,6 +253,13 @@ export type EufyMegaEventMap = {
    * report broker publication (`acked: true`) without an `instanceIp`; that is not device convergence.
    */
   commandAck: [info: { sn: string; kind: string; acked: boolean; instanceIp?: string; getAcked?: boolean }];
+  /**
+   * The cloud session was kicked or invalidated — another client logged into the same account, or the
+   * token expired. The SDK has already cleared the persisted session; a host should re-drive `login()`
+   * (which usually needs 2FA). Distinct from `error` so a host can react to auth loss without
+   * pattern-matching the generic error bus; the same failure ALSO fires `error` for back-compat.
+   */
+  sessionExpired: [err: Error];
   // Any transport error.
   error: [err: Error];
 };
