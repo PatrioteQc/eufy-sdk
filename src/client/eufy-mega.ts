@@ -955,6 +955,10 @@ export class EufyMega extends EventEmitter {
    * the command dispatcher can resolve a eufy SN → Tuya devId without a separate lookup.
    * The Tuya id is extracted from the device's raw cloud record (`tuya_uuid`, `tuya_virtual_id`,
    * `tuya_device_id`, or `virtualId` fields — whichever is non-empty).
+   *
+   * A partial cloud outage still resolves, with the devices that answered plus the ones already known — but a
+   * session the cloud has rejected REJECTS, with {@link SessionExpiredError}. An empty list would be
+   * indistinguishable from an account with no devices, and a host acts on that by removing everything it had.
    */
   async getDevices(): Promise<EufyDevice[]> {
     const devices = await this.registry.getDevices();

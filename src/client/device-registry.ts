@@ -7,7 +7,7 @@
  * tricky bits are unit-testable with a fake `mega` — the facade stays pure wiring. It never names a
  * capability or a wire; it maps records to the model's `resolveDevice`/`inspectParams`.
  */
-import { MegaApiError, MegaHttpClient, OWNER_ONLY_CODE } from "../transport/http/mega-client.js";
+import { MegaApiError, MegaHttpClient, OWNER_ONLY_CODE, SessionExpiredError } from "../transport/http/mega-client.js";
 import { noopLogger, type Logger } from "../core/logger.js";
 import { classifyDevice, type DeviceClass, type EufyDevice, type RealtimeKind } from "../core/types.js";
 import { inspectParams, resolveDevice, type Capability, type Codec, type DeviceInspection } from "../model/index.js";
@@ -243,6 +243,13 @@ export class DeviceRegistry {
    * Replacing wholesale would empty the cache during an outage, breaking every serial lookup the
    * command sink and event fan-out depend on, and would then present the whole account as newly
    * discovered once the next refresh succeeded. {@link lastRefreshPartial} records that this happened.
+   *
+   * A **rejected session** is the one failure not tolerated that way, because it is not a subset of
+   * anything: every query fails identically, so what is left to return is nothing on a fresh client — an
+   * empty account that reads exactly like an account with no devices, which a host acts on by tearing down
+   * everything it had. The transport has already tried to replace the token by logging in again, so
+   * reaching here means it could not, and the caller is the one who has to know. It rejects; the devices it
+   * already knew stay known.
    */
   async getDevices(): Promise<EufyDevice[]> {
     // get_devs_list is quirkily house-scoped: the bare {} call returns a set
@@ -257,6 +264,7 @@ export class DeviceRegistry {
       );
       for (const h of houses.house_infos ?? []) bodies.push({ house_id: h.house_id });
     } catch (e) {
+      if (e instanceof SessionExpiredError) throw e;
       partial = true;
       this.onError(e);
     }
@@ -267,6 +275,7 @@ export class DeviceRegistry {
       try {
         res = await this.mega.post<{ devices?: any[] }>("house", "/app/house/get_devs_list", body);
       } catch (e) {
+        if (e instanceof SessionExpiredError) throw e;
         partial = true;
         this.onError(e);
         continue;

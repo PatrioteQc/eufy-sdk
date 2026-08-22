@@ -1,5 +1,5 @@
 import { DeviceRegistry } from "../device-registry.js";
-import type { MegaHttpClient } from "../../transport/http/mega-client.js";
+import { SessionExpiredError, type MegaHttpClient } from "../../transport/http/mega-client.js";
 
 /**
  * A minimal fake `MegaHttpClient` — only the two methods DeviceRegistry calls (`post`,
@@ -99,6 +99,47 @@ describe("DeviceRegistry", () => {
       const devs = await reg.getDevices();
       expect(devs.map((d) => d.sn)).toEqual(["A"]);
       expect((errors[0] as Error).message).toBe("body boom");
+    });
+
+    /**
+     * A rejected session is not a subset of the account.
+     *
+     * Tolerating a failed query is right for an outage — a partial answer beats none, and the devices it did
+     * not return are kept rather than dropped. It is wrong for a token the cloud has finished with: every
+     * query fails the same way, so "what it has" is nothing on a fresh client, and a caller is handed an empty
+     * account that reads exactly like an account with no devices. A host that believes it tears down every
+     * object it had. The transport has already tried to recover this by logging in again; reaching here
+     * means it could not, so the caller is the one who has to know.
+     */
+    it("rejects rather than presenting a dead session as an account with no devices", async () => {
+      const errors: unknown[] = [];
+      const mega = fakeMega({
+        post: async () => {
+          throw new SessionExpiredError("/app/house/get_devs_list failed (401): token does not exist");
+        },
+      });
+      const reg = new DeviceRegistry({ mega, onError: (e) => errors.push(e) });
+
+      await expect(reg.getDevices()).rejects.toBeInstanceOf(SessionExpiredError);
+      expect(errors).toEqual([]); // the caller is told by the rejection, not beside a successful-looking result
+    });
+
+    /** The devices already known stay known: a rejection is not a reason to forget the account. */
+    it("keeps the devices it had when a later refresh is rejected", async () => {
+      let alive = true;
+      const mega = fakeMega({
+        post: async (_s, path) => {
+          if (!alive) throw new SessionExpiredError("token does not exist");
+          if (path.endsWith("get_house_list")) return {};
+          return { devices: [rawDevice("A")] };
+        },
+      });
+      const reg = new DeviceRegistry({ mega, onError: () => {} });
+      await reg.getDevices();
+
+      alive = false;
+      await expect(reg.getDevices()).rejects.toBeInstanceOf(SessionExpiredError);
+      expect(reg.list().map((d) => d.sn)).toEqual(["A"]);
     });
   });
 
