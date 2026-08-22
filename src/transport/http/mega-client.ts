@@ -95,6 +95,11 @@ export class SessionExpiredError extends Error {
  * Hermes bundles. The app reacts to the *condition* via generic logout handling + user-facing strings
  * (e.g. `account_login_log_out_notice` — "logged in on another device"), not by matching the code. So a
  * code here is known only from an observed live response; add new ones the same way.
+ *
+ * Internal: these are gateway mechanics, not a surface a host acts on — the transport already turns the
+ * conditions that matter into a typed outcome (`SessionExpiredError`, `LoginStatus.Captcha`). Exported
+ * only so the transport's own specs can name a code instead of repeating the number.
+ * @internal
  */
 export const EufyCloudErrorCode = {
   /**
@@ -121,6 +126,10 @@ export const EufyCloudErrorCode = {
   /** Captcha answer was wrong — fetch a fresh challenge and re-solve. */
   CAPTCHA_WRONG: 100033,
 } as const;
+/**
+ * Any one of the gateway error codes above.
+ * @internal
+ */
 export type EufyCloudErrorCode = (typeof EufyCloudErrorCode)[keyof typeof EufyCloudErrorCode];
 
 /**
@@ -457,7 +466,9 @@ export class MegaHttpClient {
     // be fine, so first re-run the key exchange ONCE and retry; only if that
     // fails too do we treat it as a dead session.
     const identityError =
-      authed && (last?.code === EufyCloudErrorCode.IDENTITY_KEY_STALE || /get identity error|identity error/i.test(last?.msg ?? ""));
+      authed &&
+      (last?.code === EufyCloudErrorCode.IDENTITY_KEY_STALE ||
+        /get identity error|identity error/i.test(last?.msg ?? ""));
     if (identityError && !_identityRetried && this.auth_) {
       this.logger.debug("[mega] identity error → re-exchanging session key and retrying");
       if (host.includes(".eufylife.com")) this.sessionKeys.delete(host);
@@ -483,9 +494,7 @@ export class MegaHttpClient {
       authed &&
       last?.status === 401 &&
       (last.code === EufyCloudErrorCode.SESSION_KICKED ||
-        /user_id is empty|invalid.*token|token.*(expired|error)|kicked|does not exist|unauthor/i.test(
-          last?.msg ?? "",
-        ));
+        /user_id is empty|invalid.*token|token.*(expired|error)|kicked|does not exist|unauthor/i.test(last?.msg ?? ""));
     if (authFailure) {
       this.clearSession();
       throw new SessionExpiredError(`${path} failed (401): ${last?.msg}`);
@@ -811,7 +820,9 @@ export class MegaHttpClient {
       // and hand it back for (re)solving — hold the id for solveCaptcha(). The code is matched inside
       // the thrown message (postSigned embeds `(status/code)`), so the patterns are built from the consts.
       const captchaWrong = new RegExp(`\\b${EufyCloudErrorCode.CAPTCHA_WRONG}\\b`);
-      const captchaAny = new RegExp(`\\b${EufyCloudErrorCode.CAPTCHA_REQUIRED}\\b|\\b${EufyCloudErrorCode.CAPTCHA_WRONG}\\b`);
+      const captchaAny = new RegExp(
+        `\\b${EufyCloudErrorCode.CAPTCHA_REQUIRED}\\b|\\b${EufyCloudErrorCode.CAPTCHA_WRONG}\\b`,
+      );
       if (captchaAny.test(msg)) {
         const cap = await this.generateCaptcha();
         this.pendingCaptchaId = cap.captchaId;
