@@ -654,6 +654,12 @@ export interface DeviceEventMap {
   contactState: PushSemanticEvent & PollSemanticEvent & { open?: boolean };
   /** Battery level changed (poll). `to` is the new 0–100 level. */
   batteryLevel: PollSemanticEvent;
+  /**
+   * A camera was enabled or disabled (poll). `enabled` is the state after the change, normalised from
+   * whichever id the device reports it under — the two carry opposite polarity, so read `enabled` rather
+   * than `to`. Absent when the change carried no value.
+   */
+  cameraEnabled: PollSemanticEvent & { enabled?: boolean };
   /** Battery alert — `state` discriminates low / hot / full. */
   batteryAlert: PushSemanticEvent & { state?: "low" | "hot" | "full" };
   /** Pan/tilt status streamed while the camera moves. */

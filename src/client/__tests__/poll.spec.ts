@@ -26,13 +26,16 @@ function makeClient(opts: Record<string, unknown> = {}) {
   return eufy;
 }
 
-const batteryChange = (to: string): ParamChange => ({
+const paramChange = (paramType: number, from: string, to: string): ParamChange => ({
   deviceSn: "T8000P0000000000",
-  paramType: 1101, // BATTERY_PARAM.BATTERY
-  from: "88",
+  paramType,
+  from,
   to,
-  params: { 1101: to },
+  params: { [paramType]: to },
 });
+
+/** BATTERY_PARAM.BATTERY changing from a known level. */
+const batteryChange = (to: string): ParamChange => paramChange(1101, "88", to);
 
 describe("cloud-param poll loop", () => {
   beforeEach(() => {
@@ -56,6 +59,55 @@ describe("cloud-param poll loop", () => {
 
     expect(seen).toHaveLength(1);
     expect(seen[0]).toMatchObject({ deviceSn: "T8000P0000000000", paramType: 1101, from: "88", to: "81" });
+  });
+
+  /**
+   * A poll change must be decoded against the changed device's capabilities, exactly as a push is.
+   *
+   * Without them `resolveHits` cannot disambiguate a param id claimed by more than one capability, so a
+   * contested id resolves to nothing and a poll event declared on it is silently never emitted. The
+   * resolution itself is pinned in `capabilities/__tests__/decode-event.spec.ts`; what is asserted here
+   * is that the argument reaches the decode at all, which is the whole of the defect — no shipped id is
+   * contested today, so nothing else about this call is observable from the outside.
+   */
+  it("decodes a poll change against the changed device's capabilities", async () => {
+    const eufy = makeClient();
+    vi.spyOn((eufy as any).registry, "pollChanges").mockResolvedValue({
+      params: [batteryChange("81")],
+      added: [],
+      removed: [],
+      reported: [],
+    });
+    const caps = vi.spyOn((eufy as any).registry, "capabilitiesForDevice").mockReturnValue(new Set(["battery"]));
+
+    await (eufy as any).pollOnce();
+
+    expect(caps).toHaveBeenCalledWith("T8000P0000000000");
+  });
+
+  /**
+   * Camera enablement is the state #47 wanted announced: it only ever arrives as a cloud param, so
+   * re-reading was the only way to learn of a change and re-reading cannot say WHEN. Both wire ids
+   * carry it, under opposite polarity — 1035 is a disable bit, 2001 reports it directly — so the event
+   * normalises to `enabled` rather than handing a caller the raw value and its polarity.
+   */
+  it("announces a camera enablement change, in the polarity the reporting id uses", async () => {
+    const eufy = makeClient();
+    const changes = [paramChange(1035, "0", "1"), paramChange(2001, "false", "true")];
+    vi.spyOn((eufy as any).registry, "pollChanges").mockResolvedValue({
+      params: changes,
+      added: [],
+      removed: [],
+      reported: [],
+    });
+    const seen: any[] = [];
+    eufy.on("cameraEnabled", (e) => seen.push(e));
+
+    await (eufy as any).pollOnce();
+
+    expect(seen).toHaveLength(2);
+    expect(seen[0]).toMatchObject({ deviceSn: "T8000P0000000000", paramType: 1035, enabled: false });
+    expect(seen[1]).toMatchObject({ paramType: 2001, enabled: true });
   });
 
   /**

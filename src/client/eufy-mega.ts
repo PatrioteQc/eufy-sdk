@@ -1232,6 +1232,10 @@ export class EufyMega extends EventEmitter {
    * state that has no push of its own (`battery.ts` maps the battery level here; `contact.ts` maps the
    * contact param as a second path alongside its push).
    *
+   * Each change is decoded against the reporting device's capabilities, the same argument the push path
+   * passes: a param id claimed by more than one capability cannot be resolved without it, so a poll
+   * event declared on a contested id would be declared and then silently never emitted.
+   *
    * Also emits `deviceState` for each device the diff reports as having re-reported. That is tracked
    * apart from the param diff because the two are different facts: the cloud can re-stamp a param with
    * an unchanged VALUE, which is no state change to report but is fresh proof the device is alive. A
@@ -1244,7 +1248,7 @@ export class EufyMega extends EventEmitter {
       for (const dev of diff.added) this.emit("deviceAdded", dev);
       for (const dev of diff.removed) this.emit("deviceRemoved", dev);
       for (const change of diff.params)
-        for (const out of decodeCapabilityEvent({ source: "poll", ...change }))
+        for (const out of decodeCapabilityEvent({ source: "poll", ...change }, this.capsForEvent(change.deviceSn)))
           this.emitSemantic(out.event, out.payload, { refresh: out.refresh });
       for (const dev of diff.reported) this.emit("deviceState", this.stateOf(dev));
       for (const change of diff.params) await this.widenCapabilities(change.deviceSn);
