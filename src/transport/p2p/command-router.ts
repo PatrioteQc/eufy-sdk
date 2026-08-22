@@ -562,6 +562,7 @@ export class P2PCommandRouter {
    * something unplayable, and whichever stopped first would close the device's path under the other —
    * with no error on either side. The second caller is refused rather than handed the first one's
    * handle, which would silently discard its `encoder` and hand it a clip already in progress.
+   *
    */
   private async openTalkback(sn: string, encoder?: AacEncoder, powered?: "wired" | "battery"): Promise<TalkbackHandle> {
     const { session, parentSn, channel, homeBaseAttached } = await this.resolveSession(sn, { waitLevel2: "soft" });
@@ -624,6 +625,9 @@ export class P2PCommandRouter {
    * source here is what let one dead source be handed out for the life of the client. A caller must
    * re-acquire through this method after a failure; `attach()` on the dropped source throws, because it
    * has been disposed.
+   *
+   * Several cameras behind one station each get their own source and may be warm at the same time: the
+   * station tags every media frame with the camera it belongs to, and {@link LiveStream} takes only its own.
    */
   async sharedLiveSourceFor(sn: string, opts: SharedLiveOpts = {}): Promise<SharedLiveSource> {
     const { session, parentSn, channel, accountId, homeBaseAttached } = await this.resolveSession(sn, {

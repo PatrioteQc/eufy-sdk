@@ -269,8 +269,17 @@ export interface TuyaDpInbound {
 /** Elementary-stream video codec of a {@link LiveVideoFrame} — eufy cameras stream H.264 or H.265. */
 export type VideoCodec = "h264" | "h265" | "av1";
 
-/** One decoded video access unit, as Annex-B (H.264 or H.265). */
+/**
+ * One decoded video access unit, as Annex-B (H.264 or H.265).
+ *
+ * A WHOLE access unit, always: a station serves a unit larger than its chunk size as several frames, and
+ * those are reassembled before delivery — so deciding anything per access unit (begin at a keyframe,
+ * switch codec at a keyframe, count frames) operates on what it says it does. A unit the transport could
+ * not complete is dropped rather than delivered short, because an access unit shorter than its own slice
+ * headers promise decodes to no picture at all.
+ */
 export interface LiveVideoFrame {
+  /** True on an IDR — a unit a consumer may begin decoding at, never a continuation of an earlier one. */
   keyframe: boolean;
   width: number;
   height: number;
@@ -448,6 +457,9 @@ export interface MediaProvider {
   /**
    * Open a managed live stream.
    *
+   * Several cameras behind one station may stream at the same time: each handle receives only the frames
+   * the station tagged for ITS camera.
+   *
    * @example
    * ```ts
    * const stream = await cam.live();
@@ -456,7 +468,12 @@ export interface MediaProvider {
    * ```
    */
   live(opts?: Record<string, unknown>): Promise<LiveStreamHandle>;
-  /** Record `seconds` of video → an mp4/h264 buffer. */
+  /**
+   * Record `seconds` of video → an mp4/h264 buffer.
+   *
+   * Opens its OWN pull rather than joining the shared source, so it costs a second stream on a camera that
+   * is already streaming. {@link recordFragments} is a shared consumer like every other egress.
+   */
   record(seconds: number, opts?: { timeoutMs?: number; skipKeyframes?: number }): Promise<Buffer>;
   /**
    * Open a video-only `node:stream` Readable over a shared source consumer — raw Annex-B bytes
