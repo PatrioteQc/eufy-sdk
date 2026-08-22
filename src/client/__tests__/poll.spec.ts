@@ -425,3 +425,58 @@ describe("disconnect during startup", () => {
     expect(poll).toHaveBeenCalled();
   });
 });
+
+/**
+ * The poll baseline must be a snapshot of VALUES, not of the records the registry hands out.
+ *
+ * `this.devices` holds the same objects, so anything that updates one in place rewrites the baseline before
+ * the next pass can diff against it. `applyRealtimeParams` does exactly that to `lastSeenMs` — a station's
+ * report stamps the record the baseline is holding — so a device that reports over realtime loses the poll's
+ * liveness signal. The param half is guarded against the same mutation, which no current path performs.
+ */
+describe("poll baseline isolation", () => {
+  beforeEach(() => vi.restoreAllMocks());
+
+  /** A registry with one device whose params a test can mutate the way the realtime path does. */
+  async function registryWithDevice() {
+    const { DeviceRegistry } = await import("../device-registry.js");
+    const device: any = { sn: "T8000P0000000000", params: { 2001: "false" }, lastSeenMs: 1 };
+    const registry = new DeviceRegistry({ mega: {} as never, onError: () => {} });
+    vi.spyOn(registry, "getDevices").mockImplementation(async () => [device]);
+    return { registry, device };
+  }
+
+  it("reports a change written into the record after the baseline was taken", async () => {
+    const { registry, device } = await registryWithDevice();
+    await registry.pollChanges(); // baseline
+
+    device.params = { ...device.params, 2001: "true" }; // the station volunteers the new value
+    const diff = await registry.pollChanges();
+
+    expect(diff.params).toEqual([
+      { deviceSn: "T8000P0000000000", paramType: 2001, from: "false", to: "true", params: { 2001: "true" } },
+    ]);
+  });
+
+  /** The half that bites today: a realtime report stamps `lastSeenMs` on the record the baseline holds. */
+  it("reports a device as re-reported after its record was updated in place", async () => {
+    const { registry, device } = await registryWithDevice();
+    await registry.pollChanges();
+
+    device.lastSeenMs = 2;
+    const diff = await registry.pollChanges();
+
+    expect(diff.reported.map((d) => d.sn)).toEqual(["T8000P0000000000"]);
+  });
+
+  /** An unchanged pass still reports nothing, so the isolation cannot fake a change. */
+  it("stays silent when nothing moved", async () => {
+    const { registry } = await registryWithDevice();
+    await registry.pollChanges();
+
+    const diff = await registry.pollChanges();
+
+    expect(diff.params).toEqual([]);
+    expect(diff.reported).toEqual([]);
+  });
+});

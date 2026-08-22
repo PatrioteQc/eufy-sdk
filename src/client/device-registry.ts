@@ -65,6 +65,18 @@ export interface PollDiff {
   reported: EufyDevice[];
 }
 
+/**
+ * One device as the previous poll pass SAW it — the values the next diff compares against, copied out of the
+ * record rather than referencing it.
+ *
+ * The record travels along only so a departed device can still be reported whole; nothing reads its params.
+ */
+interface PolledState {
+  device: EufyDevice;
+  lastSeenMs?: number;
+  params: Record<number, string>;
+}
+
 /** One `{param_type, param_value, update_time}` entry as the cloud delivers it, in either param list. */
 interface RawParam {
   param_type?: number;
@@ -196,8 +208,19 @@ export class DeviceRegistry {
    * device — a host's own `getDevices()`, a command sink resolving a serial before an on-demand P2P
    * open. Diffing the shared cache in place would let any of those silently absorb the delta, and the
    * next poll would then see an unchanged account and emit nothing. `undefined` = never polled.
+   *
+   * It holds the VALUES the diff reads, never the records themselves. Sharing the records lets anything that
+   * updates one in place rewrite the baseline before the next pass can diff against it — and the realtime
+   * path does exactly that to `lastSeenMs`: a station's report stamps the record the baseline is holding, so
+   * the next pass compares the cloud's older timestamp against a baseline already advanced to now and
+   * reports nothing. Every device that reports over realtime loses its poll liveness signal that way.
+   *
+   * The params are copied for the same reason, against a mutation no current path performs: nothing writes
+   * into a record's param map in place today (a realtime report lands in its own map, and a refetch rebuilds
+   * the record), so that half is a latent hazard rather than an observed one — copied because the diff
+   * cannot tell the difference and the cost is one shallow copy per device per pass.
    */
-  private pollSnapshot?: { devices: Map<string, EufyDevice>; complete: boolean };
+  private pollSnapshot?: { devices: Map<string, PolledState>; complete: boolean };
 
   constructor(deps: DeviceRegistryDeps) {
     this.mega = deps.mega;
@@ -332,8 +355,13 @@ export class DeviceRegistry {
     }
     const present = new Set(devices.map((d) => d.sn));
     const removed =
-      this.lastRefreshPartial || !base ? [] : [...base.devices.values()].filter((d) => !present.has(d.sn));
-    this.pollSnapshot = { devices: new Map(devices.map((d) => [d.sn, d])), complete: !this.lastRefreshPartial };
+      this.lastRefreshPartial || !base
+        ? []
+        : [...base.devices.entries()].filter(([sn]) => !present.has(sn)).map(([, state]) => state.device);
+    this.pollSnapshot = {
+      devices: new Map(devices.map((d) => [d.sn, { device: d, lastSeenMs: d.lastSeenMs, params: { ...d.params } }])),
+      complete: !this.lastRefreshPartial,
+    };
     return { params, added, removed, reported };
   }
 
