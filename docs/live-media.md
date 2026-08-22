@@ -160,6 +160,10 @@ forward account authentication headers to the redirected host.
 const shot = await cam.snapshotLive?.(); // { jpeg, width, height }
 ```
 
+`width` and `height` describe the returned image — they are read back out of the JPEG, not taken from
+the stream's frame header, so they cannot disagree with the bytes. (Some cameras reconfigure resolution
+inside one short burst, which is exactly when the header and the encoded still part company.)
+
 If the shared source already has a cached keyframe (a live view or another consumer is warm),
 `snapshotLive` decodes that keyframe directly — **no second pull**. Only if nothing is warm does it
 briefly attach, wait for a clean keyframe, decode, and detach. (The JPEG decode itself uses ffmpeg as

@@ -422,6 +422,11 @@ export interface MediaProvider {
   /**
    * A fresh still decoded from a short live burst.
    *
+   * `width`/`height` describe the RETURNED IMAGE, read back out of it rather than taken from the stream's
+   * frame header: the header states the geometry at capture start, and a camera whose stream reconfigures
+   * mid-burst leaves it contradicting the bytes — which a caller sizing a buffer or caching by resolution
+   * cannot detect short of parsing the JPEG itself.
+   *
    * Rejects with {@link LiveSnapshotUnavailableError}, whose {@link LiveSnapshotUnavailableError.retryable}
    * says whether another attempt could succeed — a caller that rate-limits acquisition needs that to
    * avoid spending its budget on a permanent fault, or abandoning a camera that would have answered.

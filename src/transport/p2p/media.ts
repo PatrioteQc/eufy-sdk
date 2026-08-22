@@ -44,6 +44,11 @@ export async function openLiveStream(session: P2PSession, opts: LiveStreamOption
  * someone else watches costs nothing on the wire. Otherwise we warm the source and wait for a clean
  * keyframe (the first IDR after a cold start is frequently partial, so skip it by default). Requires
  * `ffmpeg` for the Annex-B → JPEG decode.
+ *
+ * The returned dimensions are the ENCODED IMAGE's own, read back out of it — never the frame header's.
+ * The header states the stream's geometry when the capture started, and a stream that reconfigures
+ * mid-burst leaves it describing something the returned bytes contradict; the return value describes an
+ * image, so the image is its source of truth.
  */
 export async function captureSnapshotFromShared(
   source: SharedLiveSource,
@@ -66,8 +71,6 @@ export async function captureSnapshotFromShared(
   try {
     const burst = await new Promise<{
       h264: Buffer;
-      width: number;
-      height: number;
       codec: VideoCodec;
       sets?: ParamSets;
     }>((resolve, reject) => {
@@ -76,8 +79,6 @@ export async function captureSnapshotFromShared(
       let codec: VideoCodec = "h264";
       let keyCount = 0,
         capturing = false,
-        w = 0,
-        h = 0,
         settle: ReturnType<typeof setTimeout> | undefined;
       const timer = setTimeout(() => {
         cleanup();
@@ -95,8 +96,6 @@ export async function captureSnapshotFromShared(
           const threshold = primed ? 0 : skip; // primed: accept the cached IDR immediately
           if (!fr.keyframe || keyCount <= threshold) return;
           capturing = true;
-          w = fr.width;
-          h = fr.height;
           codec = fr.codec;
         }
         bufs.push(fr.data);
@@ -104,7 +103,7 @@ export async function captureSnapshotFromShared(
           settle = setTimeout(
             () => {
               cleanup();
-              resolve({ h264: Buffer.concat(bufs), width: w, height: h, codec, sets });
+              resolve({ h264: Buffer.concat(bufs), codec, sets });
             },
             primed ? 0 : collectMs,
           );
@@ -122,12 +121,11 @@ export async function captureSnapshotFromShared(
       consumer.on("video", onVideo);
       consumer.on("error", onError);
     });
-    const jpeg = await annexbToJpeg(primeForDecode(burst.h264, burst.sets, burst.codec), {
+    return await annexbToJpeg(primeForDecode(burst.h264, burst.sets, burst.codec), {
       logger: opts.logger ?? noopLogger,
       level: opts.ffmpegLevel,
       executable: opts.ffmpegPath,
     });
-    return { jpeg, width: burst.width, height: burst.height };
   } finally {
     consumer.detach();
   }
@@ -255,8 +253,47 @@ function primeForDecode(burst: Buffer, sets: ParamSets | undefined, codec: Video
   return sets && sets.codec === codec ? prefixParamSets(burst, sets) : burst;
 }
 
+/** Marker bytes that stand alone: TEM, SOI, EOI and the eight restart markers carry no length field. */
+const JPEG_STANDALONE_MARKERS = new Set([0x01, 0xd8, 0xd9, 0xd0, 0xd1, 0xd2, 0xd3, 0xd4, 0xd5, 0xd6, 0xd7]);
+
+/** Marker bytes in the `SOFn` range that are NOT frame headers: DHT, JPG and DAC share it. */
+const JPEG_NOT_FRAME_HEADERS = new Set([0xc4, 0xc8, 0xcc]);
+
 /**
- * Decode an Annex-B buffer (H.264 or H.265, starting at a keyframe) to a single JPEG via ffmpeg.
+ * The geometry a JPEG declares in its own frame header (`SOFn`), or `undefined` when it carries none.
+ *
+ * Walks the marker segments from the SOI rather than searching for the marker bytes: a `0xffc0` pair
+ * occurs inside quantization tables and entropy-coded data, and the first one found there would answer
+ * with two bytes of image content. Every `SOFn` puts precision, then height, then width at the same
+ * offset past its length field, so one read serves all of them. Any number of `0xff` fill bytes may
+ * precede a marker, and the standalone markers carry no length to skip by — both are what a naive walk
+ * gets wrong, and either would make a perfectly good image read as having no geometry.
+ *
+ * Decoding the image (the `jpeg-js` path the v2 thumbnail decoder needs) would answer the same question,
+ * but it is synchronous pure JS over every pixel: this needs a dozen bytes of header, so it reads them.
+ */
+function jpegGeometry(jpeg: Buffer): { width: number; height: number } | undefined {
+  let at = 2;
+  while (at + 1 < jpeg.length && jpeg[at] === 0xff) {
+    const marker = jpeg[at + 1];
+    if (marker === 0xff) {
+      at++;
+      continue;
+    }
+    if (marker >= 0xc0 && marker <= 0xcf && !JPEG_NOT_FRAME_HEADERS.has(marker)) {
+      if (at + 9 > jpeg.length) return undefined;
+      return { height: jpeg.readUInt16BE(at + 5), width: jpeg.readUInt16BE(at + 7) };
+    }
+    if (JPEG_STANDALONE_MARKERS.has(marker)) at += 2;
+    else if (at + 4 <= jpeg.length) at += 2 + jpeg.readUInt16BE(at + 2);
+    else return undefined;
+  }
+  return undefined;
+}
+
+/**
+ * Decode an Annex-B buffer (H.264 or H.265, starting at a keyframe) to a single JPEG via ffmpeg, with
+ * the geometry read back out of the image the encoder produced.
  *
  * `-pix_fmt yuvj420p` pins the JPEG-range output the encoder requires. Camera streams signal limited
  * ("tv") range, and the mjpeg encoder refuses a non-full-range input under default compliance — whether
@@ -267,14 +304,19 @@ function primeForDecode(burst: Buffer, sets: ParamSets | undefined, codec: Video
  *
  * A burst can also yield no image while ffmpeg exits 0 — asked for one frame, it finds no complete frame
  * in the data and reports success having encoded none. That is a property of the burst, so it carries the
- * same reason as a refused one, but it is described as such rather than as an ffmpeg failure.
+ * same reason as a refused one, but it is described as such rather than as an ffmpeg failure. Bytes that
+ * pass the SOI check but declare no frame header land there too: they describe no geometry, and answering
+ * with the stream's would reinstate the disagreement reading it back exists to remove.
  *
  * `spawn` carries the ffmpeg dials straight through to {@link spawnFfmpeg} — they are its options, not this
  * function's, so they travel as one bag rather than accumulating as positionals here.
  */
-function annexbToJpeg(annexb: Buffer, spawn: FfmpegSpawnOptions): Promise<Buffer> {
+function annexbToJpeg(
+  annexb: Buffer,
+  spawn: FfmpegSpawnOptions,
+): Promise<{ jpeg: Buffer; width: number; height: number }> {
   const codec = annexbFfmpegFormat(annexb);
-  return new Promise<Buffer>((resolve, reject) => {
+  return new Promise<{ jpeg: Buffer; width: number; height: number }>((resolve, reject) => {
     const ff = spawnFfmpeg(
       [
         // prettier-ignore
@@ -309,9 +351,16 @@ function annexbToJpeg(annexb: Buffer, spawn: FfmpegSpawnOptions): Promise<Buffer
     );
     ff.on("close", (code) => {
       const jpeg = Buffer.concat(out);
-      if (jpeg.length >= 3 && jpeg.subarray(0, 3).toString("hex") === "ffd8ff") return resolve(jpeg);
+      const encoded = jpeg.length >= 3 && jpeg.subarray(0, 3).toString("hex") === "ffd8ff";
+      const geometry = encoded ? jpegGeometry(jpeg) : undefined;
+      if (geometry) return resolve({ jpeg, ...geometry });
       const diagnostics = Buffer.concat(err).toString().slice(0, 200).trim();
-      const what = code === 0 ? "no complete frame in the burst" : `ffmpeg exited ${code}`;
+      const what =
+        code !== 0
+          ? `ffmpeg exited ${code}`
+          : encoded
+            ? "encoded image declares no frame header"
+            : "no complete frame in the burst";
       reject(new LiveSnapshotUnavailableError("undecodable-burst", diagnostics ? `${what}: ${diagnostics}` : what));
     });
     ff.stdin!.on("error", () => {});

@@ -97,6 +97,19 @@ export function nalTypes(buf: Buffer): number[] {
 export type FfmpegOutcome = { stdout: Buffer } | { exitCode: number; stderr: string } | { spawnError: string };
 
 /**
+ * A baseline JPEG carrying nothing but the geometry the encoder wrote into it: SOI, then a complete
+ * SOF0 whose height/width fields are the ones a reader has to answer with, then EOI. Enough for the
+ * snapshot path, which validates the SOI and reads the frame header.
+ */
+export function jpegOf(width: number, height: number): Buffer {
+  const sof0 = Buffer.concat([
+    Buffer.from([0xff, 0xc0, 0x00, 0x11, 0x08, height >> 8, height & 0xff, width >> 8, width & 0xff, 0x03]),
+    Buffer.alloc(9), // three component descriptors — unread, but the declared segment length covers them
+  ]);
+  return Buffer.concat([Buffer.from([0xff, 0xd8]), sof0, Buffer.from([0xff, 0xd9])]);
+}
+
+/**
  * A `vi.mock` factory body for `../../ffmpeg.js` that records each spawn's argv and stdin, and answers
  * with whatever `outcome()` says at the time it is called.
  *
