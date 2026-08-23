@@ -218,18 +218,25 @@ export class MegaHttpClient {
       ...cfg,
     };
     this.region = cfg.region ?? "us-pr";
-    this.openudid = cfg.openudid ?? createHash("md5").update(`eufy-mega:${cfg.email}`).digest("hex").slice(0, 16);
-    this.phoneModel = cfg.phoneModel ?? randomPhoneModel(this.openudid);
-    this.mediaUserAgent = cfg.mediaUserAgent ?? randomUserAgent(this.openudid, this.phoneModel);
     this.store = cfg.store ?? new MemorySessionStore();
     this.logger = cfg.logger ?? noopLogger;
 
-    // Hydrate a persisted session: reuse the token + bound ECDH key, skipping
-    // estimate/key-exchange/login/2FA entirely.
+    // The device identity (openudid + phone model + media UA) is generated ONCE and persisted, so it
+    // survives a token expiry AND a change to the generator — a shifting identity would look like a new
+    // device every run and re-trigger 2FA. Prefer an explicit config, then the stored value, then a
+    // fresh (deterministic, openudid-seeded) generate that persist() saves. Identity is reused even when
+    // the stored token itself has expired.
     const saved = this.store.load();
+    this.openudid =
+      cfg.openudid ?? saved?.openudid ?? createHash("md5").update(`eufy-mega:${cfg.email}`).digest("hex").slice(0, 16);
+    this.phoneModel = cfg.phoneModel ?? saved?.phoneModel ?? randomPhoneModel(this.openudid);
+    this.mediaUserAgent =
+      cfg.mediaUserAgent ?? saved?.mediaUserAgent ?? randomUserAgent(this.openudid, this.phoneModel);
+
+    // Hydrate a VALID persisted session: reuse the token + bound ECDH key, skipping
+    // estimate/key-exchange/login/2FA entirely.
     if (isSessionValid(saved) && saved) {
       this.region = saved.region;
-      this.openudid = saved.openudid;
       this.auth_ = { userId: saved.userId, authToken: saved.authToken, geoKey: saved.geoKey };
       this.tokenExpiresAt = saved.tokenExpiresAt;
       this.sessionKey = {
@@ -889,6 +896,8 @@ export class MegaHttpClient {
       geoKey: this.auth_.geoKey,
       region: this.region,
       openudid: this.openudid,
+      phoneModel: this.phoneModel,
+      mediaUserAgent: this.mediaUserAgent,
       shareKey: this.sessionKey.shareKey,
       keyIdent: this.sessionKey.keyIdent,
       tokenExpiresAt: this.tokenExpiresAt,
