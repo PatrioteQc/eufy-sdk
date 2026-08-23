@@ -7,6 +7,8 @@ import {
   TUYA_VACUUM_DP,
   decodeVacuumActivity,
   decodeCleanType,
+  decodeDoNotDisturb,
+  decodeSessionCleanTime,
   decodeVacuumFault,
   encodeModeCtrl,
   ModeCtrlMethod,
@@ -394,6 +396,74 @@ describe("decodeVacuumFault (ErrorCode → fault code)", () => {
     expect(decodeVacuumFault(undefined, byteCodec)).toBeUndefined();
     expect(decodeVacuumFault(frame(packed(2, [77])), undefined)).toBeUndefined();
     expect(decodeVacuumFault("!!not-base64!!", byteCodec)).toBeUndefined();
+  });
+});
+
+/**
+ * `UndisturbedResponse` (DP 157) and `CleanStatistics` (DP 167). Both wrap their payload one or two
+ * containers deep, and both rely on proto3 omitting zero values — so an empty container is a real
+ * answer (off / no elapsed time), while an absent one is the device not answering.
+ */
+describe("decodeDoNotDisturb (Undisturbed.sw → doNotDisturb)", () => {
+  /** `UndisturbedResponse.undisturbed.sw.value` = on, with the live `active` flag beside it. */
+  const dnd = (on: boolean): string => frame([...sub(1, int(1, 1)), ...sub(2, sub(1, on ? int(1, 1) : []))]);
+
+  it("reads the switch through both wrapper messages", () => {
+    expect(decodeDoNotDisturb(dnd(true), byteCodec)).toBe(true);
+  });
+
+  it("reads an omitted zero as off, at either level", () => {
+    expect(decodeDoNotDisturb(dnd(false), byteCodec)).toBe(false);
+    expect(decodeDoNotDisturb(frame(sub(2, [])), byteCodec)).toBe(false);
+  });
+
+  it("reads the switch, not the live in-window flag", () => {
+    // active(1) = true while the window is open, but the feature itself is off. The property means
+    // "is it enabled", so this has to answer false.
+    expect(decodeDoNotDisturb(frame([...sub(1, int(1, 1)), ...sub(2, sub(1, []))]), byteCodec)).toBe(false);
+  });
+
+  it("reads the Tuya line's plain bool on the same property", () => {
+    expect(decodeDoNotDisturb(true, byteCodec)).toBe(true);
+    expect(decodeDoNotDisturb(false, byteCodec)).toBe(false);
+    expect(decodeDoNotDisturb("true", undefined)).toBe(true);
+    expect(decodeDoNotDisturb(1, undefined)).toBe(true);
+    expect(decodeDoNotDisturb("0", undefined)).toBe(false);
+  });
+
+  it("is undefined when the device has not stated a window at all", () => {
+    expect(decodeDoNotDisturb(frame([]), byteCodec)).toBeUndefined();
+    expect(decodeDoNotDisturb(dnd(true), undefined)).toBeUndefined();
+    expect(decodeDoNotDisturb(undefined, byteCodec)).toBeUndefined();
+  });
+});
+
+describe("decodeSessionCleanTime (CleanStatistics.single → clearTime)", () => {
+  it("reads the current run's duration", () => {
+    expect(decodeSessionCleanTime(frame(sub(1, int(1, 4200))), byteCodec)).toBe(4200);
+  });
+
+  it("reads a started-but-zero run as 0, not as missing", () => {
+    expect(decodeSessionCleanTime(frame(sub(1, [])), byteCodec)).toBe(0);
+  });
+
+  it("ignores the lifetime accumulators beside it", () => {
+    // total(2) and user_total(3) carry a clean_duration at the same inner field number; reading the
+    // wrong container would report a lifetime figure as the current run.
+    const payload = frame([...sub(1, int(1, 60)), ...sub(2, int(1, 999999)), ...sub(3, int(1, 888888))]);
+    expect(decodeSessionCleanTime(payload, byteCodec)).toBe(60);
+  });
+
+  it("reads the Tuya line's plain integer on the same property", () => {
+    expect(decodeSessionCleanTime(4200, byteCodec)).toBe(4200);
+    expect(decodeSessionCleanTime("4200", undefined)).toBe(4200);
+    expect(decodeSessionCleanTime(0, undefined)).toBe(0);
+  });
+
+  it("is undefined when the device has not stated a run", () => {
+    expect(decodeSessionCleanTime(frame([]), byteCodec)).toBeUndefined();
+    expect(decodeSessionCleanTime(frame(sub(1, int(1, 60))), undefined)).toBeUndefined();
+    expect(decodeSessionCleanTime(undefined, byteCodec)).toBeUndefined();
   });
 });
 
