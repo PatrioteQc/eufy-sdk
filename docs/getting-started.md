@@ -44,7 +44,7 @@ const eufy = new EufyMega({
   email: "you@example.com",
   password: "…",
   countryCode: "GB", // region auto-discovers (GB → eu-pr)
-  phoneModel: "eufy-mega-client", // this client's device identity in your account
+  // phoneModel: "…",  // optional — defaults to a stable random model (see below)
   store: new FileSessionStore("./.eufy-session.json"), // persist + reuse session
 });
 
@@ -73,8 +73,10 @@ Notes:
   `image` data URL. Solve and call `solveCaptcha(answer)`.
 - **Persistence:** with a `store`, the token + session key are saved and reused — later runs skip
   straight to ready (no re-login / 2FA) until the token expires (a 401 clears it).
-- **Device identity:** set a distinct `phoneModel` / `openudid` so this client appears as its own
-  trusted device rather than impersonating your phone.
+- **Device identity:** `phoneModel` defaults to a **realistic random model**, seeded by `openudid` so
+  it stays stable across runs (many installs no longer all report one identical model). `openudid`
+  itself defaults to a per-account value. Set either explicitly to pin your own identity — e.g. a fixed
+  `phoneModel` if you want this client to appear as one specific device in your account.
 
 ## Logging
 
