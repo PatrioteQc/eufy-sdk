@@ -518,10 +518,13 @@ export class P2PCommandRouter {
       p2pQuery: (subCmd, opts) => this.p2pQuery(sn, subCmd, opts),
       p2pControlQuery: (param, data, opts) => this.p2pControlQuery(sn, param, data, opts),
       record: async (seconds, opts) => {
-        const { session, channel, accountId } = await this.resolveSession(sn, { waitLevel2: "soft" });
+        const { session, channel, accountId, homeBaseAttached } = await this.resolveSession(sn, {
+          waitLevel2: "soft",
+        });
         return recordClip(session, seconds, {
           channel,
           accountId,
+          homeBaseAttached,
           ...opts,
           logger: this.deps.logger ?? noopLogger,
           ffmpegLevel: this.deps.ffmpegLogLevel,

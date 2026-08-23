@@ -1,10 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 
 /**
- * The `ffmpegPath` a host configures has to reach the actual spawn, through every media egress that
- * shells out. A host with no `ffmpeg` on `PATH` is the case the option exists for, so a leg that
- * silently keeps the bare name is not a cosmetic gap — that egress is simply unavailable on that host.
- * `../media.js` is mocked to capture what the router hands each media call.
+ * What the router hands each media egress, and why an omission there is never cosmetic.
+ *
+ * A media call is only as correct as the context it is given: the `ffmpegPath` a host configured (a host
+ * with no `ffmpeg` on `PATH` is the case that option exists for, so a leg that keeps the bare name makes
+ * that egress unavailable), and the session TOPOLOGY (`homeBaseAttached`), which decides both how a
+ * stream is started and whether it may trust the station's per-camera frame tag. `../media.js` is mocked
+ * to capture what the router hands each call.
  */
 const snapshotOpts: Record<string, unknown>[] = [];
 const recordOpts: Record<string, unknown>[] = [];
@@ -24,8 +27,9 @@ vi.mock("../media.js", () => ({
 const { P2PCommandRouter } = await import("../command-router.js");
 
 const SN = "T8000P0000000000";
+const CAMERA_CHANNEL = 2;
 
-function routerWith(ffmpegPath?: string) {
+function routerWith(ffmpegPath?: string, homeBaseAttached = false) {
   const router = new P2PCommandRouter({
     mega: {} as never,
     ffmpegPath,
@@ -40,9 +44,9 @@ function routerWith(ffmpegPath?: string) {
   (router as unknown as { resolveSession: unknown }).resolveSession = async () => ({
     session: { on: () => {}, off: () => {} },
     parentSn: SN,
-    channel: 0,
+    channel: homeBaseAttached ? CAMERA_CHANNEL : 0,
     accountId: "",
-    homeBaseAttached: false,
+    homeBaseAttached,
   });
   return router;
 }
@@ -64,6 +68,31 @@ describe("host-provided ffmpeg binary reaches the media egresses", () => {
     snapshotOpts.length = 0;
     await routerWith().mediaProviderFor(SN).snapshotLive!({});
     expect(snapshotOpts[0].ffmpegPath).toBeUndefined();
+  });
+});
+
+/**
+ * The one-shot clip opens its OWN stream rather than joining the shared source, so it is the one media
+ * egress that does not inherit the topology through `sharedLiveSourceFor` — and both things that depend
+ * on it fail silently when it is missing.
+ *
+ * Undefined reads as "own-session camera": the start goes out on the `1700`/`cmd 1000` path instead of the
+ * level-2 `1003` payload an attached camera needs, and the stream cannot trust the station's per-camera
+ * frame tag, so it takes every warm camera's frames on that session and the assembler joins two encoders'
+ * units into one clip. Neither failure raises anything — the clip is simply wrong, or never starts.
+ */
+describe("the clip path receives the session topology it cannot infer", () => {
+  it("tells the clip its camera rides a HomeBase session, with the camera's own channel", async () => {
+    recordOpts.length = 0;
+    await routerWith(undefined, true).mediaProviderFor(SN).record!(1, {});
+    expect(recordOpts[0].homeBaseAttached).toBe(true);
+    expect(recordOpts[0].channel).toBe(CAMERA_CHANNEL);
+  });
+
+  it("tells the clip a camera owns its session, so the start is not sent as a HomeBase payload", async () => {
+    recordOpts.length = 0;
+    await routerWith().mediaProviderFor(SN).record!(1, {});
+    expect(recordOpts[0].homeBaseAttached).toBe(false);
   });
 });
 
