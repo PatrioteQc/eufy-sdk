@@ -86,6 +86,7 @@ describe("vacuum_clean capability module", () => {
       "activity",
       "volume",
       "battery",
+      "language",
       "cleanType",
       "errorCode",
       "workStatus",
@@ -254,6 +255,12 @@ const _errorCode: Exact<typeof vac.errorCode, number | undefined> = true;
 const _doNotDisturb: Exact<typeof vac.doNotDisturb, boolean | undefined> = true;
 const _rssi: Exact<typeof vac.rssi, number | undefined> = true;
 
+// language and volume are AIoT-only READS. Neither ships a setter: the write direction for both
+// rests on the product schema's `writable: true` alone, with no live publishDps capture, and an AIoT
+// dp write dispatches for real rather than being refused by a router guard.
+const _language: Exact<typeof vac.language, string | undefined> = true;
+const _volume: Exact<typeof vac.volume, number | undefined> = true;
+
 export const _surfaceAssertions = [
   _power,
   _battery,
@@ -267,6 +274,8 @@ export const _surfaceAssertions = [
   _errorCode,
   _doNotDisturb,
   _rssi,
+  _language,
+  _volume,
 ];
 
 describe("vacuum_clean — DP-based action routing", () => {
@@ -341,5 +350,25 @@ describe("vacuum_clean — DP-based action routing", () => {
   it("doNotDisturb getter is absent when DP 107 is not in paramIds", () => {
     const { acts } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, undefined, aiotDps));
     expect(acts.doNotDisturb).toBeUndefined();
+  });
+
+  it("language and volume are reads only — no setter is installed on any device", () => {
+    // The write direction for DP 161 and DP 162 rests on the product schema's `writable: true` and
+    // no live publishDps capture. Unlike a Tuya dp write, an AIoT one is not refused by a router
+    // guard — it reaches the device — so the setter stays off the surface until a capture exists.
+    for (const category of ["eufy_home", "eufy_home_tuya", undefined]) {
+      const { acts } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, category));
+      expect((acts as Record<string, unknown>).setLanguage).toBeUndefined();
+      expect((acts as Record<string, unknown>).setVolume).toBeUndefined();
+    }
+  });
+
+  it("language and volume still read on an AIoT vacuum", () => {
+    const reported = new Set([VACUUM_DP.LANGUAGE, VACUUM_DP.VOLUME]);
+    const { acts } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, "eufy_home", reported), {
+      read: (name) => (name === "language" ? { value: "en" } : name === "volume" ? { value: 38 } : undefined),
+    });
+    expect(acts.language).toBe("en");
+    expect(acts.volume).toBe(38);
   });
 });
