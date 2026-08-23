@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { EventEmitter } from "node:events";
 import { P2PCommandRouter, type P2PRouterDeps } from "../command-router.js";
 import { CMD_TRANSFER_PAYLOAD, LOCK_API_COMMAND } from "../../ff09.js";
 import { buildFf09ResponseFrame } from "../../__tests__/ff09-test-fixtures.js";
+import { connectedSession, type FakeP2PSession } from "./session-fixtures.js";
 
 /**
  * `P2PCommandRouter.getAutoLockState` (the `Ff09SettingsReader` behind `dev.lock()?.getAutoLockState()`
@@ -38,16 +38,12 @@ function buildResponsePlain(opts: {
   ]);
 }
 
-interface FakeSession extends EventEmitter {
-  isConnected: boolean;
-  hasLevel2Key: boolean;
+interface FakeSession extends FakeP2PSession {
   sendControlLevel2: (cmd: number, channel: number, accountId: string, payload: unknown, mValue3?: number) => boolean;
 }
 
 function makeRouter(plain: Buffer, opts: { noReply?: boolean } = {}) {
-  const session = new EventEmitter() as FakeSession;
-  session.isConnected = true;
-  session.hasLevel2Key = true;
+  const session = connectedSession() as FakeSession;
   let getCount = 0;
   session.sendControlLevel2 = vi.fn((_cmd, _channel, _accountId, payload) => {
     const p = payload as { apiCommand: number; time: number };

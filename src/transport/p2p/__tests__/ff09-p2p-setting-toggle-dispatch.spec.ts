@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
-import { EventEmitter } from "node:events";
 import { P2PCommandRouter, type P2PRouterDeps } from "../command-router.js";
 import { decryptFf09Frame, LOCK_API_COMMAND, FF09_SETTING_ID } from "../../ff09.js";
+import { connectedSession, type FakeP2PSession } from "./session-fixtures.js";
 
 /**
  * `sendFf09SettingToggle` (the `ff09-setting-toggle` intent handler behind
@@ -13,9 +13,7 @@ const ADMIN = "0000000000000000000000000000000000000000";
 const SN = "T8531K0000000000";
 const STATION_SN = "T8030P0000000000";
 
-interface FakeSession extends EventEmitter {
-  isConnected: boolean;
-  hasLevel2Key: boolean;
+interface FakeSession extends FakeP2PSession {
   sendControlLevel2: (cmd: number, channel: number, accountId: string, payload: unknown, mValue3?: number) => boolean;
 }
 
@@ -27,9 +25,7 @@ interface Call {
 
 function makeRouter() {
   const calls: Call[] = [];
-  const session = new EventEmitter() as FakeSession;
-  session.isConnected = true;
-  session.hasLevel2Key = true;
+  const session = connectedSession() as FakeSession;
   session.sendControlLevel2 = vi.fn((cmd, channel, _accountId, payload) => {
     calls.push({ cmd, channel, payload: payload as Call["payload"] });
     return true;

@@ -270,6 +270,17 @@ export class P2PSession extends EventEmitter {
   /** Guards the one-shot level-2 key negotiation kicked off by the GATEWAYINFO reply. */
   private level2Negotiating = false;
   /**
+   * Whether waiting for a level-2 key can still change the answer: `false` once one has been negotiated,
+   * once the one-shot negotiation concluded without one, and from the start when nothing can negotiate one.
+   */
+  private level2Pending: boolean;
+  /** Waiters parked in {@link awaitLevel2Key}, woken the moment the negotiation settles either way. */
+  private readonly level2Waiters: Array<() => void> = [];
+  /** When this session connected — the instant the level-2 negotiation had its chance to start. */
+  private connectedAtMs?: number;
+  /** When the one-shot level-2 negotiation actually began, which is later than connect if at all. */
+  private level2StartedAtMs?: number;
+  /**
    * Own-session channels with an active live start → the encryption variant of the start frame we
    * last sent (`"l2"` GCM / `"l1"` ECB). A keepalive tick re-issues the start if the variant should
    * change (the level-2 key arrived after an initial level-1 start), otherwise sends the 1139 nudge.
@@ -282,12 +293,14 @@ export class P2PSession extends EventEmitter {
     super();
     this.level1Key = Buffer.from(p2pCommandEncryptionKey(cfg.stationSn, cfg.p2pDid));
     this.logger = cfg.logger ?? noopLogger;
+    this.level2Pending = cfg.resolveCipherKey !== undefined;
   }
 
   /** Provide the negotiated 32-byte session key so level-2 (signCode 2/8) frames can be decrypted. */
   setLevel2Key(key: Buffer): void {
     if (key.length !== 32) throw new Error(`level-2 key must be 32 bytes, got ${key.length}`);
     this.level2Key = key;
+    this.settleLevel2();
   }
 
   /** Whether the level-2 session key has been negotiated/set. */
@@ -296,23 +309,76 @@ export class P2PSession extends EventEmitter {
   }
 
   /**
+   * Resolve with whether a level-2 key is available, waiting only while waiting can still change that.
+   *
+   * `graceMs` is the SESSION's, not the caller's restarted per call. Every command that needs the key asks
+   * this same session, so a per-call budget makes a station that offers no key charge its full budget
+   * again on every later command — silently, and for the life of the session.
+   *
+   * It runs from whichever chance came last: the connect that lets the negotiation begin, or the
+   * negotiation actually beginning. Anchoring on connect alone would cut short a negotiation whose cloud
+   * cipher lookup is still in flight, and anchoring on the negotiation alone would wait forever on a
+   * station that never prompts one. A session whose negotiation has settled answers without waiting at
+   * all, since being one-shot is what makes that answer final.
+   */
+  async awaitLevel2Key(graceMs: number): Promise<boolean> {
+    if (this.level2Key) return true;
+    if (!this.level2Pending) return false;
+    const since = Math.max(this.connectedAtMs ?? Date.now(), this.level2StartedAtMs ?? 0);
+    const remaining = graceMs - (Date.now() - since);
+    if (remaining <= 0) {
+      this.logger.debug(`[p2p] ${this.cfg.stationSn} no level-2 key and its ${graceMs}ms grace has elapsed`);
+      return false;
+    }
+    this.logger.debug(`[p2p] ${this.cfg.stationSn} waiting up to ${remaining}ms for the level-2 key`);
+    const waiters = this.level2Waiters;
+    await new Promise<void>((resolve) => {
+      const wake = (): void => resolve();
+      const deadline = setTimeout(() => {
+        const at = waiters.indexOf(wake);
+        if (at >= 0) waiters.splice(at, 1);
+        resolve();
+      }, remaining);
+      deadline.unref?.();
+      waiters.push(wake);
+    });
+    if (!this.level2Key) {
+      this.logger.debug(`[p2p] ${this.cfg.stationSn} level-2 key did not arrive within its grace`);
+    }
+    return !!this.level2Key;
+  }
+
+  /** Record that the level-2 negotiation has finished, with or without a key, and wake every waiter. */
+  private settleLevel2(): void {
+    this.level2Pending = false;
+    for (const wake of this.level2Waiters.splice(0)) wake();
+  }
+
+  /**
    * Negotiate the level-2 session key from the decrypted CMD_GATEWAYINFO payload: read its
    * `cipher_id`, resolve that cipher's ECC private key (cloud `get_ciphers`, via the configured
    * `resolveCipherKey`), run the ECIES unwrap, and `setLevel2Key()`. One-shot; emits `level2Ready`
    * on success and `error` on failure (non-fatal — level-1 traffic keeps working regardless).
+   *
+   * Every outcome settles the wait in {@link awaitLevel2Key}, because being one-shot is what makes a
+   * failure final: nothing will retry it on this session, so a later command must be told at once rather
+   * than left to time out against a key that is not coming.
    */
   private negotiateLevel2Key(gwPayload: Buffer): void {
     this.level2Negotiating = true;
+    this.level2StartedAtMs = Date.now();
     const cipherId = gatewayInfoCipherId(gwPayload);
     void (async () => {
       try {
         const eccPrivHex = await this.cfg.resolveCipherKey?.(cipherId);
         if (!eccPrivHex) {
           this.logger.debug(`[p2p] ${this.cfg.stationSn} no ECC key for cipher_id ${cipherId}`);
+          this.settleLevel2();
           return;
         }
         const key = deriveLevel2KeyFromGatewayInfo(gwPayload, eccPrivHex);
         if (!key) {
+          this.settleLevel2();
           this.emit("error", new Error(`level-2 key derivation failed (cipher_id ${cipherId})`));
           return;
         }
@@ -320,6 +386,7 @@ export class P2PSession extends EventEmitter {
         this.logger.debug(`[p2p] ${this.cfg.stationSn} level-2 key negotiated (cipher_id ${cipherId})`);
         this.emit("level2Ready", { cipherId });
       } catch (e) {
+        this.settleLevel2();
         this.emit("error", e instanceof Error ? e : new Error(String(e)));
       }
     })();
@@ -539,6 +606,7 @@ export class P2PSession extends EventEmitter {
   private onConnected(addr: Address): void {
     if (this.connected) return;
     this.connected = true;
+    this.connectedAtMs = Date.now();
     this.connecting = false;
     this.connectAddress = addr;
     if (this.lookupTimer) clearInterval(this.lookupTimer);

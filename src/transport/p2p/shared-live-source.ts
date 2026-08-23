@@ -30,6 +30,17 @@ import { Timer } from "../../core/util.js";
 import { updatedParamSets, type ParamSets } from "./annexb.js";
 import type { LiveAudioFrame, LiveStreamHandle, LiveVideoFrame, StreamBudgetNotice } from "../../core/contracts.js";
 
+/**
+ * The hard ceiling on retained prebuffer frames, whatever window was configured.
+ *
+ * A keyframe is the only place retention may begin, so a stream that stops coding them leaves the
+ * time-based trim nothing to anchor on and the window would grow for the length of the session. This is a
+ * safety valve rather than a policy: at 30fps it is minutes of media, far above any window a caller would
+ * ask for, and it is deliberately not the per-consumer queue bound — tightening backpressure must not
+ * quietly shorten a prebuffer.
+ */
+const RING_FRAME_CAP = 3600;
+
 /** Lifecycle state of a {@link SharedLiveSource}. */
 export type SharedLiveState = "idle" | "warming" | "live" | "lingering" | "stopped";
 
@@ -463,38 +474,48 @@ export class SharedLiveSource {
     for (const c of this.consumers) c.deliverAudio(frame, item.timestampMs);
   }
 
+  /**
+   * Retain the rolling window, trimmed to the same run a full-window drain asks for.
+   *
+   * Retention and drain obey one rule, because a ring trimmed tighter than the drain's rule cannot
+   * answer it — the media would already be gone. That rule is {@link windowStart}.
+   *
+   * A keyframe is the only place a run may begin, so it is also the only anchor a time-based trim has, and
+   * {@link RING_FRAME_CAP} is what bounds a stream that stops coding them. Overflow drops forward to the
+   * next keyframe rather than by a frame count, because a count cuts mid-group and leaves a ring whose
+   * oldest frame no decoder can start from — retained media that cannot be drained at all. With no later
+   * keyframe to drop to there is nothing decodable left to preserve, so retention restarts at the next one
+   * rather than holding a run that would answer a drain with nothing.
+   */
   private pushRing(item: TimedMediaFrame): void {
     if (this.preBufferMs <= 0) return;
     this.ring.push(item);
-    const cutoff = item.timestampMs - this.preBufferMs;
-    // Trim expired frames, but keep the window keyframe-aligned: never drop past the newest keyframe
-    // that still lets the oldest retained frame be an IDR, so a drain is decodable.
-    let firstKeep = 0;
-    for (let i = 0; i < this.ring.length; i++) {
-      if (this.ring[i].timestampMs >= cutoff && this.isKeyframe(this.ring[i])) {
-        firstKeep = i;
-        break;
-      }
-      if (this.ring[i].timestampMs >= cutoff) {
-        // in-window but not a keyframe — keep scanning for the aligned start unless none exists
-        firstKeep = i;
-      }
+    const start = this.windowStart(item.timestampMs - this.preBufferMs);
+    if (start > 0) this.ring.splice(0, start);
+    if (this.ring.length <= RING_FRAME_CAP) return;
+    const next = this.nextKeyframe(1);
+    if (next === undefined) this.ring = [];
+    else this.ring.splice(0, next);
+  }
+
+  /** The first keyframe at or after `from`, or nothing when the rest of the ring holds none. */
+  private nextKeyframe(from: number): number | undefined {
+    for (let i = from; i < this.ring.length; i++) {
+      if (this.isKeyframe(this.ring[i])) return i;
     }
-    // Prefer to start at a keyframe at or before firstKeep so the buffer opens decodable.
-    let align = firstKeep;
-    for (let i = firstKeep; i >= 0; i--) {
-      if (this.isKeyframe(this.ring[i])) {
-        align = i;
-        break;
-      }
-    }
-    if (align > 0) this.ring.splice(0, align);
+    return undefined;
   }
 
   /**
-   * Drain the rolling prebuffer: the retained frames within `seconds` (capped at
-   * `preBufferSeconds`), trimmed to open on a keyframe so the returned run is decodable. The host
-   * decides when to drain (e.g. on a motion event) and where to send it.
+   * Drain the rolling prebuffer: a decodable run covering the last `seconds` of retained media, capped
+   * at the configured `preBufferSeconds`. Asking for none hands over none. The host decides when to
+   * drain (e.g. on a motion event) and where to send it.
+   *
+   * The run opens on the newest keyframe at or before the window starts, so it covers the whole request
+   * and over-delivers by however far back that keyframe sits — one keyframe interval on a steady stream,
+   * more where delivery stalled, since retention is timed on arrival and a frame carries no device clock.
+   * Beginning inside the window instead would under-deliver by that same distance, which on a short window
+   * is most of it, and a decoder allows no third option.
    */
   ringBuffer(seconds: number): LiveVideoFrame[] {
     return this.bufferedMedia(seconds)
@@ -503,11 +524,28 @@ export class SharedLiveSource {
   }
 
   private bufferedMedia(seconds: number): TimedMediaFrame[] {
-    if (this.preBufferMs <= 0 || !this.ring.length) return [];
-    const cutoff = Date.now() - Math.min(seconds * 1000, this.preBufferMs);
-    let start = this.ring.findIndex((item) => item.timestampMs >= cutoff && this.isKeyframe(item));
-    if (start < 0) start = this.ring.findIndex((item) => this.isKeyframe(item));
-    return start < 0 ? [] : this.ring.slice(start);
+    const requested = Math.min(seconds * 1000, this.preBufferMs);
+    if (requested <= 0 || !this.ring.length) return [];
+    const start = this.windowStart(Date.now() - requested);
+    return this.isKeyframe(this.ring[start]) ? this.ring.slice(start) : [];
+  }
+
+  /**
+   * Where a decodable run covering everything from `cutoff` onwards begins in the ring.
+   *
+   * The newest keyframe at or before `cutoff` is that place: it is the latest point a decoder can start
+   * from and still produce every frame in the window. When the ring reaches no further back than the
+   * cutoff, its oldest keyframe is the most of the window that exists. When it holds no keyframe at all,
+   * nothing in it is decodable and index `0` reports that to the caller, which checks.
+   */
+  private windowStart(cutoff: number): number {
+    let start = -1;
+    for (let i = 0; i < this.ring.length; i++) {
+      if (!this.isKeyframe(this.ring[i])) continue;
+      if (this.ring[i].timestampMs > cutoff && start >= 0) break;
+      start = i;
+    }
+    return start < 0 ? 0 : start;
   }
 
   private isKeyframe(item: TimedMediaFrame): boolean {
