@@ -410,6 +410,10 @@ export class DeviceRegistry {
    * instead. Any OTHER failure is treated as transient: it falls back for that call but is retried next
    * time, because latching on a timeout would cost an entitled account its freshest source of params.
    *
+   * A dead session is the exception: it is not a statement about the overlay's availability, and the fallback
+   * runs over the same session, so it propagates rather than degrading to the params this call already held.
+   * Serving those as current would report an expired token as a device that simply has not changed.
+   *
    * The refusal is **logged, never surfaced as an error**. It is a normal property of a shared or member
    * account, not a fault: nothing failed that the SDK did not immediately handle, and the account holder
    * cannot grant themselves ownership. A host cannot tell "non-fatal degradation" from "something went
@@ -440,6 +444,7 @@ export class DeviceRegistry {
         const live = await this.mega.getDeviceParamList<{ params?: RawParam[] }>(sn);
         mergeParams(live.params, params, paramUpdatedAt);
       } catch (error) {
+        if (error instanceof SessionExpiredError) throw error;
         if (error instanceof MegaApiError && error.code === OWNER_ONLY_CODE) {
           this.overlayRefused.add(sn);
           if (!this.overlayRefusalReported) {
@@ -476,16 +481,27 @@ export class DeviceRegistry {
    * The list is account-wide (`get_house_list` plus one `get_devs_list` per house), so without this a refresh
    * cycle over N devices would multiply into N of those bursts — and every fetch clears the capability caches,
    * so they would stop working. One fetch serves every device that wants the same answer.
+   *
+   * Only a fetch that RESOLVED opens the reuse window. {@link getDevices} tolerates a failing house/body
+   * query as a partial and answers anyway, so an outage still holds the window on purpose — retrying per
+   * device is how one outage becomes N bursts. What must not hold it is the one failure that rejects: a dead
+   * session, which also propagates rather than degrading to `undefined`, because answering "no such device"
+   * for an expired token is the same lie {@link getDevices} stopped telling, one level down.
    */
   private async refreshedList(sn: string): Promise<EufyDevice | undefined> {
     if (Date.now() - this.listFetchedAtMs < LIST_REUSE_MS) return this.devices.find((d) => d.sn === sn);
-    this.listInFlight ??= this.getDevices().finally(() => {
-      this.listInFlight = undefined;
-      this.listFetchedAtMs = Date.now();
-    });
+    this.listInFlight ??= this.getDevices()
+      .then((devices) => {
+        this.listFetchedAtMs = Date.now();
+        return devices;
+      })
+      .finally(() => {
+        this.listInFlight = undefined;
+      });
     try {
       return (await this.listInFlight).find((d) => d.sn === sn);
-    } catch {
+    } catch (e) {
+      if (e instanceof SessionExpiredError) throw e;
       return undefined;
     }
   }

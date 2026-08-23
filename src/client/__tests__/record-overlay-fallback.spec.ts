@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DeviceRegistry } from "../device-registry.js";
-import { MegaApiError, OWNER_ONLY_CODE } from "../../transport/http/mega-client.js";
+import { MegaApiError, OWNER_ONLY_CODE, SessionExpiredError } from "../../transport/http/mega-client.js";
 
 /**
  * `record()` starts from the device-list params and overlays a per-device `get_device_param_list`. That
@@ -40,6 +40,7 @@ function registryWith(opts: {
   overlay: (sn: string) => Promise<unknown>;
   params: () => Record<number, string>;
   debug?: (message: string) => void;
+  onList?: () => void;
 }) {
   const errors: unknown[] = [];
   let listFetches = 0;
@@ -48,6 +49,7 @@ function registryWith(opts: {
     post: async (_service: string, path: string) => {
       if (path.endsWith("get_house_list")) return { house_infos: [] };
       listFetches++;
+      opts.onList?.();
       return { devices: [rawDevice(opts.params()), rawDevice(opts.params(), OTHER_SN)] };
     },
     getDeviceParamList: overlay,
@@ -203,5 +205,95 @@ describe("record() when the per-device overlay is unavailable", () => {
     expect(first.params[2001]).toBe("false");
     expect(second.params[2001]).toBe("false");
     expect(listFetches()).toBe(afterFirst);
+  });
+});
+
+/**
+ * The fallback fetch's two failure modes, which are not the same failure and must not share an answer.
+ *
+ * {@link DeviceRegistry.getDevices} tolerates a failing house/body query as a PARTIAL — it reports the error
+ * and answers with what it got, keeping previously known devices — and rejects only for a rejected session.
+ * So the reuse window is a statement that a fetch RESOLVED, not that the account came back whole: holding it
+ * over a partial outage is deliberate, because retrying per device is how one outage becomes N bursts.
+ *
+ * A dead session is the one that must not be absorbed. It is not a statement about the overlay's
+ * availability, and the fallback runs over the same session, so answering `undefined` turns an expiry into
+ * "no such device" — or worse, serves the params this call already held as current. That is the conflation
+ * removed one level up, where an empty list stopped standing in for a rejected token.
+ */
+describe("record() when the fallback list fetch itself fails", () => {
+  it("lets a rejected token surface instead of answering with a device that is missing", async () => {
+    let sessionAlive = true;
+    const { registry } = registryWith({
+      overlay: async () => {
+        if (!sessionAlive) throw new SessionExpiredError("/app/devicemanage/get_device_param_list failed (401)");
+        return { params: [{ param_type: 2001, param_value: "true", update_time: 2 }] };
+      },
+      params: () => ({ 2001: "true" }),
+      onList: () => {
+        if (!sessionAlive) throw new SessionExpiredError("/app/house/get_devs_list failed (401)");
+      },
+    });
+
+    await registry.record(SN);
+    sessionAlive = false;
+
+    await expect(registry.record(SN)).rejects.toBeInstanceOf(SessionExpiredError);
+  });
+
+  it("does not open the reuse window on a rejected session, so a recovered one is read at once", async () => {
+    let sessionAlive = false;
+    const { registry, listFetches } = registryWith({
+      overlay: ownerGated,
+      params: () => ({ 2001: "true" }),
+      onList: () => {
+        if (!sessionAlive) throw new SessionExpiredError("/app/house/get_devs_list failed (401)");
+      },
+    });
+
+    await expect(registry.record(SN)).rejects.toBeInstanceOf(SessionExpiredError);
+    const afterRejection = listFetches();
+    sessionAlive = true;
+    const recovered = await registry.record(SN);
+
+    expect(listFetches()).toBe(afterRejection + 1);
+    expect(recovered.params[2001]).toBe("true");
+  });
+
+  it("holds the window over a partial outage, so one outage is not multiplied per device", async () => {
+    const { registry, listFetches, errors } = registryWith({
+      overlay: ownerGated,
+      params: () => ({ 2001: "true" }),
+      onList: () => {
+        throw new Error("socket hang up");
+      },
+    });
+
+    await expect(registry.record(SN)).rejects.toThrow(/not found/);
+    const afterFirst = listFetches();
+    await expect(registry.record(OTHER_SN)).rejects.toThrow(/not found/);
+
+    expect(listFetches()).toBe(afterFirst);
+    expect(errors.length).toBeGreaterThan(0);
+  });
+
+  it("still absorbs a transient failure, answering from what it already holds", async () => {
+    let listAlive = true;
+    const { registry } = registryWith({
+      overlay: async () => {
+        throw new Error("socket hang up");
+      },
+      params: () => ({ 2001: "true" }),
+      onList: () => {
+        if (!listAlive) throw new Error("socket hang up");
+      },
+    });
+
+    const first = await registry.record(SN);
+    listAlive = false;
+    const second = await registry.record(SN);
+
+    expect(first.params[2001]).toBe("true");
+    expect(second.params[2001]).toBe("true");
   });
 });
