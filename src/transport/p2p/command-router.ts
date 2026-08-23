@@ -63,16 +63,17 @@ const DIRECT_CMD_SENDS = 5;
 const CONNECT_WAIT_MS = 20_000;
 
 /**
- * How long a session's level-2 negotiation is given where the key is a REQUIREMENT — the HomeBase-routed
- * commands that cannot be framed without it. Measured from the session's connect rather than from the
- * call, so it is one grace per session and not one per command; see `P2PSession.awaitLevel2Key`.
+ * How long each command is given where the level-2 key is a REQUIREMENT — the HomeBase-routed commands
+ * that cannot be framed without it. This grace is per call, because a delayed `CMD_GATEWAYINFO` on an old
+ * session may still produce the key while the command waits.
  */
 const LEVEL2_GRACE_MS = 25_000;
 
 /**
  * The best-effort grace, used where the key is merely PREFERABLE: media egresses, which only need it on
  * the HomeBase-attached path, and whose failure a stream start reports precisely on its own. A camera on
- * its own session legitimately never negotiates a key, so this wait never refuses one.
+ * its own session legitimately never negotiates a key, so this wait never refuses one. It is one grace
+ * per session, measured from connect rather than restarted by every egress or a later negotiation start.
  */
 const LEVEL2_SOFT_GRACE_MS = 8_000;
 
@@ -508,11 +509,12 @@ export class P2PCommandRouter {
   /**
    * A {@link MediaProvider} bound to one serial — resolves the session then calls `p2p/media`.
    *
-   * Every egress here is a consumer of the SAME shared pull, so N `live()` calls collapse to one PPCS
-   * session and a live snapshot against a warm, keyframe-primed source costs no extra pull at all; a
-   * cold source warms one and waits for a clean keyframe. Each therefore passes `powered` through,
-   * because any of them may be the call that creates the source, and the source keeps the power hint it
-   * was built with for everyone who joins later.
+   * Every live egress here is a consumer of the SAME shared pull, so N `live()` calls collapse to one
+   * PPCS session and a live snapshot against a warm, keyframe-primed source costs no extra pull at all; a
+   * cold source warms one and waits for a clean keyframe. Each shared egress passes its complete options
+   * through because any of them may create the source, whose power and retention hints are fixed for
+   * everyone who joins later. The bounded {@link MediaProvider.record} clip is the exception: it opens its
+   * own pull and receives its session topology directly.
    */
   mediaProviderFor(sn: string): MediaProvider {
     return {
@@ -714,9 +716,8 @@ export class P2PCommandRouter {
    * cached session and fails identically, which is why only a client restart recovered it.
    *
    * What a recycle actually replaces is the `P2PSession` INSTANCE. `close()` discards the manager's entry
-   * first, so the next acquisition builds a new instance — new socket, new RSA keypair offered as
-   * `encryptkey`, freshly negotiated level-2 key, and reset sequence windows. The instance's own `close()`
-   * resets none of those; being replaced is what does.
+   * first and invalidates that connection's level-2 key and sequence; the next acquisition builds a new
+   * instance with a new socket, a new RSA keypair offered as `encryptkey`, and fresh sequence windows.
    *
    * The close is issued BEFORE the source is dropped, because discarding the manager entry is synchronous:
    * from that moment a concurrent acquisition resolves a fresh session rather than the doomed one. It would
@@ -855,7 +856,7 @@ export class P2PCommandRouter {
           return Promise.resolve();
         },
         l2: async ({ session: s, channel: ch }) => {
-          if (!(await s.awaitLevel2Key(LEVEL2_GRACE_MS))) {
+          if (!(await s.awaitLevel2Key(LEVEL2_GRACE_MS, "call"))) {
             throw new Error(`level-2 key not ready for ${sn} — cannot query`);
           }
           s.sendRawLevel2(json, ch, P2P_ENVELOPE.CONTROL_PAYLOAD);
@@ -933,7 +934,10 @@ export class P2PCommandRouter {
     if (!session.isConnected) throw new Error(`P2P session for ${parentSn} did not connect`);
     if (opts.waitLevel2) {
       const soft = opts.waitLevel2 === "soft";
-      const ready = await session.awaitLevel2Key(soft ? LEVEL2_SOFT_GRACE_MS : LEVEL2_GRACE_MS);
+      const ready = await session.awaitLevel2Key(
+        soft ? LEVEL2_SOFT_GRACE_MS : LEVEL2_GRACE_MS,
+        soft ? "session" : "call",
+      );
       if (!ready && !soft) throw new Error(`level-2 key not ready for ${parentSn}`);
     }
     return { session, parentSn, channel, accountId, homeBaseAttached };
@@ -1357,7 +1361,7 @@ export class P2PCommandRouter {
         return Promise.resolve();
       },
       l2: async ({ session, channel }) => {
-        if (!(await session.awaitLevel2Key(LEVEL2_GRACE_MS))) {
+        if (!(await session.awaitLevel2Key(LEVEL2_GRACE_MS, "call"))) {
           throw new Error(`level-2 key not ready for ${sn} — cannot route HomeBase command`);
         }
         session.sendRawLevel2(json, channel, outerCmd);

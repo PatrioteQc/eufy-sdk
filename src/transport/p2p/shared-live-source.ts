@@ -30,16 +30,11 @@ import { Timer } from "../../core/util.js";
 import { updatedParamSets, type ParamSets } from "./annexb.js";
 import type { LiveAudioFrame, LiveStreamHandle, LiveVideoFrame, StreamBudgetNotice } from "../../core/contracts.js";
 
-/**
- * The hard ceiling on retained prebuffer frames, whatever window was configured.
- *
- * A keyframe is the only place retention may begin, so a stream that stops coding them leaves the
- * time-based trim nothing to anchor on and the window would grow for the length of the session. This is a
- * safety valve rather than a policy: at 30fps it is minutes of media, far above any window a caller would
- * ask for, and it is deliberately not the per-consumer queue bound — tightening backpressure must not
- * quietly shorten a prebuffer.
- */
-const RING_FRAME_CAP = 3600;
+/** A finite positive duration in seconds as milliseconds; absent, non-finite and non-positive mean off. */
+function durationMs(seconds: number | undefined): number {
+  const milliseconds = (seconds ?? 0) * 1000;
+  return Number.isFinite(milliseconds) && milliseconds > 0 ? milliseconds : 0;
+}
 
 /** Lifecycle state of a {@link SharedLiveSource}. */
 export type SharedLiveState = "idle" | "warming" | "live" | "lingering" | "stopped";
@@ -295,7 +290,7 @@ export class SharedLiveSource {
   constructor(private readonly opts: SharedLiveSourceOptions) {
     this.lingerMs = opts.lingerMs ?? 8000;
     this.maxQueue = opts.maxQueue ?? 900;
-    this.preBufferMs = (opts.preBufferSeconds ?? 0) * 1000;
+    this.preBufferMs = durationMs(opts.preBufferSeconds);
     this.warmRetryMs = opts.warmRetryMs ?? 2000;
     this.warmTimeoutMs = opts.warmTimeoutMs ?? 20000;
     this.powered = opts.powered ?? "wired";
@@ -480,30 +475,16 @@ export class SharedLiveSource {
    * Retention and drain obey one rule, because a ring trimmed tighter than the drain's rule cannot
    * answer it — the media would already be gone. That rule is {@link windowStart}.
    *
-   * A keyframe is the only place a run may begin, so it is also the only anchor a time-based trim has, and
-   * {@link RING_FRAME_CAP} is what bounds a stream that stops coding them. Overflow drops forward to the
-   * next keyframe rather than by a frame count, because a count cuts mid-group and leaves a ring whose
-   * oldest frame no decoder can start from — retained media that cannot be drained at all. With no later
-   * keyframe to drop to there is nothing decodable left to preserve, so retention restarts at the next one
-   * rather than holding a run that would answer a drain with nothing.
+   * A keyframe is the only place a run may begin, so it is also the only anchor a time-based trim has. A
+   * stream that stops coding them keeps its last decodable run until another keyframe gives the trim
+   * somewhere safe to move to: a separate frame-count ceiling would override the configured window, and
+   * cutting mid-group would leave retained media no decoder can start from.
    */
   private pushRing(item: TimedMediaFrame): void {
     if (this.preBufferMs <= 0) return;
     this.ring.push(item);
     const start = this.windowStart(item.timestampMs - this.preBufferMs);
     if (start > 0) this.ring.splice(0, start);
-    if (this.ring.length <= RING_FRAME_CAP) return;
-    const next = this.nextKeyframe(1);
-    if (next === undefined) this.ring = [];
-    else this.ring.splice(0, next);
-  }
-
-  /** The first keyframe at or after `from`, or nothing when the rest of the ring holds none. */
-  private nextKeyframe(from: number): number | undefined {
-    for (let i = from; i < this.ring.length; i++) {
-      if (this.isKeyframe(this.ring[i])) return i;
-    }
-    return undefined;
   }
 
   /**
@@ -524,7 +505,7 @@ export class SharedLiveSource {
   }
 
   private bufferedMedia(seconds: number): TimedMediaFrame[] {
-    const requested = Math.min(seconds * 1000, this.preBufferMs);
+    const requested = Math.min(durationMs(seconds), this.preBufferMs);
     if (requested <= 0 || !this.ring.length) return [];
     const start = this.windowStart(Date.now() - requested);
     return this.isKeyframe(this.ring[start]) ? this.ring.slice(start) : [];

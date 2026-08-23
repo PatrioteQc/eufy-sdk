@@ -48,8 +48,9 @@ function interceptSourceOptions(router: P2PCommandRouter): Record<string, unknow
 }
 
 /**
- * The options the FIRST caller passes have to actually REACH the source it builds. A spec that only
- * asserts the warning passes even with the hint dropped on the floor, which is the defect itself.
+ * The options the FIRST caller passes have to actually REACH the source it builds. Construction and
+ * conflict reporting are separate contracts: a warning proves that later options were compared, not that
+ * the first options were applied to the source.
  */
 describe("shared live source construction", () => {
   it("builds the source with the power hint the first caller passed", async () => {

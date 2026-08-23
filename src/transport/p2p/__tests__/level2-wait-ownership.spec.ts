@@ -2,15 +2,6 @@ import { describe, expect, it, vi } from "vitest";
 import { P2PCommandRouter, type P2PRouterDeps } from "../command-router.js";
 import { connectedSession, type FakeP2PSession } from "./session-fixtures.js";
 
-/**
- * Who owns the wait for a level-2 session key.
- *
- * The key belongs to the session, is negotiated once shortly after it connects, and every command that
- * needs it asks that same session. Resolving one therefore delegates the wait rather than running its own
- * clock: a per-call budget cannot tell a session that answered ten minutes ago from one still negotiating,
- * so it charges its full budget again on every call — a silent, fixed toll on each media egress and each
- * HomeBase-routed command, invisible in a log because nothing about it is reported.
- */
 const DEVICE_SN = "T8000P0000000000";
 const STATION_SN = "T8000P0000000001";
 const ACCOUNT_ID = "0000000000000000000000000000000000000000";
@@ -55,6 +46,11 @@ function setup(hasLevel2Key: boolean) {
   return { router, session };
 }
 
+/**
+ * The key belongs to one connection of the session, is negotiated once from its gateway-info reply, and
+ * every operation that needs it asks that session. Best-effort media uses one grace per session because it
+ * can proceed without the key; a command that cannot be framed without the key owns a per-call grace.
+ */
 describe("resolving a session defers the level-2 wait to the session", () => {
   /**
    * A media egress asks best-effort, because only the HomeBase-attached path needs the key and a camera on
@@ -66,13 +62,13 @@ describe("resolving a session defers the level-2 wait to the session", () => {
     const source = await router.sharedLiveSourceFor(DEVICE_SN);
     expect(source).toBeDefined();
     expect(session.awaitLevel2Key).toHaveBeenCalledTimes(1);
-    expect(session.awaitLevel2Key).toHaveBeenCalledWith(SOFT_GRACE_MS);
+    expect(session.awaitLevel2Key).toHaveBeenCalledWith(SOFT_GRACE_MS, "session");
   });
 
   it("asks with the full grace where the key is a requirement", async () => {
     const { router, session } = setup(true);
     await router.p2pQuery(DEVICE_SN, 6237, { timeoutMs: 5 }).catch(() => {});
-    expect(session.awaitLevel2Key).toHaveBeenCalledWith(HARD_GRACE_MS);
+    expect(session.awaitLevel2Key).toHaveBeenCalledWith(HARD_GRACE_MS, "call");
   });
 
   /** A requirement the session reports it cannot meet is a refusal now, not a wait that ends in one. */

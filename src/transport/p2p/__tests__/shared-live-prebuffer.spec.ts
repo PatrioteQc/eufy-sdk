@@ -4,18 +4,7 @@ import { SharedLiveSource, type SharedLiveSourceOptions } from "../shared-live-s
 import type { LiveAudioFrame, LiveVideoFrame } from "../../../core/contracts.js";
 import { streamFactory } from "./live-source-fixtures.js";
 
-/**
- * What the rolling prebuffer hands over, and why both bounds on it matter.
- *
- * A drain has to be decodable, which means it can only begin on a keyframe — so a run that COVERS the
- * requested window necessarily starts at or before it, by up to one keyframe interval. That is the only
- * over-delivery a decoder allows, and everything here pins it from both sides: a drain must not begin
- * INSIDE the window (the window is then under-delivered by up to a whole keyframe interval, which is
- * most of a short window), and it must not run away to whatever the ring happens to hold either.
- *
- * Retention obeys the same rule as the drain, because a ring trimmed to a tighter rule than the drain
- * asks for cannot answer it — the media the drain needs has already been thrown away.
- */
+/** One synthetic video frame, using an IDR-shaped byte for a keyframe and a slice-shaped byte otherwise. */
 function video(keyframe: boolean): LiveVideoFrame {
   return { keyframe, width: 960, height: 540, codec: "h264", data: Buffer.from([0, 0, 0, 1, keyframe ? 0x67 : 0x41]) };
 }
@@ -45,6 +34,12 @@ function arrivals(buffered: readonly { timestampMs: number }[]): number[] {
   return buffered.map((item) => item.timestampMs);
 }
 
+/**
+ * A drain has to be decodable, so a run covering the requested window starts at or before it on a
+ * keyframe. Beginning inside the window under-delivers by up to a whole keyframe interval; beginning at an
+ * older keyframe than necessary hands over media outside the request. Retention obeys the same rule,
+ * because a ring trimmed tighter than the drain cannot answer it.
+ */
 describe("prebuffer drain bounds", () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
@@ -76,8 +71,7 @@ describe("prebuffer drain bounds", () => {
     deliver(last(), { from: 0, to: 10_000, stepMs: 500, gopMs: 2_000 });
 
     const { buffered } = source.attachWithPrebuffer(2);
-    expect(buffered[0].timestampMs).toBeGreaterThanOrEqual(6_000);
-    expect(buffered[0].timestampMs).toBeLessThanOrEqual(8_000);
+    expect(buffered[0].timestampMs).toBe(8_000);
   });
 
   /** Asking for none is a request, not an omission: it must not be read as "whatever is retained". */
@@ -89,6 +83,18 @@ describe("prebuffer drain bounds", () => {
     expect(source.attachWithPrebuffer(0).buffered).toEqual([]);
     expect(source.ringBuffer(0)).toEqual([]);
   });
+
+  it.each([Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, -1])(
+    "hands over nothing for an invalid %s-second request",
+    (seconds) => {
+      const { source, last } = mk({ preBufferSeconds: 10 });
+      source.attach();
+      deliver(last(), { from: 0, to: 6_000, stepMs: 500, gopMs: 2_000 });
+
+      expect(source.attachWithPrebuffer(seconds).buffered).toEqual([]);
+      expect(source.ringBuffer(seconds)).toEqual([]);
+    },
+  );
 
   /**
    * Retention is measured on transport arrival, because a frame carries no device clock. Delivery is
@@ -125,62 +131,38 @@ describe("prebuffer drain bounds", () => {
   });
 });
 
-describe("prebuffer retention bounds", () => {
+describe("prebuffer retention", () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
 
   /**
-   * A keyframe is the only place retention may begin, so a stream that stops coding them gives the trim
-   * nothing to anchor on. Without a second bound the ring then grows for the whole session, and the window
-   * a caller configured in seconds becomes an unbounded buffer.
+   * A long group has one decodable anchor, and dropping it makes every retained frame unusable. The source
+   * keeps that anchor and the complete run after it until a newer keyframe gives the time-based trim
+   * somewhere safe to move to.
    */
-  it("bounds the ring even while a stream codes no further keyframe", () => {
-    const { source, last } = mk({ preBufferSeconds: 6_000 });
+  it("keeps the complete decodable run through a group longer than the configured window", () => {
+    const { source, last } = mk({ preBufferSeconds: 4 });
     source.attach();
     vi.setSystemTime(0);
     last().video(video(true));
-    deliver(last(), { from: 100, to: 500_000, stepMs: 100, gopMs: 1_000_000 });
+    deliver(last(), { from: 100, to: 400_000, stepMs: 100, gopMs: 1_000_000 });
 
-    expect(source.ringBuffer(6_000).length).toBeLessThan(4_000);
-  });
-
-  /**
-   * Dropping an undecodable run is only acceptable because retention comes back: the next keyframe is a
-   * fresh place to begin, and a window that stayed empty after one long group would be a permanent loss
-   * dressed up as a bound.
-   */
-  it("retains again from the next keyframe after an overflow left nothing decodable", () => {
-    const { source, last } = mk({ preBufferSeconds: 6_000 });
-    source.attach();
-    vi.setSystemTime(0);
-    last().video(video(true));
-    deliver(last(), { from: 100, to: 500_000, stepMs: 100, gopMs: 1_000_000 });
-    expect(source.ringBuffer(6_000)).toEqual([]);
-
-    vi.setSystemTime(500_100);
-    last().video(video(true));
-    vi.setSystemTime(500_200);
-    last().video(video(false));
-
-    const drained = source.ringBuffer(6_000);
-    expect(drained.length).toBe(2);
+    const drained = source.ringBuffer(4);
+    expect(drained).toHaveLength(4_001);
     expect(drained[0].keyframe).toBe(true);
   });
 
-  /**
-   * Overflow must not cut mid-group. A ring whose oldest frame is not a keyframe is retained media no
-   * decoder can start from, so the drain would answer nothing at all — the very collapse the window bound
-   * was fixed to stop, reached by another route.
-   */
-  it("keeps the ring drainable when overflow forces frames out", () => {
-    const { source, last } = mk({ preBufferSeconds: 6_000 });
-    source.attach();
-    deliver(last(), { from: 0, to: 500_000, stepMs: 100, gopMs: 2_000 });
+  it.each([Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, -1])(
+    "retains nothing when configured with an invalid %s-second window",
+    (preBufferSeconds) => {
+      const { source, last } = mk({ preBufferSeconds });
+      source.attach();
+      deliver(last(), { from: 0, to: 4_000, stepMs: 500, gopMs: 2_000 });
 
-    const drained = source.ringBuffer(6_000);
-    expect(drained.length).toBeGreaterThan(0);
-    expect(drained[0].keyframe).toBe(true);
-  });
+      expect(source.ringBuffer(10)).toEqual([]);
+      expect(source.attachWithPrebuffer(10).buffered).toEqual([]);
+    },
+  );
 
   /** A source with no window retains nothing, whatever a caller then asks to drain. */
   it("retains nothing when no window was configured", () => {

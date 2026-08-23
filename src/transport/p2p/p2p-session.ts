@@ -275,11 +275,11 @@ export class P2PSession extends EventEmitter {
    */
   private level2Pending: boolean;
   /** Waiters parked in {@link awaitLevel2Key}, woken the moment the negotiation settles either way. */
-  private readonly level2Waiters: Array<() => void> = [];
+  private readonly level2Waiters: Array<(outcome: "key" | "terminal" | "closed") => void> = [];
   /** When this session connected — the instant the level-2 negotiation had its chance to start. */
   private connectedAtMs?: number;
-  /** When the one-shot level-2 negotiation actually began, which is later than connect if at all. */
-  private level2StartedAtMs?: number;
+  /** Connection generation that owns every asynchronous result derived from its gateway envelope. */
+  private connectionGeneration = 0;
   /**
    * Own-session channels with an active live start → the encryption variant of the start frame we
    * last sent (`"l2"` GCM / `"l1"` ECB). A keepalive tick re-issues the start if the variant should
@@ -311,20 +311,24 @@ export class P2PSession extends EventEmitter {
   /**
    * Resolve with whether a level-2 key is available, waiting only while waiting can still change that.
    *
-   * `graceMs` is the SESSION's, not the caller's restarted per call. Every command that needs the key asks
-   * this same session, so a per-call budget makes a station that offers no key charge its full budget
-   * again on every later command — silently, and for the life of the session.
+   * A `"session"` grace is measured once, not restarted per call. Best-effort media uses it because every
+   * egress asks this same session and can proceed without the key on an own-session camera; a per-call
+   * budget there makes a station that offers no key charge its full budget on every later stream.
    *
-   * It runs from whichever chance came last: the connect that lets the negotiation begin, or the
-   * negotiation actually beginning. Anchoring on connect alone would cut short a negotiation whose cloud
-   * cipher lookup is still in flight, and anchoring on the negotiation alone would wait forever on a
-   * station that never prompts one. A session whose negotiation has settled answers without waiting at
-   * all, since being one-shot is what makes that answer final.
+   * A `"call"` grace gives the full wait to a command that cannot be framed without the key. Such a
+   * command may arrive on an old session before a delayed `CMD_GATEWAYINFO`, so session age says nothing
+   * about whether the key can still arrive during this command.
+   *
+   * The session grace runs from connect, when the station is prompted for `CMD_GATEWAYINFO`. A negotiation
+   * beginning later does not restart it: best-effort media can proceed without the key, and restarting
+   * would charge another grace to a source that may already be streaming. A session whose negotiation has
+   * settled answers without waiting at all, since being one-shot is what makes that answer final.
    */
-  async awaitLevel2Key(graceMs: number): Promise<boolean> {
+  async awaitLevel2Key(graceMs: number, graceFrom: "call" | "session" = "call"): Promise<boolean> {
+    if (this.closed) return false;
     if (this.level2Key) return true;
     if (!this.level2Pending) return false;
-    const since = Math.max(this.connectedAtMs ?? Date.now(), this.level2StartedAtMs ?? 0);
+    const since = graceFrom === "call" ? Date.now() : (this.connectedAtMs ?? Date.now());
     const remaining = graceMs - (Date.now() - since);
     if (remaining <= 0) {
       this.logger.debug(`[p2p] ${this.cfg.stationSn} no level-2 key and its ${graceMs}ms grace has elapsed`);
@@ -332,26 +336,37 @@ export class P2PSession extends EventEmitter {
     }
     this.logger.debug(`[p2p] ${this.cfg.stationSn} waiting up to ${remaining}ms for the level-2 key`);
     const waiters = this.level2Waiters;
-    await new Promise<void>((resolve) => {
-      const wake = (): void => resolve();
-      const deadline = setTimeout(() => {
+    const outcome = await new Promise<"key" | "terminal" | "closed" | "timeout">((resolve) => {
+      let deadline: ReturnType<typeof setTimeout> | undefined;
+      let settled = false;
+      const finish = (result: "key" | "terminal" | "closed" | "timeout"): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(deadline);
         const at = waiters.indexOf(wake);
         if (at >= 0) waiters.splice(at, 1);
-        resolve();
-      }, remaining);
+        resolve(result);
+      };
+      const wake = (result: "key" | "terminal" | "closed"): void => finish(result);
+      deadline = setTimeout(() => finish("timeout"), remaining);
       deadline.unref?.();
       waiters.push(wake);
     });
-    if (!this.level2Key) {
+    if (outcome === "timeout") {
       this.logger.debug(`[p2p] ${this.cfg.stationSn} level-2 key did not arrive within its grace`);
+    } else if (outcome === "terminal") {
+      this.logger.debug(`[p2p] ${this.cfg.stationSn} level-2 negotiation concluded without a key`);
+    } else if (outcome === "closed") {
+      this.logger.debug(`[p2p] ${this.cfg.stationSn} session closed before the level-2 key arrived`);
     }
-    return !!this.level2Key;
+    return outcome === "key";
   }
 
   /** Record that the level-2 negotiation has finished, with or without a key, and wake every waiter. */
-  private settleLevel2(): void {
+  private settleLevel2(reason: "terminal" | "closed" = "terminal"): void {
     this.level2Pending = false;
-    for (const wake of this.level2Waiters.splice(0)) wake();
+    const outcome = this.level2Key ? "key" : reason;
+    for (const wake of this.level2Waiters.splice(0)) wake(outcome);
   }
 
   /**
@@ -361,16 +376,17 @@ export class P2PSession extends EventEmitter {
    * on success and `error` on failure (non-fatal — level-1 traffic keeps working regardless).
    *
    * Every outcome settles the wait in {@link awaitLevel2Key}, because being one-shot is what makes a
-   * failure final: nothing will retry it on this session, so a later command must be told at once rather
-   * than left to time out against a key that is not coming.
+   * failure final for this connection generation: nothing will retry it there, so a later command must be
+   * told at once rather than left to time out against a key that is not coming.
    */
   private negotiateLevel2Key(gwPayload: Buffer): void {
     this.level2Negotiating = true;
-    this.level2StartedAtMs = Date.now();
+    const generation = this.connectionGeneration;
     const cipherId = gatewayInfoCipherId(gwPayload);
     void (async () => {
       try {
         const eccPrivHex = await this.cfg.resolveCipherKey?.(cipherId);
+        if (this.closed || generation !== this.connectionGeneration) return;
         if (!eccPrivHex) {
           this.logger.debug(`[p2p] ${this.cfg.stationSn} no ECC key for cipher_id ${cipherId}`);
           this.settleLevel2();
@@ -386,6 +402,7 @@ export class P2PSession extends EventEmitter {
         this.logger.debug(`[p2p] ${this.cfg.stationSn} level-2 key negotiated (cipher_id ${cipherId})`);
         this.emit("level2Ready", { cipherId });
       } catch (e) {
+        if (this.closed || generation !== this.connectionGeneration) return;
         this.settleLevel2();
         this.emit("error", e instanceof Error ? e : new Error(String(e)));
       }
@@ -430,6 +447,11 @@ export class P2PSession extends EventEmitter {
     if (this.connecting || this.connected) return;
     this.connecting = true;
     this.closed = false;
+    this.connectionGeneration += 1;
+    if (!this.level2Key) {
+      this.level2Pending = this.cfg.resolveCipherKey !== undefined;
+      this.level2Negotiating = false;
+    }
 
     const socket = dgram.createSocket("udp4");
     this.socket = socket;
@@ -1419,6 +1441,10 @@ export class P2PSession extends EventEmitter {
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
+    this.connectionGeneration += 1;
+    this.level2Key = undefined;
+    this.level2Seq = 0;
+    this.settleLevel2("closed");
     this.connected = false;
     this.connecting = false;
     if (this.lookupTimer) clearInterval(this.lookupTimer);
