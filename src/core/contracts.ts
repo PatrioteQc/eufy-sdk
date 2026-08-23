@@ -30,6 +30,65 @@ export class StoredSnapshotUnavailableError extends Error {
 }
 
 /**
+ * Why {@link MediaProvider.snapshotLive} could not return a still.
+ *
+ * - `no-keyframe` — no clean keyframe arrived within the acquisition window, and the live source never
+ *   reported a failure of its own. The source may simply be slower than the window allowed.
+ * - `source-failed` — the live source reported a failure, so the burst will not arrive at all. Distinct
+ *   from `no-keyframe` because it is known rather than merely elapsed, and it is known EARLY: a caller
+ *   gets it instead of waiting out the window on a source that has already given up.
+ * - `undecodable-burst` — a burst was collected but the decoder refused it. Per-attempt framing, not a
+ *   property of the camera.
+ * - `decoder-unavailable` — the decoder could not be run at all.
+ */
+export type LiveSnapshotUnavailableReason =
+  "no-keyframe" | "source-failed" | "undecodable-burst" | "decoder-unavailable";
+
+/**
+ * The reasons another attempt could plausibly succeed against an unchanged configuration.
+ *
+ * All three acquisition failures qualify, because each is a property of the attempt rather than of the
+ * camera: a window can elapse, a source can fail to start and then start, and a burst's framing is luck.
+ * An unrunnable decoder is the one that is not — it is host configuration, and no number of retries
+ * changes it.
+ */
+const RETRYABLE_LIVE_SNAPSHOT_REASONS: readonly LiveSnapshotUnavailableReason[] = [
+  "no-keyframe",
+  "source-failed",
+  "undecodable-burst",
+];
+
+/**
+ * Thrown by {@link MediaProvider.snapshotLive} when no still could be produced.
+ *
+ * {@link retryable} is the distinction the reason exists for. A caller that rate-limits acquisition has
+ * to spend its budget on attempts that can succeed: a burst the decoder refused is per-attempt framing
+ * and another try is worthwhile, while an unrunnable decoder is host configuration that no number of
+ * retries will change. Without it every failure looks alike, and a caller either retries a permanent
+ * fault forever or gives up on a camera that would have answered on the next attempt.
+ *
+ * It is derived from {@link reason} rather than passed in, so the two can never disagree, and every
+ * caller reads one answer instead of re-deriving the mapping and drifting from it.
+ *
+ * The underlying diagnostics are preserved in the error's `message` and, where there is one, its `cause` — so
+ * classifying the failure never costs the detail needed to explain it.
+ */
+export class LiveSnapshotUnavailableError extends Error {
+  /** Whether another attempt could plausibly succeed without the host changing anything. */
+  readonly retryable: boolean;
+
+  constructor(
+    readonly reason: LiveSnapshotUnavailableReason,
+    message: string,
+    options?: { cause?: unknown },
+  ) {
+    super(message, options);
+    this.name = "LiveSnapshotUnavailableError";
+    this.retryable = RETRYABLE_LIVE_SNAPSHOT_REASONS.includes(reason);
+  }
+}
+
+/**
  * Wire form for a scalar {@link Command} `"set-param"` intent. `"auto"` lets the transport choose the
  * right encoding for the device's session; `"int-string"` / `"direct-binary"` pin a specific encoding
  * when the firmware requires one.
@@ -210,8 +269,17 @@ export interface TuyaDpInbound {
 /** Elementary-stream video codec of a {@link LiveVideoFrame} — eufy cameras stream H.264 or H.265. */
 export type VideoCodec = "h264" | "h265" | "av1";
 
-/** One decoded video access unit, as Annex-B (H.264 or H.265). */
+/**
+ * One decoded video access unit, as Annex-B (H.264 or H.265).
+ *
+ * A WHOLE access unit, always: a station serves a unit larger than its chunk size as several frames, and
+ * those are reassembled before delivery — so deciding anything per access unit (begin at a keyframe,
+ * switch codec at a keyframe, count frames) operates on what it says it does. A unit the transport could
+ * not complete is dropped rather than delivered short, because an access unit shorter than its own slice
+ * headers promise decodes to no picture at all.
+ */
 export interface LiveVideoFrame {
+  /** True on an IDR — a unit a consumer may begin decoding at, never a continuation of an earlier one. */
   keyframe: boolean;
   width: number;
   height: number;
@@ -363,6 +431,15 @@ export interface MediaProvider {
   /**
    * A fresh still decoded from a short live burst.
    *
+   * `width`/`height` describe the RETURNED IMAGE, read back out of it rather than taken from the stream's
+   * frame header: the header states the geometry at capture start, and a camera whose stream reconfigures
+   * mid-burst leaves it contradicting the bytes — which a caller sizing a buffer or caching by resolution
+   * cannot detect short of parsing the JPEG itself.
+   *
+   * Rejects with {@link LiveSnapshotUnavailableError}, whose {@link LiveSnapshotUnavailableError.retryable}
+   * says whether another attempt could succeed — a caller that rate-limits acquisition needs that to
+   * avoid spending its budget on a permanent fault, or abandoning a camera that would have answered.
+   *
    * Carries `powered` for the same reason every other egress does: it may be the call that CREATES the
    * shared source, and the source keeps whatever power hint it was built with. A caller polling this
    * on a battery camera would otherwise arm no budget for anyone who joins later.
@@ -380,6 +457,9 @@ export interface MediaProvider {
   /**
    * Open a managed live stream.
    *
+   * Several cameras behind one station may stream at the same time: each handle receives only the frames
+   * the station tagged for ITS camera.
+   *
    * @example
    * ```ts
    * const stream = await cam.live();
@@ -388,7 +468,12 @@ export interface MediaProvider {
    * ```
    */
   live(opts?: Record<string, unknown>): Promise<LiveStreamHandle>;
-  /** Record `seconds` of video → an mp4/h264 buffer. */
+  /**
+   * Record `seconds` of video → an mp4/h264 buffer.
+   *
+   * Opens its OWN pull rather than joining the shared source, so it costs a second stream on a camera that
+   * is already streaming. {@link recordFragments} is a shared consumer like every other egress.
+   */
   record(seconds: number, opts?: { timeoutMs?: number; skipKeyframes?: number }): Promise<Buffer>;
   /**
    * Open a video-only `node:stream` Readable over a shared source consumer — raw Annex-B bytes

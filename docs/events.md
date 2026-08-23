@@ -11,6 +11,7 @@ eufy.on("personDetected", (e) => …);
 eufy.on("lockState", (e) => …);
 eufy.on("contactState", (e) => e.open); // entry sensor: true = open (station notify, push or poll)
 eufy.on("batteryLevel", (e) => e.to); // new 0–100 level (cloud poll — see cadence below)
+eufy.on("cameraEnabled", (e) => e.enabled); // camera switched on/off (cloud poll)
 eufy.on("strangerDetected", (e) => …); // a person the device does NOT recognise
 eufy.on("soundDetected", (e) => …); // also cryingDetected, vehicleDetected, dogDetected
 eufy.on("armingModeChanged", (e) => …); // guard mode switched — re-read the mode

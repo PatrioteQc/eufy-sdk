@@ -4,6 +4,7 @@ import {
   VACUUM_CLEAN,
   VACUUM_DP,
   LEGACY_VACUUM_DP,
+  TUYA_VACUUM_DP,
   decodeVacuumActivity,
   decodeCleanType,
   encodeModeCtrl,
@@ -11,7 +12,7 @@ import {
   type VacuumCleanActions,
   type VacuumActivity,
   type VacuumCleanType,
-  type X8CleanTypeTuya,
+  type TuyaCleanType,
 } from "../vacuum-clean.js";
 import { bind } from "./bind.js";
 
@@ -72,8 +73,8 @@ describe("encodeModeCtrl", () => {
   });
 });
 
-/** Minimal `CommandContext` for a given model and/or category. */
-function fakeCtx(model?: string, category?: string, paramIds: ReadonlySet<number> = new Set()): CommandContext {
+/** Minimal `CommandContext` for a given model/category and optional DP id set. */
+function fakeCtx(model?: string, category?: string, paramIds: Set<number> = new Set()): CommandContext {
   return { channel: 0, codec: "vacuum", model, category, paramIds };
 }
 
@@ -85,6 +86,7 @@ describe("vacuum_clean capability module", () => {
       "activity",
       "volume",
       "battery",
+      "language",
       "cleanType",
       "errorCode",
       "workStatus",
@@ -94,6 +96,12 @@ describe("vacuum_clean capability module", () => {
       "clearTime",
       "clearArea",
       "loudness",
+      "lifetimeCleanTime",
+      "lifetimeCleanArea",
+      "waterTank",
+      "mopPad",
+      "doNotDisturb",
+      "rssi",
     ]);
   });
 
@@ -227,9 +235,9 @@ declare const vac: VacuumCleanActions;
 const _power: Exact<typeof vac.power, boolean | undefined> = true;
 const _battery: Exact<typeof vac.battery, number | undefined> = true;
 const _activity: Exact<typeof vac.activity, VacuumActivity | undefined> = true;
-const _cleanType: Exact<typeof vac.cleanType, VacuumCleanType | X8CleanTypeTuya | undefined> = true;
+const _cleanType: Exact<typeof vac.cleanType, VacuumCleanType | TuyaCleanType | undefined> = true;
 
-// setPower is gated by available: isAiotVacuum — optional on the surface (present only when category is known).
+// setPower is gated by paramIds.has(151) — optional on the surface (absent until DP 151 is reported).
 const _setPowerOptional: Exact<undefined extends typeof vac.setPower ? true : false, true> = true;
 const _setPowerArg: Exact<Parameters<NonNullable<typeof vac.setPower>>[0], boolean> = true;
 
@@ -237,11 +245,21 @@ const _setPowerArg: Exact<Parameters<NonNullable<typeof vac.setPower>>[0], boole
 const _noSetActivity: Exact<"setActivity" extends keyof VacuumCleanActions ? true : false, false> = true;
 const _noSetBattery: Exact<"setBattery" extends keyof VacuumCleanActions ? true : false, false> = true;
 
-// startCleaning is DP-gated — optional when the device has not reported its control DPs.
+// startCleaning is a MethodMember gated by isAiotVacuum or DP 2 in paramIds — absent only on Tuya-category devices that haven't reported DP 2.
 const _startCleaning: Exact<typeof vac.startCleaning, (() => Promise<void>) | undefined> = true;
 
 // errorCode is an evidence-gated read for the legacy Tuya clean line.
 const _errorCode: Exact<typeof vac.errorCode, number | undefined> = true;
+
+// doNotDisturb and rssi are DP-gated reads — absent until DPs 107 / 134 are reported.
+const _doNotDisturb: Exact<typeof vac.doNotDisturb, boolean | undefined> = true;
+const _rssi: Exact<typeof vac.rssi, number | undefined> = true;
+
+// language and volume are AIoT-only READS. Neither ships a setter: the write direction for both
+// rests on the product schema's `writable: true` alone, with no live publishDps capture, and an AIoT
+// dp write dispatches for real rather than being refused by a router guard.
+const _language: Exact<typeof vac.language, string | undefined> = true;
+const _volume: Exact<typeof vac.volume, number | undefined> = true;
 
 export const _surfaceAssertions = [
   _power,
@@ -254,40 +272,103 @@ export const _surfaceAssertions = [
   _noSetBattery,
   _startCleaning,
   _errorCode,
+  _doNotDisturb,
+  _rssi,
+  _language,
+  _volume,
 ];
 
-describe("vacuum_clean — DP-based guards", () => {
-  const TUYA_DPS = new Set([LEGACY_VACUUM_DP.PLAY_PAUSE, LEGACY_VACUUM_DP.GO_HOME]);
+describe("vacuum_clean — DP-based action routing", () => {
+  // AIoT device: has reported DP 151 (power) and DP 153 (work status). DP 152 (MODE_CTRL) is write-only and never in paramIds.
+  const aiotDps = new Set([VACUUM_DP.POWER, VACUUM_DP.WORK_STATUS]);
+  // Tuya device: has reported DP 2 (play/pause) and DP 101 (go home).
+  const tuyaDps = new Set([LEGACY_VACUUM_DP.PLAY_PAUSE, LEGACY_VACUUM_DP.GO_HOME]);
 
-  it("write actions are absent on Tuya vacuums — Tuya write path not yet verified", () => {
+  it("write actions are present for non-Tuya-category devices — AIoT path (isAiotVacuum)", () => {
+    const { acts } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx("T2250", undefined, aiotDps));
+    expect(acts.startCleaning).toBeDefined();
+    expect(acts.returnToDock).toBeDefined();
+    expect(acts.pauseCleaning).toBeDefined();
+  });
+
+  it("write actions are absent for Tuya-category device with no Tuya DPs — bootstrapping window", () => {
     const { acts } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, "eufy_home_tuya"));
     expect(acts.startCleaning).toBeUndefined();
     expect(acts.returnToDock).toBeUndefined();
     expect(acts.pauseCleaning).toBeUndefined();
   });
 
-  it("write actions are present on AIoT vacuums (eufy_home category)", () => {
-    const { acts } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, "eufy_home"));
-    expect(acts.startCleaning).toBeDefined();
-    expect(acts.returnToDock).toBeDefined();
-    expect(acts.pauseCleaning).toBeDefined();
+  it("write actions are absent on a Tuya device, even when it reported DP 2 and DP 101", () => {
+    // No Tuya clean-line write has been confirmed on a device, and dispatching one would route
+    // through the Tuya command router, which refuses unverified writes by default. An advertised
+    // verb that throws on the happy path is worse than an absent one.
+    const { acts } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx("T2266", "eufy_home_tuya", tuyaDps));
+    expect(acts.startCleaning).toBeUndefined();
+    expect(acts.returnToDock).toBeUndefined();
+    expect(acts.pauseCleaning).toBeUndefined();
   });
 
-  it("setPower is absent when POWER DP is not reported", () => {
-    const { acts } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, "eufy_home_tuya", TUYA_DPS));
+  it("dispatches the AIoT ModeCtrl frame, never a legacy bool DP", async () => {
+    const { acts, sent } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx("T2351", undefined, tuyaDps));
+    await acts.startCleaning!();
+    await acts.returnToDock!();
+    await acts.pauseCleaning!();
+    expect(sent.every((c) => (c as { dp: number }).dp === VACUUM_DP.MODE_CTRL)).toBe(true);
+  });
+
+  it("setPower is absent on the Tuya clean line — no confirmed power DP there", () => {
+    const { acts } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx("T2266", "eufy_home_tuya", tuyaDps));
     expect(acts.setPower).toBeUndefined();
   });
 
-  it("dispatches DP 151 for setPower on eufy_home category (Anker AIoT MQTT)", async () => {
-    const { acts, sent } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, "eufy_home"));
+  it("setPower is present on an AIoT device that has not reported DP 151", () => {
+    // DP 151 belongs to the shared AIoT product schema rather than to a device's reported set, so the
+    // write is gated on the platform. Gating it on the reported DP hid it on real devices.
+    const { acts } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx("T2351", undefined, new Set()));
+    expect(acts.setPower).toBeDefined();
+  });
+
+  it("dispatches DP 151 for setPower when DP 151 is in paramIds — AIoT clean line", async () => {
+    const { acts, sent } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, undefined, aiotDps));
     await acts.setPower!(true);
     expect(sent).toHaveLength(1);
     expect(sent[0]).toMatchObject({ kind: "aiot-dp", dp: 151, value: true });
   });
 
-  it("dispatches a ModeCtrlRequest for startCleaning on AIoT vacuums", async () => {
-    const { acts, sent } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, "eufy_home"));
+  it("dispatches a ModeCtrlRequest for startCleaning — AIoT path (isAiotVacuum, no legacy DP 2)", async () => {
+    const { acts, sent } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, undefined, aiotDps));
     await acts.startCleaning!();
     expect(sent[0]).toMatchObject({ kind: "aiot-dp", dp: 152 });
+  });
+
+  it("doNotDisturb is read-only — setter absent even when DP 107 is in paramIds", () => {
+    const dps = new Set([TUYA_VACUUM_DP.FORBID_MODE]);
+    const { acts } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, undefined, dps));
+    expect((acts as Record<string, unknown>).setDoNotDisturb).toBeUndefined();
+  });
+
+  it("doNotDisturb getter is absent when DP 107 is not in paramIds", () => {
+    const { acts } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, undefined, aiotDps));
+    expect(acts.doNotDisturb).toBeUndefined();
+  });
+
+  it("language and volume are reads only — no setter is installed on any device", () => {
+    // The write direction for DP 161 and DP 162 rests on the product schema's `writable: true` and
+    // no live publishDps capture. Unlike a Tuya dp write, an AIoT one is not refused by a router
+    // guard — it reaches the device — so the setter stays off the surface until a capture exists.
+    for (const category of ["eufy_home", "eufy_home_tuya", undefined]) {
+      const { acts } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, category));
+      expect((acts as Record<string, unknown>).setLanguage).toBeUndefined();
+      expect((acts as Record<string, unknown>).setVolume).toBeUndefined();
+    }
+  });
+
+  it("language and volume still read on an AIoT vacuum", () => {
+    const reported = new Set([VACUUM_DP.LANGUAGE, VACUUM_DP.VOLUME]);
+    const { acts } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, "eufy_home", reported), {
+      read: (name) => (name === "language" ? { value: "en" } : name === "volume" ? { value: 38 } : undefined),
+    });
+    expect(acts.language).toBe("en");
+    expect(acts.volume).toBe(38);
   });
 });

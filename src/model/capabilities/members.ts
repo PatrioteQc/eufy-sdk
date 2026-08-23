@@ -110,8 +110,9 @@ export interface ValueMember {
    * that declares this lands OPTIONAL on the surface, because whether it exists is a runtime fact.
    *
    * Takes an {@link AvailabilityContext} (not a full CommandContext): the manifest applies the same
-   * gate at resolve time, before a live session exists, so it must read only device facts a record
-   * carries — never `channel`/`paramIds`.
+   * gate at resolve time, before a live session exists. May read any field the {@link CloudRecord}
+   * can supply — `codec`, `model`, `category`, `deviceType`, `capabilities`, `paramIds` — but never
+   * transport-only fields (`channel`).
    */
   available?: (ctx: AvailabilityContext) => boolean;
   /**
@@ -156,6 +157,16 @@ export interface ValueMember {
    * arrives over realtime, where "has reported already" is the wrong evidence.
    */
   realtime?: boolean;
+  /**
+   * Whether this member's READ observes the same wire its write lands on, for a given device. Absent means
+   * yes — the ordinary case, where the setter's effect shows up in the getter.
+   *
+   * Declared only where a family routes the write elsewhere: the read then answers honestly about the param
+   * it observes while disagreeing with what the setter did, and a caller has no reason to distrust it. Such a
+   * member is named by {@link unreflectedMembers} for the devices where it applies, so the disagreement is
+   * something a caller can see rather than discover.
+   */
+  readReflectsWrite?: (ctx: CommandContext) => boolean;
   /**
    * A setting the device ACCEPTS but never reports back.
    *
@@ -782,6 +793,8 @@ export function bindMembers<M extends Members>(
   ff09Settings?: Ff09SettingsReader,
 ): Surface<M> {
   const out: Record<string, unknown> = {};
+  const unobservable: string[] = [];
+  const unreflected: string[] = [];
   const deps: MemberDeps = { ctx, sink, read, rawDp, media };
   for (const [name, m] of Object.entries(members)) {
     if ("provided" in m) {
@@ -812,6 +825,8 @@ export function bindMembers<M extends Members>(
       Object.defineProperty(out, name, { get, enumerable: true, configurable: true });
     }
     if (!m.write || m.unverified || !installs(m, ctx)) continue;
+    if (m.writeOnly) unobservable.push(name);
+    else if (m.readReflectsWrite && !m.readReflectsWrite(ctx)) unreflected.push(name);
     const setter = m.writeAs ?? `set${name[0].toUpperCase()}${name.slice(1)}`;
     out[setter] = describedAction(describeWrite(name, m, reported), (value: boolean | number | string) => {
       try {
@@ -821,5 +836,55 @@ export function bindMembers<M extends Members>(
       }
     });
   }
+  attachStatement(out, UNOBSERVABLE, unobservable);
+  attachStatement(out, UNREFLECTED, unreflected);
   return out as Surface<M>;
 }
+
+/**
+ * Two statements a caller needs and cannot derive from the shape, carried out of band so neither becomes a
+ * member of the capability it describes. Same device as `core/contracts`' command-observation symbol.
+ */
+const UNOBSERVABLE = Symbol("unobservable-members");
+const UNREFLECTED = Symbol("unreflected-members");
+
+/** Attach one frozen statement to a bound surface, keyed so it is not a member of it. */
+function attachStatement(surface: object, key: symbol, names: readonly string[]): void {
+  Object.defineProperty(surface, key, { value: Object.freeze([...names]), configurable: true });
+}
+
+/** Read one back. Any object that was never bound answers empty rather than undefined. */
+function statement(surface: object, key: symbol): readonly string[] {
+  return (surface as Record<symbol, readonly string[] | undefined>)[key] ?? [];
+}
+
+/**
+ * The members this device can be told to change but will never report back.
+ *
+ * `cam.privacy === undefined` reads identically for a device that reports the value as unset and one that
+ * never reports it, and guessing between them is what a caller must not do: refusing a working camera
+ * withdraws it, and allowing a dead one shows a viewer a stream that will never carry frames.
+ *
+ * Only members whose setter is actually installed for this device are listed. A member whose write is
+ * unverified has no setter and its intent path throws, so calling it something the device "accepts" would
+ * put exactly the guess the unverified-write rule excludes back into the typed story.
+ *
+ * `unexposed` members are deliberately absent: the device DOES report those — they are in the property schema
+ * and reachable through `getProperty` — what is missing is a confirmed meaning for the value.
+ *
+ * Empty for any object that is not a bound capability.
+ */
+export const unobservableMembers = (surface: object): readonly string[] => statement(surface, UNOBSERVABLE);
+
+/**
+ * The members this device reports, but whose value does NOT reflect what its own setter writes — because on
+ * this device family the write lands on a different wire than the read observes.
+ *
+ * A readable value that silently disagrees with the write is worse than an unreadable one: a caller has no
+ * reason to distrust it. Camera enablement is one on the families whose power rides the privacy envelope —
+ * the write goes there while the read still observes the on/off param, so a camera that has been turned off
+ * still reads as on. Naming it lets a caller decline to act on the value instead of acting on a wrong one.
+ *
+ * Empty for any object that is not a bound capability.
+ */
+export const unreflectedMembers = (surface: object): readonly string[] => statement(surface, UNREFLECTED);

@@ -398,10 +398,24 @@ export class Fmp4Muxer {
     return box("traf", tfhd, tfdt, this.trun(samples));
   }
 
+  /**
+   * One track fragment run, declaring exactly the per-sample fields its body carries.
+   *
+   * `tr_flags` is data-offset-present (`0x000001`) | sample-duration-present (`0x000100`) |
+   * sample-size-present (`0x000200`) | sample-flags-present (`0x000400`). A parser sizes the sample
+   * table from these flags alone, so every extra flag adds a 4-byte field per sample that it then reads
+   * past the end of the box. A flag set wider than the body makes the run overrun its own size and the
+   * whole fragment undemuxable, which is why the value and the loop below must be read together.
+   *
+   * Composition-time offsets are deliberately absent: the source delivers access units in decode order
+   * with no reordering, so each sample's composition time equals its decode time.
+   *
+   * `data_offset` is written as zero and patched with the sample data's position once the enclosing
+   * `moof` is assembled and its length is known.
+   */
   private trun(samples: Sample[]): Buffer {
-    // flags: data-offset(0x1) + sample-duration(0x100) + sample-size(0x200) + sample-flags(0x400)
-    const flags = 0x000f01;
-    const parts: Buffer[] = [u32(flags), u32(samples.length), u32(0) /* data_offset patched later */];
+    const flags = 0x000701;
+    const parts: Buffer[] = [u32(flags), u32(samples.length), u32(0)];
     for (const s of samples) {
       parts.push(u32(s.duration), u32(s.data.length), u32(s.keyframe ? 0x02000000 : 0x01010000));
     }

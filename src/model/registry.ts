@@ -232,11 +232,19 @@ export function resolveDevice(rec: CloudRecord): ResolvedDevice {
  * fields a live session hasn't produced.
  */
 export function resolveProperties(rec: CloudRecord, codec: Codec, capabilities: Capability[]): PropertySpec[] {
+  const paramIds = new Set<number>();
+  if (rec.params && typeof rec.params === "object") {
+    for (const k of Object.keys(rec.params)) {
+      const n = Number(k);
+      if (Number.isFinite(n)) paramIds.add(n);
+    }
+  }
   return mergeProperties(capabilities, {
     codec,
     deviceType: rec.deviceType,
     model: rec.model,
     category: rec.category,
     capabilities: new Set(capabilities),
+    paramIds,
   });
 }

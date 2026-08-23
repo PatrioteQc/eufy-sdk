@@ -122,6 +122,8 @@ export interface P2PRouterDeps {
   logger?: Logger;
   /** ffmpeg `-loglevel` for the media (snapshot/record) paths. Default `"error"`. */
   ffmpegLogLevel?: FfmpegLevel;
+  /** The ffmpeg executable the media paths run. Default: the bare name, looked up on `PATH`. */
+  ffmpegPath?: string;
   /** Current (already-loaded) device list. */
   listDevices: () => EufyDevice[];
   /** Load the device list if it isn't loaded yet (delegates to the client's getDevices). */
@@ -323,12 +325,8 @@ export class P2PCommandRouter {
     session.on("close", () => {
       if (this.manager.get(stationSn) !== session) return;
       this.manager.remove(stationSn);
-      for (const [key, src] of this.liveSources) {
-        if (key.startsWith(`${stationSn}:`)) {
-          src.dispose();
-          this.liveSources.delete(key);
-          this.liveSourceOpts.delete(key);
-        }
+      for (const key of [...this.liveSources.keys()]) {
+        if (key.startsWith(`${stationSn}:`)) this.dropLiveSource(key);
       }
       for (const [key, talk] of this.talkbacks) {
         if (key.startsWith(`${stationSn}:`)) {
@@ -504,6 +502,7 @@ export class P2PCommandRouter {
           ...opts,
           logger: this.deps.logger ?? noopLogger,
           ffmpegLevel: this.deps.ffmpegLogLevel,
+          ffmpegPath: this.deps.ffmpegPath,
         });
       },
       live: async (opts) => {
@@ -519,13 +518,17 @@ export class P2PCommandRouter {
       p2pQuery: (subCmd, opts) => this.p2pQuery(sn, subCmd, opts),
       p2pControlQuery: (param, data, opts) => this.p2pControlQuery(sn, param, data, opts),
       record: async (seconds, opts) => {
-        const { session, channel, accountId } = await this.resolveSession(sn, { waitLevel2: "soft" });
+        const { session, channel, accountId, homeBaseAttached } = await this.resolveSession(sn, {
+          waitLevel2: "soft",
+        });
         return recordClip(session, seconds, {
           channel,
           accountId,
+          homeBaseAttached,
           ...opts,
           logger: this.deps.logger ?? noopLogger,
           ffmpegLevel: this.deps.ffmpegLogLevel,
+          ffmpegPath: this.deps.ffmpegPath,
         });
       },
     };
@@ -562,6 +565,7 @@ export class P2PCommandRouter {
    * something unplayable, and whichever stopped first would close the device's path under the other —
    * with no error on either side. The second caller is refused rather than handed the first one's
    * handle, which would silently discard its `encoder` and hand it a clip already in progress.
+   *
    */
   private async openTalkback(sn: string, encoder?: AacEncoder, powered?: "wired" | "battery"): Promise<TalkbackHandle> {
     const { session, parentSn, channel, homeBaseAttached } = await this.resolveSession(sn, { waitLevel2: "soft" });
@@ -611,13 +615,22 @@ export class P2PCommandRouter {
    * `onActive`/`onIdle` so an attached stream counts as a user of the station's P2P session (cancels
    * the session idle-detach while streaming; its longer idle timer arms when the last consumer leaves).
    *
-   * A source that has **stopped** with no consumers left (linger teardown, warm timeout, budget
-   * auto-stop, upstream error) is dropped here rather than re-used. Its pull is dead, so nothing is
+   * A source that has **stopped** (linger teardown, failed start, budget auto-stop, upstream error) is
+   * dropped here rather than re-used, whatever is still attached to it. Its pull is dead, so nothing is
    * being protected by keeping it — and keeping it meant the options of whichever egress happened to
    * create it first survived for the process lifetime, so a stray `powered` from the day's first
    * snapshot would still be dictating the budget hours later. Dropping it lets the next caller build a
    * fresh source from its own options, which is the difference between fixing the silent-drop defect
    * and merely reporting it.
+   *
+   * Attachment count is deliberately NOT part of that test. A failed start fails its consumers without
+   * detaching them, so a caller still holding its handle left the count non-zero — and requiring an empty
+   * source here is what let one dead source be handed out for the life of the client. A caller must
+   * re-acquire through this method after a failure; `attach()` on the dropped source throws, because it
+   * has been disposed.
+   *
+   * Several cameras behind one station each get their own source and may be warm at the same time: the
+   * station tags every media frame with the camera it belongs to, and {@link LiveStream} takes only its own.
    */
   async sharedLiveSourceFor(sn: string, opts: SharedLiveOpts = {}): Promise<SharedLiveSource> {
     const { session, parentSn, channel, accountId, homeBaseAttached } = await this.resolveSession(sn, {
@@ -625,10 +638,8 @@ export class P2PCommandRouter {
     });
     const key = `${parentSn}:${channel}`;
     let source = this.liveSources.get(key);
-    if (source && source.state === "stopped" && source.consumerCount === 0) {
-      source.dispose();
-      this.liveSources.delete(key);
-      this.liveSourceOpts.delete(key);
+    if (source && source.state === "stopped") {
+      this.dropLiveSource(key);
       source = undefined;
     }
     if (!source) {
@@ -652,6 +663,7 @@ export class P2PCommandRouter {
         label: key,
         onActive: () => this.manager.addUser(parentSn),
         onIdle: () => this.manager.releaseUser(parentSn),
+        onStartFailed: () => this.onLiveStartFailed(sn, key),
       });
       this.liveSources.set(key, source);
       this.liveSourceOpts.set(key, opts);
@@ -659,6 +671,52 @@ export class P2PCommandRouter {
     }
     this.warnIgnoredLiveOpts(key, opts);
     return source;
+  }
+
+  /** Dispose one cached live source and forget it, so the next acquisition builds a fresh one. */
+  private dropLiveSource(key: string): void {
+    const source = this.liveSources.get(key);
+    if (!source) return;
+    source.dispose();
+    this.liveSources.delete(key);
+    this.liveSourceOpts.delete(key);
+  }
+
+  /**
+   * A live start produced no frames. Drop the source, and recycle the device's P2P session when doing so
+   * is safe.
+   *
+   * Rebuilding the stream alone is not enough when it is the session, or the per-device state carried on
+   * it, that has stopped serving this camera: every later attach builds another stream over the same
+   * cached session and fails identically, which is why only a client restart recovered it.
+   *
+   * What a recycle actually replaces is the `P2PSession` INSTANCE. `close()` discards the manager's entry
+   * first, so the next acquisition builds a new instance — new socket, new RSA keypair offered as
+   * `encryptkey`, freshly negotiated level-2 key, and reset sequence windows. The instance's own `close()`
+   * resets none of those; being replaced is what does.
+   *
+   * The close is issued BEFORE the source is dropped, because discarding the manager entry is synchronous:
+   * from that moment a concurrent acquisition resolves a fresh session rather than the doomed one. It would
+   * find the not-yet-dropped source in that window, which is exactly why a stopped source is replaced
+   * regardless of what is attached to it.
+   *
+   * Only a **standalone** device's session is recycled, resolved through {@link stationKeyOf} so this and
+   * {@link resetStandaloneSession} cannot disagree about what standalone means. An attached camera shares
+   * its HomeBase session with every other camera on it, and closing that to recover one would drop the
+   * rest, so an attached camera gets the stream rebuild and nothing more. Unlike
+   * {@link resetStandaloneSession} this does not wait for the station to fall idle: the failed source's own
+   * session user is still counted, so a deferred reset would never fire.
+   */
+  private onLiveStartFailed(sn: string, key: string): void {
+    const station = this.stationKeyOf(sn);
+    if (station !== sn) {
+      this.dropLiveSource(key);
+      return;
+    }
+    void this.manager
+      .close(station)
+      .catch((error) => this.reportError(error instanceof Error ? error : new Error(String(error))))
+      .finally(() => this.dropLiveSource(key));
   }
 
   /**

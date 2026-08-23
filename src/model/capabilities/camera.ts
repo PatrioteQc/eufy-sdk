@@ -315,6 +315,23 @@ function poweredOf(ctx: CommandContext): "wired" | "battery" {
 }
 
 /**
+ * Every wire id that carries the camera's enablement state, with the polarity it reports under — the
+ * READ side of {@link CAMERA_MEMBERS}.enabled, read back off that member rather than restated.
+ *
+ * A second list would be a second answer to "which ids mean enablement, and which way round": the
+ * getter would keep one and the poll event the other, and a family whose alias moved would report the
+ * inverse of what it reads. `invert` is the member's own convention — the value is a DISABLE bit where
+ * it is set.
+ */
+function enablementReads(): { paramType: number; invert: boolean }[] {
+  const member = CAMERA_MEMBERS.enabled;
+  return [
+    { paramType: member.param, invert: member.invert },
+    ...member.readAliases.map((alias) => ({ paramType: alias.paramType, invert: alias.invert })),
+  ];
+}
+
+/**
  * Every `camera` feature, declared once. The property schema, the typed getters, the derived setters,
  * the intent routes, the media methods and the descriptions all come out of this table.
  *
@@ -337,6 +354,16 @@ export const CAMERA_MEMBERS = {
    * with direct polarity, so 2001 is a read-alias. Both verified live (T8114 1035=0 → ON; T8410
    * 2001=false → OFF). The S350/outdoor-PT privacy form (6250) is a separate wire and is not aliased
    * here until its polarity is captured.
+   *
+   * On the families {@link usesSeparatePowerEnvelope} covers, the WRITE goes to the privacy envelope while
+   * this read still observes 1035/2001 — so `setEnabled(false)` succeeds without moving this value, and the
+   * value reads as ON for a camera that is off. `readReflectsWrite` declares that, which puts those devices
+   * in `unreflectedMembers(dev.camera())` so a caller can decline to act on the value instead of acting on a
+   * wrong one.
+   *
+   * Aliasing 6250 here would fix it properly, and it IS reported on those families (T8170 and T8171 each
+   * returned 6250="0" alongside 1035="0" while streaming). That is one polarity seen once; the privacy-on
+   * reading is not captured, so the mapping stays unverified rather than guessed.
    */
   enabled: {
     param: CAMERA_CMD.CAMERA_ENABLE,
@@ -345,6 +372,7 @@ export const CAMERA_MEMBERS = {
     provenance: "verified",
     invert: true,
     readAliases: [{ paramType: 2001, invert: false }],
+    readReflectsWrite: (ctx) => !usesSeparatePowerEnvelope(ctx),
     description:
       "Camera enabled. Family-dependent wire param: 1035 CMD_DEVS_SWITCH (disable bit, battery/" +
       "solo cams) or 2001 OPEN_DEVICE (standalone indoor/outdoor). Reliable on/off status source " +
@@ -459,6 +487,10 @@ export const CAMERA_MEMBERS = {
   /**
    * Privacy mode — the multi-frame burst. Nothing reports it back, so it is a setter with no getter, and
    * it declares no param: the id the burst is built from is the transport's, not this capability's.
+   *
+   * Being write-only, it is named by `unobservableMembers(dev.camera())`, so a caller can tell "this camera
+   * is not in privacy mode" from "this camera cannot say" rather than reading both as `undefined`. That
+   * distinction matters most on the families whose power rides this same envelope — see {@link enabled}.
    */
   privacy: {
     type: "bool",
@@ -552,6 +584,26 @@ export const CAMERA: CapabilityModule = {
   properties: propertiesOf(CAMERA_MEMBERS),
   /** Every camera-codec device has the power/privacy surface. */
   detection: { codecs: ["camera"] },
+  /**
+   * Inbound `cameraEnabled`: the enablement state changing between cloud polls.
+   *
+   * Enablement only ever arrives as a cloud param — no id pushes it — so re-reading was the only way a
+   * caller could learn it had moved, and re-reading cannot say WHEN. Every id that carries the read is
+   * mapped, from {@link enablementReads}, so the event and the getter cannot disagree about which ids
+   * those are or which polarity each reports under; the raw value is normalised to `enabled` because
+   * the two ids report it inverted from each other.
+   *
+   * Neither id is claimed by another capability, so both emit without capability context — which is the
+   * declared behaviour for an uncontested id, and safe here because both have only ever been reported by
+   * camera devices.
+   */
+  events: enablementReads().map(({ paramType, invert }) => ({
+    source: "poll" as const,
+    match: paramType,
+    emit: "cameraEnabled",
+    derive: (s) =>
+      s.source === "poll" && s.to !== undefined ? { enabled: asBool(s.to) !== invert } : ({} as Record<string, never>),
+  })),
   /** Only the no-argument power verbs, which carry no value for a member to hold. */
   actions(ctx: CommandContext, sink: CommandSink): CapabilityActions {
     return {

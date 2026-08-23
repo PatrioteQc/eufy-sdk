@@ -30,6 +30,24 @@ Consequences a host should rely on:
 - **Linger, then stop.** When the last consumer detaches the source lingers briefly (so a quick
   re-attach reuses it) and then stops the pull. You don't manage the pull; you manage your consumer.
 
+## Several cameras behind one station
+
+A camera behind a HomeBase shares that station's session with every other camera on it, and every stream
+opened over it reads the same inbound feed. The station **tags each media frame with the camera it belongs
+to**, and the SDK matches on that — so each handle receives only its own camera's video and audio, and two
+or three cameras on one HomeBase can stream at the same time.
+
+Worth knowing:
+
+- Cameras that own their session (standalone, no HomeBase) number their stream for themselves, so nothing
+  is matched there — there is only one camera on that session.
+- If a station ever tags an attached camera's frames with something other than the channel that was
+  started, the SDK notices within about two seconds, logs a warning and stops matching rather than serving
+  a stream that never delivers. Two cameras warm on such a station would interleave, as they did before
+  this existed.
+- `record()` opens its own pull instead of joining the shared source, so it costs a second stream on a
+  camera that is already streaming. `recordFragments()` is a shared consumer like everything else.
+
 ## 1. Event stream (low-level)
 
 The direct escape hatch — raw frames as they arrive.
@@ -38,7 +56,7 @@ The direct escape hatch — raw frames as they arrive.
 const stream = await cam.live();
 
 stream.on("video", (frame) => {
-  // frame.data    Annex-B bytes (one or more start-code-prefixed NAL units)
+  // frame.data    Annex-B bytes (ONE whole access unit, start-code-prefixed NAL units)
   // frame.codec   "h264" | "h265" | "av1"
   // frame.width, frame.height
   // frame.keyframe  true on an IDR (a valid resync/segment boundary)
@@ -65,6 +83,12 @@ rather than inferred — and read on every frame, because the device is free to 
 Audio deliberately carries **no sample rate and no channel count**: neither is on the wire. The eufy app
 assumes 16 kHz mono for all three codecs, and a host that needs those numbers is making the same
 assumption — the SDK does not dress it up as a device fact.
+
+A `video` event is **one whole access unit**. A station serves a unit bigger than its own chunk size as
+several frames, and those are rejoined before you see them — so `keyframe` really does mean "you may
+begin decoding here", and counting `video` events counts frames. A unit the transport could not complete
+(a lost datagram costs all of it) is dropped rather than handed to you short, because bytes that stop
+mid-slice decode to nothing.
 
 ## 2. Node Readable (pipe it)
 
@@ -160,11 +184,16 @@ forward account authentication headers to the redirected host.
 const shot = await cam.snapshotLive?.(); // { jpeg, width, height }
 ```
 
+`width` and `height` describe the returned image — they are read back out of the JPEG, not taken from
+the stream's frame header, so they cannot disagree with the bytes. (Some cameras reconfigure resolution
+inside one short burst, which is exactly when the header and the encoded still part company.)
+
 If the shared source already has a cached keyframe (a live view or another consumer is warm),
 `snapshotLive` decodes that keyframe directly — **no second pull**. Only if nothing is warm does it
 briefly attach, wait for a clean keyframe, decode, and detach. (The JPEG decode itself uses ffmpeg as
-an optional convenience sink; the raw keyframe bytes are always available dependency-free via
-`openReadable` / the event stream.)
+an optional convenience sink — resolved on `PATH`, or set `ffmpegPath` on the client to name the binary
+you ship; the raw keyframe bytes are always available dependency-free via `openReadable` / the event
+stream.)
 
 ## Talkback — audio the other way
 

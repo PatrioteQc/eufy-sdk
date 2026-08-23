@@ -27,6 +27,7 @@
 import { EventEmitter } from "node:events";
 import { noopLogger, type Logger } from "../../core/logger.js";
 import { Timer } from "../../core/util.js";
+import { updatedParamSets, type ParamSets } from "./annexb.js";
 import type { LiveAudioFrame, LiveStreamHandle, LiveVideoFrame, StreamBudgetNotice } from "../../core/contracts.js";
 
 /** Lifecycle state of a {@link SharedLiveSource}. */
@@ -80,6 +81,24 @@ export interface SharedLiveSourceOptions {
   onActive?: () => void;
   /** Called when the LAST consumer detaches (1→0) — the router releases its session user. See {@link onActive}. */
   onIdle?: () => void;
+  /**
+   * Called when a stream is torn down having **never delivered a frame**, AFTER consumers have been told.
+   *
+   * A source can only rebuild its stream; it holds a factory, not the session that stream rides on. When
+   * the session — or the per-device state carried on it — is what has stopped serving this device, every
+   * rebuild starts another stream over the same session and dies the same way, so the owner of the session
+   * has to hear about it to do anything else.
+   *
+   * The condition is deliberately "no frame ever arrived", not "the warm-up deadline fired". A start can
+   * fail without that deadline being reached — an upstream error or stop can arrive first, the battery
+   * budget can stop the pull, and a caller that gives up before the deadline cancels it on the way out
+   * (`clearWarmWatch`) — and all of those are the same dead start. Enumerating the ways instead of naming
+   * the condition is how the case that actually happens gets left out.
+   *
+   * Not called by {@link SharedLiveSource.dispose}: the owner asked for that one, and it is the very thing
+   * an owner does in response to this callback.
+   */
+  onStartFailed?: () => void;
 }
 
 /**
@@ -235,8 +254,12 @@ export class SharedLiveSource {
   private _state: SharedLiveState = "idle";
   private disposed = false;
 
+  /** Whether the CURRENT stream generation has delivered a frame; reset by every {@link warm}. */
+  private deliveredFrame = false;
   /** Last keyframe access unit seen — replayed to a joining consumer (keyframe-prime). */
   private lastKeyframe?: Extract<TimedMediaFrame, { kind: "video" }>;
+  /** Last parameter sets the stream announced — see {@link parameterSets}. */
+  private lastParamSets?: ParamSets;
   /** Rolling prebuffer, keyframe-alignable on drain. */
   private ring: TimedMediaFrame[] = [];
 
@@ -284,6 +307,21 @@ export class SharedLiveSource {
   }
 
   /**
+   * The parameter sets (SPS/PPS, plus VPS for H.265) most recently announced on this stream, or
+   * `undefined` before any have been seen.
+   *
+   * A camera commonly sends them ONCE, with the first keyframe of a stream. Every later access unit is
+   * then undecodable in isolation, so a consumer that collects a burst — and cannot see frames from
+   * before it joined — has no way to recover them. This source watches every frame from stream start,
+   * which makes it the only holder of the answer. A caller re-emits them ahead of its collected burst.
+   *
+   * Cleared when the stream is torn down, so a rebuilt stream never primes a burst with a dead stream's sets.
+   */
+  get parameterSets(): ParamSets | undefined {
+    return this.lastParamSets;
+  }
+
+  /**
    * Attach a new consumer. Warms the stream on the first attach (or cancels a pending linger teardown
    * and reuses the warm stream), then replays the cached keyframe so the consumer can decode at once.
    */
@@ -328,6 +366,7 @@ export class SharedLiveSource {
   /** Build + start the underlying stream, wire its frames into the fan-out, and watch the warm-up. */
   private warm(): void {
     this._state = "warming";
+    this.deliveredFrame = false;
     this.logger.debug(`${this.tag} warming (retry=${this.warmRetryMs}ms deadline=${this.warmTimeoutMs}ms)`);
     const stream = this.opts.makeStream();
     this.stream = stream;
@@ -386,7 +425,11 @@ export class SharedLiveSource {
     this.warmDeadlineTimer.cancel();
   }
 
-  /** No frame within the warm-up window — surface a start failure to consumers and tear down. */
+  /**
+   * No frame within the warm-up window — surface a start failure to consumers, tear down, and report the
+   * failed start to the owner (see {@link SharedLiveSourceOptions.onStartFailed}) so it can recycle what
+   * this source cannot reach.
+   */
   private onWarmTimeout(): void {
     if (this.disposed || !this.stream) return;
     const err = new Error("live stream failed to start (no frames within warm-up window)");
@@ -396,6 +439,7 @@ export class SharedLiveSource {
   }
 
   private onVideo(frame: LiveVideoFrame): void {
+    this.deliveredFrame = true;
     const item = { kind: "video", frame, timestampMs: Date.now() } as const;
     if (this.warmRetryTimer || this.warmDeadlineTimer.pending) {
       this.clearWarmWatch(); // first frame → warmed
@@ -404,6 +448,7 @@ export class SharedLiveSource {
       );
       if (this.powered === "battery") this.armBudget(); // battery drain starts now
     }
+    this.lastParamSets = updatedParamSets(frame.data, this.lastParamSets);
     if (frame.keyframe) {
       this.lastKeyframe = item;
       if (this._state === "warming") this._state = "live";
@@ -489,20 +534,33 @@ export class SharedLiveSource {
     this.lingerTimer.arm(this.lingerMs, () => this.teardown("stopped"));
   }
 
-  /** Stop + drop the underlying stream and clear the prime/ring caches. Rebuildable via attach(). */
-  private teardown(state: SharedLiveState): void {
+  /**
+   * Stop + drop the underlying stream and clear the prime/ring caches. Rebuildable via attach().
+   *
+   * The stream reference is dropped BEFORE stopping it, because `stop()` emits `"stop"` synchronously and
+   * this source listens for that — so stopping re-enters `teardown` through {@link onUpstreamEnd}. Clearing
+   * first makes that re-entry hit the `!this.stream` guard and return, which is what keeps a single
+   * teardown from reporting a failed start twice (and, before that report existed, from tearing down twice).
+   *
+   * `report` is false only for {@link dispose}: the owner asked for that one.
+   */
+  private teardown(state: SharedLiveState, report = true): void {
+    const stream = this.stream;
+    const startFailed = stream !== undefined && !this.deliveredFrame;
+    this.stream = undefined;
     this.clearWarmWatch();
     this.clearBudget();
     this.lingerTimer.cancel();
     try {
-      this.stream?.stop();
+      stream?.stop();
     } catch {
       /* stream may already be gone */
     }
-    this.stream = undefined;
     this.lastKeyframe = undefined;
+    this.lastParamSets = undefined;
     this.ring = [];
     this._state = state;
+    if (startFailed && report) this.opts.onStartFailed?.();
   }
 
   /** Underlying stream ended unexpectedly (station max-duration / reconnect): tell consumers. */
@@ -522,12 +580,20 @@ export class SharedLiveSource {
     this.teardown("stopped");
   }
 
-  /** Permanent shutdown (session close / router closeAll). Consumers get `stop`; no rebuild. */
+  /**
+   * Permanent shutdown (session close / router closeAll). Consumers get `stop`; no rebuild.
+   *
+   * Releases the session user when consumers were still attached: {@link SharedLiveSourceOptions.onActive}
+   * fired on the 0→1 transition, and this is the 1→0 one, so skipping it would leave the station pinned
+   * open for a source that can never serve anyone again.
+   */
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    const held = this.consumers.size > 0;
     for (const c of [...this.consumers]) c.end();
     this.consumers.clear();
-    this.teardown("stopped");
+    this.teardown("stopped", false);
+    if (held) this.opts.onIdle?.();
   }
 }

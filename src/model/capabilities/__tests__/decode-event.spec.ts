@@ -197,6 +197,7 @@ describe("the announced event vocabulary", () => {
         "armingModeChanged",
         "batteryAlert",
         "batteryLevel",
+        "cameraEnabled",
         "contactState",
         "cryingDetected",
         "dogDetected",
