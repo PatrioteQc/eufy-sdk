@@ -16,7 +16,7 @@ import {
   type TuyaCleanType,
 } from "../vacuum-clean.js";
 import { bind } from "./bind.js";
-import { byteCodec, frame, int, sub } from "./proto-bytes.js";
+import { byteCodec, frame, int, sub, varint } from "./proto-bytes.js";
 
 /**
  * The capability is exercised against a FAKE codec, never the real `transport/raw-dp.ts` — importing
@@ -176,86 +176,6 @@ describe("decodeVacuumActivity (WorkStatus.state → activity)", () => {
     expect(decodeVacuumActivity(7, workStatus(3))).toBe("unknown");
   });
 });
-
-/**
- * Byte-real `WorkStatus` fixtures. State 5 is resolved from the sub-messages BESIDE the state field, so
- * a fake that hands back one flat field list cannot exercise it — these encode actual protobuf bytes and
- * read them back through a schema-less reader that mirrors the `RawDpCodec` contract.
- *
- * Encoding only what a real device would send matters here: proto3 omits a zero-valued field, so
- * `Cleaning{state: DOING}` and `Cleaning{}` are the same bytes, and the decode has to read the absence
- * as the enum's zero member rather than as missing data.
- */
-function varint(n: number): number[] {
-  const out: number[] = [];
-  let v = n;
-  while (v > 0x7f) {
-    out.push((v & 0x7f) | 0x80);
-    v >>>= 7;
-  }
-  out.push(v);
-  return out;
-}
-/** A varint-valued field, omitted entirely when zero — the proto3 default rule. */
-function int(field: number, value: number): number[] {
-  return value === 0 ? [] : [...varint((field << 3) | 0), ...varint(value)];
-}
-/** A length-delimited sub-message field. Always emitted, so an EMPTY sub-message still states its presence. */
-function sub(field: number, body: number[]): number[] {
-  return [...varint((field << 3) | 2), ...varint(body.length), ...body];
-}
-/** Wrap a message body in the `varint(len) ++ body` framing a Raw DP value carries, base64-encoded. */
-function frame(body: number[]): string {
-  return Buffer.from([...varint(body.length), ...body]).toString("base64");
-}
-
-/**
- * A schema-less reader over real bytes, matching `transport/raw-dp.ts`'s contract without importing it —
- * `model/` specs may not reach into `transport/`, and re-deriving the read here is what proves the
- * capability depends on the CONTRACT rather than on that implementation.
- */
-const byteCodec: RawDpCodec = {
-  decode(value: string) {
-    const buf = Buffer.from(value, "base64");
-    let pos = 0;
-    let len = 0;
-    let shift = 0;
-    while (pos < buf.length) {
-      const b = buf[pos++]!;
-      len |= (b & 0x7f) << shift;
-      shift += 7;
-      if (!(b & 0x80)) break;
-    }
-    const body = buf.subarray(pos);
-    return len === body.length ? this.nested(body) : undefined;
-  },
-  nested(value: Buffer) {
-    const out: RawDpField[] = [];
-    let pos = 0;
-    const readVarint = (): number => {
-      let v = 0;
-      let shift = 0;
-      while (pos < value.length) {
-        const b = value[pos++]!;
-        v |= (b & 0x7f) << shift;
-        shift += 7;
-        if (!(b & 0x80)) break;
-      }
-      return v;
-    };
-    while (pos < value.length) {
-      const tag = readVarint();
-      const field = tag >>> 3;
-      if ((tag & 7) === 0) out.push({ field, kind: "int", value: BigInt(readVarint()) });
-      else if ((tag & 7) === 2) {
-        const len = readVarint();
-        out.push({ field, kind: "bytes", value: value.subarray(pos, pos + len) });
-        pos += len;
-      } else return undefined;
-    }
-    return out;
-  },
-};
 
 /** `WorkStatus.state` = CLEANING(5), plus whichever sub-messages the fixture states. */
 function cleaningFrame(...subs: number[][]): string {
@@ -422,21 +342,11 @@ export const _surfaceAssertions = [
  * default — one length-delimited run of varints, not one field per value. A sender may still emit the
  * unpacked form, so both are exercised against real bytes.
  */
-function varintBytes(n: number): number[] {
-  const out: number[] = [];
-  let v = n;
-  while (v > 0x7f) {
-    out.push((v & 0x7f) | 0x80);
-    v >>>= 7;
-  }
-  out.push(v);
-  return out;
-}
 /** A packed `repeated uint32` field: one length-delimited run of concatenated varints. */
 function packed(field: number, values: readonly number[]): number[] {
   return sub(
     field,
-    values.flatMap((v) => varintBytes(v)),
+    values.flatMap((v) => varint(v)),
   );
 }
 
