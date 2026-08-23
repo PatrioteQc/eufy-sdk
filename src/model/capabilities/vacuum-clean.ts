@@ -337,6 +337,13 @@ function subValue(codec: RawDpCodec, body: Buffer, field: number): number {
  *
  * Falls through to `"cleaning"` whenever no sub-message claims it, so a frame this does not recognise
  * degrades to the previous behaviour rather than to a worse one.
+ *
+ * **The station branch is the softest read here, and the one to confirm on-device first.** It takes the
+ * PRESENCE of `washing_drying_system` as washing-or-drying and does not read its value, where `go_wash`
+ * above reads the actual mode. That follows the schema's own "an absent message is IDLE" rule, and it
+ * degrades into the `"cleaning"` fallback rather than into a wrong dock state — but unlike the go_wash
+ * and paused branches it is not corroborated by a capture, so a live report of a robot washing at its
+ * dock is what would settle whether presence alone is enough.
  */
 function resolveCleaningState(fields: readonly RawDpField[], codec: RawDpCodec): VacuumActivity {
   const sub = (field: number): Buffer | undefined => {
@@ -455,6 +462,11 @@ const NO_FAULT = 0;
  * Packed arrives as one length-delimited run of varints, unpacked as a plain varint field repeated —
  * so the first match wins in either case. Returns `undefined` when the field is absent or the packed
  * run is empty, which the caller reads as "this list said nothing" rather than as a zero code.
+ *
+ * **Assumes a code below 2³¹.** The accumulate uses JavaScript's `<<`, which is a 32-bit signed
+ * operation, so a wider varint would wrap. Every documented range is four digits — 1-119 robot,
+ * 1010-5112 component, 6010-6311 station, 7000-7055 situational — so this holds today and is stated
+ * rather than assumed silently, in case the vendor's table ever grows a wider code.
  */
 function firstRepeatedCode(fields: readonly RawDpField[], field: number): number | undefined {
   const found = fields.find((f) => f.field === field);
@@ -655,6 +667,12 @@ export const VACUUM_CLEAN_MEMBERS = {
    *
    * The code's MEANING is the vendor's own table and is not interpreted here — a host that wants text
    * maps the number itself.
+   *
+   * The DP 106 alias is DELIBERATELY ungated, unlike `battery` and `cleanType` which gate their
+   * legacy aliases on `isTuyaVacuum`. A fault is the one reading worth surfacing even when the
+   * family classification is wrong or absent, and {@link decodeVacuumFault} discriminates on the
+   * value's SHAPE rather than on the family — so a device carrying DP 106 decodes sanely whichever
+   * line it turns out to be on. The asymmetry is the point, not an oversight.
    */
   errorCode: {
     param: VACUUM_DP.FAULT_ALERT,
