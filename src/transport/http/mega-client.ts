@@ -584,6 +584,24 @@ export class MegaHttpClient {
   }
 
   /**
+   * Fetch one page of a device's **cleaning history** from the mega `clean` service.
+   *
+   * Body is `{ device_sn, num, page }` — `num` is the page SIZE and `page` is 1-based. Returns the raw
+   * response so the caller owns the shape; `parseCleanRecords` in `model/` is what reads it.
+   *
+   * Each record carries a `download_url` to a binary detail blob. That blob is NOT fetched here: the
+   * host it points at is unconfirmed, and this client's binary path (`downloadMediaResource`) is
+   * host-allowlisted by design.
+   */
+  getCleanRecords<T = unknown>(deviceSn: string, num = 20, page = 1): Promise<T> {
+    return this.post<T>("clean", "/app/clean/get_device_clean_record_list", {
+      device_sn: deviceSn,
+      num,
+      page,
+    });
+  }
+
+  /**
    * Generic authed escape hatch for scripts/experiments: a signed POST to
    * `app-{service}-{region}.eufy.com{path}` with an arbitrary body. Use the typed wrappers
    * above in SDK code; this exists so tooling can probe endpoints / body shapes live.

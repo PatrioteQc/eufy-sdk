@@ -40,6 +40,7 @@ import type { DeviceEventMap } from "../model/capabilities/index.js";
 import type { CommandContext } from "../model/capabilities/types.js";
 import { CapabilityNotSupportedError } from "../model/capabilities/types.js";
 import { type DpCatalog, EMPTY_DP_CATALOG, parseDpCatalog } from "../model/capabilities/dp-catalog.js";
+import { type CleanRecordPage, EMPTY_CLEAN_RECORD_PAGE, parseCleanRecords } from "../model/clean-records.js";
 import {
   commandObservation,
   type Command,
@@ -982,6 +983,26 @@ export class EufyMega extends EventEmitter {
    */
   getProductDataPoint<T = unknown>(code: string): Promise<T> {
     return this.mega.getProductDataPoint<T>(code);
+  }
+
+  /**
+   * One page of a robot vacuum's **cleaning history**, newest first.
+   *
+   * `pageSize` is how many records to return and `page` is 1-based; page through until the returned
+   * `total` is reached. Answers an empty page rather than throwing when the account has no history for
+   * the device or the response cannot be read.
+   *
+   * Each record carries a `downloadUrl` for the run's binary detail blob (map and per-run statistics).
+   * The SDK hands that URL over rather than fetching it — the host is unconfirmed and the blob's format
+   * is not evidenced yet.
+   */
+  async getCleanRecords(deviceSn: string, pageSize = 20, page = 1): Promise<CleanRecordPage> {
+    try {
+      return parseCleanRecords(await this.mega.getCleanRecords(deviceSn, pageSize, page));
+    } catch (err) {
+      this.opts.logger?.debug?.(`[clean] record list failed: ${(err as Error).message}`);
+      return EMPTY_CLEAN_RECORD_PAGE;
+    }
   }
 
   /** Live param list for one owned device. See `MegaHttpClient.getDeviceParamList`. */
