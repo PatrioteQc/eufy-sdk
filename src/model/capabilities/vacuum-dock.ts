@@ -9,6 +9,45 @@ import { isAiotVacuum } from "../device-family.js";
 const VACUUM_DOCK_DP = 173 as const;
 
 /**
+ * DP id carrying `DeviceInfo` (DP 169) — the robot's own identity, with the dock's nested inside it.
+ *
+ * Only the dock's slice is read here. The robot's own firmware is already `info.firmwareVersion`, off
+ * the cloud device record, and a second spelling of it on this capability would be the same feature
+ * under two names.
+ */
+const VACUUM_DOCK_INFO_DP = 169 as const;
+
+/**
+ * Field numbers inside `DeviceInfo` (DP 169) for the dock's slice of it.
+ *
+ * The vendor notes `station` is present only while the robot is powered on AT the dock, so its absence
+ * is normal rather than an error — a robot out on a job simply has nothing to say about the dock here.
+ */
+const DEVICE_INFO_FIELD = {
+  /** `station` — the dock's own info block. */
+  STATION: 11,
+  /** `software` within a `Station` — its firmware version string, e.g. "1.2.3". */
+  SOFTWARE: 1,
+} as const;
+
+/**
+ * Decode the DOCK's firmware version from `DeviceInfo` (DP 169).
+ *
+ * `undefined` covers every way it is not stated: no codec, a payload that does not decode, a robot not
+ * currently docked (no `station` block), or a dock that reports the block without a version. A
+ * length-delimited `string` arrives as bytes, so the value is read back as UTF-8.
+ * @internal
+ */
+export function decodeDockFirmware(raw: ParamValue | undefined, codec: RawDpCodec | undefined): string | undefined {
+  if (typeof raw !== "string" || !codec) return undefined;
+  const station = codec.decode(raw)?.find((f) => f.field === DEVICE_INFO_FIELD.STATION);
+  if (station?.kind !== "bytes") return undefined;
+  const software = codec.nested(station.value)?.find((f) => f.field === DEVICE_INFO_FIELD.SOFTWARE);
+  if (software?.kind !== "bytes" || !software.value.length) return undefined;
+  return software.value.toString("utf-8");
+}
+
+/**
  * Every value {@link DockActivity} can take — the read's declared domain, so the schema a caller reads
  * and the type it compiles against are the same list rather than two that can drift.
  *
@@ -131,6 +170,24 @@ export function decodeDockActivity(
  */
 export const VACUUM_DOCK_MEMBERS = {
   /**
+   * The DOCK's firmware version (DP 169, `DeviceInfo.station.software`) — distinct from
+   * `info.firmwareVersion`, which is the robot's and comes off the cloud device record.
+   *
+   * `undefined` while the robot is not docked: the vendor only fills the station block when the robot
+   * is powered on at the dock, so an absent value is normal rather than a fault.
+   */
+  dockFirmwareVersion: {
+    param: VACUUM_DOCK_INFO_DP,
+    type: "string",
+    kind: "text",
+    provenance: "mega",
+    decode: (raw, codec) => decodeDockFirmware(raw as ParamValue | undefined, codec),
+    decodedKind: "text",
+    description:
+      "Dock firmware version from DeviceInfo.station.software (DP 169 appAndDevice, Raw protobuf). " +
+      "The robot's own firmware is info.firmwareVersion, not this.",
+  },
+  /**
    * What the dock is doing (DP 173, `StationResponse`) — washing or drying mops, emptying the bin,
    * moving water, or idle.
    *
@@ -218,7 +275,10 @@ export const VACUUM_DOCK: CapabilityModule = {
   // equipment the T2351 has and a plain RoboVac does not.
   detection: { evidenceParams: [VACUUM_DOCK_DP] },
   decodeState(signal) {
-    const params = pickDpParams(signal.source === "mqtt" ? signal.dpParams : undefined, [VACUUM_DOCK_DP]);
+    const params = pickDpParams(signal.source === "mqtt" ? signal.dpParams : undefined, [
+      VACUUM_DOCK_DP,
+      VACUUM_DOCK_INFO_DP,
+    ]);
     return params ? { params } : null;
   },
 };

@@ -1,5 +1,11 @@
 import type { CommandContext } from "../types.js";
-import { VACUUM_DOCK, DOCK_ACTIVITIES, decodeDockActivity, type VacuumDockActions } from "../vacuum-dock.js";
+import {
+  VACUUM_DOCK,
+  DOCK_ACTIVITIES,
+  decodeDockActivity,
+  decodeDockFirmware,
+  type VacuumDockActions,
+} from "../vacuum-dock.js";
 import { bind } from "./bind.js";
 import { byteCodec, frame, int, sub } from "./proto-bytes.js";
 
@@ -10,8 +16,8 @@ function dockCtx(model?: string, category?: string): CommandContext {
 describe("vacuum_dock capability module", () => {
   it("declares the capability + schema", () => {
     expect(VACUUM_DOCK.capability).toBe("vacuum_dock");
-    // writeOnly members are excluded from the property schema; dockState is the only read.
-    expect(VACUUM_DOCK.properties.map((p) => p.name)).toEqual(["dockState"]);
+    // writeOnly members are excluded from the property schema; the two reads are what remain.
+    expect(VACUUM_DOCK.properties.map((p) => p.name)).toEqual(["dockFirmwareVersion", "dockState"]);
   });
 
   it("every property has a string name + numeric paramType", () => {
@@ -110,5 +116,36 @@ describe("decodeDockActivity (StationStatus → dock activity)", () => {
     expect(decodeDockActivity(station(int(2, 1)), undefined)).toBeUndefined();
     expect(decodeDockActivity(undefined, byteCodec)).toBeUndefined();
     expect(decodeDockActivity(7, byteCodec)).toBeUndefined();
+  });
+});
+
+/**
+ * `DeviceInfo` (DP 169). Only the dock's nested block is read — the robot's own `software`(4) sits at
+ * the top level and must not be mistaken for it.
+ */
+describe("decodeDockFirmware (DeviceInfo.station.software)", () => {
+  /** A `DeviceInfo` carrying the robot's own firmware, and optionally the dock's block. */
+  function deviceInfo(robotSw: string, dockSw?: string): string {
+    const str = (field: number, v: string): number[] => sub(field, [...Buffer.from(v, "utf-8")]);
+    return frame([...str(4, robotSw), ...(dockSw === undefined ? [] : sub(11, str(1, dockSw)))]);
+  }
+
+  it("reads the dock's version, not the robot's", () => {
+    expect(decodeDockFirmware(deviceInfo("9.9.9", "1.2.3"), byteCodec)).toBe("1.2.3");
+  });
+
+  it("is undefined while the robot is not docked — no station block is normal", () => {
+    expect(decodeDockFirmware(deviceInfo("9.9.9"), byteCodec)).toBeUndefined();
+  });
+
+  it("is undefined when the station block carries no version", () => {
+    expect(decodeDockFirmware(frame(sub(11, [])), byteCodec)).toBeUndefined();
+  });
+
+  it("is undefined for every way it is not stated", () => {
+    expect(decodeDockFirmware(frame([]), byteCodec)).toBeUndefined();
+    expect(decodeDockFirmware(deviceInfo("9.9.9", "1.2.3"), undefined)).toBeUndefined();
+    expect(decodeDockFirmware(undefined, byteCodec)).toBeUndefined();
+    expect(decodeDockFirmware(7, byteCodec)).toBeUndefined();
   });
 });

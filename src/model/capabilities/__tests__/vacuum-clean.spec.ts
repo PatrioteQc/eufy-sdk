@@ -7,6 +7,7 @@ import {
   TUYA_VACUUM_DP,
   decodeVacuumActivity,
   decodeCleanType,
+  decodeChildLock,
   decodeDoNotDisturb,
   decodeSessionCleanTime,
   decodeVacuumFault,
@@ -104,6 +105,7 @@ describe("vacuum_clean capability module", () => {
       "lifetimeCleanArea",
       "waterTank",
       "mopPad",
+      "childLock",
       "doNotDisturb",
       "rssi",
     ]);
@@ -404,6 +406,26 @@ describe("decodeVacuumFault (ErrorCode → fault code)", () => {
  * containers deep, and both rely on proto3 omitting zero values — so an empty container is a real
  * answer (off / no elapsed time), while an absent one is the device not answering.
  */
+describe("decodeChildLock (UnisettingResponse.children_lock)", () => {
+  it("reads the switch through its wrapper", () => {
+    expect(decodeChildLock(frame(sub(1, int(1, 1))), byteCodec)).toBe(true);
+  });
+
+  it("reads an omitted zero as off", () => {
+    expect(decodeChildLock(frame(sub(1, [])), byteCodec)).toBe(false);
+  });
+
+  it("ignores the other toggles in the same message", () => {
+    expect(decodeChildLock(frame([...sub(1, int(1, 1)), ...sub(3, int(1, 1)), ...sub(9, [])]), byteCodec)).toBe(true);
+  });
+
+  it("is undefined when the setting is not reported at all", () => {
+    expect(decodeChildLock(frame(sub(3, int(1, 1))), byteCodec)).toBeUndefined();
+    expect(decodeChildLock(frame(sub(1, int(1, 1))), undefined)).toBeUndefined();
+    expect(decodeChildLock(undefined, byteCodec)).toBeUndefined();
+  });
+});
+
 describe("decodeDoNotDisturb (Undisturbed.sw → doNotDisturb)", () => {
   /** `UndisturbedResponse.undisturbed.sw.value` = on, with the live `active` flag beside it. */
   const dnd = (on: boolean): string => frame([...sub(1, int(1, 1)), ...sub(2, sub(1, on ? int(1, 1) : []))]);

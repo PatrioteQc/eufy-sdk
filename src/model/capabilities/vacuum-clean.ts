@@ -31,6 +31,8 @@ export const VACUUM_DP = {
   DO_NOT_DISTURB: 157,
   /** CleanStatistics (DP 167, Raw protobuf) — session and lifetime totals (see {@link decodeSessionCleanTime}). */
   CLEAN_STATS: 167,
+  /** UnisettingResponse (DP 176, Raw protobuf) — the device-wide setting toggles (see {@link decodeChildLock}). */
+  SETTINGS: 176,
   /** ErrorCode (DP 177 fault alert, Raw protobuf) — the robot's faults and warnings (see {@link decodeVacuumFault}). */
   FAULT_ALERT: 177,
 } as const;
@@ -584,6 +586,37 @@ export function decodeSessionCleanTime(raw: ParamValue | undefined, codec: RawDp
 }
 
 /**
+ * Field numbers inside `UnisettingResponse` (DP 176).
+ *
+ * The message carries fifteen toggles; only the child lock is read, because the property schema allows
+ * one property per data point. **Its REQUEST counterpart numbers the same settings differently** — only
+ * `children_lock` sits at 1 in both — so a reader and a writer of this DP can never share a table.
+ */
+const UNISETTING_FIELD = {
+  /** `children_lock` — field 1 of the RESPONSE. */
+  CHILDREN_LOCK: 1,
+  /** `value` within a `Switch`. */
+  VALUE: 1,
+} as const;
+
+/**
+ * Decode the child-lock switch out of a `UnisettingResponse` (DP 176).
+ *
+ * A present-but-empty `Switch` reads as `false`: proto3 omits a zero, so "off" and "said nothing about
+ * this toggle" are the same bytes once the wrapper is there. An absent wrapper is `undefined` — the
+ * device did not report the setting at all.
+ * @internal
+ */
+export function decodeChildLock(raw: ParamValue | undefined, codec: RawDpCodec | undefined): boolean | undefined {
+  if (typeof raw !== "string" || !codec) return undefined;
+  const lock = codec.decode(raw)?.find((f) => f.field === UNISETTING_FIELD.CHILDREN_LOCK);
+  if (lock?.kind !== "bytes") return undefined;
+  const value = codec.nested(lock.value)?.find((f) => f.field === UNISETTING_FIELD.VALUE);
+  if (value === undefined) return false;
+  return value.kind === "int" ? value.value !== 0n : undefined;
+}
+
+/**
  * Decode a `WorkStatus` (DP 153) Raw-DP value to a {@link VacuumActivity}. That DP carries a whole
  * protobuf message rather than a scalar, so the payload is read through the injected {@link RawDpCodec}:
  * the codec owns the structure, this owns which field number carries which meaning. `"unknown"` covers
@@ -918,9 +951,25 @@ export const VACUUM_CLEAN_MEMBERS = {
     description: "Mop pad attached (DP 129, Bool ro). X8 Pro Tuya clean line. Schema-confirmed.",
   },
   /**
-   * Do-not-disturb mode (DP 107, Bool rw). When `true` the robot suppresses voice announcements;
-   * the app allows toggling this from its settings screen. Tuya clean line only — no equivalent
-   * DP confirmed on AIoT. Schema-confirmed from `thing.m.device.ref.info.list` v5.4 (forbid_mode).
+   * Child lock — when on, the robot ignores its physical buttons.
+   *
+   * AIoT clean line only; no equivalent is confirmed on the Tuya schema, so there is no read alias.
+   */
+  childLock: {
+    param: VACUUM_DP.SETTINGS,
+    type: "bool",
+    kind: "boolean",
+    provenance: "mega",
+    decode: (raw, codec) => decodeChildLock(raw as ParamValue | undefined, codec),
+    decodedKind: "boolean",
+    description: "Child lock from UnisettingResponse.children_lock (DP 176 commonSettings, Raw protobuf).",
+    available: (ctx: AvailabilityContext) => ctx.paramIds?.has(VACUUM_DP.SETTINGS) ?? false,
+  },
+  /**
+   * Do-not-disturb — when on, the robot suppresses its voice announcements.
+   *
+   * Reports whether the feature is SWITCHED ON, not whether the quiet window happens to be open right
+   * now; `UndisturbedResponse` carries that as a separate `active` flag which this deliberately skips.
    */
   doNotDisturb: {
     param: VACUUM_DP.DO_NOT_DISTURB,
