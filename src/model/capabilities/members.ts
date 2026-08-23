@@ -110,8 +110,9 @@ export interface ValueMember {
    * that declares this lands OPTIONAL on the surface, because whether it exists is a runtime fact.
    *
    * Takes an {@link AvailabilityContext} (not a full CommandContext): the manifest applies the same
-   * gate at resolve time, before a live session exists, so it must read only device facts a record
-   * carries — never `channel`/`paramIds`.
+   * gate at resolve time, before a live session exists. May read any field the {@link CloudRecord}
+   * can supply — `codec`, `model`, `category`, `deviceType`, `capabilities`, `paramIds` — but never
+   * transport-only fields (`channel`).
    */
   available?: (ctx: AvailabilityContext) => boolean;
   /**
