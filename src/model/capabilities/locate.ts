@@ -1,4 +1,4 @@
-import { isAiotVacuum } from "../device-family.js";
+import { isAiotVacuum, isTuyaVacuum } from "../device-family.js";
 import { pickDpParams, aiotDp } from "./access.js";
 import { method, propertiesOf, type Members, type Surface } from "./members.js";
 import type { CapabilityModule } from "./types.js";
@@ -33,7 +33,7 @@ export const LOCATE_MEMBERS = {
     kind: "boolean",
     provenance: "mega",
     writtenElsewhere: true,
-    readAliases: [{ paramType: LEGACY_LOCATE_DP }],
+    readAliases: [{ paramType: LEGACY_LOCATE_DP, available: isTuyaVacuum }],
     description:
       "Find-robot trigger (DP 160 AIoT / DP 103 Tuya). A momentary write trigger — the device sends it to begin or " +
       "cancel a beep but holds no durable state, so this may never be observed true in practice.",

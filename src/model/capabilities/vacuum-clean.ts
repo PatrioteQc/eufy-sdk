@@ -371,7 +371,7 @@ export function decodeVacuumActivity(raw: ParamValue | undefined, codec: RawDpCo
  * mode-control verbs are AIoT-only: no Tuya clean-line write has been confirmed on a device, so none
  * is dispatched.
  *
- * X8 Pro read members (`lifetimeCleanTime`, `lifetimeCleanArea`, `waterTank`, `mopPad`)
+ * Tuya clean-line read members (`lifetimeCleanTime`, `lifetimeCleanArea`, `waterTank`, `mopPad`)
  * are populated only once the device has reported those DPs over MQTT or the initial Tuya DP poll.
  */
 export type VacuumCleanActions = Surface<typeof VACUUM_CLEAN_MEMBERS>;
@@ -379,19 +379,19 @@ export type VacuumCleanActions = Surface<typeof VACUUM_CLEAN_MEMBERS>;
 /**
  * Every `vacuum_clean` read plus the writes and mode-control verbs.
  *
- * `power` (DP 151) write is gated by `paramIds.has(151)` — present on AIoT T2xxx clean-line devices
- * that report DP 151; absent on the legacy Tuya clean line (no confirmed power DP). The three
- * mode-control verbs (`startCleaning`, `returnToDock`, `pauseCleaning`) are gated by the presence of
- * DP 2/101 (Tuya path) or DP 152 (AIoT path) in `paramIds` and dispatch different DP shapes per
- * platform: legacy Tuya dispatches DP 2 (bool, start=true/pause=false) / DP 101 (bool, return=true),
- * AIoT dispatches DP 152 (ModeCtrlRequest protobuf). Each
- * AIoT mode-control verb carries its own `seq` counter per bind (the T2351 accepts per-closure
+ * Every write here is AIoT-only, gated on `isAiotVacuum`: `power` (DP 151) and the three mode-control
+ * verbs (`startCleaning`, `returnToDock`, `pauseCleaning`, all DP 152 `ModeCtrlRequest`). DP 151 and
+ * DP 152 belong to the shared AIoT product schema rather than to a device's reported param set, so
+ * gating them on a reported DP would hide them on real hardware. No legacy Tuya clean-line write is
+ * dispatched at all — that direction has no live `publishDps` capture behind it.
+ *
+ * Each AIoT mode-control verb carries its own `seq` counter per bind (the T2351 accepts per-closure
  * counters — two separately-obtained action objects both starting at 112 do not cause the device to
  * complain, so the seq is not enforced as globally monotonic).
  *
- * DP-gated additions: `doNotDisturb` (DP 107, Bool rw, suppresses voice prompts), `rssi` (DP 134,
- * WiFi signal strength) — present only when the device has reported those DPs. The `locate` action
- * (DP 103 / DP 160) is owned by the `locate` capability module.
+ * DP-gated READS: `doNotDisturb` (DP 107, Bool ro) and `rssi` (DP 134, WiFi signal strength) are
+ * installed only when the device has reported those DPs. The `locate` action (DP 160) is owned by the
+ * `locate` capability module.
  *
  * Exported so a caller can name the table its `*Actions` type is derived from, but NOT published:
  * each entry states its wire id and the evidence it was confirmed on, which the reference site
