@@ -437,9 +437,7 @@ export const VACUUM_CLEAN_MEMBERS = {
     unit: "%",
     kind: "percent",
     provenance: "mega",
-    description: "Speaker volume 0-100 (DP 161, Value rw). AIoT clean line.",
-    write: (v) => aiotDp(VACUUM_DP.VOLUME, v as number),
-    writeAs: "setVolume",
+    description: "Speaker volume 0-100 (DP 161, Value ro). AIoT clean line.",
     available: (ctx: AvailabilityContext) => isAiotVacuum(ctx),
   },
   /**
@@ -468,9 +466,7 @@ export const VACUUM_CLEAN_MEMBERS = {
     type: "string",
     kind: "text",
     provenance: "mega",
-    description: "Device UI language locale code (DP 162, String rw). AIoT clean line.",
-    write: (v) => aiotDp(VACUUM_DP.LANGUAGE, v as string),
-    writeAs: "setLanguage",
+    description: "Device UI language locale code (DP 162, String ro). AIoT clean line.",
     available: (ctx: AvailabilityContext) => isAiotVacuum(ctx),
   },
   /**

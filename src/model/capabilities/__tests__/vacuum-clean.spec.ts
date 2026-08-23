@@ -255,14 +255,11 @@ const _errorCode: Exact<typeof vac.errorCode, number | undefined> = true;
 const _doNotDisturb: Exact<typeof vac.doNotDisturb, boolean | undefined> = true;
 const _rssi: Exact<typeof vac.rssi, number | undefined> = true;
 
-// language is AIoT-only: read is a string locale code; setLanguage is the optional setter.
+// language and volume are AIoT-only READS. Neither ships a setter: the write direction for both
+// rests on the product schema's `writable: true` alone, with no live publishDps capture, and an AIoT
+// dp write dispatches for real rather than being refused by a router guard.
 const _language: Exact<typeof vac.language, string | undefined> = true;
-const _setLanguageOptional: Exact<undefined extends typeof vac.setLanguage ? true : false, true> = true;
-const _setLanguageArg: Exact<Parameters<NonNullable<typeof vac.setLanguage>>[0], string> = true;
-
-// volume is AIoT-only write: setVolume takes a number; absent on Tuya.
-const _setVolumeOptional: Exact<undefined extends typeof vac.setVolume ? true : false, true> = true;
-const _setVolumeArg: Exact<Parameters<NonNullable<typeof vac.setVolume>>[0], number> = true;
+const _volume: Exact<typeof vac.volume, number | undefined> = true;
 
 export const _surfaceAssertions = [
   _power,
@@ -278,10 +275,7 @@ export const _surfaceAssertions = [
   _doNotDisturb,
   _rssi,
   _language,
-  _setLanguageOptional,
-  _setLanguageArg,
-  _setVolumeOptional,
-  _setVolumeArg,
+  _volume,
 ];
 
 describe("vacuum_clean — DP-based action routing", () => {
@@ -358,29 +352,23 @@ describe("vacuum_clean — DP-based action routing", () => {
     expect(acts.doNotDisturb).toBeUndefined();
   });
 
-  it("setLanguage is present on AIoT vacuums and dispatches DP 162", async () => {
-    const { acts, sent } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, "eufy_home"));
-    expect(acts.setLanguage).toBeDefined();
-    await acts.setLanguage!("en");
-    expect(sent).toHaveLength(1);
-    expect(sent[0]).toMatchObject({ kind: "aiot-dp", dp: VACUUM_DP.LANGUAGE, value: "en" });
+  it("language and volume are reads only — no setter is installed on any device", () => {
+    // The write direction for DP 161 and DP 162 rests on the product schema's `writable: true` and
+    // no live publishDps capture. Unlike a Tuya dp write, an AIoT one is not refused by a router
+    // guard — it reaches the device — so the setter stays off the surface until a capture exists.
+    for (const category of ["eufy_home", "eufy_home_tuya", undefined]) {
+      const { acts } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, category));
+      expect((acts as Record<string, unknown>).setLanguage).toBeUndefined();
+      expect((acts as Record<string, unknown>).setVolume).toBeUndefined();
+    }
   });
 
-  it("setLanguage is absent on Tuya vacuums — no confirmed language DP in Tuya schema", () => {
-    const { acts } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, "eufy_home_tuya"));
-    expect(acts.setLanguage).toBeUndefined();
-  });
-
-  it("setVolume is present on AIoT vacuums and dispatches DP 161", async () => {
-    const { acts, sent } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, "eufy_home"));
-    expect(acts.setVolume).toBeDefined();
-    await acts.setVolume!(50);
-    expect(sent).toHaveLength(1);
-    expect(sent[0]).toMatchObject({ kind: "aiot-dp", dp: VACUUM_DP.VOLUME, value: 50 });
-  });
-
-  it("setVolume is absent on Tuya vacuums — no confirmed volume write DP in Tuya schema", () => {
-    const { acts } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, "eufy_home_tuya"));
-    expect(acts.setVolume).toBeUndefined();
+  it("language and volume still read on an AIoT vacuum", () => {
+    const reported = new Set([VACUUM_DP.LANGUAGE, VACUUM_DP.VOLUME]);
+    const { acts } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, "eufy_home", reported), {
+      read: (name) => (name === "language" ? { value: "en" } : name === "volume" ? { value: 38 } : undefined),
+    });
+    expect(acts.language).toBe("en");
+    expect(acts.volume).toBe(38);
   });
 });
