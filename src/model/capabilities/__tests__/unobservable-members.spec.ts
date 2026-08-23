@@ -37,6 +37,11 @@ const writeOnlyMember = {
   write: () => ({ kind: "set-param" as const, param: 1, value: 1, channel: 0 }),
 };
 
+/**
+ * A member the device DOES report. `1035` is the camera-switch read id, used so the fixture matches a real
+ * read rather than because anything here depends on the number — a member's param ids live in its own
+ * capability table, and no id enum is shared with a transport.
+ */
 const readableMember = {
   param: 1035,
   type: "bool" as const,
