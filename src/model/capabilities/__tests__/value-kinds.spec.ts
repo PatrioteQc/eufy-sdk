@@ -27,6 +27,7 @@ const UNIT_FOR_KIND: Record<string, string> = {
   celsius: "°C",
   dbm: "dBm",
   seconds: "s",
+  hours: "h",
   megabytes: "MB",
   degrees: "°",
 };
@@ -37,6 +38,7 @@ const NUMERIC_KINDS = new Set<ValueKind>([
   "celsius",
   "dbm",
   "seconds",
+  "hours",
   "megabytes",
   "degrees",
   "scalar",
@@ -63,12 +65,20 @@ const reads: { label: string; mod: CapabilityModule; read: Read; spec?: Property
   Object.entries(mod.members ?? {})
     .flatMap(([name, m]) => ("type" in m ? [[name, m] as const] : []))
     .filter(([, m]) => !m.writeOnly && !m.unexposed)
-    .map(([name, m]: readonly [string, ValueMember]) => ({
-      label: `${mod.capability}.${name}`,
-      mod,
-      read: { kind: m.decodedKind, values: m.decodedValues, decode: m.decode },
-      spec: mod.properties.find((p) => p.name === (m.property ?? name)),
-    })),
+    .map(([name, m]: readonly [string, ValueMember]) => {
+      // A `readsFrom` member publishes no spec of its own — it decodes a field of the OWNER's stored
+      // payload, so the owner's spec is the stored property these rules are about. Resolved the same
+      // way `bindMembers` resolves it, so the rules keep checking a real property rather than skipping
+      // the derived reads entirely.
+      const owner = (m.readsFrom === undefined ? undefined : (mod.members?.[m.readsFrom] as ValueMember)) ?? m;
+      const ownerName = owner === m ? name : m.readsFrom!;
+      return {
+        label: `${mod.capability}.${name}`,
+        mod,
+        read: { kind: m.decodedKind, values: m.decodedValues, decode: m.decode },
+        spec: mod.properties.find((p) => p.name === (owner.property ?? ownerName)),
+      };
+    }),
 );
 
 describe("value kinds — the published vocabulary", () => {

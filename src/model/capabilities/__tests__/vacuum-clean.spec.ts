@@ -7,7 +7,8 @@ import {
   TUYA_VACUUM_DP,
   decodeVacuumActivity,
   decodeCleanType,
-  decodeChildLock,
+  decodeUnisetting,
+  decodeConsumableHours,
   decodeDoNotDisturb,
   decodeDoNotDisturbActive,
   decodeSessionCleanTime,
@@ -107,6 +108,7 @@ describe("vacuum_clean capability module", () => {
       "waterTank",
       "mopPad",
       "childLock",
+      "sideBrushHours",
       "doNotDisturb",
       "rssi",
     ]);
@@ -410,23 +412,69 @@ describe("decodeVacuumFault (ErrorCode → fault code)", () => {
  * containers deep, and both rely on proto3 omitting zero values — so an empty container is a real
  * answer (off / no elapsed time), while an absent one is the device not answering.
  */
-describe("decodeChildLock (UnisettingResponse.children_lock)", () => {
-  it("reads the switch through its wrapper", () => {
-    expect(decodeChildLock(frame(sub(1, int(1, 1))), byteCodec)).toBe(true);
+describe("decodeUnisetting (UnisettingResponse toggles)", () => {
+  const CHILD_LOCK = 1;
+  const MULTI_MAP = 3;
+  const SMART_FOLLOW = 13;
+
+  it("reads a switch through its wrapper", () => {
+    expect(decodeUnisetting(frame(sub(CHILD_LOCK, int(1, 1))), byteCodec, CHILD_LOCK)).toBe(true);
   });
 
   it("reads an omitted zero as off", () => {
-    expect(decodeChildLock(frame(sub(1, [])), byteCodec)).toBe(false);
+    expect(decodeUnisetting(frame(sub(CHILD_LOCK, [])), byteCodec, CHILD_LOCK)).toBe(false);
   });
 
-  it("ignores the other toggles in the same message", () => {
-    expect(decodeChildLock(frame([...sub(1, int(1, 1)), ...sub(3, int(1, 1)), ...sub(9, [])]), byteCodec)).toBe(true);
+  it("reads each toggle out of one message without disturbing the others", () => {
+    // The whole point of one message carrying fifteen settings: every member reads its own field of
+    // the same payload, and a field it does not name must not leak into its answer.
+    const payload = frame([...sub(CHILD_LOCK, int(1, 1)), ...sub(MULTI_MAP, []), ...sub(SMART_FOLLOW, int(1, 1))]);
+    expect(decodeUnisetting(payload, byteCodec, CHILD_LOCK)).toBe(true);
+    expect(decodeUnisetting(payload, byteCodec, MULTI_MAP)).toBe(false);
+    expect(decodeUnisetting(payload, byteCodec, SMART_FOLLOW)).toBe(true);
+    // Field 9 is absent from this payload — not reported, which is not the same as off.
+    expect(decodeUnisetting(payload, byteCodec, 9)).toBeUndefined();
   });
 
   it("is undefined when the setting is not reported at all", () => {
-    expect(decodeChildLock(frame(sub(3, int(1, 1))), byteCodec)).toBeUndefined();
-    expect(decodeChildLock(frame(sub(1, int(1, 1))), undefined)).toBeUndefined();
-    expect(decodeChildLock(undefined, byteCodec)).toBeUndefined();
+    expect(decodeUnisetting(frame(sub(MULTI_MAP, int(1, 1))), byteCodec, CHILD_LOCK)).toBeUndefined();
+    expect(decodeUnisetting(frame(sub(CHILD_LOCK, int(1, 1))), undefined, CHILD_LOCK)).toBeUndefined();
+    expect(decodeUnisetting(undefined, byteCodec, CHILD_LOCK)).toBeUndefined();
+  });
+});
+
+describe("decodeConsumableHours (ConsumableRuntime parts)", () => {
+  const SIDE_BRUSH = 1;
+  const MOP = 6;
+  const DIRTY_WATERTANK = 10;
+
+  it("reads a part's hours through its Duration wrapper", () => {
+    expect(decodeConsumableHours(frame(sub(SIDE_BRUSH, int(1, 42))), byteCodec, SIDE_BRUSH)).toBe(42);
+  });
+
+  it("reads a fitted-but-unused part as 0, not as missing", () => {
+    expect(decodeConsumableHours(frame(sub(MOP, [])), byteCodec, MOP)).toBe(0);
+  });
+
+  it("reads each part out of one message, and respects the gap at 8 and 9", () => {
+    // The vendor leaves 8 and 9 unused; the waste-water tank really is at 10. Renumbering around the
+    // hole would report the water filter's hours as the tank's.
+    const payload = frame([
+      ...sub(SIDE_BRUSH, int(1, 10)),
+      ...sub(MOP, int(1, 20)),
+      ...sub(DIRTY_WATERTANK, int(1, 30)),
+    ]);
+    expect(decodeConsumableHours(payload, byteCodec, SIDE_BRUSH)).toBe(10);
+    expect(decodeConsumableHours(payload, byteCodec, MOP)).toBe(20);
+    expect(decodeConsumableHours(payload, byteCodec, DIRTY_WATERTANK)).toBe(30);
+    expect(decodeConsumableHours(payload, byteCodec, 8)).toBeUndefined();
+    expect(decodeConsumableHours(payload, byteCodec, 9)).toBeUndefined();
+  });
+
+  it("is undefined for a part this robot does not track", () => {
+    expect(decodeConsumableHours(frame(sub(SIDE_BRUSH, int(1, 5))), byteCodec, MOP)).toBeUndefined();
+    expect(decodeConsumableHours(frame(sub(SIDE_BRUSH, int(1, 5))), undefined, SIDE_BRUSH)).toBeUndefined();
+    expect(decodeConsumableHours(undefined, byteCodec, SIDE_BRUSH)).toBeUndefined();
   });
 });
 
@@ -498,6 +546,61 @@ describe("decodeDoNotDisturbActive (Undisturbed.active → doNotDisturbActive)",
     expect(decodeDoNotDisturbActive(frame([]), byteCodec)).toBeUndefined();
     expect(decodeDoNotDisturbActive(window(int(1, 1)), undefined)).toBeUndefined();
     expect(decodeDoNotDisturbActive(undefined, byteCodec)).toBeUndefined();
+  });
+});
+
+describe("one payload, many reads — DP 176 settings and DP 168 consumables", () => {
+  const settings = frame([...sub(1, int(1, 1)), ...sub(3, []), ...sub(13, int(1, 1))]);
+  const consumables = frame([...sub(1, int(1, 120)), ...sub(6, []), ...sub(10, int(1, 30))]);
+  const dps = new Set([VACUUM_DP.SETTINGS, VACUUM_DP.CONSUMABLES]);
+
+  const bound = () =>
+    bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, undefined, dps), {
+      rawDp: byteCodec,
+      read: (name) =>
+        name === "childLock" ? { value: settings } : name === "sideBrushHours" ? { value: consumables } : undefined,
+    });
+
+  it("gives every settings toggle its own answer off the one DP 176 report", () => {
+    const acts = bound().acts;
+    expect(acts.childLock).toBe(true);
+    expect(acts.multiMap).toBe(false);
+    expect(acts.smartFollow).toBe(true);
+    // Reported by neither the fixture nor the device — absent, which is not "off".
+    expect(acts.livePhoto).toBeUndefined();
+  });
+
+  it("gives every consumable counter its own answer off the one DP 168 report", () => {
+    const acts = bound().acts;
+    expect(acts.sideBrushHours).toBe(120);
+    expect(acts.mopHours).toBe(0);
+    expect(acts.dirtyWaterTankHours).toBe(30);
+    expect(acts.dustBagHours).toBeUndefined();
+  });
+
+  it("publishes exactly one property per DP, however many members read it", () => {
+    // Eighteen getters over two data points. The schema still describes two reports, because that is
+    // what the device sends — the extra readings are derived, not extra wire claims.
+    const named = (dp: number) => VACUUM_CLEAN.properties.filter((p) => p.paramType === dp).map((p) => p.name);
+    expect(named(VACUUM_DP.SETTINGS)).toEqual(["childLock"]);
+    expect(named(VACUUM_DP.CONSUMABLES)).toEqual(["sideBrushHours"]);
+  });
+
+  it("installs none of them on a device that never reported the DP", () => {
+    const { acts } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, undefined, new Set()), {
+      rawDp: byteCodec,
+    });
+    expect(acts.childLock).toBeUndefined();
+    expect(acts.smartFollow).toBeUndefined();
+    expect(acts.sideBrushHours).toBeUndefined();
+    expect(acts.mopHours).toBeUndefined();
+  });
+
+  it("grows no setters — every one of these is a read", () => {
+    const acts = bound().acts as Record<string, unknown>;
+    for (const name of ["setChildLock", "setMultiMap", "setSmartFollow", "setSideBrushHours", "setMopHours"]) {
+      expect(acts[name]).toBeUndefined();
+    }
   });
 });
 

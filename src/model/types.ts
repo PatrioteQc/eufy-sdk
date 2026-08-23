@@ -82,9 +82,11 @@ export type PropertyValueType = "bool" | "number" | "string" | "enum";
  * one as the other is wrong in a way no type check catches.
  *
  *  - `boolean` — an on/off state (always paired with `type: "bool"`).
- *  - `percent` / `celsius` / `dbm` / `seconds` / `megabytes` / `degrees` — a measured quantity in the
- *    unit the device reports it in; each pairs with the matching `unit`. Values are
- *    never converted on the way out — a converted reading is an invented one.
+ *  - `percent` / `celsius` / `dbm` / `seconds` / `hours` / `megabytes` / `degrees` — a measured quantity
+ *    in the unit the device reports it in; each pairs with the matching `unit`. Values are
+ *    never converted on the way out — a converted reading is an invented one. `seconds` and `hours`
+ *    are separate kinds for exactly that reason: a robot reports a run in seconds and a consumable's
+ *    wear in hours, and normalising one into the other would publish a number the device never sent.
  *  - `scalar` — a plain number in no unit at all: a step on a ladder, a mode index, a raw level, a
  *    segment count. Ordered and comparable, but its range and direction are the device's, so nothing
  *    but the device says what a given value means.
@@ -117,6 +119,7 @@ export const KNOWN_VALUE_KINDS = [
   "celsius",
   "dbm",
   "seconds",
+  "hours",
   "megabytes",
   "degrees",
   "scalar",

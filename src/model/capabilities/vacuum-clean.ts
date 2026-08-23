@@ -31,7 +31,9 @@ export const VACUUM_DP = {
   DO_NOT_DISTURB: 157,
   /** CleanStatistics (DP 167, Raw protobuf) — session and lifetime totals (see {@link decodeSessionCleanTime}). */
   CLEAN_STATS: 167,
-  /** UnisettingResponse (DP 176, Raw protobuf) — the device-wide setting toggles (see {@link decodeChildLock}). */
+  /** ConsumableRuntime (DP 168, Raw protobuf) — hours used per replaceable part (see {@link decodeConsumableHours}). */
+  CONSUMABLES: 168,
+  /** UnisettingResponse (DP 176, Raw protobuf) — the device-wide setting toggles (see {@link decodeUnisetting}). */
   SETTINGS: 176,
   /** ErrorCode (DP 177 fault alert, Raw protobuf) — the robot's faults and warnings (see {@link decodeVacuumFault}). */
   FAULT_ALERT: 177,
@@ -630,27 +632,103 @@ export function decodeSessionCleanTime(raw: ParamValue | undefined, codec: RawDp
  * `children_lock` sits at 1 in both — so a reader and a writer of this DP can never share a table.
  */
 const UNISETTING_FIELD = {
-  /** `children_lock` — field 1 of the RESPONSE. */
+  /** `children_lock` — the one field that shares a number with the request. */
   CHILDREN_LOCK: 1,
+  /** `cruise_continue_sw` — resume a cruise after charging. */
+  CRUISE_CONTINUE: 2,
+  /** `multi_map_sw` — keep more than one saved map. */
+  MULTI_MAP: 3,
+  /** `ai_see` — the obstacle camera. */
+  AI_SEE: 4,
+  /** `water_level_sw` — request 5, response 5 differ in the REQUEST; this is the response number. */
+  WATER_LEVEL: 5,
+  /** `suggest_restricted` — offer restricted-area suggestions. */
+  SUGGEST_RESTRICTED: 6,
+  /** `deep_mop_corner_sw` — extra corner passes while mopping. */
+  DEEP_MOP_CORNER: 7,
+  /** `dust_full_remind` — warn when the dust bag is full. */
+  DUST_FULL_REMIND: 8,
+  /** `live_photo_sw` — capture stills while cleaning. */
+  LIVE_PHOTO: 9,
+  /** `smart_follow_sw` — the response numbers this 13, the request 12. */
+  SMART_FOLLOW: 13,
   /** `value` within a `Switch`. */
   VALUE: 1,
 } as const;
 
 /**
- * Decode the child-lock switch out of a `UnisettingResponse` (DP 176).
+ * Decode one `Switch`-wrapped toggle out of a `UnisettingResponse` (DP 176).
+ *
+ * Every toggle in this message is the same two-level shape — a single-field `Switch` wrapper whose
+ * `value` is the bool — so one reader serves all of them and each member only names its field number.
+ *
+ * **Response numbers only.** The REQUEST counterpart numbers the same settings differently and only
+ * `children_lock` sits at 1 in both, so {@link UNISETTING_FIELD} is a read-side table and a writer of
+ * this DP must never borrow it. That is the trap this whole message carries; see the constant's doc.
  *
  * A present-but-empty `Switch` reads as `false`: proto3 omits a zero, so "off" and "said nothing about
  * this toggle" are the same bytes once the wrapper is there. An absent wrapper is `undefined` — the
  * device did not report the setting at all.
  * @internal
  */
-export function decodeChildLock(raw: ParamValue | undefined, codec: RawDpCodec | undefined): boolean | undefined {
+export function decodeUnisetting(
+  raw: ParamValue | undefined,
+  codec: RawDpCodec | undefined,
+  field: number,
+): boolean | undefined {
   if (typeof raw !== "string" || !codec) return undefined;
-  const lock = codec.decode(raw)?.find((f) => f.field === UNISETTING_FIELD.CHILDREN_LOCK);
-  if (lock?.kind !== "bytes") return undefined;
-  const value = codec.nested(lock.value)?.find((f) => f.field === UNISETTING_FIELD.VALUE);
+  const toggle = codec.decode(raw)?.find((f) => f.field === field);
+  if (toggle?.kind !== "bytes") return undefined;
+  const value = codec.nested(toggle.value)?.find((f) => f.field === UNISETTING_FIELD.VALUE);
   if (value === undefined) return false;
   return value.kind === "int" ? value.value !== 0n : undefined;
+}
+
+/**
+ * Field numbers inside `ConsumableRuntime` (DP 168) — one per replaceable part.
+ *
+ * **8 and 9 are deliberately unused by the vendor.** Do not renumber around the gap: the parts after it
+ * really do sit at 10 and 11, and closing the hole would silently read the wrong counter.
+ *
+ * Each part is a `Duration { uint32 duration = 1 }` carrying HOURS USED, counting up. The vendor does
+ * not send a percentage remaining and this does not invent one — a life expectancy per part is a
+ * calibration, not something the device reports, so a host that wants a percentage owns that choice.
+ */
+const CONSUMABLE_FIELD = {
+  SIDE_BRUSH: 1,
+  ROLLING_BRUSH: 2,
+  FILTER_MESH: 3,
+  SCRAPE: 4,
+  SENSOR: 5,
+  MOP: 6,
+  DUSTBAG: 7,
+  DIRTY_WATERTANK: 10,
+  DIRTY_WATERFILTER: 11,
+  /** `duration` within a `Duration`, in hours. */
+  DURATION: 1,
+} as const;
+
+/**
+ * Decode one part's hours-used out of a `ConsumableRuntime` (DP 168).
+ *
+ * Same two-level shape for every part, so one reader serves all nine and each member names its field.
+ *
+ * A present-but-empty `Duration` reads as `0`, not as missing: a part fitted and never run has no hours
+ * on it, and proto3 omits the zero. An absent `Duration` is `undefined` — this robot does not track
+ * that part, which is a real answer for a model that does not have one.
+ * @internal
+ */
+export function decodeConsumableHours(
+  raw: ParamValue | undefined,
+  codec: RawDpCodec | undefined,
+  field: number,
+): number | undefined {
+  if (typeof raw !== "string" || !codec) return undefined;
+  const part = codec.decode(raw)?.find((f) => f.field === field);
+  if (part?.kind !== "bytes") return undefined;
+  const duration = codec.nested(part.value)?.find((f) => f.field === CONSUMABLE_FIELD.DURATION);
+  if (duration === undefined) return 0;
+  return duration.kind === "int" ? Number(duration.value) : undefined;
 }
 
 /**
@@ -997,10 +1075,239 @@ export const VACUUM_CLEAN_MEMBERS = {
     type: "bool",
     kind: "boolean",
     provenance: "mega",
-    decode: (raw, codec) => decodeChildLock(raw as ParamValue | undefined, codec),
+    decode: (raw, codec) => decodeUnisetting(raw as ParamValue | undefined, codec, UNISETTING_FIELD.CHILDREN_LOCK),
     decodedKind: "boolean",
     description: "Child lock from UnisettingResponse.children_lock (DP 176 commonSettings, Raw protobuf).",
     available: (ctx: AvailabilityContext) => ctx.paramIds?.has(VACUUM_DP.SETTINGS) ?? false,
+  },
+  /**
+   * Whether a cruise resumes by itself after the robot has charged, rather than ending at the dock.
+   */
+  cruiseContinue: {
+    readsFrom: "childLock",
+    type: "bool",
+    kind: "boolean",
+    provenance: "mega",
+    decode: (raw, codec) => decodeUnisetting(raw as ParamValue | undefined, codec, UNISETTING_FIELD.CRUISE_CONTINUE),
+    decodedKind: "boolean",
+    description: "Resume a cruise after charging — UnisettingResponse.cruise_continue_sw (DP 176, Raw protobuf).",
+  },
+  /**
+   * Whether the robot keeps more than one saved map — a house with more than one floor needs this on.
+   */
+  multiMap: {
+    readsFrom: "childLock",
+    type: "bool",
+    kind: "boolean",
+    provenance: "mega",
+    decode: (raw, codec) => decodeUnisetting(raw as ParamValue | undefined, codec, UNISETTING_FIELD.MULTI_MAP),
+    decodedKind: "boolean",
+    description: "Multi-map storage — UnisettingResponse.multi_map_sw (DP 176, Raw protobuf).",
+  },
+  /**
+   * The obstacle-recognition camera. Off means the robot navigates without it, not that it is broken.
+   */
+  aiSee: {
+    readsFrom: "childLock",
+    type: "bool",
+    kind: "boolean",
+    provenance: "mega",
+    decode: (raw, codec) => decodeUnisetting(raw as ParamValue | undefined, codec, UNISETTING_FIELD.AI_SEE),
+    decodedKind: "boolean",
+    description: "Obstacle-recognition camera — UnisettingResponse.ai_see (DP 176, Raw protobuf).",
+  },
+  /**
+   * The vendor's `water_level_sw`. Named after the wire rather than given a friendlier name: what it\n   * switches is not stated anywhere this SDK can point at, and a guessed name would be a claim.
+   */
+  waterLevelSwitch: {
+    readsFrom: "childLock",
+    type: "bool",
+    kind: "boolean",
+    provenance: "mega",
+    decode: (raw, codec) => decodeUnisetting(raw as ParamValue | undefined, codec, UNISETTING_FIELD.WATER_LEVEL),
+    decodedKind: "boolean",
+    description:
+      "UnisettingResponse.water_level_sw (DP 176, Raw protobuf). Vendor name kept — its meaning is unconfirmed.",
+  },
+  /**
+   * Whether the robot offers restricted-area suggestions after a run — the prompts that ask to fence\n   * off a spot it got stuck in.
+   */
+  suggestRestricted: {
+    readsFrom: "childLock",
+    type: "bool",
+    kind: "boolean",
+    provenance: "mega",
+    decode: (raw, codec) => decodeUnisetting(raw as ParamValue | undefined, codec, UNISETTING_FIELD.SUGGEST_RESTRICTED),
+    decodedKind: "boolean",
+    description: "Restricted-area suggestions — UnisettingResponse.suggest_restricted (DP 176, Raw protobuf).",
+  },
+  /**
+   * Extra corner passes while mopping. Slower runs, cleaner corners.
+   */
+  deepMopCorner: {
+    readsFrom: "childLock",
+    type: "bool",
+    kind: "boolean",
+    provenance: "mega",
+    decode: (raw, codec) => decodeUnisetting(raw as ParamValue | undefined, codec, UNISETTING_FIELD.DEEP_MOP_CORNER),
+    decodedKind: "boolean",
+    description: "Deep corner mopping — UnisettingResponse.deep_mop_corner_sw (DP 176, Raw protobuf).",
+  },
+  /**
+   * Whether the robot warns when its dust bag is full.
+   */
+  dustFullRemind: {
+    readsFrom: "childLock",
+    type: "bool",
+    kind: "boolean",
+    provenance: "mega",
+    decode: (raw, codec) => decodeUnisetting(raw as ParamValue | undefined, codec, UNISETTING_FIELD.DUST_FULL_REMIND),
+    decodedKind: "boolean",
+    description: "Dust-bag-full reminder — UnisettingResponse.dust_full_remind (DP 176, Raw protobuf).",
+  },
+  /**
+   * Whether the robot captures stills while cleaning.
+   */
+  livePhoto: {
+    readsFrom: "childLock",
+    type: "bool",
+    kind: "boolean",
+    provenance: "mega",
+    decode: (raw, codec) => decodeUnisetting(raw as ParamValue | undefined, codec, UNISETTING_FIELD.LIVE_PHOTO),
+    decodedKind: "boolean",
+    description: "Capture stills while cleaning — UnisettingResponse.live_photo_sw (DP 176, Raw protobuf).",
+  },
+  /**
+   * Smart-follow mode. Numbered 13 in the response and 12 in the request — the widest gap in a message\n   * whose two directions disagree about almost every field.
+   */
+  smartFollow: {
+    readsFrom: "childLock",
+    type: "bool",
+    kind: "boolean",
+    provenance: "mega",
+    decode: (raw, codec) => decodeUnisetting(raw as ParamValue | undefined, codec, UNISETTING_FIELD.SMART_FOLLOW),
+    decodedKind: "boolean",
+    description: "Smart-follow mode — UnisettingResponse.smart_follow_sw (DP 176, Raw protobuf).",
+  },
+  /**
+   * Hours run on the current side brush.\n   *\n   * The owner of DP 168 — the other eight counters read their own field out of this same payload, which\n   * is why they declare `readsFrom` rather than a wire of their own. Hours USED, counting up: the\n   * vendor sends no life expectancy, so a percentage remaining is the host's calibration to make, not\n   * a number this SDK can invent.
+   */
+  sideBrushHours: {
+    param: VACUUM_DP.CONSUMABLES,
+    type: "number",
+    unit: "h",
+    kind: "hours",
+    provenance: "mega",
+    decode: (raw, codec) => decodeConsumableHours(raw as ParamValue | undefined, codec, CONSUMABLE_FIELD.SIDE_BRUSH),
+    decodedKind: "hours",
+    description: "Side-brush hours used — ConsumableRuntime.side_brush (DP 168 consumables, Raw protobuf).",
+    available: (ctx: AvailabilityContext) => ctx.paramIds?.has(VACUUM_DP.CONSUMABLES) ?? false,
+  },
+  /**
+   * Hours run on the current rolling brush.
+   */
+  rollingBrushHours: {
+    readsFrom: "sideBrushHours",
+    type: "number",
+    unit: "h",
+    kind: "hours",
+    provenance: "mega",
+    decode: (raw, codec) => decodeConsumableHours(raw as ParamValue | undefined, codec, CONSUMABLE_FIELD.ROLLING_BRUSH),
+    decodedKind: "hours",
+    description: "Rolling-brush hours used — ConsumableRuntime.rolling_brush (DP 168, Raw protobuf).",
+  },
+  /**
+   * Hours run on the current filter mesh.
+   */
+  filterHours: {
+    readsFrom: "sideBrushHours",
+    type: "number",
+    unit: "h",
+    kind: "hours",
+    provenance: "mega",
+    decode: (raw, codec) => decodeConsumableHours(raw as ParamValue | undefined, codec, CONSUMABLE_FIELD.FILTER_MESH),
+    decodedKind: "hours",
+    description: "Filter-mesh hours used — ConsumableRuntime.filter_mesh (DP 168, Raw protobuf).",
+  },
+  /**
+   * Hours run on the current scraper.
+   */
+  scraperHours: {
+    readsFrom: "sideBrushHours",
+    type: "number",
+    unit: "h",
+    kind: "hours",
+    provenance: "mega",
+    decode: (raw, codec) => decodeConsumableHours(raw as ParamValue | undefined, codec, CONSUMABLE_FIELD.SCRAPE),
+    decodedKind: "hours",
+    description: "Scraper hours used — ConsumableRuntime.scrape (DP 168, Raw protobuf).",
+  },
+  /**
+   * Hours since the sensors were last cleaned.
+   */
+  sensorHours: {
+    readsFrom: "sideBrushHours",
+    type: "number",
+    unit: "h",
+    kind: "hours",
+    provenance: "mega",
+    decode: (raw, codec) => decodeConsumableHours(raw as ParamValue | undefined, codec, CONSUMABLE_FIELD.SENSOR),
+    decodedKind: "hours",
+    description: "Hours since the sensors were cleaned — ConsumableRuntime.sensor (DP 168, Raw protobuf).",
+  },
+  /**
+   * Hours run on the current mop pad.
+   */
+  mopHours: {
+    readsFrom: "sideBrushHours",
+    type: "number",
+    unit: "h",
+    kind: "hours",
+    provenance: "mega",
+    decode: (raw, codec) => decodeConsumableHours(raw as ParamValue | undefined, codec, CONSUMABLE_FIELD.MOP),
+    decodedKind: "hours",
+    description: "Mop-pad hours used — ConsumableRuntime.mop (DP 168, Raw protobuf).",
+  },
+  /**
+   * Hours since the dust bag was last changed.
+   */
+  dustBagHours: {
+    readsFrom: "sideBrushHours",
+    type: "number",
+    unit: "h",
+    kind: "hours",
+    provenance: "mega",
+    decode: (raw, codec) => decodeConsumableHours(raw as ParamValue | undefined, codec, CONSUMABLE_FIELD.DUSTBAG),
+    decodedKind: "hours",
+    description: "Dust-bag hours used — ConsumableRuntime.dustbag (DP 168, Raw protobuf).",
+  },
+  /**
+   * Hours since the waste-water tank was last emptied. Field 10, not 8 — the vendor leaves 8 and 9\n   * unused and closing that gap would read the wrong counter.
+   */
+  dirtyWaterTankHours: {
+    readsFrom: "sideBrushHours",
+    type: "number",
+    unit: "h",
+    kind: "hours",
+    provenance: "mega",
+    decode: (raw, codec) =>
+      decodeConsumableHours(raw as ParamValue | undefined, codec, CONSUMABLE_FIELD.DIRTY_WATERTANK),
+    decodedKind: "hours",
+    description: "Waste-water-tank hours — ConsumableRuntime.dirty_watertank (DP 168, Raw protobuf).",
+  },
+  /**
+   * Hours run on the waste-water filter.
+   */
+  dirtyWaterFilterHours: {
+    readsFrom: "sideBrushHours",
+    type: "number",
+    unit: "h",
+    kind: "hours",
+    provenance: "mega",
+    decode: (raw, codec) =>
+      decodeConsumableHours(raw as ParamValue | undefined, codec, CONSUMABLE_FIELD.DIRTY_WATERFILTER),
+    decodedKind: "hours",
+    description: "Waste-water-filter hours — ConsumableRuntime.dirty_waterfilter (DP 168, Raw protobuf).",
   },
   /**
    * Do-not-disturb — when on, the robot suppresses its voice announcements.
