@@ -115,6 +115,16 @@ const eufy = new EufyMega({
 Diagnostics are separate from **operational errors** — always also handle the `error` event
 (`eufy.on("error", …)`), which fires regardless of the logger.
 
+A **kicked/expired session** (another client logged into the account, or the token lapsed) is a
+separate signal: it fires the dedicated `sessionExpired` event rather than `error`. The SDK has already
+cleared the session, so handle it by re-driving `login()`:
+
+```ts
+eufy.on("sessionExpired", () => {
+  // re-authenticate — a fresh login usually needs a 2FA code
+});
+```
+
 ## Full example
 
 The minimal end-to-end — log in and print each device with its resolved capabilities:

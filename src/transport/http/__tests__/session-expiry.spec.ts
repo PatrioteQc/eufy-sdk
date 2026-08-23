@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { MegaHttpClient, SessionExpiredError } from "../mega-client.js";
+import { MegaHttpClient, SessionExpiredError, EufyCloudErrorCode } from "../mega-client.js";
 
 describe("mega authenticated session rejection", () => {
   it("classifies vendor code 26084 as an expired session without message parsing", async () => {
@@ -13,7 +13,7 @@ describe("mega authenticated session rejection", () => {
     internals.ensureSessionKey = vi.fn(async () => ({ shareKey: "00".repeat(32), keyIdent: "00".repeat(16) }));
     internals.httpPost = vi.fn(async () => ({
       status: 401,
-      data: { code: 26084, msg: "synthetic wording that carries no token keywords" },
+      data: { code: EufyCloudErrorCode.SESSION_KICKED, msg: "synthetic wording that carries no token keywords" },
     }));
     const clearSession = vi.spyOn(internals, "clearSession");
 

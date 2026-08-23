@@ -39,6 +39,16 @@ stream?.on("error", (err) => console.error("stream", err));
 stream?.on("stop", () => console.log("source ended — re-attach to rebuild"));
 ```
 
+**Auth loss is a separate signal.** A kicked/expired cloud session (another client logged into the
+account, or the token lapsed) does **not** come through `error` — it fires `sessionExpired`. The SDK
+has already cleared the session, so handle it by re-driving `login()` (usually a fresh 2FA):
+
+```ts
+eufy.on("sessionExpired", async () => {
+  await eufy.login(); // then submit the 2FA code
+});
+```
+
 ## 3. Common symptoms
 
 | Symptom / error                                                                   | Likely cause                                                                                                                                                                                                                         | What to do                                                                                                                                                                                                |

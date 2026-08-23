@@ -77,6 +77,10 @@ carries each event, and how P2P opens on demand, is covered in [Realtime transpo
 Low-level escape hatches remain (`message`, `p2p`, `pushRaw`, connect/disconnect lifecycle, `error`)
 for when you want the raw frame.
 
+A kicked or expired cloud session — another client logged into the account, or the token lapsed —
+surfaces as its own **`sessionExpired`** event, not on `error`. The SDK has already cleared the
+persisted session by the time it fires; listen for it to re-drive `login()` (usually a fresh 2FA).
+
 Detection kinds are **separate events**, not one `motion` with a flag — a host usually maps them to
 distinct sensors. Note `personDetected` means a face or a _recognised_ person; someone the device does
 not recognise arrives as `strangerDetected`.
