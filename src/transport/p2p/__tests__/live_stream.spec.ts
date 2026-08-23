@@ -14,6 +14,16 @@ class FakeSession extends EventEmitter {
   stopLiveMedia() {
     this.stopped++;
   }
+  /**
+   * Mirrors the real session's extraction: the body is the `payloadLength` the header declares, and an
+   * encrypted frame needs the RSA key this fake has no equivalent of, so it answers undefined there.
+   */
+  decodeVideoFrame(data: Buffer, signCode: number): Buffer | undefined {
+    if (data.length < 22) return undefined;
+    const declared = data.readUInt32LE(0);
+    if (signCode > 0 && declared >= 128) return undefined;
+    return data.subarray(22, 22 + declared);
+  }
   push(f: Partial<P2PFrame>) {
     this.emit("data", f as P2PFrame);
   }
@@ -34,6 +44,7 @@ function videoFrame(opts: {
   hdr.writeInt16LE(opts.width ?? 960, 0x0a);
   hdr.writeInt16LE(opts.height ?? 540, 0x0c);
   const body = Buffer.concat([SC4, opts.nal]);
+  hdr.writeUInt32LE(body.length, 0x00); // every real frame declares the payload it carries
   return { commandId: 1300, channel: opts.channel ?? 0, signCode: 0, data: Buffer.concat([hdr, body]) };
 }
 
@@ -134,14 +145,25 @@ describe("LiveStream", () => {
     expect(audio.map((f) => f.codec)).toEqual(["aac-eld"]);
   });
 
-  it("starts the requested camera channel and does NOT filter inbound frames by it", () => {
+  it("starts the requested camera channel", () => {
     const { session, live } = mk({ channel: 3 }); // e.g. T8425
+    live.start();
+    expect(session.startChannel).toBe(3);
+  });
+
+  /**
+   * A camera that owns its session numbers its stream for itself: one was measured started on channel 0
+   * and tagging its frames channel 1. There is only one camera on that session, so there is nothing to tell
+   * apart — and matching the started channel there would drop the entire stream.
+   */
+  it("takes every frame on an own-session camera, whatever channel the station tags", () => {
+    const { session, live } = mk({ channel: 0 });
     const frames: any[] = [];
     live.on("video", (f) => frames.push(f));
     live.start();
-    expect(session.startChannel).toBe(3); // channel is the SEND channel
-    // inbound frames are tagged channel 0 by the station regardless — must NOT be dropped
-    session.push(videoFrame({ nal: Buffer.from([0x41]), channel: 0 }));
+
+    session.push(videoFrame({ nal: Buffer.from([0x41]), channel: 1 }));
+
     expect(frames).toHaveLength(1);
   });
 
@@ -158,6 +180,269 @@ describe("LiveStream", () => {
       data: Buffer.concat([Buffer.alloc(0x16, 7), Buffer.from([9, 9, 9, 9])]),
     } as any);
     expect(frames).toHaveLength(0);
+  });
+});
+
+/**
+ * A station splits an access unit larger than its chunk size across several `CMD_VIDEO_FRAME` frames.
+ * `LiveVideoFrame` is documented as one access unit, and a consumer that reads `keyframe` as "this buffer
+ * is independently decodable", switches codec at a keyframe, or counts frames is deciding per access unit;
+ * delivering chunks silently makes all three wrong.
+ *
+ * The wire semantics below are measured on two camera models, not inferred:
+ *  - each frame declares only the payload IT carries, so the unit's total is nowhere on the wire — a
+ *    70190-byte unit arrived as 64000 then 6190;
+ *  - the frames of one unit repeat its header (same timestamp, same sequence field);
+ *  - every frame of a split unit is filled to 64000 except the last;
+ *  - a frame that starts a unit begins with a start code; a continuation begins mid-NAL.
+ */
+describe("LiveStream access-unit reassembly", () => {
+  const CHUNK = 64000;
+
+  /** The 22-byte plaintext header, as the station repeats it on every frame of one unit. */
+  function header(payloadLength: number, opts: { keyframe?: boolean; sequence?: number; timestamp?: number } = {}) {
+    const hdr = Buffer.alloc(0x16);
+    hdr.writeUInt32LE(payloadLength, 0x00);
+    hdr.writeUInt8(opts.keyframe === false ? 0x00 : 0x01, 0x04);
+    hdr.writeUInt16LE(opts.sequence ?? 0, 0x06);
+    hdr.writeInt16LE(1920, 0x0a);
+    hdr.writeInt16LE(1080, 0x0c);
+    hdr.writeUInt32LE(opts.timestamp ?? 0x1000, 0x0e);
+    return hdr;
+  }
+
+  /** One `CMD_VIDEO_FRAME`: its header declares the body it carries, exactly as the station does. */
+  function videoChunk(body: Buffer, opts: { keyframe?: boolean; sequence?: number; timestamp?: number } = {}) {
+    return {
+      commandId: 1300,
+      channel: 0,
+      signCode: 0,
+      data: Buffer.concat([header(body.length, opts), body]),
+    };
+  }
+
+  /** A frame filled to exactly the split threshold: parameter sets, then the start of an IDR. */
+  const idrHead = Buffer.concat([SC4, Buffer.from([0x67, 0x42, 0x00]), SC4, Buffer.from([0x65, 0x88])]);
+  const filled = Buffer.concat([idrHead, Buffer.alloc(CHUNK - idrHead.length, 0x11)]);
+  /** The rest of that IDR — mid-NAL, so no start code of its own, and short so it ends the unit. */
+  const tail = Buffer.from([0x22, 0x33, 0x44, 0x55, 0x66]);
+  /** An ordinary small unit, complete in one frame. */
+  const small = Buffer.concat([SC4, Buffer.from([0x41, 0x9a, 0x02])]);
+
+  function mk(opts = {}) {
+    const session = new FakeSession();
+    const frames: any[] = [];
+    const live = new LiveStream(session as unknown as P2PSession, opts).start();
+    live.on("video", (f) => frames.push(f));
+    return { session, live, frames };
+  }
+
+  it("delivers a split unit as ONE whole access unit", () => {
+    const { session, frames } = mk();
+
+    session.push(videoChunk(filled));
+    session.push(videoChunk(tail));
+
+    expect(frames).toHaveLength(1);
+    expect(frames[0].data.equals(Buffer.concat([filled, tail]))).toBe(true);
+    expect(frames[0]).toMatchObject({ keyframe: true, width: 1920, height: 1080 });
+  });
+
+  it("emits nothing while the unit's latest frame is still full", () => {
+    const { session, frames } = mk();
+
+    session.push(videoChunk(filled));
+
+    expect(frames).toEqual([]);
+  });
+
+  /**
+   * The continuation repeats the keyframe flag while carrying no parameter sets, so a consumer beginning a
+   * decode there has nothing to decode against.
+   */
+  it("never announces a continuation as a keyframe of its own", () => {
+    const { session, frames } = mk();
+
+    session.push(videoChunk(filled));
+    session.push(videoChunk(tail));
+
+    expect(frames.filter((f) => f.keyframe)).toHaveLength(1);
+  });
+
+  /** The overwhelming majority of units arrive in one frame below the threshold: no holding, no latency. */
+  it("delivers a unit that arrives in one frame immediately", () => {
+    const { session, frames } = mk();
+
+    session.push(videoChunk(small, { keyframe: false }));
+
+    expect(frames).toHaveLength(1);
+    expect(frames[0].data.equals(small)).toBe(true);
+  });
+
+  /**
+   * The threshold is what a splitting station FILLS to, not a size above which a unit must be split.
+   * Stations that never split deliver whole units far bigger than it — measured at 148057 and 231954
+   * bytes — and holding those back, then discarding them as truncated, costs the very keyframes a
+   * decoder cannot start without.
+   */
+  it("delivers a single-frame unit larger than the threshold immediately", () => {
+    const { session, frames } = mk();
+    const big = Buffer.concat([
+      SC4,
+      Buffer.from([0x67, 0x42, 0x00]),
+      SC4,
+      Buffer.from([0x65, 0x88]),
+      Buffer.alloc(90_000, 0x11),
+    ]);
+
+    session.push(videoChunk(big));
+
+    expect(frames).toHaveLength(1);
+    expect(frames[0].data.equals(big)).toBe(true);
+  });
+
+  /**
+   * Identity and the missing start code are required together. A following unit that opens with a start
+   * code can never be absorbed, however the station labelled it — a merge is invisible to a consumer that
+   * trusts the contract.
+   */
+  it("does not absorb a following unit that opens with a start code", () => {
+    const { session, frames } = mk();
+
+    session.push(videoChunk(filled, { timestamp: 0x1000 }));
+    session.push(videoChunk(small, { timestamp: 0x1000, keyframe: false }));
+
+    expect(frames).toHaveLength(1);
+    expect(frames[0].data.equals(small)).toBe(true);
+  });
+
+  /** Nor one whose header describes a different unit, even where it continues mid-NAL. */
+  it("does not absorb a continuation-shaped frame belonging to another unit", () => {
+    const { session, frames } = mk();
+
+    session.push(videoChunk(filled, { timestamp: 0x1000 }));
+    session.push(videoChunk(tail, { timestamp: 0x2000 }));
+
+    expect(frames).toHaveLength(1);
+    expect(frames[0].data.equals(tail)).toBe(true);
+  });
+
+  /**
+   * A lost datagram costs the whole frame the P2P layer was reassembling, so a unit whose tail never
+   * arrives is ended by the next unit while still full. Handing those bytes to a decoder is what produces
+   * `error while decoding MB …, bytestream -28` — it ran off the end of a slice whose header promised more.
+   */
+  it("drops a unit whose tail never arrived rather than delivering truncated bytes", () => {
+    const { session, frames } = mk();
+
+    session.push(videoChunk(filled, { timestamp: 0x1000 }));
+    session.push(videoChunk(small, { timestamp: 0x2000, keyframe: false }));
+
+    expect(frames).toHaveLength(1);
+    expect(frames[0].data.equals(small)).toBe(true);
+  });
+
+  /** The loss was previously silent in both directions: no frame, and nothing said so. */
+  it("reports a dropped unit instead of losing it silently", () => {
+    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const { session } = mk({ logger });
+
+    session.push(videoChunk(filled, { timestamp: 0x1000 }));
+    session.push(videoChunk(small, { timestamp: 0x2000, keyframe: false }));
+
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+    expect(String(logger.warn.mock.calls[0][0])).toContain(`${filled.length}`);
+  });
+
+  /** One line per stream, not per frame: a camera dropping units steadily must not flood a host's log. */
+  it("warns once per stream and keeps the rest at debug level", () => {
+    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const { session } = mk({ logger });
+
+    for (let i = 1; i <= 3; i++) {
+      session.push(videoChunk(filled, { timestamp: i * 0x1000 }));
+      session.push(videoChunk(small, { timestamp: i * 0x1000 + 1, keyframe: false }));
+    }
+
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+    expect(logger.debug).toHaveBeenCalledTimes(2);
+  });
+});
+
+/**
+ * A HomeBase fans several cameras out over ONE session, so every stream on it reads the same inbound feed.
+ * The station says which camera a media frame belongs to — measured with two cameras of different geometry
+ * warm at once, the frame's channel field partitioned them exactly (1920x1080 on the started channel 0,
+ * 640x480 on channel 2, video and audio alike) while each handle was delivered both cameras' frames.
+ */
+describe("LiveStream channel isolation on a HomeBase", () => {
+  function attached(channel: number, logger?: unknown) {
+    const session = new FakeSession();
+    const frames: any[] = [];
+    const audio: any[] = [];
+    const live = new LiveStream(session as unknown as P2PSession, {
+      channel,
+      homeBaseAttached: true,
+      logger: logger as never,
+    }).start();
+    live.on("video", (f) => frames.push(f));
+    live.on("audio", (f) => audio.push(f));
+    return { session, frames, audio };
+  }
+
+  it("takes the frames the station tagged for its own camera", () => {
+    const { session, frames } = attached(2);
+
+    session.push(videoFrame({ nal: Buffer.from([0x41]), channel: 2 }));
+
+    expect(frames).toHaveLength(1);
+  });
+
+  it("drops another camera's video, which used to interleave into this stream", () => {
+    const { session, frames } = attached(2);
+
+    session.push(videoFrame({ nal: Buffer.from([0x41]), channel: 2 }));
+    session.push(videoFrame({ nal: Buffer.from([0x41]), channel: 0 }));
+
+    expect(frames).toHaveLength(1);
+  });
+
+  /** Audio is tagged the same way — a doorbell's audio in another camera's stream is the same defect. */
+  it("drops another camera's audio too", () => {
+    const { session, audio } = attached(2);
+
+    session.push({ ...audioFrame(0, Buffer.from([1, 2])), channel: 2 } as any);
+    session.push({ ...audioFrame(0, Buffer.from([1, 2])), channel: 0 } as any);
+
+    expect(audio).toHaveLength(1);
+  });
+
+  /**
+   * A station that tags an attached camera's frames with something other than the started channel would
+   * otherwise get a stream that never delivers anything. After a bounded run of frames with none of its own
+   * it stops filtering and says so — one account's firmware is not every account's.
+   */
+  it("stops filtering, with a warning, if none of its own frames ever arrive", () => {
+    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const { session, frames } = attached(2, logger);
+
+    for (let i = 0; i < 40; i++) session.push(videoFrame({ nal: Buffer.from([0x41]), channel: 0 }));
+
+    expect(frames.length).toBeGreaterThan(0);
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+    expect(String(logger.warn.mock.calls[0][0])).toContain("station tags media channel 0");
+  });
+
+  /** Once its own tag has been seen, the fallback must never fire: the station has proven it discriminates. */
+  it("keeps filtering once its own camera's tag has been seen", () => {
+    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const { session, frames } = attached(2, logger);
+
+    session.push(videoFrame({ nal: Buffer.from([0x41]), channel: 2 }));
+    for (let i = 0; i < 40; i++) session.push(videoFrame({ nal: Buffer.from([0x41]), channel: 0 }));
+
+    expect(frames).toHaveLength(1);
+    expect(logger.warn).not.toHaveBeenCalled();
   });
 });
 

@@ -16,7 +16,7 @@
  */
 import { EventEmitter } from "node:events";
 import type { P2PSession, P2PFrame } from "./p2p-session.js";
-import { parseVideoFrameHeader, VideoFrameDecoder } from "./video.js";
+import { AccessUnitAssembler, VideoFrameDecoder } from "./video.js";
 import { sniffAnnexbCodec } from "./annexb.js";
 import { noopLogger, type Logger } from "../../core/logger.js";
 import type { AudioCodec, LiveAudioFrame, LiveVideoFrame, VideoCodec } from "../../core/contracts.js";
@@ -38,6 +38,16 @@ const SC3 = Buffer.from([0, 0, 1]);
  * itself when a stream produces no audio at all, to feed its decoder silence.
  */
 const AUDIO_CODECS: Readonly<Record<number, AudioCodec>> = { 0: "aac-lc", 2: "g711a", 7: "aac-eld" };
+
+/**
+ * How many frames tagged for another camera this stream tolerates before concluding that the station does
+ * NOT tag media per camera, and taking every frame instead.
+ *
+ * Two seconds of a 15fps stream. Enough that a station which tags as measured never reaches it (its very
+ * first media frame carries the started channel), and short enough that a station which tags differently
+ * costs a caller a brief gap rather than a stream that never delivers.
+ */
+const FOREIGN_FRAME_TOLERANCE = 30;
 
 /**
  * How often the media start is re-issued to hold a stream open, when a caller expresses no preference.
@@ -65,8 +75,10 @@ export interface LiveStreamOptions {
   /**
    * Camera channel to START (the device's `device_channel`) — sent in CMD_START_REALTIME_MEDIA to
    * select which camera on a multi-camera HomeBase streams. Defaults to the station channel.
-   * NOTE: this is the SEND channel; inbound frames are tagged channel 0 by the station regardless,
-   * so it is NOT used to filter received frames.
+   *
+   * On a HomeBase-attached camera it is ALSO what inbound media is matched against, so one camera's stream
+   * never carries another camera's frames: a station fanning several cameras out over one session tags every
+   * media frame with the camera it belongs to.
    */
   channel?: number;
   /** Camera ECC private key (32B) for E2E/encrypted cameras; omit for plaintext cameras. */
@@ -94,6 +106,12 @@ export class LiveStream extends EventEmitter {
   private kaTimer?: ReturnType<typeof setInterval>;
   /** Last codec sniffed off a keyframe; delta frames (no config NAL) inherit it. Default h264. */
   private lastCodec: VideoCodec = "h264";
+  /** Rebuilds an access unit the station split across several frames — see {@link AccessUnitAssembler}. */
+  private readonly units = new AccessUnitAssembler((drop) => this.reportDroppedUnit(drop));
+  /** The channel inbound media must be tagged with, once {@link acceptsMedia} trusts the station's tag. */
+  private mediaChannel?: number;
+  private ownFrames = 0;
+  private foreignFrames = 0;
   private readonly handler = (f: P2PFrame) => this.onFrame(f);
   private readonly logger: Logger;
 
@@ -103,6 +121,8 @@ export class LiveStream extends EventEmitter {
   ) {
     super();
     this.logger = opts.logger ?? noopLogger;
+    // Only a HomeBase serves several cameras over one session, so only there is there anything to tell apart.
+    if (opts.homeBaseAttached && opts.channel !== undefined) this.mediaChannel = opts.channel;
     if (opts.eccPrivateKey) this.decoder = new VideoFrameDecoder(opts.eccPrivateKey);
   }
 
@@ -166,30 +186,19 @@ export class LiveStream extends EventEmitter {
   }
 
   private onFrame(f: P2PFrame): void {
-    // NOTE: no channel filter here — the station tags inbound media frames channel 0 regardless of
-    // which camera channel was started, so filtering by `opts.channel` would drop everything. One
-    // LiveStream maps to one started camera; emit all video/audio frames it receives.
+    if (!this.acceptsMedia(f)) return;
     try {
       if (f.commandId === CMD_VIDEO_FRAME) {
-        const hdr = parseVideoFrameHeader(f.data);
-        // Standard path (plaintext + RSA/AES-ECB encrypted keyframes): the session decodes it (it
-        // holds the RSA private key). Falls back to the legacy header-strip + ECIES VideoFrameDecoder.
-        let annexb = this.session.decodeVideoFrame?.(f.data, f.signCode) ?? this.plaintextAnnexB(f.data);
-        if (!annexb && this.decoder) {
-          const dec = this.decoder.decodeFrame(f.data); // E2E ECIES-camera path
-          if (dec) annexb = dec.h264;
-        }
-        if (annexb && annexb.length) {
-          const keyframe = hdr?.keyframe ?? false;
+        for (const unit of this.units.push(f.data, (payload) => this.annexbOf(payload, f.signCode))) {
           // Sniff the codec only on a keyframe (it carries the parameter sets); delta frames have no
           // config NAL, so they inherit the last-known codec.
-          if (keyframe) this.lastCodec = sniffAnnexbCodec(annexb) ?? this.lastCodec;
+          if (unit.keyframe) this.lastCodec = sniffAnnexbCodec(unit.data) ?? this.lastCodec;
           this.emit("video", {
-            keyframe,
-            width: hdr?.width ?? 0,
-            height: hdr?.height ?? 0,
+            keyframe: unit.keyframe,
+            width: unit.width,
+            height: unit.height,
             codec: this.lastCodec,
-            data: annexb,
+            data: unit.data,
           });
         }
       } else if (f.commandId === CMD_AUDIO_FRAME) {
@@ -207,6 +216,66 @@ export class LiveStream extends EventEmitter {
     } catch (e) {
       this.emit("error", e instanceof Error ? e : new Error(String(e)));
     }
+  }
+
+  /**
+   * Whether this stream may take `frame` — the demultiplexer for a station that serves several cameras.
+   *
+   * Every stream over a station's session reads the same inbound feed, so with two cameras warm each stream
+   * sees both. The station DOES say which camera a media frame belongs to: measured with two cameras of
+   * different geometry streaming at once on one HomeBase, the frame's channel field partitioned them
+   * exactly — 43 frames of 1920x1080 on the started channel 0 and 28 of 640x480 on channel 2, video and
+   * audio alike — while each handle was delivered both cameras' frames.
+   *
+   * The tag is only meaningful where a station fans out to several cameras. A camera that owns its session
+   * numbers its stream for itself: one was started on channel 0 and tagged its frames channel 1, so
+   * matching there would drop the whole stream. Hence only an attached camera filters.
+   *
+   * A station that contradicts the measurement — tagging an attached camera's frames with something other
+   * than the channel that was started — would otherwise get a stream that never delivers, so after
+   * {@link FOREIGN_FRAME_TOLERANCE} frames with none of its own the stream stops filtering and says so.
+   * Nothing about the fleet this was measured on needs that path; it exists because one account's firmware
+   * is not every account's.
+   */
+  private acceptsMedia(frame: P2PFrame): boolean {
+    if (this.mediaChannel === undefined || (frame.commandId !== CMD_VIDEO_FRAME && frame.commandId !== CMD_AUDIO_FRAME))
+      return true;
+    if (frame.channel === this.mediaChannel) {
+      this.ownFrames++;
+      return true;
+    }
+    if (this.ownFrames > 0) return false;
+    if (++this.foreignFrames < FOREIGN_FRAME_TOLERANCE) return false;
+    this.logger.warn(
+      `[live] station tags media channel ${frame.channel}, not the started ${this.mediaChannel} — taking every ` +
+        `frame from here (another camera streaming on this station would interleave with this one)`,
+    );
+    this.mediaChannel = undefined;
+    return true;
+  }
+
+  /**
+   * The Annex-B payload of a frame that starts an access unit. The session decodes it when it can (it
+   * holds the RSA private key, and handles the plaintext form); the legacy header-strip and the ECIES
+   * {@link VideoFrameDecoder} are the fallbacks for an E2E camera.
+   */
+  private annexbOf(payload: Buffer, signCode: number): Buffer | undefined {
+    const annexb = this.session.decodeVideoFrame?.(payload, signCode) ?? this.plaintextAnnexB(payload);
+    if (annexb) return annexb;
+    return this.decoder?.decodeFrame(payload)?.h264;
+  }
+
+  /**
+   * Report an access unit the transport could not complete.
+   *
+   * Loud once per stream, then quiet: a station losing datagrams steadily would otherwise flood a host's
+   * log with one line per unit, and the first one already says everything the rest repeat. It was
+   * previously silent in both directions — no frame reached a consumer, and nothing said why.
+   */
+  private reportDroppedUnit(drop: { carried: number; chunks: number; count: number }): void {
+    const message = `[live] dropped an incomplete access unit (${drop.carried} bytes in ${drop.chunks} frame(s), tail never arrived, ${drop.count} so far)`;
+    if (drop.count === 1) this.logger.warn(message);
+    else this.logger.debug(message);
   }
 }
 

@@ -33,6 +33,11 @@ import { BATTERY } from "./battery.js";
 export { RtspRecordingMode, type RtspRecordingModeValue, type RtspAuthScheme } from "./rtsp.js";
 export { EntryAlarmTone, type EntryAlarmToneValue } from "./contact.js";
 export { SirenVolume, type SirenVolumeValue, SirenAlarmDuration, type SirenAlarmDurationValue } from "./siren.js";
+/**
+ * Ask what a bound capability can be told to change but can never report back, and what it reports without
+ * that value reflecting its own setter.
+ */
+export { unobservableMembers, unreflectedMembers } from "./members.js";
 export {
   Watermark,
   type WatermarkValue,
@@ -649,6 +654,12 @@ export interface DeviceEventMap {
   contactState: PushSemanticEvent & PollSemanticEvent & { open?: boolean };
   /** Battery level changed (poll). `to` is the new 0–100 level. */
   batteryLevel: PollSemanticEvent;
+  /**
+   * A camera was enabled or disabled (poll). `enabled` is the state after the change, normalised from
+   * whichever id the device reports it under — the two carry opposite polarity, so read `enabled` rather
+   * than `to`. Absent when the change carried no value.
+   */
+  cameraEnabled: PollSemanticEvent & { enabled?: boolean };
   /** Battery alert — `state` discriminates low / hot / full. */
   batteryAlert: PushSemanticEvent & { state?: "low" | "hot" | "full" };
   /** Pan/tilt status streamed while the camera moves. */

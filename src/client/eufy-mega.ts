@@ -290,11 +290,13 @@ export class EufyMega extends EventEmitter {
     this.registry = new DeviceRegistry({
       mega: this.mega,
       onError: (e) => this.reportError(e),
+      logger: opts.logger,
     });
     this.p2p = new P2PCommandRouter({
       mega: this.mega,
       logger: opts.logger,
       ffmpegLogLevel: opts.ffmpegLogLevel,
+      ffmpegPath: opts.ffmpegPath,
       poweredFor: (parentSn) => this.stationPower(parentSn),
       sessionIdle: { batteryIdleMs: opts.p2pIdleMs },
       localAddresses: opts.localAddresses,
@@ -953,6 +955,10 @@ export class EufyMega extends EventEmitter {
    * the command dispatcher can resolve a eufy SN → Tuya devId without a separate lookup.
    * The Tuya id is extracted from the device's raw cloud record (`tuya_uuid`, `tuya_virtual_id`,
    * `tuya_device_id`, or `virtualId` fields — whichever is non-empty).
+   *
+   * A partial cloud outage still resolves, with the devices that answered plus the ones already known — but a
+   * session the cloud has rejected REJECTS, with {@link SessionExpiredError}. An empty list would be
+   * indistinguishable from an account with no devices, and a host acts on that by removing everything it had.
    */
   async getDevices(): Promise<EufyDevice[]> {
     const devices = await this.registry.getDevices();
@@ -1230,6 +1236,10 @@ export class EufyMega extends EventEmitter {
    * state that has no push of its own (`battery.ts` maps the battery level here; `contact.ts` maps the
    * contact param as a second path alongside its push).
    *
+   * Each change is decoded against the reporting device's capabilities, the same argument the push path
+   * passes: a param id claimed by more than one capability cannot be resolved without it, so a poll
+   * event declared on a contested id would be declared and then silently never emitted.
+   *
    * Also emits `deviceState` for each device the diff reports as having re-reported. That is tracked
    * apart from the param diff because the two are different facts: the cloud can re-stamp a param with
    * an unchanged VALUE, which is no state change to report but is fresh proof the device is alive. A
@@ -1242,7 +1252,7 @@ export class EufyMega extends EventEmitter {
       for (const dev of diff.added) this.emit("deviceAdded", dev);
       for (const dev of diff.removed) this.emit("deviceRemoved", dev);
       for (const change of diff.params)
-        for (const out of decodeCapabilityEvent({ source: "poll", ...change }))
+        for (const out of decodeCapabilityEvent({ source: "poll", ...change }, this.capsForEvent(change.deviceSn)))
           this.emitSemantic(out.event, out.payload, { refresh: out.refresh });
       for (const dev of diff.reported) this.emit("deviceState", this.stateOf(dev));
       for (const change of diff.params) await this.widenCapabilities(change.deviceSn);

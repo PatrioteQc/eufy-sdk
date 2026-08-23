@@ -26,13 +26,16 @@ function makeClient(opts: Record<string, unknown> = {}) {
   return eufy;
 }
 
-const batteryChange = (to: string): ParamChange => ({
+const paramChange = (paramType: number, from: string, to: string): ParamChange => ({
   deviceSn: "T8000P0000000000",
-  paramType: 1101, // BATTERY_PARAM.BATTERY
-  from: "88",
+  paramType,
+  from,
   to,
-  params: { 1101: to },
+  params: { [paramType]: to },
 });
+
+/** BATTERY_PARAM.BATTERY changing from a known level. */
+const batteryChange = (to: string): ParamChange => paramChange(1101, "88", to);
 
 describe("cloud-param poll loop", () => {
   beforeEach(() => {
@@ -56,6 +59,55 @@ describe("cloud-param poll loop", () => {
 
     expect(seen).toHaveLength(1);
     expect(seen[0]).toMatchObject({ deviceSn: "T8000P0000000000", paramType: 1101, from: "88", to: "81" });
+  });
+
+  /**
+   * A poll change must be decoded against the changed device's capabilities, exactly as a push is.
+   *
+   * Without them `resolveHits` cannot disambiguate a param id claimed by more than one capability, so a
+   * contested id resolves to nothing and a poll event declared on it is silently never emitted. The
+   * resolution itself is pinned in `capabilities/__tests__/decode-event.spec.ts`; what is asserted here
+   * is that the argument reaches the decode at all, which is the whole of the defect — no shipped id is
+   * contested today, so nothing else about this call is observable from the outside.
+   */
+  it("decodes a poll change against the changed device's capabilities", async () => {
+    const eufy = makeClient();
+    vi.spyOn((eufy as any).registry, "pollChanges").mockResolvedValue({
+      params: [batteryChange("81")],
+      added: [],
+      removed: [],
+      reported: [],
+    });
+    const caps = vi.spyOn((eufy as any).registry, "capabilitiesForDevice").mockReturnValue(new Set(["battery"]));
+
+    await (eufy as any).pollOnce();
+
+    expect(caps).toHaveBeenCalledWith("T8000P0000000000");
+  });
+
+  /**
+   * Camera enablement is the state #47 wanted announced: it only ever arrives as a cloud param, so
+   * re-reading was the only way to learn of a change and re-reading cannot say WHEN. Both wire ids
+   * carry it, under opposite polarity — 1035 is a disable bit, 2001 reports it directly — so the event
+   * normalises to `enabled` rather than handing a caller the raw value and its polarity.
+   */
+  it("announces a camera enablement change, in the polarity the reporting id uses", async () => {
+    const eufy = makeClient();
+    const changes = [paramChange(1035, "0", "1"), paramChange(2001, "false", "true")];
+    vi.spyOn((eufy as any).registry, "pollChanges").mockResolvedValue({
+      params: changes,
+      added: [],
+      removed: [],
+      reported: [],
+    });
+    const seen: any[] = [];
+    eufy.on("cameraEnabled", (e) => seen.push(e));
+
+    await (eufy as any).pollOnce();
+
+    expect(seen).toHaveLength(2);
+    expect(seen[0]).toMatchObject({ deviceSn: "T8000P0000000000", paramType: 1035, enabled: false });
+    expect(seen[1]).toMatchObject({ paramType: 2001, enabled: true });
   });
 
   /**
@@ -371,5 +423,60 @@ describe("disconnect during startup", () => {
     await vi.advanceTimersByTimeAsync(1000);
 
     expect(poll).toHaveBeenCalled();
+  });
+});
+
+/**
+ * The poll baseline must be a snapshot of VALUES, not of the records the registry hands out.
+ *
+ * `this.devices` holds the same objects, so anything that updates one in place rewrites the baseline before
+ * the next pass can diff against it. `applyRealtimeParams` does exactly that to `lastSeenMs` — a station's
+ * report stamps the record the baseline is holding — so a device that reports over realtime loses the poll's
+ * liveness signal. The param half is guarded against the same mutation, which no current path performs.
+ */
+describe("poll baseline isolation", () => {
+  beforeEach(() => vi.restoreAllMocks());
+
+  /** A registry with one device whose params a test can mutate the way the realtime path does. */
+  async function registryWithDevice() {
+    const { DeviceRegistry } = await import("../device-registry.js");
+    const device: any = { sn: "T8000P0000000000", params: { 2001: "false" }, lastSeenMs: 1 };
+    const registry = new DeviceRegistry({ mega: {} as never, onError: () => {} });
+    vi.spyOn(registry, "getDevices").mockImplementation(async () => [device]);
+    return { registry, device };
+  }
+
+  it("reports a change written into the record after the baseline was taken", async () => {
+    const { registry, device } = await registryWithDevice();
+    await registry.pollChanges(); // baseline
+
+    device.params = { ...device.params, 2001: "true" }; // the station volunteers the new value
+    const diff = await registry.pollChanges();
+
+    expect(diff.params).toEqual([
+      { deviceSn: "T8000P0000000000", paramType: 2001, from: "false", to: "true", params: { 2001: "true" } },
+    ]);
+  });
+
+  /** The half that bites today: a realtime report stamps `lastSeenMs` on the record the baseline holds. */
+  it("reports a device as re-reported after its record was updated in place", async () => {
+    const { registry, device } = await registryWithDevice();
+    await registry.pollChanges();
+
+    device.lastSeenMs = 2;
+    const diff = await registry.pollChanges();
+
+    expect(diff.reported.map((d) => d.sn)).toEqual(["T8000P0000000000"]);
+  });
+
+  /** An unchanged pass still reports nothing, so the isolation cannot fake a change. */
+  it("stays silent when nothing moved", async () => {
+    const { registry } = await registryWithDevice();
+    await registry.pollChanges();
+
+    const diff = await registry.pollChanges();
+
+    expect(diff.params).toEqual([]);
+    expect(diff.reported).toEqual([]);
   });
 });

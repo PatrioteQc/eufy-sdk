@@ -78,6 +78,35 @@ function parseMaybeJson(text: string): unknown {
   }
 }
 
+/**
+ * A mega API call the server answered with a non-zero envelope code, carrying that code rather than only a
+ * message.
+ *
+ * The retry/auth logic here already decides what to do by NUMBER (4416, 10000, 4404, 26084), so the number is
+ * the authoritative fact about which condition was hit. Formatting it into a message and throwing a bare
+ * `Error` left every caller that needs to tell one condition from another parsing this module's message
+ * format back apart — a decision that belongs to the layer that owns the wire, not to whoever reads it.
+ */
+export class MegaApiError extends Error {
+  constructor(
+    message: string,
+    /** The envelope's `code`, or undefined when the failure produced no envelope. */
+    readonly code: number | undefined,
+    /** The HTTP status the envelope arrived with. */
+    readonly status: number | undefined,
+  ) {
+    super(message);
+    this.name = "MegaApiError";
+  }
+}
+
+/**
+ * `get_device_param_list` refuses a shared or member account: only the device's owner may read it. The
+ * refusal is permanent for the life of that account's session, so a caller should fall back to the
+ * device-list params rather than retry.
+ */
+export const OWNER_ONLY_CODE = 20004;
+
 /** Thrown when a persisted/expired session is rejected (401). Re-login to recover. */
 export class SessionExpiredError extends Error {
   constructor(message: string) {
@@ -173,6 +202,71 @@ export type LoginResult =
   | { status: typeof LoginStatus.Captcha; image: string; retry: boolean }
   | { status: typeof LoginStatus.TwoFactor; method: string };
 
+/** What can be done about a rejection that means the token is finished. */
+type SessionRecovery = "retry" | "unrecoverable" | "held-off";
+
+/** First wait before replacing a token that was replaced recently; doubles per consecutive replacement. */
+const REAUTH_HOLD_OFF_MS = 60_000;
+const REAUTH_HOLD_OFF_CAP_MS = 30 * 60_000;
+/** How long a replaced token must keep serving calls before the wait is forgotten. */
+const REAUTH_STABLE_MS = 10 * 60_000;
+
+/**
+ * What a token being displaced repeatedly almost always means, and the one thing that fixes it. Carried on the
+ * surfaced error because the alternative — a client silently trading logins with another — is worse than a
+ * caller being told.
+ */
+const CONTENDED_SESSION_HINT =
+  "another client may be signed in with the same account and device identity, and each login displaces the " +
+  "other's session; give each client its own openudid";
+
+/**
+ * Whether a rejection's CODE or WORDING says the token is finished, rather than that this request was refused
+ * for some other reason (rate limit, captcha cooldown) — the difference between dropping a good session and
+ * keeping it. The caller pairs this with the 401 status; neither alone is the signal.
+ *
+ * The vendor words the same rejection several ways, and only one carries a distinctive code. All of these were
+ * observed on one account: {@link EufyCloudErrorCode.SESSION_KICKED} with `"token does not exist because it was
+ * kicked out"` when another login displaced it, and the generic `401` with `"token error"` or `"token not
+ * exist, token = …"` for the same thing. Matching the code alone leaves a displaced stored token looking like
+ * an ordinary API error, which nothing recovers from.
+ *
+ * The subject-less wordings are anchored to a token or a session: a bare `does not exist` also occurs in the
+ * serialised detail of rejections that have nothing to do with the credential, and clearing a healthy session
+ * on one of those costs a re-2FA.
+ */
+function tokenRejected(code: number | undefined, msg: string | undefined): boolean {
+  return (
+    code === EufyCloudErrorCode.SESSION_KICKED ||
+    /user_id is empty|invalid.*token|token.*(expired|error|not exist)|kicked|(?:token|session).*does not exist|unauthor/i.test(
+      msg ?? "",
+    )
+  );
+}
+
+/**
+ * Strip a token the gateway echoed back into its own error message.
+ *
+ * `"token not exist, token = <the rejected token>"` is the vendor's wording, and that message travels into the
+ * error a host logs and pastes into a bug report. A credential that has just been rejected is still a
+ * credential, and it is never the part of the message that explains anything.
+ */
+function withoutTokenEcho(text: string): string {
+  return text.replace(/token\s*[=:]\s*"?[A-Za-z0-9._-]{8,}"?/gi, "token = <redacted>");
+}
+
+/**
+ * {@link MegaHttpClient.postSigned}'s bookkeeping for the two recoveries it performs on itself, so each is
+ * attempted once per call rather than once per rejection.
+ * @internal
+ */
+export interface SignedRetry {
+  /** The session key has already been re-exchanged for this call. */
+  identity?: boolean;
+  /** The token has already been replaced by a fresh login for this call. */
+  reauth?: boolean;
+}
+
 /**
  * The cloud HTTP client. Internal transport, reachable as an escape hatch via `EufyMega.api`.
  * @internal
@@ -197,6 +291,13 @@ export class MegaHttpClient {
   private readonly logger: Logger;
   /** Remembered working Content-Type per host (the gateway is picky + inconsistent). */
   private readonly contentTypeByHost = new Map<string, string>();
+  /** True while a `/passport/login` round trip is in flight — see {@link canReauthenticate}. */
+  private loggingIn = false;
+  /** The one in-flight re-login every call rejected on the same dead token waits on. */
+  private reauthAttempt?: Promise<boolean>;
+  /** Replacements since the held session last proved stable, and when the last one ran — see {@link recoveryDue}. */
+  private recoveries = 0;
+  private lastRecoveryAt = 0;
 
   constructor(cfg: MegaClientConfig) {
     this.cfg = {
@@ -212,23 +313,32 @@ export class MegaHttpClient {
     this.store = cfg.store ?? new MemorySessionStore();
     this.logger = cfg.logger ?? noopLogger;
 
-    // Hydrate a persisted session: reuse the token + bound ECDH key, skipping
-    // estimate/key-exchange/login/2FA entirely.
+    this.hydrateFromStore();
+  }
+
+  /**
+   * Install the session the store holds, if it holds a usable one: the token + its bound ECDH key, skipping
+   * estimate/key-exchange/login/2FA entirely. Answers the token adopted, or `undefined`.
+   *
+   * Read at construction, and again when a rejection is being recovered from — a store SHARED with another
+   * client may already hold the session that client obtained, which is cheaper to adopt than to compete with.
+   */
+  private hydrateFromStore(): string | undefined {
     const saved = this.store.load();
-    if (isSessionValid(saved) && saved) {
-      this.region = saved.region;
-      this.openudid = saved.openudid;
-      this.auth_ = { userId: saved.userId, authToken: saved.authToken, geoKey: saved.geoKey };
-      this.tokenExpiresAt = saved.tokenExpiresAt;
-      this.sessionKey = {
-        keyIdent: saved.keyIdent,
-        shareKey: saved.shareKey,
-        clientPublicKeyHex: "",
-        clientPrivateKeyHex: "",
-        createdAt: Date.now(),
-      };
-      this.logger.debug("[mega] restored persisted session for", saved.userId);
-    }
+    if (!isSessionValid(saved) || !saved) return undefined;
+    this.region = saved.region;
+    this.openudid = saved.openudid;
+    this.auth_ = { userId: saved.userId, authToken: saved.authToken, geoKey: saved.geoKey };
+    this.tokenExpiresAt = saved.tokenExpiresAt;
+    this.sessionKey = {
+      keyIdent: saved.keyIdent,
+      shareKey: saved.shareKey,
+      clientPublicKeyHex: "",
+      clientPrivateKeyHex: "",
+      createdAt: Date.now(),
+    };
+    this.logger.debug("[mega] restored persisted session for", saved.userId);
+    return saved.authToken;
   }
 
   get auth(): { userId: string; authToken: string } | undefined {
@@ -386,16 +496,24 @@ export class MegaHttpClient {
     return entry;
   }
 
-  /** Signed + encrypted POST. Content-type auto-falls-back (text/plain ↔ json). */
+  /**
+   * Signed + encrypted POST. Content-type auto-falls-back (text/plain ↔ json).
+   *
+   * `retry` is this method's own bookkeeping across the two recoveries it performs on itself — a re-exchanged
+   * session key, and a re-login — so each is attempted once per call. A caller leaves it out.
+   */
   async postSigned<T = unknown>(
     host: string,
     path: string,
     body: unknown = {},
     authed = true,
-    _identityRetried = false,
+    retry: SignedRetry = {},
     headerOverrides: Record<string, string> = {},
   ): Promise<T> {
     const entry = await this.ensureSessionKey(host);
+    // Remembered because a rejection can arrive after another call has already replaced the session, and the
+    // two cases need opposite handling: replace a token that is still held, use one that is already fresh.
+    const sentToken = authed ? this.auth_?.authToken : undefined;
     const encBody = encryptBody(JSON.stringify(body ?? {}), entry.shareKey);
     // The gateway wants a specific Content-Type per host and 4416s ("signature
     // invalid") on the wrong one — so we probe, then REMEMBER the winner per host
@@ -428,6 +546,7 @@ export class MegaHttpClient {
       const res = await this.httpPost(`https://${host}${path}`, encBody, headers);
       const env = res.data as ApiEnvelope<unknown>;
       if (res.status === 200 && env?.code === 0) {
+        if (authed) this.noteSessionWorking();
         this.contentTypeByHost.set(host, contentType); // remember what worked
         if (typeof env.data === "string" && env.data.length > 0) {
           const pt = decryptBody(env.data, entry.shareKey).toString("utf-8");
@@ -449,7 +568,7 @@ export class MegaHttpClient {
           /* not decryptable */
         }
       }
-      last = { code: env?.code, msg: detail, status: res.status };
+      last = { code: env?.code, msg: withoutTokenEcho(detail), status: res.status };
       const retryable =
         (res.status === 403 && env?.code === EufyCloudErrorCode.SIGNATURE_INVALID) ||
         env?.code === EufyCloudErrorCode.PROBE_RETRY ||
@@ -457,7 +576,7 @@ export class MegaHttpClient {
       // 4416/10000 on the first content-type is expected probing — don't log it as
       // an error; only surface genuinely unexpected envelopes in debug.
       if (env?.code !== 0 && !retryable)
-        this.logger.debug("[mega] err envelope:", JSON.stringify(res.data).slice(0, 500));
+        this.logger.debug("[mega] err envelope:", withoutTokenEcho(JSON.stringify(res.data).slice(0, 500)));
       if (!retryable) break;
     }
     // "get identity error" (4404, usually HTTP 463): the server no longer knows
@@ -469,7 +588,7 @@ export class MegaHttpClient {
       authed &&
       (last?.code === EufyCloudErrorCode.IDENTITY_KEY_STALE ||
         /get identity error|identity error/i.test(last?.msg ?? ""));
-    if (identityError && !_identityRetried && this.auth_) {
+    if (identityError && !retry.identity && this.auth_) {
       this.logger.debug("[mega] identity error → re-exchanging session key and retrying");
       if (host.includes(".eufylife.com")) this.sessionKeys.delete(host);
       else this.sessionKey = undefined;
@@ -480,28 +599,22 @@ export class MegaHttpClient {
         throw new SessionExpiredError(`${path} failed (key re-exchange rejected): ${last?.msg}`);
       }
       this.persist(); // remember the fresh key-ident
-      return this.postSigned<T>(host, path, body, authed, true, headerOverrides);
+      return this.postSigned<T>(host, path, body, authed, { ...retry, identity: true }, headerOverrides);
     }
-    if (identityError && _identityRetried) {
-      // Fresh key-ident still rejected → the token itself is dead; force re-login.
-      this.clearSession();
-      throw new SessionExpiredError(`${path} failed (${last?.status}/${last?.code}): ${last?.msg}`);
+    // Two ways to conclude the TOKEN is finished rather than this request refused: a fresh key-ident that
+    // was still rejected, or a 401 whose code/wording says so. Only these drop the persisted session — a
+    // transient 401 (rate limit, captcha cooldown) must not wipe a good one and force re-2FA.
+    const tokenFinished =
+      (identityError && retry.identity) || (authed && last?.status === 401 && tokenRejected(last.code, last.msg));
+    if (tokenFinished) {
+      const reason = `${path} failed (${last?.status}/${last?.code}): ${last?.msg}`;
+      const recovery = retry.reauth ? "unrecoverable" : await this.recoverRejectedSession(sentToken);
+      if (recovery === "retry")
+        return this.postSigned<T>(host, path, body, authed, { ...retry, reauth: true }, headerOverrides);
+      if (!this.sessionReplacedSince(sentToken)) this.clearSession();
+      throw new SessionExpiredError(recovery === "held-off" ? `${reason} — ${CONTENDED_SESSION_HINT}` : reason);
     }
-    // Only drop the persisted session on a genuine auth failure (stale/invalid
-    // token), NOT on transient 401s (rate-limit / captcha cooldown) — otherwise a
-    // temporary hiccup would needlessly wipe a good session and force re-2FA.
-    const authFailure =
-      authed &&
-      last?.status === 401 &&
-      (last.code === EufyCloudErrorCode.SESSION_KICKED ||
-        /user_id is empty|invalid.*token|token.*(expired|error)|kicked|(?:token|session).*does not exist|unauthor/i.test(
-          last?.msg ?? "",
-        ));
-    if (authFailure) {
-      this.clearSession();
-      throw new SessionExpiredError(`${path} failed (401): ${last?.msg}`);
-    }
-    throw new Error(`${path} failed (${last?.status}/${last?.code}): ${last?.msg}`);
+    throw new MegaApiError(`${path} failed (${last?.status}/${last?.code}): ${last?.msg}`, last?.code, last?.status);
   }
 
   /** Authed call to a mega service host: app-{service}-{region}.eufy.com. */
@@ -511,7 +624,7 @@ export class MegaHttpClient {
     body: unknown = {},
     headerOverrides: Record<string, string> = {},
   ): Promise<T> {
-    return this.postSigned<T>(`app-${service}-${this.region}.eufy.com`, path, body, true, false, headerOverrides);
+    return this.postSigned<T>(`app-${service}-${this.region}.eufy.com`, path, body, true, {}, headerOverrides);
   }
 
   /**
@@ -573,9 +686,9 @@ export class MegaHttpClient {
    * `{ param_type, param_value, update_time }` — VALUES ONLY, no name/meaning (the param→meaning
    * mapping is hardcoded in the app, never returned by the API).
    *
-   * NOTE: this endpoint is **owner-gated** — a shared/member account gets `20004 "Only the owner
-   * can change settings"`. For those accounts use the `get_devs_list` params instead (which also
-   * carry `{param_type, param_value, update_time}` and are not owner-gated).
+   * NOTE: this endpoint is **owner-gated** — a shared/member account gets {@link OWNER_ONLY_CODE}
+   * (`"Only the owner can change settings"`), permanently. For those accounts use the `get_devs_list`
+   * params instead, which also carry `{param_type, param_value, update_time}` and are not owner-gated.
    */
   getDeviceParamList<T = unknown>(deviceSn: string): Promise<T> {
     return this.post<T>("devicemanage", "/app/devicemanage/get_device_param_list", {
@@ -765,8 +878,15 @@ export class MegaHttpClient {
    *  - `captcha` → show `image`, then {@link solveCaptcha}(answer).
    *  - `2fa` → a code was sent; {@link submitVerifyCode}(code).
    *
-   * A restored session short-circuits to `ok` with no network. `messageType` picks the 2FA channel
-   * (2 = email, 1 = SMS) for the code that gets sent when 2FA is required.
+   * A restored session short-circuits to `ok` with no network, so `ok` there states that a session was
+   * RESTORED, not that the cloud still honours it — `session.raw.restored` marks that case. Nothing is spent
+   * proving it here: the first authenticated call is where the cloud says, and a token it rejects is replaced
+   * by a fresh login and the call retried, without the caller seeing anything (see {@link postSigned}). What
+   * reaches the caller, as {@link SessionExpiredError}, is a replacement this client cannot complete by
+   * itself — one needing a captcha or a 2FA code, one with no credentials to use, one attempted while a login
+   * is already part-way through, or a login that failed outright.
+   *
+   * `messageType` picks the 2FA channel (2 = email, 1 = SMS) for the code that gets sent when 2FA is required.
    */
   async login(opts: { messageType?: number } = {}): Promise<LoginResult> {
     // Reuse a restored session — no network, no 2FA — until it expires. NOT while a 2FA code is
@@ -784,6 +904,114 @@ export class MegaHttpClient {
       };
     }
     return this.attemptLogin(this.loginBody({}), opts.messageType ?? 2);
+  }
+
+  /**
+   * Whether the session this call was made against has already been replaced.
+   *
+   * A rejection can arrive after another call's recovery has finished — the request was in flight with the old
+   * token, and the answer to it is late news. Such a call needs no recovery of its own, and must not clear the
+   * session: doing so discards the token that was just obtained and logs the client out while it is being
+   * fixed.
+   */
+  private sessionReplacedSince(sentToken: string | undefined): boolean {
+    const held = this.auth_?.authToken;
+    return !!held && held !== sentToken;
+  }
+
+  /**
+   * Deal with a rejection that means the token is finished; answers what the caller may do about it.
+   *
+   * The cheap answers first. A session already replaced by another call's recovery just needs using, and a
+   * recovery already in flight is JOINED rather than duplicated — a device-list refresh fires several calls at
+   * once, and each starting its own login would spend N of them to learn one thing. A store SHARED with
+   * another client may already hold that client's token, which is both cheaper than a login and the difference
+   * between adopting a working session and destroying it.
+   *
+   * Only then is a login spent, and its rate is bounded — see {@link recoveryDue}. Dropping the dead session
+   * first is what keeps the login state machine from short-circuiting on it.
+   */
+  private async recoverRejectedSession(sentToken: string | undefined): Promise<SessionRecovery> {
+    if (this.sessionReplacedSince(sentToken)) return "retry";
+    const joining = this.reauthAttempt;
+    if (joining) return (await joining) ? "retry" : "unrecoverable";
+    if (this.hydrateFromStore() && this.sessionReplacedSince(sentToken)) return "retry";
+    if (!this.canReauthenticate()) return "unrecoverable";
+    if (!this.recoveryDue()) return "held-off";
+    this.recoveries++;
+    this.lastRecoveryAt = Date.now();
+    this.clearSession();
+    return (await this.reauthenticate()) ? "retry" : "unrecoverable";
+  }
+
+  /**
+   * Whether a token may be replaced now, given how recently the last one was.
+   *
+   * A client's device identity defaults to one derived from its credentials, so two clients on one account look
+   * like the same device — and the cloud keeps one session per device. Each finds its token rejected, replaces
+   * it, and evicts the other: an unbounded login war, silent, and repeated logins are exactly what makes an
+   * account start demanding captchas. The first replacement is immediate, because a token displaced once is
+   * the ordinary case; a second one soon after is evidence of contention rather than expiry, so the wait grows
+   * and a caller is told the honest reason instead of being served a fight.
+   */
+  private recoveryDue(): boolean {
+    if (this.recoveries === 0) return true;
+    const wait = Math.min(REAUTH_HOLD_OFF_MS * 2 ** (this.recoveries - 1), REAUTH_HOLD_OFF_CAP_MS);
+    const waited = Date.now() - this.lastRecoveryAt;
+    if (waited >= wait) return true;
+    this.logger.warn(
+      `[mega] token rejected ${Math.round(waited / 1000)}s after the last replacement — holding off ` +
+        `${Math.round(wait / 1000)}s. ${CONTENDED_SESSION_HINT}`,
+    );
+    return false;
+  }
+
+  /**
+   * Note that the held session is working. A replacement that keeps serving calls for long enough is not
+   * contention, so the hold-off is forgotten and the next genuine expiry recovers immediately.
+   */
+  private noteSessionWorking(): void {
+    if (this.recoveries > 0 && Date.now() - this.lastRecoveryAt > REAUTH_STABLE_MS) this.recoveries = 0;
+  }
+
+  /**
+   * Whether a rejected token is worth trying to replace without asking the host anything.
+   *
+   * Structural rather than a list of paths: a login round trip is itself an authenticated call while a limited
+   * token is held, so re-logging in from inside one would recurse — and a path list would have to be
+   * maintained alongside every request the login flow makes. A 2FA code already outstanding is a login a human
+   * is part-way through, and restarting it silently would discard it. No credentials means nothing to try: a
+   * host running purely off a restored session has to be told.
+   */
+  private canReauthenticate(): boolean {
+    return !!this.cfg.email && !!this.cfg.password && !this.loggingIn && !this.pending2fa;
+  }
+
+  /**
+   * Replace a rejected token by running the login state machine again, at most once at a time.
+   *
+   * Answers whether a usable session was obtained; a login that needs a captcha or a 2FA code answers `false`,
+   * because neither can be satisfied from here — the caller then surfaces the rejection so the host can drive
+   * the flow it owns. A login that fails outright answers `false` too, with the reason logged: the caller has a
+   * more useful thing to tell its own caller than "the re-login failed".
+   *
+   * One attempt is SHARED by every call that was in flight against the dead token. A device-list refresh fires
+   * several at once, and each starting its own login would spend N of them to learn one thing — worse, on an
+   * account that limits concurrent sessions, each login displaces the token the previous one just obtained.
+   */
+  private reauthenticate(): Promise<boolean> {
+    this.reauthAttempt ??= this.login()
+      .then((result) => {
+        if (result.status === LoginStatus.Ok) this.logger.debug("[mega] token was rejected — logged in again");
+        else this.logger.warn(`[mega] token was rejected and the re-login needs ${result.status} — cannot recover`);
+        return result.status === LoginStatus.Ok;
+      })
+      .catch((e: unknown) => {
+        this.logger.warn(`[mega] re-login failed: ${e instanceof Error ? e.message : String(e)}`);
+        return false;
+      })
+      .finally(() => (this.reauthAttempt = undefined));
+    return this.reauthAttempt;
   }
 
   /**
@@ -808,6 +1036,16 @@ export class MegaHttpClient {
    * {@link solveCaptcha} / {@link submitVerifyCode}; the caller-facing methods only build the body.
    */
   private async attemptLogin(body: Record<string, unknown>, messageType: number): Promise<LoginResult> {
+    this.loggingIn = true;
+    try {
+      return await this.loginRoundTrip(body, messageType);
+    } finally {
+      this.loggingIn = false;
+    }
+  }
+
+  /** The round trip itself. Wrapped by {@link attemptLogin}, which marks it in flight. */
+  private async loginRoundTrip(body: Record<string, unknown>, messageType: number): Promise<LoginResult> {
     if (!this.cfg.region) await this.estimateDomain();
     await this.ensureSessionKey();
     const passportHost = `app-passport-${this.region}.eufy.com`;

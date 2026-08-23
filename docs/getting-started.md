@@ -18,10 +18,12 @@ eufy-sdk is not affiliated with, endorsed by, or sponsored by Anker Innovations 
   v2 thumbnail performs repeated candidate decodes and blocks the Node.js event loop until that image
   finishes. The synthetic 176×144 and 264×200 fixtures each took about one second on one Node 24 test
   host; timing varies by image and hardware.
-- **`ffmpeg` — optional, on `PATH`.** Needed only for the convenience decode/mux sinks: JPEG
+- **`ffmpeg` — optional.** Needed only for the convenience decode/mux sinks: JPEG
   `snapshotLive()`, the one-shot `record(seconds)` buffer, and WebRTC container output (`.mp4`/`.mkv`;
   falls back to raw when absent). The core paths — `live()`, `openReadable()`, `recordFragments()`
-  (CMAF fMP4), and the passive stored `snapshotStored()` — need no ffmpeg.
+  (CMAF fMP4), and the passive stored `snapshotStored()` — need no ffmpeg. Resolved on `PATH` by
+  default; a host that ships or manages its own build names it with `new EufyMega({ ffmpegPath })`
+  instead of editing `PATH`, and `ffmpegAvailable(ffmpegPath)` answers whether that one is runnable.
 
 ## Install
 
@@ -72,7 +74,27 @@ Notes:
 - **Captcha** triggers after repeated failed logins on an untrusted device; the result carries a PNG
   `image` data URL. Solve and call `solveCaptcha(answer)`.
 - **Persistence:** with a `store`, the token + session key are saved and reused — later runs skip
-  straight to ready (no re-login / 2FA) until the token expires (a 401 clears it).
+  straight to ready (no re-login / 2FA).
+- **A rejected token recovers itself.** A stored session can be invalidated while you are not using it —
+  it expires, or another login on the same account displaces it. `login()` resolving `ok` from the store
+  says a session was _restored_, not that the cloud still honours it; the first call that uses it finds
+  out. When the cloud rejects it, the client logs in again with the credentials it already has and
+  finishes the call, so you see nothing. What surfaces (as a rejected promise carrying
+  `SessionExpiredError`) is a recovery the client cannot complete alone: one needing **you** for a captcha
+  or 2FA code, one with no credentials to use, one attempted mid-login, or a login that failed.
+  `getDevices()` **rejects** in that case rather than resolving with an empty list, so an unauthenticated
+  client never reads as an account with no devices.
+- **Two clients on one account need two identities.** `openudid` defaults to a value derived from your
+  credentials, so two clients built the same way look like the **same device** to the cloud — which keeps
+  one session per device and evicts the other. Each then finds its token rejected and replaces it,
+  displacing the other in turn. Give every client its own `openudid` and they coexist. Two clients that
+  share one `store` are fine too: a client whose token is rejected adopts whatever the store now holds
+  before it considers logging in.
+- **Contention is bounded, not silent.** A token replaced once is ordinary; a second replacement soon
+  after is treated as contention, so the client waits (a minute, doubling, capped at half an hour)
+  instead of trading logins — repeated logins are what makes an account start demanding captchas. The
+  rejection you get then names the likely cause. A replacement that keeps working for ten minutes clears
+  the wait.
 - **Device identity:** set a distinct `phoneModel` / `openudid` so this client appears as its own
   trusted device rather than impersonating your phone.
 
