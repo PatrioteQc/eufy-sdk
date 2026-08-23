@@ -494,7 +494,9 @@ export class MegaHttpClient {
       authed &&
       last?.status === 401 &&
       (last.code === EufyCloudErrorCode.SESSION_KICKED ||
-        /user_id is empty|invalid.*token|token.*(expired|error)|kicked|does not exist|unauthor/i.test(last?.msg ?? ""));
+        /user_id is empty|invalid.*token|token.*(expired|error)|kicked|(?:token|session).*does not exist|unauthor/i.test(
+          last?.msg ?? "",
+        ));
     if (authFailure) {
       this.clearSession();
       throw new SessionExpiredError(`${path} failed (401): ${last?.msg}`);
@@ -816,9 +818,8 @@ export class MegaHttpClient {
       res = await this.postSigned<Record<string, unknown>>(passportHost, "/passport/login", body, !!this.auth_);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      // Captcha required (CAPTCHA_REQUIRED) or wrong answer (CAPTCHA_WRONG): fetch a fresh challenge
-      // and hand it back for (re)solving — hold the id for solveCaptcha(). The code is matched inside
-      // the thrown message (postSigned embeds `(status/code)`), so the patterns are built from the consts.
+      // Captcha required / wrong answer — the code is matched in the thrown message (postSigned embeds
+      // `(status/code)`), so the patterns are built from the consts. Hold the id for solveCaptcha().
       const captchaWrong = new RegExp(`\\b${EufyCloudErrorCode.CAPTCHA_WRONG}\\b`);
       const captchaAny = new RegExp(
         `\\b${EufyCloudErrorCode.CAPTCHA_REQUIRED}\\b|\\b${EufyCloudErrorCode.CAPTCHA_WRONG}\\b`,

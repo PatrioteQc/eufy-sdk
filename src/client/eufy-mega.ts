@@ -378,12 +378,21 @@ export class EufyMega extends EventEmitter {
    * before; one that does not gets a log line instead of a crash, which is the correct trade for a
    * failure it never asked to be told about.
    */
+  /**
+   * Route an internal error to the host. A {@link SessionExpiredError} — a kicked/expired token, the
+   * transport having already cleared the session — is emitted as the dedicated `sessionExpired` event so
+   * a host can react to auth loss without pattern-matching the generic `error` bus; it is NOT also sent
+   * to `error`. Every other error goes to `error`, falling back to a logged warning when nothing listens
+   * (an unhandled `error` on an EventEmitter throws). Only reported-error paths reach here — an error
+   * thrown straight out of a direct call is the caller's to handle.
+   */
   private reportError(e: unknown): void {
     const err = e instanceof Error ? e : new Error(String(e));
-    // Auth loss (a kicked/expired token) gets its own event so a host can react without string-matching
-    // the generic error bus. A normal event, so emitting with no listener is a harmless no-op (unlike
-    // `error`, which throws when unhandled). Matched by name to survive an error crossing a module edge.
-    if (err.name === "SessionExpiredError") this.emit("sessionExpired", err);
+    if (err instanceof SessionExpiredError) {
+      if (this.listenerCount("sessionExpired")) this.emit("sessionExpired", err);
+      else this.opts.logger?.warn?.(`[eufy] ${err.message}`);
+      return;
+    }
     if (this.listenerCount("error")) this.emit("error", err);
     else this.opts.logger?.warn?.(`[eufy] ${err.message}`);
   }

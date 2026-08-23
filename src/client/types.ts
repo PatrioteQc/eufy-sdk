@@ -257,7 +257,7 @@ export type EufyMegaEventMap = {
    * The cloud session was kicked or invalidated — another client logged into the same account, or the
    * token expired. The SDK has already cleared the persisted session; a host should re-drive `login()`
    * (which usually needs 2FA). Distinct from `error` so a host can react to auth loss without
-   * pattern-matching the generic error bus; the same failure ALSO fires `error` for back-compat.
+   * pattern-matching the generic `error` bus. A session error is emitted ONLY here, not also on `error`.
    */
   sessionExpired: [err: Error];
   // Any transport error.
