@@ -205,6 +205,28 @@ export interface ValueMember {
    * knowing what its fields mean.
    */
   decode?: (raw: unknown, codec: RawDpCodec | undefined, ctx: CommandContext) => boolean | number | string | undefined;
+  /**
+   * This member's value is a FIELD of another member's payload, not a wire id of its own.
+   *
+   * Names the member KEY that owns the `param`. That owner's stored property is what this member's
+   * {@link decode} is handed, and the owner's evidence gate becomes this member's gate — so a device
+   * that never reported the DP gets neither getter, and one that did gets both.
+   *
+   * The inverse of {@link readAliases}, which is one value across several wire ids. This is several
+   * values inside ONE wire id, which is how the clean line reports most of what it knows: nine
+   * consumable counters arrive as nine sub-messages of a single `ConsumableRuntime` on DP 168, and a
+   * `CleanParam` on DP 154 carries the mop level, the carpet strategy and the clean type together.
+   *
+   * Contributes NO {@link PropertySpec}, deliberately: the schema describes what a device REPORTS, and
+   * the device reports one DP carrying one value. Publishing a second spec for the same id would give
+   * `Device` two names for one param and it stores under only the first — the extra getters would then
+   * answer `undefined` forever, which is exactly the failure the evidence gate exists to prevent.
+   *
+   * Read-only by construction. Setting a field inside a shared payload means re-encoding the whole
+   * message, which needs an encoder and a captured write this SDK does not have; the owner keeps the
+   * wire. Guarded by `property-id-integrity.spec.ts`.
+   */
+  readsFrom?: string;
   /** What the decoded value means, when it differs from the stored property's own {@link kind}. */
   decodedKind?: ValueKind;
   /**
@@ -814,11 +836,18 @@ export function bindMembers<M extends Members>(
       if (installs(m, ctx)) out[name] = describe(m.description, () => sink.dispatch(m.action(ctx)), {});
       continue;
     }
-    const prop = m.property ?? name;
+    // A `readsFrom` member has no wire id of its own: it reads a FIELD of the owner's payload, so the
+    // owner's stored property is what it decodes and the owner's evidence gate is what installs it.
+    // Falling back to the member itself keeps the ordinary case a single lookup.
+    // Falls back to the member itself when `readsFrom` names nothing, so a typo costs the getter (the
+    // fallback declares no param, so its gate is false) rather than throwing at bind time.
+    const owner = ((m.readsFrom === undefined ? undefined : members[m.readsFrom]) ?? m) as ValueMember;
+    const ownerName = owner === m ? name : String(m.readsFrom);
+    const prop = owner.property ?? ownerName;
     // One availability decision across getter, setter and manifest: a member gated off by `available`
     // for this device is not exposed as a getter either (the manifest already omits it).
     const available = !m.available || m.available(ctx);
-    const reported = available && reads(m, ctx);
+    const reported = available && reads(owner, ctx);
     if (reported && !m.writeOnly && !m.unexposed) {
       const decode = m.decode;
       const get = decode ? () => decode(read(prop)?.value, rawDp, ctx) : () => narrow(m.type, read, prop);

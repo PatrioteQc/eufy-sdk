@@ -9,6 +9,7 @@ import {
   decodeCleanType,
   decodeChildLock,
   decodeDoNotDisturb,
+  decodeDoNotDisturbActive,
   decodeSessionCleanTime,
   decodeVacuumFault,
   encodeModeCtrl,
@@ -316,6 +317,8 @@ const _errorCode: Exact<typeof vac.errorCode, number | undefined> = true;
 
 // doNotDisturb and rssi are DP-gated reads — absent until DPs 107 / 134 are reported.
 const _doNotDisturb: Exact<typeof vac.doNotDisturb, boolean | undefined> = true;
+// A `readsFrom` member derives its surface type from its own `decode`, exactly as an owning one does.
+const _doNotDisturbActive: Exact<typeof vac.doNotDisturbActive, boolean | undefined> = true;
 const _rssi: Exact<typeof vac.rssi, number | undefined> = true;
 
 // language and volume are AIoT-only READS. Neither ships a setter: the write direction for both
@@ -336,6 +339,7 @@ export const _surfaceAssertions = [
   _startCleaning,
   _errorCode,
   _doNotDisturb,
+  _doNotDisturbActive,
   _rssi,
   _language,
   _volume,
@@ -457,6 +461,85 @@ describe("decodeDoNotDisturb (Undisturbed.sw → doNotDisturb)", () => {
     expect(decodeDoNotDisturb(frame([]), byteCodec)).toBeUndefined();
     expect(decodeDoNotDisturb(dnd(true), undefined)).toBeUndefined();
     expect(decodeDoNotDisturb(undefined, byteCodec)).toBeUndefined();
+  });
+});
+
+describe("decodeDoNotDisturbActive (Undisturbed.active → doNotDisturbActive)", () => {
+  /** The same payload shape the switch decode is exercised with: `active`(1) beside `undisturbed`(2). */
+  const window = (active: number[]): string => frame([...sub(1, active), ...sub(2, sub(1, int(1, 1)))]);
+
+  it("reads the live flag through a Switch wrapper", () => {
+    expect(decodeDoNotDisturbActive(window(int(1, 1)), byteCodec)).toBe(true);
+  });
+
+  it("reads a bare varint too, since which shape the vendor sends is not confirmed", () => {
+    // Both readings mean the same flag, so accepting either is what removes the guess rather than
+    // adding one — a wrapper whose value is omitted, and a bare zero, are both "not open".
+    expect(decodeDoNotDisturbActive(frame([...int(1, 1), ...sub(2, [])]), byteCodec)).toBe(true);
+    expect(decodeDoNotDisturbActive(window([]), byteCodec)).toBe(false);
+  });
+
+  it("reads an omitted flag beside a stated window as closed, not as missing", () => {
+    expect(decodeDoNotDisturbActive(frame(sub(2, sub(1, int(1, 1)))), byteCodec)).toBe(false);
+  });
+
+  it("answers the window, not the switch — the two disagree for most of the day", () => {
+    // The feature is ON (sw.value = 1) but the quiet hours have not started. Reading the switch here
+    // would tell a caller the robot is being quiet when it is not.
+    expect(decodeDoNotDisturb(window([]), byteCodec)).toBe(true);
+    expect(decodeDoNotDisturbActive(window([]), byteCodec)).toBe(false);
+  });
+
+  it("is undefined on anything that is not an UndisturbedResponse", () => {
+    // The Tuya line's DP 107 is a plain bool carrying the SWITCH; borrowing it would answer a
+    // different question than the one asked.
+    expect(decodeDoNotDisturbActive(true, byteCodec)).toBeUndefined();
+    expect(decodeDoNotDisturbActive("1", byteCodec)).toBeUndefined();
+    expect(decodeDoNotDisturbActive(frame([]), byteCodec)).toBeUndefined();
+    expect(decodeDoNotDisturbActive(window(int(1, 1)), undefined)).toBeUndefined();
+    expect(decodeDoNotDisturbActive(undefined, byteCodec)).toBeUndefined();
+  });
+});
+
+describe("doNotDisturbActive — a second reading of one DP (`readsFrom`)", () => {
+  const payload = frame([...sub(1, int(1, 1)), ...sub(2, sub(1, int(1, 1)))]);
+  const aiotDnd = new Set([VACUUM_DP.DO_NOT_DISTURB]);
+
+  it("decodes the OWNER's stored property, not one named after itself", () => {
+    // The whole point of the mechanism: `Device` stores DP 157 under `doNotDisturb`, so a getter
+    // reading `doNotDisturbActive` would find nothing and answer undefined forever.
+    const { acts } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, undefined, aiotDnd), {
+      rawDp: byteCodec,
+      read: (name) => (name === "doNotDisturb" ? { value: payload } : undefined),
+    });
+    expect(acts.doNotDisturb).toBe(true);
+    expect(acts.doNotDisturbActive).toBe(true);
+  });
+
+  it("publishes no property of its own — DP 157 stays owned by one spec", () => {
+    // A second spec for the same id is what `Device.specByParam` drops on the floor, and what the
+    // one-owner guard exists to catch. The reading is derived; the param is not claimed twice.
+    const forDp157 = VACUUM_CLEAN.properties.filter((p) => p.paramType === VACUUM_DP.DO_NOT_DISTURB);
+    expect(forDp157.map((p) => p.name)).toEqual(["doNotDisturb"]);
+  });
+
+  it("is absent on a device that reports only the Tuya switch", () => {
+    // DP 107 carries the switch and says nothing about the window, so the owner's read alias must not
+    // drag this getter onto a device that cannot answer it.
+    const tuyaOnly = new Set([TUYA_VACUUM_DP.FORBID_MODE]);
+    const { acts } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, "eufy_home_tuya", tuyaOnly), {
+      rawDp: byteCodec,
+      read: (name) => (name === "doNotDisturb" ? { value: true } : undefined),
+    });
+    expect(acts.doNotDisturb).toBe(true);
+    expect(acts.doNotDisturbActive).toBeUndefined();
+  });
+
+  it("grows no setter — a field inside a shared payload cannot be written on its own", () => {
+    const { acts } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, undefined, aiotDnd), {
+      rawDp: byteCodec,
+    });
+    expect((acts as Record<string, unknown>).setDoNotDisturbActive).toBeUndefined();
   });
 });
 
