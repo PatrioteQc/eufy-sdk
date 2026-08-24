@@ -176,10 +176,40 @@ const MODE_CTRL_FIELD = {
  * (omitted from the wire when zero), START_GOHOME → 6, PAUSE_TASK → 13.
  */
 export const ModeCtrlMethod = {
+  /** Live-verified on a T2351. Zero, so it is omitted from the wire per the proto3 default rule. */
   START_AUTO_CLEAN: 0,
+  /** Live-verified on a T2351. */
   START_GOHOME: 6,
+  /** Live-verified on a T2351. */
   PAUSE_TASK: 13,
+
+  // ── Parameterless verbs from the vendor's own `ModeCtrlRequest.Method`, NOT yet captured ────────
+  // Same frame as the three above — the two fields every method shares are live-proven, so the only
+  // unconfirmed thing about each is its number. That is not a small thing: a wrong number is a
+  // different command reaching real hardware, and an AIoT write is fire-and-forget. Every member built
+  // on one of these carries `unverified`.
+  START_SPOT_CLEAN: 3,
+  START_RC_CLEAN: 5,
+  START_FAST_MAPPING: 9,
+  START_GOWASH: 10,
+  STOP_TASK: 12,
+  RESUME_TASK: 14,
+  STOP_GOHOME: 15,
+  STOP_RC_CLEAN: 16,
+  STOP_GOWASH: 17,
+  STOP_SMART_FOLLOW: 18,
+  START_GLOBAL_CRUISE: 20,
 } as const;
+
+/**
+ * The methods that carry a `Param` oneof — room, zone, goto, schedule, cruise and scene cleans.
+ *
+ * Deliberately absent from {@link ModeCtrlMethod}. Each needs an argument the caller has to supply and
+ * this SDK cannot yet answer: a room or zone id comes from map data, which is not decodable here, and a
+ * coordinate is signed centimetres in a frame no capture has pinned. Listing their numbers beside the
+ * parameterless ones would invite a caller to send one with an empty payload, which is a valid frame
+ * meaning something nobody intended.
+ */
 
 /**
  * Encode a `ModeCtrlRequest` protobuf (DP 152) as a DP value: `varint(bodyLen) ++ {method:1, seq:2}`.
@@ -194,6 +224,19 @@ export const ModeCtrlMethod = {
  * message's business, not the encoder's.
  * @internal
  */
+/**
+ * The next `ModeCtrlRequest.seq`, shared by every verb on DP 152.
+ *
+ * The three verified verbs each keep their own counter inside a `method` closure. A table-declared
+ * member has no closure to hold one, and a shared counter is the better behaviour anyway: `seq`
+ * identifies a request so its response can be matched to it, and two verbs handing out the same number
+ * would make two outstanding requests indistinguishable. Starts where the existing verbs start.
+ */
+let modeCtrlSeq = 111;
+function nextModeCtrlSeq(): number {
+  return ++modeCtrlSeq;
+}
+
 export function encodeModeCtrl(method: number, seq: number): string {
   return rawDp((w) => {
     if (method !== 0) w.int(MODE_CTRL_FIELD.METHOD, method);
@@ -1570,6 +1613,172 @@ export const VACUUM_CLEAN_MEMBERS = {
     provenance: "mega",
     description: "WiFi RSSI in dBm (DP 134, Value ro). Schema-confirmed.",
     available: (ctx: AvailabilityContext) => ctx.paramIds?.has(TUYA_VACUUM_DP.RSSI) ?? false,
+  },
+  /**
+   * The ModeCtrl verbs whose METHOD NUMBER is not yet captured.
+   *
+   * Each shares its frame with the three verified verbs above — same message, same two fields, same
+   * encoder — so what is unconfirmed is the number alone. That still keeps them `unverified`: a wrong
+   * number is a different command arriving at real hardware, and an AIoT DP write is fire-and-forget,
+   * so a mistake looks exactly like success. They are declared so the capability documents what the
+   * robot accepts, and one capture per verb is all that stands between them and a working setter.
+   *
+   * `stopCleaning` and `resumeCleaning` are the pair users notice missing first: today a paused robot
+   * can only be resumed by starting a fresh run.
+   */
+  /**
+   * End the current job outright, as opposed to {@link VACUUM_CLEAN_MEMBERS.pauseCleaning}, which\n   * leaves it resumable.
+   */
+  stopCleaning: {
+    type: "bool",
+    kind: "boolean",
+    writeOnly: true,
+    unverified: true,
+    write: () => aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.STOP_TASK, nextModeCtrlSeq())),
+    available: (ctx: AvailabilityContext) => isAiotVacuum(ctx),
+    provenance: "mega",
+    description:
+      "Stop the current job (ModeCtrlRequest method 12 over DP 152). Method number not captured — unverified.",
+  },
+  /**
+   * Carry on with a paused job rather than starting a new one — the counterpart the pause verb has\n   * been missing.
+   */
+  resumeCleaning: {
+    type: "bool",
+    kind: "boolean",
+    writeOnly: true,
+    unverified: true,
+    write: () => aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.RESUME_TASK, nextModeCtrlSeq())),
+    available: (ctx: AvailabilityContext) => isAiotVacuum(ctx),
+    provenance: "mega",
+    description:
+      "Resume a paused job (ModeCtrlRequest method 14 over DP 152). Method number not captured — unverified.",
+  },
+  /**
+   * Send the robot to the dock to wash its mops. Distinct from the dock's own `washMops`, which asks\n   * the STATION to run its cycle: this one moves the robot there first.
+   */
+  startWashingMops: {
+    type: "bool",
+    kind: "boolean",
+    writeOnly: true,
+    unverified: true,
+    write: () => aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.START_GOWASH, nextModeCtrlSeq())),
+    available: (ctx: AvailabilityContext) => isAiotVacuum(ctx),
+    provenance: "mega",
+    description:
+      "Go and wash the mops (ModeCtrlRequest method 10 over DP 152). Method number not captured — unverified.",
+  },
+  /**
+   * Call off a mop-wash trip in progress.
+   */
+  stopWashingMops: {
+    type: "bool",
+    kind: "boolean",
+    writeOnly: true,
+    unverified: true,
+    write: () => aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.STOP_GOWASH, nextModeCtrlSeq())),
+    available: (ctx: AvailabilityContext) => isAiotVacuum(ctx),
+    provenance: "mega",
+    description:
+      "Stop washing the mops (ModeCtrlRequest method 17 over DP 152). Method number not captured — unverified.",
+  },
+  /**
+   * Call off a return-to-dock in progress, leaving the robot where it is.
+   */
+  stopReturnToDock: {
+    type: "bool",
+    kind: "boolean",
+    writeOnly: true,
+    unverified: true,
+    write: () => aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.STOP_GOHOME, nextModeCtrlSeq())),
+    available: (ctx: AvailabilityContext) => isAiotVacuum(ctx),
+    provenance: "mega",
+    description:
+      "Stop returning to the dock (ModeCtrlRequest method 15 over DP 152). Method number not captured — unverified.",
+  },
+  /**
+   * Clean the robot's immediate surroundings. Takes no target — the spot is wherever it is standing,\n   * which is why this one needs no `Param` and its area-selecting cousins do.
+   */
+  startSpotClean: {
+    type: "bool",
+    kind: "boolean",
+    writeOnly: true,
+    unverified: true,
+    write: () => aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.START_SPOT_CLEAN, nextModeCtrlSeq())),
+    available: (ctx: AvailabilityContext) => isAiotVacuum(ctx),
+    provenance: "mega",
+    description:
+      "Spot-clean where the robot stands (ModeCtrlRequest method 3 over DP 152). Method number not captured — unverified.",
+  },
+  /**
+   * Run a fast mapping pass without cleaning — how a robot learns a floor it has not seen.
+   */
+  startMapping: {
+    type: "bool",
+    kind: "boolean",
+    writeOnly: true,
+    unverified: true,
+    write: () => aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.START_FAST_MAPPING, nextModeCtrlSeq())),
+    available: (ctx: AvailabilityContext) => isAiotVacuum(ctx),
+    provenance: "mega",
+    description:
+      "Run a fast mapping pass (ModeCtrlRequest method 9 over DP 152). Method number not captured — unverified.",
+  },
+  /**
+   * Patrol the whole map without cleaning — the camera-equipped models use this to look around.
+   */
+  startCruise: {
+    type: "bool",
+    kind: "boolean",
+    writeOnly: true,
+    unverified: true,
+    write: () => aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.START_GLOBAL_CRUISE, nextModeCtrlSeq())),
+    available: (ctx: AvailabilityContext) => isAiotVacuum(ctx),
+    provenance: "mega",
+    description:
+      "Start a global cruise (ModeCtrlRequest method 20 over DP 152). Method number not captured — unverified.",
+  },
+  /**
+   * Enter remote-control cleaning, where the app drives. The SDK offers no steering wire, so this is\n   * only half a feature until one exists — declared for completeness of the vocabulary.
+   */
+  startRemoteControl: {
+    type: "bool",
+    kind: "boolean",
+    writeOnly: true,
+    unverified: true,
+    write: () => aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.START_RC_CLEAN, nextModeCtrlSeq())),
+    available: (ctx: AvailabilityContext) => isAiotVacuum(ctx),
+    provenance: "mega",
+    description:
+      "Enter remote-control cleaning (ModeCtrlRequest method 5 over DP 152). Method number not captured — unverified.",
+  },
+  /**
+   * Leave remote-control cleaning.
+   */
+  stopRemoteControl: {
+    type: "bool",
+    kind: "boolean",
+    writeOnly: true,
+    unverified: true,
+    write: () => aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.STOP_RC_CLEAN, nextModeCtrlSeq())),
+    available: (ctx: AvailabilityContext) => isAiotVacuum(ctx),
+    provenance: "mega",
+    description:
+      "Leave remote-control cleaning (ModeCtrlRequest method 16 over DP 152). Method number not captured — unverified.",
+  },
+  /**
+   * Stop smart-follow mode. There is no start verb in the vendor's parameterless set — the mode is\n   * switched on through `smartFollow` in the DP 176 settings, and only stopped from here.
+   */
+  stopSmartFollow: {
+    type: "bool",
+    kind: "boolean",
+    writeOnly: true,
+    unverified: true,
+    write: () => aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.STOP_SMART_FOLLOW, nextModeCtrlSeq())),
+    available: (ctx: AvailabilityContext) => isAiotVacuum(ctx),
+    provenance: "mega",
+    description:
+      "Stop smart-follow mode (ModeCtrlRequest method 18 over DP 152). Method number not captured — unverified.",
   },
   /** Start an auto-clean run via ModeCtrlRequest method 0 (DP 152). AIoT only — Tuya write unverified. */
   startCleaning: method(

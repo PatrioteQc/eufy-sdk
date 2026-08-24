@@ -936,3 +936,56 @@ describe("vacuum_clean — DP-based action routing", () => {
     expect(acts.volume).toBe(38);
   });
 });
+
+describe("ModeCtrl verbs — vocabulary declared, wire still unconfirmed", () => {
+  const AIOT = new Set([VACUUM_DP.POWER, VACUUM_DP.WORK_STATUS]);
+
+  it("keeps the captured verbs callable and every uncaptured one off the surface", () => {
+    const { acts } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, "eufy_home", AIOT));
+    const a = acts as Record<string, unknown>;
+    // Live-verified on a T2351 — these three stay.
+    expect(typeof a.startCleaning).toBe("function");
+    expect(typeof a.returnToDock).toBe("function");
+    // Method number from the vendor enum alone. A wrong number is a different command reaching real
+    // hardware on a fire-and-forget wire, so declaring the verb must not install it.
+    for (const name of [
+      "stopCleaning",
+      "resumeCleaning",
+      "startWashingMops",
+      "stopWashingMops",
+      "stopReturnToDock",
+      "startSpotClean",
+      "startMapping",
+      "startCruise",
+      "startRemoteControl",
+      "stopRemoteControl",
+      "stopSmartFollow",
+    ]) {
+      expect(a[name]).toBeUndefined();
+      expect(a[`set${name[0].toUpperCase()}${name.slice(1)}`]).toBeUndefined();
+    }
+  });
+
+  it("gives the whole vocabulary distinct method numbers", () => {
+    // A duplicate here would silently make two verbs the same command.
+    const numbers = Object.values(ModeCtrlMethod);
+    expect(new Set(numbers).size).toBe(numbers.length);
+  });
+
+  it("leaves the param-carrying methods out of the enum entirely", () => {
+    // Room, zone, goto and scene cleans need an argument this SDK cannot answer yet. Listing their
+    // numbers would invite sending one with an empty payload — a valid frame meaning something else.
+    expect(Object.values(ModeCtrlMethod)).not.toContain(24);
+    expect(Object.values(ModeCtrlMethod)).not.toContain(1);
+  });
+
+  it("advances seq per request, so two outstanding writes stay distinguishable", () => {
+    const first = encodeModeCtrl(ModeCtrlMethod.STOP_TASK, 1);
+    const second = encodeModeCtrl(ModeCtrlMethod.STOP_TASK, 2);
+    expect(first).not.toBe(second);
+    expect(byteCodec.decode(first)).toEqual([
+      { field: 1, kind: "int", value: 12n },
+      { field: 2, kind: "int", value: 1n },
+    ]);
+  });
+});
