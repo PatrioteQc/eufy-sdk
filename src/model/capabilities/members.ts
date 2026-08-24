@@ -206,25 +206,40 @@ export interface ValueMember {
    */
   decode?: (raw: unknown, codec: RawDpCodec | undefined, ctx: CommandContext) => boolean | number | string | undefined;
   /**
-   * This member's value is a FIELD of another member's payload, not a wire id of its own.
+   * This member's value is also a FIELD of another member's payload.
    *
-   * Names the member KEY that owns the `param`. That owner's stored property is what this member's
-   * {@link decode} is handed, and the owner's evidence gate becomes this member's gate — so a device
-   * that never reported the DP gets neither getter, and one that did gets both.
+   * Names the member KEY that owns that payload's `param`. The owner's stored property is what this
+   * member's {@link decode} is handed, and the owner's evidence installs this member — so a device that
+   * never reported the DP gets neither getter, and one that did gets both.
    *
    * The inverse of {@link readAliases}, which is one value across several wire ids. This is several
    * values inside ONE wire id, which is how the clean line reports most of what it knows: nine
    * consumable counters arrive as nine sub-messages of a single `ConsumableRuntime` on DP 168, and a
-   * `CleanParam` on DP 154 carries the mop level, the carpet strategy and the clean type together.
+   * `CleanParam` on DP 154 carries the carpet strategy and the clean type together.
    *
-   * Contributes NO {@link PropertySpec}, deliberately: the schema describes what a device REPORTS, and
-   * the device reports one DP carrying one value. Publishing a second spec for the same id would give
-   * `Device` two names for one param and it stores under only the first — the extra getters would then
-   * answer `undefined` forever, which is exactly the failure the evidence gate exists to prevent.
+   * **Two shapes, by whether the member also declares a `param` of its own.**
    *
-   * Read-only by construction. Setting a field inside a shared payload means re-encoding the whole
-   * message, which needs an encoder and a captured write this SDK does not have; the owner keeps the
-   * wire. Guarded by `property-id-integrity.spec.ts`.
+   * *Derived only* (no `param`): the member contributes NO {@link PropertySpec}. The schema describes
+   * what a device REPORTS and the device reports one DP, so a second spec for that id would give
+   * `Device` two names for one param — and it stores under only the first, leaving the extra getters
+   * answering `undefined` forever. That is exactly the failure the evidence gate exists to prevent.
+   *
+   * *Second source* (with a `param`): the member keeps its own wire and its own spec, and reaches into
+   * the owner's payload only on a device that did not report that wire. This is what lets ONE property
+   * span both clean lines when the two report it differently — the legacy Tuya line puts the lifetime
+   * cleaned area on its own DP, the AIoT line buries it inside `CleanStatistics` on DP 167. Without it,
+   * the same value would need two names and every host would branch on device family to ask for it.
+   * The `decode` sees whichever raw value the device actually has, so it discriminates on SHAPE, the way
+   * the clean line's cross-family decoders already do.
+   *
+   * **Watch what the owner was installed BY.** An owner with {@link readAliases} can be present because
+   * of an alias, and the value stored under its property is then the ALIAS's — a different wire carrying
+   * a different figure. A borrowing member that cannot come from that wire has to screen for it, either
+   * with its own {@link available} gate or in its `decode`; `lifetimeCleanCount` does both.
+   *
+   * Read-only either way. Setting a field inside a shared payload means re-encoding the whole message,
+   * which needs an encoder and a captured write this SDK does not have; the owner keeps that wire.
+   * Guarded by `property-id-integrity.spec.ts`.
    */
   readsFrom?: string;
   /** What the decoded value means, when it differs from the stored property's own {@link kind}. */
@@ -836,21 +851,24 @@ export function bindMembers<M extends Members>(
       if (installs(m, ctx)) out[name] = describe(m.description, () => sink.dispatch(m.action(ctx)), {});
       continue;
     }
-    // A `readsFrom` member has no wire id of its own: it reads a FIELD of the owner's payload, so the
-    // owner's stored property is what it decodes and the owner's evidence gate is what installs it.
-    // Falling back to the member itself keeps the ordinary case a single lookup.
-    // Falls back to the member itself when `readsFrom` names nothing, so a typo costs the getter (the
-    // fallback declares no param, so its gate is false) rather than throwing at bind time.
+    const prop = m.property ?? name;
+    // A `readsFrom` member reads a FIELD of another member's payload. Falling back to the member itself
+    // when `readsFrom` names nothing costs the getter (that fallback is its own owner, so nothing is
+    // borrowed) rather than throwing at bind time.
     const owner = ((m.readsFrom === undefined ? undefined : members[m.readsFrom]) ?? m) as ValueMember;
-    const ownerName = owner === m ? name : String(m.readsFrom);
-    const prop = owner.property ?? ownerName;
+    const borrowed = owner === m ? undefined : (owner.property ?? String(m.readsFrom));
     // One availability decision across getter, setter and manifest: a member gated off by `available`
     // for this device is not exposed as a getter either (the manifest already omits it).
     const available = !m.available || m.available(ctx);
-    const reported = available && reads(owner, ctx);
+    // Either wire is evidence: the member's own param where it has one, or the owner's payload that
+    // carries the same value on the other device family.
+    const reported = available && (reads(m, ctx) || (borrowed !== undefined && reads(owner, ctx)));
     if (reported && !m.writeOnly && !m.unexposed) {
       const decode = m.decode;
-      const get = decode ? () => decode(read(prop)?.value, rawDp, ctx) : () => narrow(m.type, read, prop);
+      // The member's own wire wins; the owner's payload is the fallback for a device that does not
+      // speak it. One `decode` sees whichever arrived and discriminates on the value's shape.
+      const raw = (): unknown => read(prop)?.value ?? (borrowed === undefined ? undefined : read(borrowed)?.value);
+      const get = decode ? () => decode(raw(), rawDp, ctx) : () => narrow(m.type, read, prop);
       Object.defineProperty(out, name, { get, enumerable: true, configurable: true });
     }
     if (!m.write || m.unverified || !installs(m, ctx)) continue;

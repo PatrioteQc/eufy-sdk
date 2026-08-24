@@ -27,6 +27,7 @@ const UNIT_FOR_KIND: Record<string, string> = {
   celsius: "°C",
   dbm: "dBm",
   seconds: "s",
+  hours: "h",
   megabytes: "MB",
   degrees: "°",
 };
@@ -37,6 +38,7 @@ const NUMERIC_KINDS = new Set<ValueKind>([
   "celsius",
   "dbm",
   "seconds",
+  "hours",
   "megabytes",
   "degrees",
   "scalar",
@@ -63,12 +65,23 @@ const reads: { label: string; mod: CapabilityModule; read: Read; spec?: Property
   Object.entries(mod.members ?? {})
     .flatMap(([name, m]) => ("type" in m ? [[name, m] as const] : []))
     .filter(([, m]) => !m.writeOnly && !m.unexposed)
-    .map(([name, m]: readonly [string, ValueMember]) => ({
-      label: `${mod.capability}.${name}`,
-      mod,
-      read: { kind: m.decodedKind, values: m.decodedValues, decode: m.decode },
-      spec: mod.properties.find((p) => p.name === (m.property ?? name)),
-    })),
+    .map(([name, m]: readonly [string, ValueMember]) => {
+      // A `readsFrom` member with no param of its own publishes no spec — it decodes a field of the
+      // OWNER's stored payload, so the owner's spec is the stored property these rules are about. One
+      // that DOES declare a param keeps its own spec and only borrows on the other device family, so
+      // its own spec is the right one. Resolved the way `bindMembers` resolves the read.
+      const borrowed =
+        m.readsFrom === undefined || m.param !== undefined
+          ? undefined
+          : ((mod.members?.[m.readsFrom] as ValueMember | undefined) ?? undefined);
+      const specName = borrowed ? (borrowed.property ?? m.readsFrom!) : (m.property ?? name);
+      return {
+        label: `${mod.capability}.${name}`,
+        mod,
+        read: { kind: m.decodedKind, values: m.decodedValues, decode: m.decode },
+        spec: mod.properties.find((p) => p.name === specName),
+      };
+    }),
 );
 
 describe("value kinds — the published vocabulary", () => {

@@ -7,10 +7,12 @@ import {
   TUYA_VACUUM_DP,
   decodeVacuumActivity,
   decodeCleanType,
-  decodeChildLock,
+  decodeUnisetting,
+  decodeCleanParamValue,
+  decodeConsumableHours,
   decodeDoNotDisturb,
   decodeDoNotDisturbActive,
-  decodeSessionCleanTime,
+  decodeCleanStat,
   decodeVacuumFault,
   encodeModeCtrl,
   ModeCtrlMethod,
@@ -107,6 +109,7 @@ describe("vacuum_clean capability module", () => {
       "waterTank",
       "mopPad",
       "childLock",
+      "sideBrushHours",
       "doNotDisturb",
       "rssi",
     ]);
@@ -410,23 +413,69 @@ describe("decodeVacuumFault (ErrorCode → fault code)", () => {
  * containers deep, and both rely on proto3 omitting zero values — so an empty container is a real
  * answer (off / no elapsed time), while an absent one is the device not answering.
  */
-describe("decodeChildLock (UnisettingResponse.children_lock)", () => {
-  it("reads the switch through its wrapper", () => {
-    expect(decodeChildLock(frame(sub(1, int(1, 1))), byteCodec)).toBe(true);
+describe("decodeUnisetting (UnisettingResponse toggles)", () => {
+  const CHILD_LOCK = 1;
+  const MULTI_MAP = 3;
+  const SMART_FOLLOW = 13;
+
+  it("reads a switch through its wrapper", () => {
+    expect(decodeUnisetting(frame(sub(CHILD_LOCK, int(1, 1))), byteCodec, CHILD_LOCK)).toBe(true);
   });
 
   it("reads an omitted zero as off", () => {
-    expect(decodeChildLock(frame(sub(1, [])), byteCodec)).toBe(false);
+    expect(decodeUnisetting(frame(sub(CHILD_LOCK, [])), byteCodec, CHILD_LOCK)).toBe(false);
   });
 
-  it("ignores the other toggles in the same message", () => {
-    expect(decodeChildLock(frame([...sub(1, int(1, 1)), ...sub(3, int(1, 1)), ...sub(9, [])]), byteCodec)).toBe(true);
+  it("reads each toggle out of one message without disturbing the others", () => {
+    // The whole point of one message carrying fifteen settings: every member reads its own field of
+    // the same payload, and a field it does not name must not leak into its answer.
+    const payload = frame([...sub(CHILD_LOCK, int(1, 1)), ...sub(MULTI_MAP, []), ...sub(SMART_FOLLOW, int(1, 1))]);
+    expect(decodeUnisetting(payload, byteCodec, CHILD_LOCK)).toBe(true);
+    expect(decodeUnisetting(payload, byteCodec, MULTI_MAP)).toBe(false);
+    expect(decodeUnisetting(payload, byteCodec, SMART_FOLLOW)).toBe(true);
+    // Field 9 is absent from this payload — not reported, which is not the same as off.
+    expect(decodeUnisetting(payload, byteCodec, 9)).toBeUndefined();
   });
 
   it("is undefined when the setting is not reported at all", () => {
-    expect(decodeChildLock(frame(sub(3, int(1, 1))), byteCodec)).toBeUndefined();
-    expect(decodeChildLock(frame(sub(1, int(1, 1))), undefined)).toBeUndefined();
-    expect(decodeChildLock(undefined, byteCodec)).toBeUndefined();
+    expect(decodeUnisetting(frame(sub(MULTI_MAP, int(1, 1))), byteCodec, CHILD_LOCK)).toBeUndefined();
+    expect(decodeUnisetting(frame(sub(CHILD_LOCK, int(1, 1))), undefined, CHILD_LOCK)).toBeUndefined();
+    expect(decodeUnisetting(undefined, byteCodec, CHILD_LOCK)).toBeUndefined();
+  });
+});
+
+describe("decodeConsumableHours (ConsumableRuntime parts)", () => {
+  const SIDE_BRUSH = 1;
+  const MOP = 6;
+  const DIRTY_WATERTANK = 10;
+
+  it("reads a part's hours through its Duration wrapper", () => {
+    expect(decodeConsumableHours(frame(sub(SIDE_BRUSH, int(1, 42))), byteCodec, SIDE_BRUSH)).toBe(42);
+  });
+
+  it("reads a fitted-but-unused part as 0, not as missing", () => {
+    expect(decodeConsumableHours(frame(sub(MOP, [])), byteCodec, MOP)).toBe(0);
+  });
+
+  it("reads each part out of one message, and respects the gap at 8 and 9", () => {
+    // The vendor leaves 8 and 9 unused; the waste-water tank really is at 10. Renumbering around the
+    // hole would report the water filter's hours as the tank's.
+    const payload = frame([
+      ...sub(SIDE_BRUSH, int(1, 10)),
+      ...sub(MOP, int(1, 20)),
+      ...sub(DIRTY_WATERTANK, int(1, 30)),
+    ]);
+    expect(decodeConsumableHours(payload, byteCodec, SIDE_BRUSH)).toBe(10);
+    expect(decodeConsumableHours(payload, byteCodec, MOP)).toBe(20);
+    expect(decodeConsumableHours(payload, byteCodec, DIRTY_WATERTANK)).toBe(30);
+    expect(decodeConsumableHours(payload, byteCodec, 8)).toBeUndefined();
+    expect(decodeConsumableHours(payload, byteCodec, 9)).toBeUndefined();
+  });
+
+  it("is undefined for a part this robot does not track", () => {
+    expect(decodeConsumableHours(frame(sub(SIDE_BRUSH, int(1, 5))), byteCodec, MOP)).toBeUndefined();
+    expect(decodeConsumableHours(frame(sub(SIDE_BRUSH, int(1, 5))), undefined, SIDE_BRUSH)).toBeUndefined();
+    expect(decodeConsumableHours(undefined, byteCodec, SIDE_BRUSH)).toBeUndefined();
   });
 });
 
@@ -501,6 +550,144 @@ describe("decodeDoNotDisturbActive (Undisturbed.active → doNotDisturbActive)",
   });
 });
 
+describe("decodeCleanParamValue (CleanParam settings beside clean_type)", () => {
+  const CARPET = 2;
+  const EXTENT = 3;
+  const TIMES = 7;
+  /** `clean_param`(1) wrapping the settings, as the device reports them. */
+  const param = (body: number[]): string => frame(sub(1, body));
+
+  it("reads a setting through its single-field wrapper", () => {
+    expect(decodeCleanParamValue(param(sub(CARPET, int(1, 1))), byteCodec, CARPET)).toBe(1);
+  });
+
+  it("reads the wrapper's scalar wherever the vendor numbered it", () => {
+    // The point of taking the first varint rather than asserting an inner field number: the wrapper's
+    // field is named differently per setting (`value`, `strategy`, …) and this must not depend on that.
+    expect(decodeCleanParamValue(param(sub(EXTENT, int(3, 2))), byteCodec, EXTENT)).toBe(2);
+  });
+
+  it("reads a present-but-empty wrapper as the zero member, not as missing", () => {
+    expect(decodeCleanParamValue(param(sub(CARPET, [])), byteCodec, CARPET)).toBe(0);
+    expect(decodeCleanParamValue(param(sub(CARPET, sub(9, []))), byteCodec, CARPET)).toBe(0);
+  });
+
+  it("reads a bare scalar too, for a setting the vendor did not wrap", () => {
+    expect(decodeCleanParamValue(param(int(TIMES, 2)), byteCodec, TIMES)).toBe(2);
+  });
+
+  it("gives each setting its own answer out of the one payload", () => {
+    const payload = param([...sub(1, int(1, 1)), ...sub(CARPET, int(1, 2)), ...sub(EXTENT, [])]);
+    expect(decodeCleanParamValue(payload, byteCodec, CARPET)).toBe(2);
+    expect(decodeCleanParamValue(payload, byteCodec, EXTENT)).toBe(0);
+    // Not stated in this report — absent is not the same as the zero member.
+    expect(decodeCleanParamValue(payload, byteCodec, TIMES)).toBeUndefined();
+  });
+
+  it("reads the CONFIGURED container, never the running one", () => {
+    // running_clean_param(4) disagrees with the setting mid-change; reading it would report what the
+    // job in progress is doing as though the user had chosen it.
+    const payload = frame([...sub(1, sub(CARPET, int(1, 1))), ...sub(4, sub(CARPET, int(1, 2)))]);
+    expect(decodeCleanParamValue(payload, byteCodec, CARPET)).toBe(1);
+  });
+
+  it("is undefined on anything that is not a CleanParam", () => {
+    expect(decodeCleanParamValue(frame([]), byteCodec, CARPET)).toBeUndefined();
+    expect(decodeCleanParamValue(param(sub(CARPET, int(1, 1))), undefined, CARPET)).toBeUndefined();
+    expect(decodeCleanParamValue(true, byteCodec, CARPET)).toBeUndefined();
+    expect(decodeCleanParamValue(undefined, byteCodec, CARPET)).toBeUndefined();
+  });
+});
+
+describe("CleanParam settings on the bound surface", () => {
+  const dps = new Set([VACUUM_DP.CLEAN_PARAM]);
+  const payload = frame(
+    sub(1, [...sub(1, int(1, 1)), ...sub(2, int(1, 1)), ...sub(3, []), ...sub(5, int(1, 1)), ...sub(7, int(1, 2))]),
+  );
+
+  const bound = () =>
+    bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, undefined, dps), {
+      rawDp: byteCodec,
+      read: (name) => (name === "cleanType" ? { value: payload } : undefined),
+    });
+
+  it("answers every setting off the one DP 154 report", () => {
+    const acts = bound().acts;
+    expect(acts.cleanType).toBe("mop");
+    expect(acts.carpetStrategy).toBe("avoid");
+    expect(acts.cleanExtent).toBe("normal");
+    expect(acts.smartMode).toBe(true);
+    expect(acts.cleanTimes).toBe(2);
+  });
+
+  it("publishes one property for DP 154, however many members read it", () => {
+    const named = VACUUM_CLEAN.properties.filter((p) => p.paramType === VACUUM_DP.CLEAN_PARAM).map((p) => p.name);
+    expect(named).toEqual(["cleanType"]);
+  });
+
+  it("grows no setters — the whole message would have to be re-encoded to write one field", () => {
+    const acts = bound().acts as Record<string, unknown>;
+    for (const name of ["setCarpetStrategy", "setCleanExtent", "setSmartMode", "setCleanTimes"]) {
+      expect(acts[name]).toBeUndefined();
+    }
+  });
+});
+
+describe("one payload, many reads — DP 176 settings and DP 168 consumables", () => {
+  const settings = frame([...sub(1, int(1, 1)), ...sub(3, []), ...sub(13, int(1, 1))]);
+  const consumables = frame([...sub(1, int(1, 120)), ...sub(6, []), ...sub(10, int(1, 30))]);
+  const dps = new Set([VACUUM_DP.SETTINGS, VACUUM_DP.CONSUMABLES]);
+
+  const bound = () =>
+    bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, undefined, dps), {
+      rawDp: byteCodec,
+      read: (name) =>
+        name === "childLock" ? { value: settings } : name === "sideBrushHours" ? { value: consumables } : undefined,
+    });
+
+  it("gives every settings toggle its own answer off the one DP 176 report", () => {
+    const acts = bound().acts;
+    expect(acts.childLock).toBe(true);
+    expect(acts.multiMap).toBe(false);
+    expect(acts.smartFollow).toBe(true);
+    // Reported by neither the fixture nor the device — absent, which is not "off".
+    expect(acts.livePhoto).toBeUndefined();
+  });
+
+  it("gives every consumable counter its own answer off the one DP 168 report", () => {
+    const acts = bound().acts;
+    expect(acts.sideBrushHours).toBe(120);
+    expect(acts.mopHours).toBe(0);
+    expect(acts.dirtyWaterTankHours).toBe(30);
+    expect(acts.dustBagHours).toBeUndefined();
+  });
+
+  it("publishes exactly one property per DP, however many members read it", () => {
+    // Eighteen getters over two data points. The schema still describes two reports, because that is
+    // what the device sends — the extra readings are derived, not extra wire claims.
+    const named = (dp: number) => VACUUM_CLEAN.properties.filter((p) => p.paramType === dp).map((p) => p.name);
+    expect(named(VACUUM_DP.SETTINGS)).toEqual(["childLock"]);
+    expect(named(VACUUM_DP.CONSUMABLES)).toEqual(["sideBrushHours"]);
+  });
+
+  it("installs none of them on a device that never reported the DP", () => {
+    const { acts } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, undefined, new Set()), {
+      rawDp: byteCodec,
+    });
+    expect(acts.childLock).toBeUndefined();
+    expect(acts.smartFollow).toBeUndefined();
+    expect(acts.sideBrushHours).toBeUndefined();
+    expect(acts.mopHours).toBeUndefined();
+  });
+
+  it("grows no setters — every one of these is a read", () => {
+    const acts = bound().acts as Record<string, unknown>;
+    for (const name of ["setChildLock", "setMultiMap", "setSmartFollow", "setSideBrushHours", "setMopHours"]) {
+      expect(acts[name]).toBeUndefined();
+    }
+  });
+});
+
 describe("doNotDisturbActive — a second reading of one DP (`readsFrom`)", () => {
   const payload = frame([...sub(1, int(1, 1)), ...sub(2, sub(1, int(1, 1)))]);
   const aiotDnd = new Set([VACUUM_DP.DO_NOT_DISTURB]);
@@ -543,32 +730,115 @@ describe("doNotDisturbActive — a second reading of one DP (`readsFrom`)", () =
   });
 });
 
-describe("decodeSessionCleanTime (CleanStatistics.single → clearTime)", () => {
+describe("decodeCleanStat (CleanStatistics — the run beside the lifetime totals)", () => {
   it("reads the current run's duration", () => {
-    expect(decodeSessionCleanTime(frame(sub(1, int(1, 4200))), byteCodec)).toBe(4200);
+    expect(decodeCleanStat(frame(sub(1, int(1, 4200))), byteCodec, 1, 1)).toBe(4200);
   });
 
   it("reads a started-but-zero run as 0, not as missing", () => {
-    expect(decodeSessionCleanTime(frame(sub(1, [])), byteCodec)).toBe(0);
+    expect(decodeCleanStat(frame(sub(1, [])), byteCodec, 1, 1)).toBe(0);
   });
 
   it("ignores the lifetime accumulators beside it", () => {
     // total(2) and user_total(3) carry a clean_duration at the same inner field number; reading the
     // wrong container would report a lifetime figure as the current run.
     const payload = frame([...sub(1, int(1, 60)), ...sub(2, int(1, 999999)), ...sub(3, int(1, 888888))]);
-    expect(decodeSessionCleanTime(payload, byteCodec)).toBe(60);
+    expect(decodeCleanStat(payload, byteCodec, 1, 1)).toBe(60);
   });
 
   it("reads the Tuya line's plain integer on the same property", () => {
-    expect(decodeSessionCleanTime(4200, byteCodec)).toBe(4200);
-    expect(decodeSessionCleanTime("4200", undefined)).toBe(4200);
-    expect(decodeSessionCleanTime(0, undefined)).toBe(0);
+    expect(decodeCleanStat(4200, byteCodec, 1, 1)).toBe(4200);
+    expect(decodeCleanStat("4200", undefined, 1, 1)).toBe(4200);
+    expect(decodeCleanStat(0, undefined, 1, 1)).toBe(0);
   });
 
   it("is undefined when the device has not stated a run", () => {
-    expect(decodeSessionCleanTime(frame([]), byteCodec)).toBeUndefined();
-    expect(decodeSessionCleanTime(frame(sub(1, int(1, 60))), undefined)).toBeUndefined();
-    expect(decodeSessionCleanTime(undefined, byteCodec)).toBeUndefined();
+    expect(decodeCleanStat(frame([]), byteCodec, 1, 1)).toBeUndefined();
+    expect(decodeCleanStat(frame(sub(1, int(1, 60))), undefined, 1, 1)).toBeUndefined();
+    expect(decodeCleanStat(undefined, byteCodec, 1, 1)).toBeUndefined();
+  });
+});
+
+describe("one figure, two clean lines — CleanStatistics as a second source", () => {
+  /** `single{duration,area}` + `user_total{duration,area,count}`, as an AIoT robot reports them. */
+  const stats = frame([
+    ...sub(1, [...int(1, 600), ...int(2, 12)]),
+    ...sub(3, [...int(1, 360000), ...int(2, 4200), ...int(3, 210)]),
+  ]);
+
+  it("reads every figure out of the one DP 167 report on the AIoT line", () => {
+    const { acts } = bind<VacuumCleanActions>(
+      "vacuum_clean",
+      fakeCtx(undefined, undefined, new Set([VACUUM_DP.CLEAN_STATS])),
+      {
+        rawDp: byteCodec,
+        read: (name) => (name === "clearTime" ? { value: stats } : undefined),
+      },
+    );
+    expect(acts.clearTime).toBe(600);
+    expect(acts.clearArea).toBe(12);
+    expect(acts.lifetimeCleanTime).toBe(360000);
+    expect(acts.lifetimeCleanArea).toBe(4200);
+    expect(acts.lifetimeCleanCount).toBe(210);
+  });
+
+  it("keeps reading the Tuya line's own DPs under the same names", () => {
+    // The point of the second source: one name per figure, whichever family the device is on. A Tuya
+    // robot reports each figure on its own DP and must not be routed through the protobuf path.
+    const tuyaDps = new Set([
+      TUYA_VACUUM_DP.CLEAR_TIME,
+      TUYA_VACUUM_DP.CLEAR_AREA,
+      TUYA_VACUUM_DP.CLEAR_TOTAL_TIME,
+      TUYA_VACUUM_DP.CLEAR_TOTAL_AREA,
+    ]);
+    const values: Record<string, number> = {
+      clearTime: 600,
+      clearArea: 12,
+      lifetimeCleanTime: 360000,
+      lifetimeCleanArea: 4200,
+    };
+    const { acts } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, "eufy_home_tuya", tuyaDps), {
+      rawDp: byteCodec,
+      read: (name) => (name in values ? { value: values[name] } : undefined),
+    });
+    expect(acts.clearTime).toBe(600);
+    expect(acts.clearArea).toBe(12);
+    expect(acts.lifetimeCleanTime).toBe(360000);
+    expect(acts.lifetimeCleanArea).toBe(4200);
+    // No Tuya DP carries a run count, and DP 167 is absent here — so it is not offered at all.
+    expect(acts.lifetimeCleanCount).toBeUndefined();
+  });
+
+  it("prefers a member's own wire over the borrowed payload", () => {
+    // A device reporting both must answer from its own DP. Borrowing is the fallback, not the default.
+    const both = new Set([VACUUM_DP.CLEAN_STATS, TUYA_VACUUM_DP.CLEAR_AREA]);
+    const { acts } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, undefined, both), {
+      rawDp: byteCodec,
+      read: (name) => (name === "clearTime" ? { value: stats } : name === "clearArea" ? { value: 99 } : undefined),
+    });
+    expect(acts.clearArea).toBe(99);
+  });
+
+  it("still publishes one property per DP — the borrowed id is not claimed twice", () => {
+    const named = (dp: number) => VACUUM_CLEAN.properties.filter((p) => p.paramType === dp).map((p) => p.name);
+    expect(named(VACUUM_DP.CLEAN_STATS)).toEqual(["clearTime"]);
+    // Each second-source member keeps its OWN spec, which is what makes it readable on the Tuya line.
+    expect(named(TUYA_VACUUM_DP.CLEAR_AREA)).toEqual(["clearArea"]);
+    expect(named(TUYA_VACUUM_DP.CLEAR_TOTAL_AREA)).toEqual(["lifetimeCleanArea"]);
+  });
+
+  it("grows no setters — every one of these is an accumulator the device owns", () => {
+    const { acts } = bind<VacuumCleanActions>(
+      "vacuum_clean",
+      fakeCtx(undefined, undefined, new Set([VACUUM_DP.CLEAN_STATS])),
+      {
+        rawDp: byteCodec,
+      },
+    );
+    const a = acts as Record<string, unknown>;
+    for (const n of ["setClearArea", "setLifetimeCleanTime", "setLifetimeCleanArea", "setLifetimeCleanCount"]) {
+      expect(a[n]).toBeUndefined();
+    }
   });
 });
 
