@@ -27,6 +27,12 @@ export const VACUUM_DP = {
   LANGUAGE: 162,
   /** Battery level 0-100 (DP 163, Value) — a clean-namespace DP, NOT the security param 1101. */
   BATTERY: 163,
+  /** UndisturbedResponse (DP 157, Raw protobuf) — the do-not-disturb window (see {@link decodeDoNotDisturb}). */
+  DO_NOT_DISTURB: 157,
+  /** CleanStatistics (DP 167, Raw protobuf) — session and lifetime totals (see {@link decodeSessionCleanTime}). */
+  CLEAN_STATS: 167,
+  /** UnisettingResponse (DP 176, Raw protobuf) — the device-wide setting toggles (see {@link decodeChildLock}). */
+  SETTINGS: 176,
   /** ErrorCode (DP 177 fault alert, Raw protobuf) — the robot's faults and warnings (see {@link decodeVacuumFault}). */
   FAULT_ALERT: 177,
 } as const;
@@ -511,6 +517,118 @@ export function decodeVacuumFault(raw: ParamValue | undefined, codec: RawDpCodec
 }
 
 /**
+ * Field numbers inside `UndisturbedResponse` (DP 157) and the messages it nests.
+ *
+ * `ACTIVE` is deliberately NOT read: it reports whether the window is open right now, which is a
+ * different question from whether the feature is switched on, and the latter is what the property means.
+ */
+const UNDISTURBED_FIELD = {
+  /** `undisturbed` — the configured window; `active`(1) beside it is the live in-window flag. */
+  UNDISTURBED: 2,
+  /** `sw` within an `Undisturbed` — the enable switch. */
+  SWITCH: 1,
+  /** `value` within a `Switch`. */
+  VALUE: 1,
+} as const;
+
+/**
+ * Decode the do-not-disturb switch from either clean line.
+ *
+ * Discriminates on the value's SHAPE, as {@link decodeCleanType} and {@link decodeVacuumFault} do: the
+ * Tuya line reports DP 107 as a plain bool, the AIoT line reports DP 157 as an `UndisturbedResponse`.
+ *
+ * A present-but-empty `Switch` reads as `false` rather than as missing — proto3 omits a zero-valued
+ * field, so "switched off" and "said nothing about the switch" are the same bytes once the container
+ * around them is there. An absent CONTAINER is still `undefined`: that is the device not answering.
+ * @internal
+ */
+export function decodeDoNotDisturb(raw: ParamValue | undefined, codec: RawDpCodec | undefined): boolean | undefined {
+  if (typeof raw === "boolean") return raw;
+  if (typeof raw === "number") return raw !== 0;
+  if (typeof raw !== "string") return undefined;
+  if (raw === "true" || raw === "false") return raw === "true";
+  if (raw === "0" || raw === "1") return raw === "1";
+  if (!codec) return undefined;
+
+  const window = codec.decode(raw)?.find((f) => f.field === UNDISTURBED_FIELD.UNDISTURBED);
+  if (window?.kind !== "bytes") return undefined;
+  const sw = codec.nested(window.value)?.find((f) => f.field === UNDISTURBED_FIELD.SWITCH);
+  if (sw === undefined) return false;
+  if (sw.kind !== "bytes") return undefined;
+  const value = codec.nested(sw.value)?.find((f) => f.field === UNDISTURBED_FIELD.VALUE);
+  if (value === undefined) return false;
+  return value.kind === "int" ? value.value !== 0n : undefined;
+}
+
+/**
+ * Field numbers inside `CleanStatistics` (DP 167).
+ *
+ * `SINGLE` is the run in progress. Two lifetime accumulators sit beside it — `total`(2), which survives
+ * a factory reset, and `user_total`(3), which does not — and neither is read here: the property is one
+ * number and the session figure is the one that changes while a caller is watching.
+ */
+const CLEAN_STATS_FIELD = {
+  /** `single` — statistics for the current run. */
+  SINGLE: 1,
+  /** `clean_duration` within a `Single`, in seconds. */
+  DURATION: 1,
+} as const;
+
+/**
+ * Decode the current run's cleaning duration from either clean line.
+ *
+ * Tuya reports DP 109 as a plain integer of seconds; AIoT reports DP 167 as a `CleanStatistics` whose
+ * `single.clean_duration` carries the same figure in the same unit. Shape discrimination again.
+ *
+ * A present-but-empty `Single` reads as `0` — a run that has just started has elapsed no time, and
+ * proto3 omits the zero. An absent `Single` is `undefined`.
+ * @internal
+ */
+export function decodeSessionCleanTime(raw: ParamValue | undefined, codec: RawDpCodec | undefined): number | undefined {
+  if (typeof raw === "number") return raw;
+  if (typeof raw !== "string") return undefined;
+  if (/^\d+$/.test(raw)) return Number(raw);
+  if (!codec) return undefined;
+
+  const single = codec.decode(raw)?.find((f) => f.field === CLEAN_STATS_FIELD.SINGLE);
+  if (single?.kind !== "bytes") return undefined;
+  const duration = codec.nested(single.value)?.find((f) => f.field === CLEAN_STATS_FIELD.DURATION);
+  if (duration === undefined) return 0;
+  return duration.kind === "int" ? Number(duration.value) : undefined;
+}
+
+/**
+ * Field numbers inside `UnisettingResponse` (DP 176).
+ *
+ * The message carries fifteen toggles; only the child lock is read, because the property schema allows
+ * one property per data point. **Its REQUEST counterpart numbers the same settings differently** — only
+ * `children_lock` sits at 1 in both — so a reader and a writer of this DP can never share a table.
+ */
+const UNISETTING_FIELD = {
+  /** `children_lock` — field 1 of the RESPONSE. */
+  CHILDREN_LOCK: 1,
+  /** `value` within a `Switch`. */
+  VALUE: 1,
+} as const;
+
+/**
+ * Decode the child-lock switch out of a `UnisettingResponse` (DP 176).
+ *
+ * A present-but-empty `Switch` reads as `false`: proto3 omits a zero, so "off" and "said nothing about
+ * this toggle" are the same bytes once the wrapper is there. An absent wrapper is `undefined` — the
+ * device did not report the setting at all.
+ * @internal
+ */
+export function decodeChildLock(raw: ParamValue | undefined, codec: RawDpCodec | undefined): boolean | undefined {
+  if (typeof raw !== "string" || !codec) return undefined;
+  const lock = codec.decode(raw)?.find((f) => f.field === UNISETTING_FIELD.CHILDREN_LOCK);
+  if (lock?.kind !== "bytes") return undefined;
+  const value = codec.nested(lock.value)?.find((f) => f.field === UNISETTING_FIELD.VALUE);
+  if (value === undefined) return false;
+  return value.kind === "int" ? value.value !== 0n : undefined;
+}
+
+/**
  * Decode a `WorkStatus` (DP 153) Raw-DP value to a {@link VacuumActivity}. That DP carries a whole
  * protobuf message rather than a scalar, so the payload is read through the injected {@link RawDpCodec}:
  * the codec owns the structure, this owns which field number carries which meaning. `"unknown"` covers
@@ -766,13 +884,17 @@ export const VACUUM_CLEAN_MEMBERS = {
    * Read-only — no write is expected for a session counter.
    */
   clearTime: {
-    param: TUYA_VACUUM_DP.CLEAR_TIME,
+    param: VACUUM_DP.CLEAN_STATS,
     type: "number",
     unit: "s",
     kind: "seconds",
     provenance: "mega",
+    readAliases: [{ paramType: TUYA_VACUUM_DP.CLEAR_TIME, available: isTuyaVacuum }],
+    decode: (raw, codec) => decodeSessionCleanTime(raw as ParamValue | undefined, codec),
+    decodedKind: "seconds",
     description:
-      "Session cleaning duration in seconds from DP 109 (ClearTime). X8 Pro Tuya clean line. Live-confirmed.",
+      "Session cleaning duration in seconds — CleanStatistics.single.clean_duration (DP 167 AIoT, Raw " +
+      "protobuf) or the plain DP 109 integer on the Tuya clean line.",
   },
   /**
    * Session cleaned area in m² (DP 110, Value). Live-confirmed 54 at rest. Read-only.
@@ -847,17 +969,40 @@ export const VACUUM_CLEAN_MEMBERS = {
     description: "Mop pad attached (DP 129, Bool ro). X8 Pro Tuya clean line. Schema-confirmed.",
   },
   /**
-   * Do-not-disturb mode (DP 107, Bool rw). When `true` the robot suppresses voice announcements;
-   * the app allows toggling this from its settings screen. Tuya clean line only — no equivalent
-   * DP confirmed on AIoT. Schema-confirmed from `thing.m.device.ref.info.list` v5.4 (forbid_mode).
+   * Child lock — when on, the robot ignores its physical buttons.
+   *
+   * AIoT clean line only; no equivalent is confirmed on the Tuya schema, so there is no read alias.
    */
-  doNotDisturb: {
-    param: TUYA_VACUUM_DP.FORBID_MODE,
+  childLock: {
+    param: VACUUM_DP.SETTINGS,
     type: "bool",
     kind: "boolean",
     provenance: "mega",
-    description: "Do-not-disturb mode (DP 107, Bool ro). X8 Pro Tuya clean line. Live-confirmed.",
-    available: (ctx: AvailabilityContext) => ctx.paramIds?.has(TUYA_VACUUM_DP.FORBID_MODE) ?? false,
+    decode: (raw, codec) => decodeChildLock(raw as ParamValue | undefined, codec),
+    decodedKind: "boolean",
+    description: "Child lock from UnisettingResponse.children_lock (DP 176 commonSettings, Raw protobuf).",
+    available: (ctx: AvailabilityContext) => ctx.paramIds?.has(VACUUM_DP.SETTINGS) ?? false,
+  },
+  /**
+   * Do-not-disturb — when on, the robot suppresses its voice announcements.
+   *
+   * Reports whether the feature is SWITCHED ON, not whether the quiet window happens to be open right
+   * now; `UndisturbedResponse` carries that as a separate `active` flag which this deliberately skips.
+   */
+  doNotDisturb: {
+    param: VACUUM_DP.DO_NOT_DISTURB,
+    type: "bool",
+    kind: "boolean",
+    provenance: "mega",
+    readAliases: [{ paramType: TUYA_VACUUM_DP.FORBID_MODE, available: isTuyaVacuum }],
+    decode: (raw, codec) => decodeDoNotDisturb(raw as ParamValue | undefined, codec),
+    decodedKind: "boolean",
+    description:
+      "Do-not-disturb switch — Undisturbed.sw (DP 157 AIoT, Raw protobuf) or the plain DP 107 bool on " +
+      "the Tuya clean line. Whether the feature is ON, not whether the window is open right now.",
+    available: (ctx: AvailabilityContext) =>
+      (ctx.paramIds?.has(VACUUM_DP.DO_NOT_DISTURB) ?? false) ||
+      (ctx.paramIds?.has(TUYA_VACUUM_DP.FORBID_MODE) ?? false),
   },
   /**
    * WiFi RSSI in dBm (DP 134, Value ro). Schema-confirmed from `thing.m.device.ref.info.list` v5.4.
