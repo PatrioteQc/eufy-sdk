@@ -75,19 +75,49 @@ describe("live start acknowledgement diagnostics", () => {
     expect(value.data).toMatchObject({ cmd: 1000, msg_id: 1, extValue: 1000, streamtype: 2, video_type: 12 });
   });
 
-  it("retransmits one unacknowledged live start with the same sequence", () => {
+  it("repeats an unacknowledged live start byte-identically", () => {
+    vi.useFakeTimers();
+    const { session, send, sentFrame } = harness();
+
+    session.startLiveMedia();
+    const first = sentFrame(0);
+    vi.advanceTimersByTime(1000);
+
+    expect(send.mock.calls.length).toBeGreaterThan(2);
+    for (const [, , frame] of send.mock.calls) expect(frame).toEqual(first);
+  });
+
+  it("gives up on a start the camera never acknowledges, and says so", () => {
+    vi.useFakeTimers();
+    const { session, send, debug } = harness();
+
+    session.startLiveMedia();
+    vi.advanceTimersByTime(3000);
+    const sent = send.mock.calls.length;
+    vi.advanceTimersByTime(10_000);
+
+    expect(debug).toHaveBeenCalledWith(LIVE_TRACE_MESSAGE, { phase: "media-command-unacknowledged", action: "start" });
+    expect(send).toHaveBeenCalledTimes(sent);
+  });
+
+  it("issues a fresh start after abandoning one, rather than nudging a stream that never began", () => {
     vi.useFakeTimers();
     const { session, send, debug, sentFrame } = harness();
 
     session.startLiveMedia();
     const first = sentFrame(0);
-    vi.advanceTimersByTime(500);
+    vi.advanceTimersByTime(3000);
+    const abandoned = send.mock.calls.length;
+    session.startLiveMedia();
 
-    expect(send).toHaveBeenCalledTimes(2);
-    expect(sentFrame(1)).toEqual(first);
-    vi.advanceTimersByTime(500);
-    expect(send).toHaveBeenCalledTimes(2);
-    expect(debug).toHaveBeenCalledWith(LIVE_TRACE_MESSAGE, { phase: "media-command-unacknowledged", action: "start" });
+    expect(send).toHaveBeenCalledTimes(abandoned + 1);
+    const reissued = sentFrame(abandoned);
+    expect(reissued).not.toEqual(first);
+    expect(reissued.subarray(4).length).toBe(first.subarray(4).length);
+    expect(debug).toHaveBeenCalledWith(
+      LIVE_TRACE_MESSAGE,
+      expect.objectContaining({ phase: "media-command", action: "start" }),
+    );
   });
 
   it("stops retransmitting once the acknowledgement lands", () => {
@@ -95,11 +125,12 @@ describe("live start acknowledgement diagnostics", () => {
     const { session, send, debug, acknowledge } = harness();
 
     session.startLiveMedia();
-    vi.advanceTimersByTime(500);
+    vi.advanceTimersByTime(150);
     acknowledge(0);
+    const sent = send.mock.calls.length;
     vi.advanceTimersByTime(5000);
 
-    expect(send).toHaveBeenCalledTimes(2);
+    expect(send).toHaveBeenCalledTimes(sent);
     expect(debug).not.toHaveBeenCalledWith(
       LIVE_TRACE_MESSAGE,
       expect.objectContaining({ phase: "media-command-unacknowledged" }),

@@ -78,8 +78,15 @@ const CMD_CONTROL_PAYLOAD = 1700;
 const CMD_START_LIVE = 1000;
 const CMD_STREAM_KEEPALIVE = 1139;
 /**
- * `1700` START_LIVE frame-header `type` (streamId byte): 11 (0x0b) for the level-1 (AES-128-ECB)
- * variant, 10 (0x0a) for the level-2 (AES-256-GCM) variant.
+ * The `1700` START_LIVE frame-header `type` byte.
+ *
+ * The current app does not derive this from the encryption level: it was captured sending 10 to one
+ * own-session camera and 11 to another, both at signCode 8 (level-2 GCM), differing by model and firmware
+ * generation rather than by cipher. Measured against the camera the app sends 11 to, a start carrying either
+ * value is accepted and delivers a keyframe, so the byte does not gate the stream on that firmware.
+ *
+ * The values are kept split by level because that is the pairing each has been verified in — 10 with
+ * level-2, 11 with level-1 — not because the level is known to select them.
  */
 const START_LIVE_FRAME_TYPE_L1 = 11;
 const START_LIVE_FRAME_TYPE_L2 = 10;
@@ -128,16 +135,31 @@ const AUDIO_RETRANSMIT_MS = 700;
 const AUDIO_MAX_SENDS = 2;
 /**
  * An own-session live start is acknowledged like an audio frame, and a start the device never took leaves
- * the camera silent with nothing to time out against but the warm-up deadline. It is retained and repeated
- * on the same terms: byte-identical, at most once, then abandoned.
+ * the camera silent with nothing to time out against but the warm-up deadline.
  *
- * The interval is well under the 9 ms acknowledgement measured for the app's own start, so a repeat only
- * happens when the datagram is genuinely gone rather than merely slow. Byte-identical matters because the
- * frame carries its sequence number and its ciphertext: a rebuilt start is a different message to a device
- * that de-duplicates by sequence, so it would be taken as a second start instead of a repair.
+ * So it is retained and repeated byte-identically until the device acknowledges it. Byte-identical is what
+ * makes repeating safe: the frame carries its sequence number and its ciphertext, and a device receiving the
+ * same sequence repeatedly starts the stream once — captured acknowledging one start's sequence seventeen
+ * times while streaming it once. A rebuilt start would instead read as a second, different start.
+ *
+ * Repeating until acknowledged is the app's own behaviour: it was captured sending the identical start 20
+ * times across 272 ms to a camera still waking, which acknowledged after 238 ms, and once to a camera that
+ * acknowledged in 9 ms. A count-bounded repeat cannot express that — the number of sends a start needs is
+ * whatever its acknowledgement latency demands, which measured 4–16 ms awake and 238 ms waking.
  */
-const LIVE_START_RETRANSMIT_MS = 500;
-const LIVE_START_MAX_SENDS = 2;
+const LIVE_START_RETRANSMIT_MS = 150;
+/**
+ * How long a live start is repeated before it is abandoned as unacknowledged.
+ *
+ * Two bounds sit either side of this. Below: the acknowledgement latencies actually measured — 4–37 ms from
+ * an awake own-session camera, 238 ms from one still waking — and this stays an order of magnitude above
+ * them, because abandoning early does not repair anything. A repeat is byte-identical and so is the same
+ * start; what follows an abandonment is a start under a NEW sequence, which is a second start rather than a
+ * repair, and the app never issues one. Above: the warm-up deadline a source gives the whole start (20s by
+ * default), so an abandoned start is reported while the warm-up is still running — the trace is then the
+ * reason the warm-up failed, not a footnote to it — and there is room for several fresh starts within it.
+ */
+const LIVE_START_ACK_DEADLINE_MS = 3000;
 /**
  * Half the 16-bit sequence space: a datagram whose distance from the last one exceeds this is read as
  * arriving from behind rather than as a near-full-space jump forward, which is how the numbering wraps
@@ -152,10 +174,11 @@ const SEQUENCE_LOOKBACK = 0x8000;
 const MAX_TRACED_DATAGRAM_GAPS = 8;
 /**
  * A datagram retained for retransmission until the device acknowledges its sequence number: the exact bytes
- * that were sent, when they last went out, and how many times they have been sent.
+ * that were sent, when they first went out and when they last did, and how many times they have been sent.
  */
 interface RetainedDatagram {
   data: Buffer;
+  firstSentAt: number;
   sentAt: number;
   sends: number;
 }
@@ -805,26 +828,34 @@ export class P2PSession extends EventEmitter {
     for (const [pendingSequence, pending] of this.unackedLiveStarts) {
       if (pending.channel === channel) this.unackedLiveStarts.delete(pendingSequence);
     }
-    this.unackedLiveStarts.set(sequence, { channel, data, sentAt: Date.now(), sends: 1 });
+    const sentAt = Date.now();
+    this.unackedLiveStarts.set(sequence, { channel, data, firstSentAt: sentAt, sentAt, sends: 1 });
     this.armLiveStartRetransmit();
     this.send(this.connectAddress, RequestMessageType.DATA, data);
   }
 
   /**
-   * Repeat unacknowledged own-session live starts. Runs only while a start is outstanding.
+   * Repeat unacknowledged own-session live starts until the device takes one. Runs only while a start is
+   * outstanding.
    *
-   * A start that exhausts {@link LIVE_START_MAX_SENDS} is traced as `media-command-unacknowledged`: the
-   * camera was never told to stream, so the warm-up that follows can only ever time out, and the trace is
-   * what separates that from a camera that got the start and stayed silent.
+   * A start abandoned at {@link LIVE_START_ACK_DEADLINE_MS} is traced as `media-command-unacknowledged` and
+   * the channel's started state is forgotten. Both halves matter: the camera was never told to stream, so
+   * the warm-up that follows can only ever time out, and the trace is what separates that from a camera that
+   * got the start and stayed silent. Forgetting the state is what lets the next keepalive tick issue a real
+   * start under a fresh sequence — while the channel still counts as started, every tick sends only the 1139
+   * nudge, which holds a stream that was never started and cannot begin one.
    */
   private armLiveStartRetransmit(): void {
     if (this.liveStartRetransmitTimer) return;
     this.liveStartRetransmitTimer = setInterval(() => {
       const outstanding = this.retransmitUnacked(this.unackedLiveStarts, {
         retransmitMs: LIVE_START_RETRANSMIT_MS,
-        maxSends: LIVE_START_MAX_SENDS,
+        spent: (held) => Date.now() - held.firstSentAt >= LIVE_START_ACK_DEADLINE_MS,
         onResent: () => traceLiveStart(this.logger, { phase: "media-command-retry", action: "start" }),
-        onAbandoned: () => traceLiveStart(this.logger, { phase: "media-command-unacknowledged", action: "start" }),
+        onAbandoned: (_sequence, held) => {
+          this.liveStartedChannels.delete(held.channel);
+          traceLiveStart(this.logger, { phase: "media-command-unacknowledged", action: "start" });
+        },
       });
       if (!outstanding) this.clearLiveStartRetransmit();
     }, LIVE_START_RETRANSMIT_MS / 2);
@@ -1017,7 +1048,8 @@ export class P2PSession extends EventEmitter {
       buildRawCommandPayload(Buffer.concat([header, frame]), channel, 0),
     ]);
     this.videoSeqNumber = (this.videoSeqNumber + 1) & 0xffff;
-    this.unackedAudio.set(seq, { data, sentAt: Date.now(), sends: 1 });
+    const sentAt = Date.now();
+    this.unackedAudio.set(seq, { data, firstSentAt: sentAt, sentAt, sends: 1 });
     this.armAudioRetransmit();
     this.send(this.connectAddress, RequestMessageType.DATA, data);
   }
@@ -1045,7 +1077,7 @@ export class P2PSession extends EventEmitter {
     this.audioRetransmitTimer = setInterval(() => {
       const outstanding = this.retransmitUnacked(this.unackedAudio, {
         retransmitMs: AUDIO_RETRANSMIT_MS,
-        maxSends: AUDIO_MAX_SENDS,
+        spent: (held) => held.sends >= AUDIO_MAX_SENDS,
         onAbandoned: (sequence) => {
           if (this.audioStalled) return;
           this.audioStalled = true;
@@ -1061,21 +1093,23 @@ export class P2PSession extends EventEmitter {
 
   /**
    * One retransmission sweep over an acknowledged channel's retained datagrams: resend those past
-   * `retransmitMs` byte-identically, abandon those already sent `maxSends` times, and answer whether any
-   * datagram is still outstanding — a caller stops its ticker once nothing is.
+   * `retransmitMs` byte-identically, abandon those the caller reports spent, and answer whether any datagram
+   * is still outstanding — a caller stops its ticker once nothing is.
    *
-   * Both acknowledged directions — outbound audio and the own-session live start — repeat on these same
-   * terms, so the policy has one implementation and the callers differ only in their timings and in what
-   * they report when a datagram is abandoned. Datagrams are only ever retained by a send, and a send needs
-   * a connect address, so the no-address case has nothing retained to sweep and simply reports idle.
+   * Both acknowledged directions — outbound audio and the own-session live start — repeat on these terms, so
+   * the sweep has one implementation. What "spent" means is the caller's, because the two are bounded by
+   * different things: audio by a send count, since repeating it more amplifies the loss it is repairing; a
+   * live start by elapsed time, since the sends it needs are however many its acknowledgement latency
+   * demands. Datagrams are only ever retained by a send, and a send needs a connect address, so the
+   * no-address case has nothing retained to sweep and simply reports idle.
    */
-  private retransmitUnacked(
-    retained: Map<number, RetainedDatagram>,
+  private retransmitUnacked<T extends RetainedDatagram>(
+    retained: Map<number, T>,
     policy: {
       retransmitMs: number;
-      maxSends: number;
-      onAbandoned: (sequence: number) => void;
-      onResent?: (sequence: number) => void;
+      spent: (held: T) => boolean;
+      onAbandoned: (sequence: number, held: T) => void;
+      onResent?: (sequence: number, held: T) => void;
     },
   ): boolean {
     if (!this.connectAddress) return false;
@@ -1083,14 +1117,14 @@ export class P2PSession extends EventEmitter {
     for (const [sequence, held] of retained) {
       if (now - held.sentAt < policy.retransmitMs) continue;
       retained.delete(sequence);
-      if (held.sends >= policy.maxSends) {
-        policy.onAbandoned(sequence);
+      if (policy.spent(held)) {
+        policy.onAbandoned(sequence, held);
         continue;
       }
       held.sends++;
       held.sentAt = now;
       retained.set(sequence, held);
-      policy.onResent?.(sequence);
+      policy.onResent?.(sequence, held);
       this.send(this.connectAddress, RequestMessageType.DATA, held.data);
     }
     return retained.size > 0;

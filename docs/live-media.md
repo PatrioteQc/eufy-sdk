@@ -325,8 +325,10 @@ session idle-detaches so a battery device sleeps — see [Connectivity & battery
 - **UDP retransmissions.** Each data type is sequenced independently. Duplicate and stale datagrams are
   acknowledged and ignored without discarding a different frame being assembled, and the numbering may wrap
   without a false gap. A missing datagram still drops that incomplete frame so corrupt media is never
-  delivered. An unacknowledged own-session `START_LIVE` is repeated once with identical bytes, then
-  abandoned. A new connection starts the numbering over, so its first datagrams are never read as stale.
+  delivered. An unacknowledged own-session `START_LIVE` is repeated with identical bytes until the camera
+  acknowledges it, and abandoned after 3s — at which point that channel is no longer treated as started, so
+  the next keepalive tick issues a real start instead of nudging a stream that never began. A new connection
+  starts the numbering over, so its first datagrams are never read as stale.
 - **No silent hang.** `live()` re-issues the media-start (`nudge`) until the first keyframe arrives; if
   none arrives within the warm-up window the stream emits a `LiveStreamStartError` rather than hanging
   forever. It carries everything needed to tell the failures apart without transport logs: `reason`
