@@ -511,7 +511,9 @@ export function decodeVacuumFault(raw: ParamValue | undefined, codec: RawDpCodec
  * different question from whether the feature is switched on, and the latter is what the property means.
  */
 const UNDISTURBED_FIELD = {
-  /** `undisturbed` — the configured window; `active`(1) beside it is the live in-window flag. */
+  /** `active` — the live in-window flag, beside the configured window rather than inside it. */
+  ACTIVE: 1,
+  /** `undisturbed` — the configured window. */
   UNDISTURBED: 2,
   /** `sw` within an `Undisturbed` — the enable switch. */
   SWITCH: 1,
@@ -544,6 +546,41 @@ export function decodeDoNotDisturb(raw: ParamValue | undefined, codec: RawDpCode
   if (sw === undefined) return false;
   if (sw.kind !== "bytes") return undefined;
   const value = codec.nested(sw.value)?.find((f) => f.field === UNDISTURBED_FIELD.VALUE);
+  if (value === undefined) return false;
+  return value.kind === "int" ? value.value !== 0n : undefined;
+}
+
+/**
+ * Decode the live in-window flag from an `UndisturbedResponse` (DP 157).
+ *
+ * The companion to {@link decodeDoNotDisturb}, which reports whether the feature is switched ON. This
+ * one reports whether the quiet window is open RIGHT NOW — two different questions the same DP answers,
+ * which is why this member reads its sibling's payload instead of claiming a wire of its own.
+ *
+ * **Both shapes of `active` are read.** Whether the vendor wraps it in a `Switch` the way `sw` is
+ * wrapped, or sends it as a bare bool, is not confirmed — so a varint is taken at face value and a
+ * sub-message is opened for its `value`. That is not a guess about which arrives: both readings mean
+ * the same flag, so handling either is what removes the guess.
+ *
+ * The AIoT line only. On the Tuya line DP 107 is a plain bool carrying the SWITCH, and no wire there
+ * states the window — so a non-protobuf value answers `undefined` rather than borrowing the switch.
+ *
+ * An absent `active` beside a present `undisturbed` reads as `false`: proto3 omits a zero, so "the
+ * window is not open" and "said nothing about it" are the same bytes once the message is recognisable.
+ * An absent `undisturbed` is `undefined` — the payload is not one of these at all.
+ * @internal
+ */
+export function decodeDoNotDisturbActive(
+  raw: ParamValue | undefined,
+  codec: RawDpCodec | undefined,
+): boolean | undefined {
+  if (typeof raw !== "string" || !codec) return undefined;
+  const fields = codec.decode(raw);
+  if (!fields?.some((f) => f.field === UNDISTURBED_FIELD.UNDISTURBED)) return undefined;
+  const active = fields.find((f) => f.field === UNDISTURBED_FIELD.ACTIVE);
+  if (active === undefined) return false;
+  if (active.kind === "int") return active.value !== 0n;
+  const value = codec.nested(active.value)?.find((f) => f.field === UNDISTURBED_FIELD.VALUE);
   if (value === undefined) return false;
   return value.kind === "int" ? value.value !== 0n : undefined;
 }
@@ -985,6 +1022,26 @@ export const VACUUM_CLEAN_MEMBERS = {
     available: (ctx: AvailabilityContext) =>
       (ctx.paramIds?.has(VACUUM_DP.DO_NOT_DISTURB) ?? false) ||
       (ctx.paramIds?.has(TUYA_VACUUM_DP.FORBID_MODE) ?? false),
+  },
+  /**
+   * Whether the do-not-disturb window is open RIGHT NOW — the live flag, not the switch beside it.
+   *
+   * A caller showing "quiet hours" as a schedule wants `doNotDisturb`; one
+   * asking why the robot just declined to speak wants this. The two disagree for most of the day.
+   *
+   * Reads its sibling's payload rather than a wire of its own: `active` and `sw` are two fields of the
+   * one `UndisturbedResponse` the device reports on DP 157, so there is one param and two readings of
+   * it. AIoT only — the Tuya line's DP 107 carries the switch and says nothing about the window.
+   */
+  doNotDisturbActive: {
+    readsFrom: "doNotDisturb",
+    type: "bool",
+    kind: "boolean",
+    provenance: "mega",
+    decode: (raw, codec) => decodeDoNotDisturbActive(raw as ParamValue | undefined, codec),
+    decodedKind: "boolean",
+    description: "Whether the do-not-disturb window is open now — Undisturbed.active (DP 157 AIoT, Raw protobuf).",
+    available: (ctx: AvailabilityContext) => ctx.paramIds?.has(VACUUM_DP.DO_NOT_DISTURB) ?? false,
   },
   /**
    * WiFi RSSI in dBm (DP 134, Value ro). Schema-confirmed from `thing.m.device.ref.info.list` v5.4.

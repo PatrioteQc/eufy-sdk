@@ -2,6 +2,7 @@ import { CAPABILITY_MODULES } from "../index.js";
 import { SECURITY_PARAMS, CLEAN_PARAMS } from "../../param-dictionary.js";
 import { LIFE_PARAMS } from "../../life-params.js";
 import type { CapabilityModule } from "../types.js";
+import type { ValueMember } from "../members.js";
 
 /**
  * Cross-module property-id integrity — the general form of the guard the siren fix needed locally.
@@ -109,6 +110,37 @@ describe("property id integrity (cross-module)", () => {
       })
       .map(([key, v]) => `${key} claimed by ${v.join(", ")}`);
     expect(collisions).toEqual([]);
+  });
+
+  it("a `readsFrom` member borrows a real owner's param and never claims a wire of its own", () => {
+    // The counterpart to the one-owner rule above, and the reason that rule needs no exception: several
+    // members reading different fields of ONE payload are not two capabilities disagreeing about an id,
+    // so they must not publish a second spec for it. `Device` keys stored params by id and keeps the
+    // first spec that claims one, so a second spec here would leave the extra getters reading a name
+    // nothing is ever stored under — `undefined` forever, silently.
+    const offenders: string[] = [];
+    for (const [cap, m] of Object.entries(CAPABILITY_MODULES)) {
+      const members = (m as Mod).members;
+      if (!members) continue;
+      for (const [name, member] of Object.entries(members)) {
+        const v = member as ValueMember;
+        if (v.readsFrom === undefined) continue;
+        const where = `${cap}.${name}`;
+        const owner = members[v.readsFrom] as ValueMember | undefined;
+        if (!owner) offenders.push(`${where} → readsFrom "${v.readsFrom}", which is not a member here`);
+        else if (owner.param === undefined) offenders.push(`${where} → owner "${v.readsFrom}" declares no param`);
+        else if (owner.readsFrom !== undefined) offenders.push(`${where} → owner "${v.readsFrom}" is itself derived`);
+        // Its value is a field of someone else's payload, so it can only be reached by decoding one.
+        if (v.decode === undefined) offenders.push(`${where} → readsFrom without a decode`);
+        // A wire id, an alias or a write would all be claims on a param this member does not own. The
+        // write is the sharp one: setting a field means re-encoding the whole message, so the owner
+        // keeps the wire and a derived read never grows a setter behind its back.
+        if (v.param !== undefined) offenders.push(`${where} → readsFrom AND its own param ${v.param}`);
+        if (v.readAliases !== undefined) offenders.push(`${where} → readsFrom AND its own readAliases`);
+        if (v.write !== undefined) offenders.push(`${where} → readsFrom AND a write`);
+      }
+    }
+    expect(offenders).toEqual([]);
   });
 
   it("the siren fix specifically holds: its ids are all dictionary-grounded, none quarantined", () => {

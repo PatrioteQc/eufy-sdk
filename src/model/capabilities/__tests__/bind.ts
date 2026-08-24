@@ -2,7 +2,7 @@ import { buildActions } from "../index.js";
 import { camelCase } from "../access.js";
 import type { Capability } from "../../types.js";
 import type { CommandContext } from "../types.js";
-import type { Command, Ff09SettingsReader, MediaProvider } from "../../../core/contracts.js";
+import type { Command, Ff09SettingsReader, MediaProvider, RawDpCodec } from "../../../core/contracts.js";
 
 /**
  * The bound `dev.<cap>()` object plus the commands it sent — what a caller actually holds.
@@ -18,6 +18,8 @@ export function bind<T>(
   opts: {
     media?: MediaProvider;
     ff09Settings?: Ff09SettingsReader;
+    /** The injected Raw-DP reader, for a capability whose getters `decode` a structured payload. */
+    rawDp?: RawDpCodec;
     read?: (name: string) => { value: unknown } | undefined;
   } = {},
 ): { acts: T; sent: Command[] } {
@@ -28,7 +30,7 @@ export function bind<T>(
     { dispatch: async (c) => void sent.push(c) },
     opts.media,
     opts.ff09Settings,
-    undefined,
+    opts.rawDp,
     opts.read as never,
   );
   const key = camelCase(capability);
