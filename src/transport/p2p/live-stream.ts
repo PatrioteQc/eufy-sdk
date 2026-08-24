@@ -112,6 +112,11 @@ export class LiveStream extends EventEmitter {
   private mediaChannel?: number;
   private ownFrames = 0;
   private foreignFrames = 0;
+  private tracedFirstVideoCommand = false;
+  private tracedFirstVideoUnit = false;
+  private tracedFirstKeyframe = false;
+  private tracedDecodeFailures = 0;
+  private tracedFirstForeignFrame = false;
   private readonly handler = (f: P2PFrame) => this.onFrame(f);
   private readonly logger: Logger;
 
@@ -186,10 +191,23 @@ export class LiveStream extends EventEmitter {
   }
 
   private onFrame(f: P2PFrame): void {
-    if (!this.acceptsMedia(f)) return;
+    const accepted = this.acceptsMedia(f);
+    if (f.commandId === CMD_VIDEO_FRAME && !this.tracedFirstVideoCommand) {
+      this.tracedFirstVideoCommand = true;
+      this.logger.debug("[live] start trace", { phase: "first-video-command", signCode: f.signCode, accepted });
+    }
+    if (!accepted) return;
     try {
       if (f.commandId === CMD_VIDEO_FRAME) {
         for (const unit of this.units.push(f.data, (payload) => this.annexbOf(payload, f.signCode))) {
+          if (!this.tracedFirstVideoUnit) {
+            this.tracedFirstVideoUnit = true;
+            this.logger.debug("[live] start trace", { phase: "first-video-unit", keyframe: unit.keyframe });
+          }
+          if (unit.keyframe && !this.tracedFirstKeyframe) {
+            this.tracedFirstKeyframe = true;
+            this.logger.debug("[live] start trace", { phase: "first-keyframe" });
+          }
           // Sniff the codec only on a keyframe (it carries the parameter sets); delta frames have no
           // config NAL, so they inherit the last-known codec.
           if (unit.keyframe) this.lastCodec = sniffAnnexbCodec(unit.data) ?? this.lastCodec;
@@ -244,6 +262,13 @@ export class LiveStream extends EventEmitter {
       this.ownFrames++;
       return true;
     }
+    if (!this.tracedFirstForeignFrame) {
+      this.tracedFirstForeignFrame = true;
+      this.logger.debug("[live] start trace", {
+        phase: "first-foreign-media-command",
+        media: frame.commandId === CMD_VIDEO_FRAME ? "video" : "audio",
+      });
+    }
     if (this.ownFrames > 0) return false;
     if (++this.foreignFrames < FOREIGN_FRAME_TOLERANCE) return false;
     this.logger.warn(
@@ -262,7 +287,11 @@ export class LiveStream extends EventEmitter {
   private annexbOf(payload: Buffer, signCode: number): Buffer | undefined {
     const annexb = this.session.decodeVideoFrame?.(payload, signCode) ?? this.plaintextAnnexB(payload);
     if (annexb) return annexb;
-    return this.decoder?.decodeFrame(payload)?.h264;
+    const decoded = this.decoder?.decodeFrame(payload)?.h264;
+    if (!decoded && this.tracedDecodeFailures++ < 3) {
+      this.logger.debug("[live] start trace", { phase: "video-decode-empty", signCode });
+    }
+    return decoded;
   }
 
   /**

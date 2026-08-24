@@ -657,6 +657,12 @@ export class P2PSession extends EventEmitter {
    */
   startLiveMedia(channel: number = STATION_CHANNEL, accountId = "", homeBaseAttached = false): void {
     if (homeBaseAttached) {
+      this.logger.debug("[live] start trace", {
+        phase: "media-command",
+        topology: "attached",
+        action: "start",
+        level2: !!this.level2Key,
+      });
       this.sendMediaPayloadLevel2(CMD_START_REALTIME_MEDIA, channel, accountId, {});
       return;
     }
@@ -667,8 +673,20 @@ export class P2PSession extends EventEmitter {
     // 1003 here is read as a status query, not a stream.)
     const want: "l1" | "l2" = this.level2Key ? "l2" : "l1";
     if (this.liveStartedChannels.get(channel) === want) {
+      this.logger.debug("[live] start trace", {
+        phase: "media-command",
+        topology: "own",
+        action: "keepalive",
+        level2: want === "l2",
+      });
       this.sendCommand(CMD_STREAM_KEEPALIVE, channel);
     } else {
+      this.logger.debug("[live] start trace", {
+        phase: "media-command",
+        topology: "own",
+        action: "start",
+        level2: want === "l2",
+      });
       this.sendStartLiveOwnSession(channel, accountId);
       this.liveStartedChannels.set(channel, want);
     }
