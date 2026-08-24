@@ -40,8 +40,15 @@ export interface CleanRecord {
 
 /** A page of cleaning history, plus how many records exist in total. */
 export interface CleanRecordPage {
+  /** The page as the cloud ordered it. Nothing here re-sorts, so the order is the gateway's contract. */
   readonly records: readonly CleanRecord[];
-  /** Total records the account holds for this device — page through with `page` until it is reached. */
+  /**
+   * Total records the account holds for this device — page through with `page` until it is reached.
+   *
+   * Falls back to this page's own record count when the response states no total, which can UNDERSTATE
+   * if a malformed record was skipped. That is the safe direction: a caller pages until it reaches the
+   * total, so a low figure ends the walk early rather than looping for records that never arrive.
+   */
   readonly total: number;
 }
 

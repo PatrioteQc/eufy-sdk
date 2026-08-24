@@ -986,7 +986,8 @@ export class EufyMega extends EventEmitter {
   }
 
   /**
-   * One page of a robot vacuum's **cleaning history**, newest first.
+   * One page of a robot vacuum's **cleaning history**, in whatever order the cloud returns it —
+   * newest first in practice, but that is the gateway's contract and the SDK does not re-sort.
    *
    * `pageSize` is how many records to return and `page` is 1-based; page through until the returned
    * `total` is reached. Answers an empty page rather than throwing when the account has no history for
