@@ -1024,9 +1024,9 @@ export { HubAlarmTone, type HubAlarmToneValue } from "./siren.js";
  * RoboVac activity and clean type are the declared returns of the public `dev.vacuumClean()` getters,
  * so a consumer needs to be able to name both unions.
  */
-export type { VacuumActivity, VacuumCleanType } from "./vacuum-clean.js";
-/** The lists those two unions are taken from — published because each union names its own. */
-export { VACUUM_ACTIVITIES, VACUUM_CLEAN_TYPES } from "./vacuum-clean.js";
+export type { VacuumActivity, VacuumCleanType, CarpetStrategy, CleanExtent } from "./vacuum-clean.js";
+/** The lists those unions are taken from — published because each union names its own. */
+export { VACUUM_ACTIVITIES, VACUUM_CLEAN_TYPES, CARPET_STRATEGIES, CLEAN_EXTENTS } from "./vacuum-clean.js";
 // RoboVac suction levels — a host reads `suction` as a raw int and names it via suctionLevelName; the
 // SuctionLevel map + resolver are the public way to do that.
 export { SuctionLevel, suctionLevelName, type SuctionLevelValue } from "./suction.js";

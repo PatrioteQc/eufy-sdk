@@ -404,9 +404,72 @@ const CLEAN_PARAM_FIELD = {
   CONFIGURED: 1,
   /** `clean_type` within a `CleanParam`. */
   CLEAN_TYPE: 1,
+  /** `clean_carpet` — what to do when the robot meets a carpet. */
+  CLEAN_CARPET: 2,
+  /** `clean_extent` — how far past the mapped edge to go. */
+  CLEAN_EXTENT: 3,
+  /** `smart_mode_sw` — the robot's own judgement about a room, on or off. */
+  SMART_MODE: 5,
+  /** `clean_times` — how many passes one job makes. */
+  CLEAN_TIMES: 7,
   /** `value` within a `CleanType`. */
   VALUE: 1,
 } as const;
+
+/** `clean_carpet.strategy` — what the robot does when it meets a carpet. */
+export const CARPET_STRATEGIES = ["autoRaise", "avoid", "ignore"] as const;
+export type CarpetStrategy = (typeof CARPET_STRATEGIES)[number];
+const CARPET_STRATEGY: Record<number, CarpetStrategy> = { 0: "autoRaise", 1: "avoid", 2: "ignore" };
+
+/**
+ * `clean_extent.value` — how far past the mapped edge a job reaches.
+ *
+ * **Not the app's display order.** The app lists these differently, so a host that renders the index
+ * rather than the name will disagree with the phone; the names here follow the wire, which is the only
+ * order this SDK can vouch for.
+ */
+export const CLEAN_EXTENTS = ["normal", "narrow", "quick"] as const;
+export type CleanExtent = (typeof CLEAN_EXTENTS)[number];
+const CLEAN_EXTENT: Record<number, CleanExtent> = { 0: "normal", 1: "narrow", 2: "quick" };
+
+/**
+ * Read one setting out of the CONFIGURED `CleanParam` (DP 154), by its field number.
+ *
+ * The generalisation of {@link decodeCleanType}, and it reads the same container for the same reason:
+ * a report taken mid-change carries a different value in `clean_param`(1) and `running_clean_param`(4),
+ * and the SETTING is the stable answer.
+ *
+ * **How the inner value is found, and why it is not a second field number.** The vendor wraps each
+ * setting in its own single-field message — `CleanType{value}`, `CleanCarpet{strategy}`,
+ * `CleanExtent{value}` — where the wrapper's name and its field's name differ per setting but the
+ * shape does not. Rather than assert a number for each inner field, this takes the FIRST varint the
+ * wrapper carries. The 1→1→1 nesting is live-proven for `clean_type`; taking the first scalar is what
+ * extends that to its siblings without claiming a number for any of them.
+ *
+ * The cost is stated rather than hidden: a wrapper that ever carries more than one scalar would read
+ * its first, so this is only used for the settings documented as single-valued. `mop_mode`(4) carries
+ * both a level and a corner-clean flag and is deliberately NOT read here for that reason.
+ *
+ * A present-but-empty wrapper answers `0` — proto3 omits a zero, so the enum's zero member and "the
+ * wrapper said nothing" are the same bytes. An absent wrapper is `undefined`: the device did not state
+ * this setting at all.
+ * @internal
+ */
+export function decodeCleanParamValue(
+  raw: ParamValue | undefined,
+  codec: RawDpCodec | undefined,
+  field: number,
+): number | undefined {
+  if (typeof raw !== "string" || !codec) return undefined;
+  const configured = codec.decode(raw)?.find((f) => f.field === CLEAN_PARAM_FIELD.CONFIGURED);
+  if (configured?.kind !== "bytes" || !configured.value.length) return undefined;
+  const setting = codec.nested(configured.value)?.find((f) => f.field === field);
+  if (setting === undefined) return undefined;
+  if (setting.kind === "int") return Number(setting.value);
+  if (!setting.value.length) return 0;
+  const value = codec.nested(setting.value)?.find((f) => f.kind === "int");
+  return value === undefined ? 0 : Number(value.value);
+}
 
 /**
  * Decode the cleaning type out of a `CleanParam` (DP 154) Raw-DP value.
@@ -877,6 +940,71 @@ export const VACUUM_CLEAN_MEMBERS = {
     decodedValues: [...VACUUM_CLEAN_TYPES, ...TUYA_CLEAN_TYPES] as readonly string[],
     readAliases: [{ paramType: TUYA_VACUUM_DP.CLEAN_TYPE, available: isTuyaVacuum }],
     description: "Configured cleaning type from CleanParam.clean_type (DP 154 AIoT protobuf) or DP 113 Tuya Enum.",
+  },
+  /**
+   * What the robot does when it meets a carpet — raise the mop, drive around, or carry on over it.
+   *
+   * Reads its sibling's DP 154 payload: `clean_carpet` sits beside `clean_type` in the one `CleanParam`
+   * the device reports, so there is one param and several readings of it.
+   */
+  carpetStrategy: {
+    readsFrom: "cleanType",
+    type: "string",
+    provenance: "mega",
+    decode: (raw, codec) => {
+      const v = decodeCleanParamValue(raw as ParamValue | undefined, codec, CLEAN_PARAM_FIELD.CLEAN_CARPET);
+      return v === undefined ? undefined : CARPET_STRATEGY[v];
+    },
+    decodedKind: "enum",
+    decodedValues: CARPET_STRATEGIES as readonly string[],
+    description: "Carpet strategy from CleanParam.clean_carpet (DP 154 AIoT, Raw protobuf).",
+  },
+  /**
+   * How far past the mapped edge a job reaches.
+   *
+   * The index order is the WIRE's, not the app's display order — a host that shows the raw number will
+   * disagree with the phone. Surface the name.
+   */
+  cleanExtent: {
+    readsFrom: "cleanType",
+    type: "string",
+    provenance: "mega",
+    decode: (raw, codec) => {
+      const v = decodeCleanParamValue(raw as ParamValue | undefined, codec, CLEAN_PARAM_FIELD.CLEAN_EXTENT);
+      return v === undefined ? undefined : CLEAN_EXTENT[v];
+    },
+    decodedKind: "enum",
+    decodedValues: CLEAN_EXTENTS as readonly string[],
+    description: "Clean extent from CleanParam.clean_extent (DP 154 AIoT, Raw protobuf). Wire order, not app order.",
+  },
+  /**
+   * Whether the robot is left to its own judgement about a room — suction and water chosen per surface
+   * rather than held at what the user set.
+   */
+  smartMode: {
+    readsFrom: "cleanType",
+    type: "bool",
+    kind: "boolean",
+    provenance: "mega",
+    decode: (raw, codec) => {
+      const v = decodeCleanParamValue(raw as ParamValue | undefined, codec, CLEAN_PARAM_FIELD.SMART_MODE);
+      return v === undefined ? undefined : v !== 0;
+    },
+    decodedKind: "boolean",
+    description: "Smart mode from CleanParam.smart_mode_sw (DP 154 AIoT, Raw protobuf).",
+  },
+  /**
+   * How many passes one job makes over the same floor. `0` is the device stating no repeat rather than
+   * a robot that will not clean.
+   */
+  cleanTimes: {
+    readsFrom: "cleanType",
+    type: "number",
+    kind: "scalar",
+    provenance: "mega",
+    decode: (raw, codec) => decodeCleanParamValue(raw as ParamValue | undefined, codec, CLEAN_PARAM_FIELD.CLEAN_TIMES),
+    decodedKind: "scalar",
+    description: "Passes per job from CleanParam.clean_times (DP 154 AIoT, Raw protobuf).",
   },
   /**
    * The robot's current fault, as a numeric code. `0` is no fault; `undefined` is a device that has not

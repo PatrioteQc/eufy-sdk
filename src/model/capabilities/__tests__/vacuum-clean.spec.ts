@@ -8,6 +8,7 @@ import {
   decodeVacuumActivity,
   decodeCleanType,
   decodeUnisetting,
+  decodeCleanParamValue,
   decodeConsumableHours,
   decodeDoNotDisturb,
   decodeDoNotDisturbActive,
@@ -546,6 +547,89 @@ describe("decodeDoNotDisturbActive (Undisturbed.active → doNotDisturbActive)",
     expect(decodeDoNotDisturbActive(frame([]), byteCodec)).toBeUndefined();
     expect(decodeDoNotDisturbActive(window(int(1, 1)), undefined)).toBeUndefined();
     expect(decodeDoNotDisturbActive(undefined, byteCodec)).toBeUndefined();
+  });
+});
+
+describe("decodeCleanParamValue (CleanParam settings beside clean_type)", () => {
+  const CARPET = 2;
+  const EXTENT = 3;
+  const TIMES = 7;
+  /** `clean_param`(1) wrapping the settings, as the device reports them. */
+  const param = (body: number[]): string => frame(sub(1, body));
+
+  it("reads a setting through its single-field wrapper", () => {
+    expect(decodeCleanParamValue(param(sub(CARPET, int(1, 1))), byteCodec, CARPET)).toBe(1);
+  });
+
+  it("reads the wrapper's scalar wherever the vendor numbered it", () => {
+    // The point of taking the first varint rather than asserting an inner field number: the wrapper's
+    // field is named differently per setting (`value`, `strategy`, …) and this must not depend on that.
+    expect(decodeCleanParamValue(param(sub(EXTENT, int(3, 2))), byteCodec, EXTENT)).toBe(2);
+  });
+
+  it("reads a present-but-empty wrapper as the zero member, not as missing", () => {
+    expect(decodeCleanParamValue(param(sub(CARPET, [])), byteCodec, CARPET)).toBe(0);
+    expect(decodeCleanParamValue(param(sub(CARPET, sub(9, []))), byteCodec, CARPET)).toBe(0);
+  });
+
+  it("reads a bare scalar too, for a setting the vendor did not wrap", () => {
+    expect(decodeCleanParamValue(param(int(TIMES, 2)), byteCodec, TIMES)).toBe(2);
+  });
+
+  it("gives each setting its own answer out of the one payload", () => {
+    const payload = param([...sub(1, int(1, 1)), ...sub(CARPET, int(1, 2)), ...sub(EXTENT, [])]);
+    expect(decodeCleanParamValue(payload, byteCodec, CARPET)).toBe(2);
+    expect(decodeCleanParamValue(payload, byteCodec, EXTENT)).toBe(0);
+    // Not stated in this report — absent is not the same as the zero member.
+    expect(decodeCleanParamValue(payload, byteCodec, TIMES)).toBeUndefined();
+  });
+
+  it("reads the CONFIGURED container, never the running one", () => {
+    // running_clean_param(4) disagrees with the setting mid-change; reading it would report what the
+    // job in progress is doing as though the user had chosen it.
+    const payload = frame([...sub(1, sub(CARPET, int(1, 1))), ...sub(4, sub(CARPET, int(1, 2)))]);
+    expect(decodeCleanParamValue(payload, byteCodec, CARPET)).toBe(1);
+  });
+
+  it("is undefined on anything that is not a CleanParam", () => {
+    expect(decodeCleanParamValue(frame([]), byteCodec, CARPET)).toBeUndefined();
+    expect(decodeCleanParamValue(param(sub(CARPET, int(1, 1))), undefined, CARPET)).toBeUndefined();
+    expect(decodeCleanParamValue(true, byteCodec, CARPET)).toBeUndefined();
+    expect(decodeCleanParamValue(undefined, byteCodec, CARPET)).toBeUndefined();
+  });
+});
+
+describe("CleanParam settings on the bound surface", () => {
+  const dps = new Set([VACUUM_DP.CLEAN_PARAM]);
+  const payload = frame(
+    sub(1, [...sub(1, int(1, 1)), ...sub(2, int(1, 1)), ...sub(3, []), ...sub(5, int(1, 1)), ...sub(7, int(1, 2))]),
+  );
+
+  const bound = () =>
+    bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, undefined, dps), {
+      rawDp: byteCodec,
+      read: (name) => (name === "cleanType" ? { value: payload } : undefined),
+    });
+
+  it("answers every setting off the one DP 154 report", () => {
+    const acts = bound().acts;
+    expect(acts.cleanType).toBe("mop");
+    expect(acts.carpetStrategy).toBe("avoid");
+    expect(acts.cleanExtent).toBe("normal");
+    expect(acts.smartMode).toBe(true);
+    expect(acts.cleanTimes).toBe(2);
+  });
+
+  it("publishes one property for DP 154, however many members read it", () => {
+    const named = VACUUM_CLEAN.properties.filter((p) => p.paramType === VACUUM_DP.CLEAN_PARAM).map((p) => p.name);
+    expect(named).toEqual(["cleanType"]);
+  });
+
+  it("grows no setters — the whole message would have to be re-encoded to write one field", () => {
+    const acts = bound().acts as Record<string, unknown>;
+    for (const name of ["setCarpetStrategy", "setCleanExtent", "setSmartMode", "setCleanTimes"]) {
+      expect(acts[name]).toBeUndefined();
+    }
   });
 });
 
