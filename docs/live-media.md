@@ -131,8 +131,26 @@ with ADTS framing removed from each media sample. G.711 A-law remains available 
 is not mislabeled as MPEG-4 AAC in the container.
 
 `preBufferSeconds` drains retained audio/video before live frames, beginning at a video keyframe and
-preserving transport-arrival timing across the handoff. It can only return media already retained by a
-warm shared source; opening a cold recording cannot reconstruct time before the source started.
+preserving transport-arrival timing across the handoff. A drain opens on the newest keyframe at or before
+the window starts, so it covers the whole window and exceeds it by however far back that keyframe sits —
+one keyframe interval on a steady stream, more where delivery stalled, because retention is timed on
+arrival and a frame carries no device clock. Asking for `0` drains nothing.
+
+The window is a finite positive duration. Absent, negative, `NaN`, and infinite values disable retention
+and drain nothing rather than creating an unbounded buffer.
+
+It can only return media already retained by a warm shared source; opening a cold recording cannot
+reconstruct time before the source started. **Retention is fixed when the pull is opened, and every egress
+can set it**, because whichever call opens the pull is the one that decides:
+
+```ts
+await cam.snapshotLive!({ preBufferSeconds: 10 });
+const stream = await cam.live!({ preBufferSeconds: 10 });
+```
+
+An egress that omits it is not opting out — it leaves the choice to whoever got there first, so a still
+polled on an idle camera opens a pull retaining nothing and a recording seconds later has nothing to drain,
+however much it asks for. Pass the same window on every egress a device uses, or none of them.
 
 ## Snapshots
 

@@ -414,6 +414,32 @@ export interface WebRTCPeerHandle {
 }
 
 /**
+ * What a media call tells the shared pull it may be the one to OPEN.
+ *
+ * Every egress on a device joins ONE shared pull, and whichever asks for it first is the call that builds
+ * it — so these are settings any egress may have to supply, and none can change once consumers are
+ * attached. An egress that omits one is not opting out of it; it is leaving the choice to whichever call
+ * got there first, which is why every egress accepts them rather than only the ones they read like.
+ */
+export interface SharedSourceHints {
+  /**
+   * Power source, a runtime device fact (`"battery"` incl. solar, or `"wired"`) — never a device-family
+   * trait. `"wired"` streams unbounded; `"battery"` bounds a continuous stream to a budget, after which
+   * the handle's `budget` notice offers an extension.
+   */
+  powered?: "wired" | "battery";
+  /**
+   * Seconds of already-captured media the pull retains for a later drain; `0`, absent, non-finite and
+   * negative values retain none.
+   *
+   * Retention costs memory on every frame and only a caller knows whether anything will drain it, so it
+   * is never assumed. Media can only be retained while the pull is running, so a window answers "what did
+   * the camera capture just before this" only for a pull something already opened.
+   */
+  preBufferSeconds?: number;
+}
+
+/**
  * The **media / device-query boundary** — the second transport, for operations that RETURN data (a
  * still, a live stream, a recording, a P2P request/reply query). The client implements it (P2P media
  * plumbing); capability modules call it without knowing the protocol. Bound to one device serial, so
@@ -440,16 +466,17 @@ export interface MediaProvider {
    * says whether another attempt could succeed — a caller that rate-limits acquisition needs that to
    * avoid spending its budget on a permanent fault, or abandoning a camera that would have answered.
    *
-   * Carries `powered` for the same reason every other egress does: it may be the call that CREATES the
-   * shared source, and the source keeps whatever power hint it was built with. A caller polling this
-   * on a battery camera would otherwise arm no budget for anyone who joins later.
+   * Carries {@link SharedSourceHints} for the reason stated there: a still polled on an idle camera is
+   * routinely the call that OPENS the shared pull, so it decides the power budget and the retained window
+   * for every egress that joins later.
    */
-  snapshotLive(opts?: {
-    timeoutMs?: number;
-    collectMs?: number;
-    skipKeyframes?: number;
-    powered?: "wired" | "battery";
-  }): Promise<{
+  snapshotLive(
+    opts?: {
+      timeoutMs?: number;
+      collectMs?: number;
+      skipKeyframes?: number;
+    } & SharedSourceHints,
+  ): Promise<{
     jpeg: Buffer;
     width: number;
     height: number;
@@ -467,7 +494,7 @@ export interface MediaProvider {
    * stream.stop(); // detach this consumer
    * ```
    */
-  live(opts?: Record<string, unknown>): Promise<LiveStreamHandle>;
+  live(opts?: SharedSourceHints & Record<string, unknown>): Promise<LiveStreamHandle>;
   /**
    * Record `seconds` of video → an mp4/h264 buffer.
    *
@@ -481,27 +508,24 @@ export interface MediaProvider {
    * {@link live} or muxed through {@link recordFragments}; it is never interleaved into raw video.
    * The caller owns the Readable's lifetime, and destroying it releases the shared pull.
    */
-  openReadable?(opts?: {
-    objectMode?: boolean;
-    powered?: "wired" | "battery";
-  }): Promise<import("node:stream").Readable>;
+  openReadable?(opts?: { objectMode?: boolean } & SharedSourceHints): Promise<import("node:stream").Readable>;
   /**
    * Continuously record the live feed as fragmented-MP4 (CMAF). The caller-owned
    * {@link FragmentRecordingHandle} yields an init segment then keyframe-bounded media fragments,
    * emits battery-budget notices, and releases the shared pull on `stop`, `break`, or `return`.
+   *
+   * {@link SharedSourceHints.preBufferSeconds} does double duty here: it configures the retained window
+   * when this call is the one that opens the pull, and it is the length this recording drains from a pull
+   * that was already open. The drain opens on the newest keyframe at or before the window starts, so it
+   * covers the request and exceeds it by however far back that keyframe sits.
    */
-  recordFragments?(opts?: {
-    fragmentSeconds?: number;
-    /** Drain this much retained media before live frames; capped by the source's configured window. */
-    preBufferSeconds?: number;
-    powered?: "wired" | "battery";
-  }): FragmentRecordingHandle;
+  recordFragments?(opts?: { fragmentSeconds?: number } & SharedSourceHints): FragmentRecordingHandle;
   /**
    * Open the camera's **talkback** path — audio travelling from the host TO the device, the opposite
    * direction to everything else here. See {@link TalkbackHandle} for the accepted audio. Optional (an
    * unbound model has no client), and absent on a device whose talkback wire is unverified.
    */
-  talkback?(opts?: { encoder?: AacEncoder; powered?: "wired" | "battery" }): Promise<TalkbackHandle>;
+  talkback?(opts?: { encoder?: AacEncoder } & SharedSourceHints): Promise<TalkbackHandle>;
   /**
    * Generic P2P request/reply query: send a `SET_PAYLOAD` sub-command and resolve with the reply
    * frame's `payload` (the reply whose `cmd` echoes `subCmd`). Transport-only — the caller owns the

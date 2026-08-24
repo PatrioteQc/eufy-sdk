@@ -18,6 +18,7 @@ import type {
   MediaProvider,
   ScalarForm,
   AacEncoder,
+  SharedSourceHints,
   TalkbackHandle,
 } from "../../core/contracts.js";
 import { noopLogger, type Logger } from "../../core/logger.js";
@@ -58,14 +59,34 @@ import { FragmentRecording } from "./fragment-recording.js";
  */
 const DIRECT_CMD_SENDS = 5;
 
-/** Options accepted when warming a {@link SharedLiveSource} for a device (all optional). */
-export interface SharedLiveOpts {
+/** How long a freshly resolved session is given to reach a connected state. */
+const CONNECT_WAIT_MS = 20_000;
+
+/**
+ * How long each command is given where the level-2 key is a REQUIREMENT — the HomeBase-routed commands
+ * that cannot be framed without it. This grace is per call, because a delayed `CMD_GATEWAYINFO` on an old
+ * session may still produce the key while the command waits.
+ */
+const LEVEL2_GRACE_MS = 25_000;
+
+/**
+ * The best-effort grace, used where the key is merely PREFERABLE: media egresses, which only need it on
+ * the HomeBase-attached path, and whose failure a stream start reports precisely on its own. A camera on
+ * its own session legitimately never negotiates a key, so this wait never refuses one. It is one grace
+ * per session, measured from connect rather than restarted by every egress or a later negotiation start.
+ */
+const LEVEL2_SOFT_GRACE_MS = 8_000;
+
+/**
+ * Options accepted when warming a {@link SharedLiveSource} for a device (all optional).
+ *
+ * {@link SharedSourceHints} are the members any media egress may supply, because any of them may be the
+ * call that opens the pull; the rest reach it only from a caller that warms a source directly.
+ */
+export interface SharedLiveOpts extends SharedSourceHints {
   eccPrivateKey?: Buffer;
   keepAliveMs?: number;
   lingerMs?: number;
-  preBufferSeconds?: number;
-  /** Runtime power source (`"battery"` incl solar / `"wired"`) — the model supplies it; bounds the stream. */
-  powered?: "wired" | "battery";
   /** Battery/solar continuous-stream budget in ms (default 45000). */
   batteryBudgetMs?: number;
   /** Grace after the budget notice to `extend()` before auto-stop, in ms (default 10000). */
@@ -488,16 +509,17 @@ export class P2PCommandRouter {
   /**
    * A {@link MediaProvider} bound to one serial — resolves the session then calls `p2p/media`.
    *
-   * Every egress here is a consumer of the SAME shared pull, so N `live()` calls collapse to one PPCS
-   * session and a live snapshot against a warm, keyframe-primed source costs no extra pull at all; a
-   * cold source warms one and waits for a clean keyframe. Each therefore passes `powered` through,
-   * because any of them may be the call that creates the source, and the source keeps the power hint it
-   * was built with for everyone who joins later.
+   * Every live egress here is a consumer of the SAME shared pull, so N `live()` calls collapse to one
+   * PPCS session and a live snapshot against a warm, keyframe-primed source costs no extra pull at all; a
+   * cold source warms one and waits for a clean keyframe. Each shared egress passes its complete options
+   * through because any of them may create the source, whose power and retention hints are fixed for
+   * everyone who joins later. The bounded {@link MediaProvider.record} clip is the exception: it opens its
+   * own pull and receives its session topology directly.
    */
   mediaProviderFor(sn: string): MediaProvider {
     return {
       snapshotLive: async (opts) => {
-        const source = await this.sharedLiveSourceFor(sn, { powered: opts?.powered });
+        const source = await this.sharedLiveSourceFor(sn, opts ?? {});
         return captureSnapshotFromShared(source, {
           ...opts,
           logger: this.deps.logger ?? noopLogger,
@@ -510,11 +532,11 @@ export class P2PCommandRouter {
         return source.attach();
       },
       openReadable: async (opts) => {
-        const source = await this.sharedLiveSourceFor(sn, { powered: opts?.powered });
+        const source = await this.sharedLiveSourceFor(sn, opts ?? {});
         return openReadableFromConsumer(source.attach(), opts);
       },
       recordFragments: (opts) => this.recordFragments(sn, opts),
-      talkback: (opts) => this.openTalkback(sn, opts?.encoder, opts?.powered),
+      talkback: (opts) => this.openTalkback(sn, opts),
       p2pQuery: (subCmd, opts) => this.p2pQuery(sn, subCmd, opts),
       p2pControlQuery: (param, data, opts) => this.p2pControlQuery(sn, param, data, opts),
       record: async (seconds, opts) => {
@@ -567,7 +589,10 @@ export class P2PCommandRouter {
    * handle, which would silently discard its `encoder` and hand it a clip already in progress.
    *
    */
-  private async openTalkback(sn: string, encoder?: AacEncoder, powered?: "wired" | "battery"): Promise<TalkbackHandle> {
+  private async openTalkback(
+    sn: string,
+    opts: { encoder?: AacEncoder } & SharedSourceHints = {},
+  ): Promise<TalkbackHandle> {
     const { session, parentSn, channel, homeBaseAttached } = await this.resolveSession(sn, { waitLevel2: "soft" });
     const logger = this.deps.logger ?? noopLogger;
     const key = `${parentSn}:${channel}`;
@@ -577,12 +602,12 @@ export class P2PCommandRouter {
           `open talkback before starting another`,
       );
     }
-    const source = await this.sharedLiveSourceFor(sn, { powered });
+    const source = await this.sharedLiveSourceFor(sn, opts);
     const consumer = source.attach();
     const talk = new Talkback(session, {
       channel,
       homeBaseAttached,
-      encoder,
+      encoder: opts.encoder,
       releaseMedia: () => consumer.stop(),
       logger,
     });
@@ -691,9 +716,8 @@ export class P2PCommandRouter {
    * cached session and fails identically, which is why only a client restart recovered it.
    *
    * What a recycle actually replaces is the `P2PSession` INSTANCE. `close()` discards the manager's entry
-   * first, so the next acquisition builds a new instance — new socket, new RSA keypair offered as
-   * `encryptkey`, freshly negotiated level-2 key, and reset sequence windows. The instance's own `close()`
-   * resets none of those; being replaced is what does.
+   * first and invalidates that connection's level-2 key and sequence; the next acquisition builds a new
+   * instance with a new socket, a new RSA keypair offered as `encryptkey`, and fresh sequence windows.
    *
    * The close is issued BEFORE the source is dropped, because discarding the manager entry is synchronous:
    * from that moment a concurrent acquisition resolves a fresh session rather than the doomed one. It would
@@ -746,20 +770,9 @@ export class P2PCommandRouter {
    */
   recordFragments(
     sn: string,
-    opts: {
-      fragmentSeconds?: number;
-      preBufferSeconds?: number;
-      eccPrivateKey?: Buffer;
-      keepAliveMs?: number;
-      powered?: "wired" | "battery";
-    } = {},
+    opts: { fragmentSeconds?: number; eccPrivateKey?: Buffer; keepAliveMs?: number } & SharedSourceHints = {},
   ): FragmentRecording {
-    const source = this.sharedLiveSourceFor(sn, {
-      eccPrivateKey: opts.eccPrivateKey,
-      keepAliveMs: opts.keepAliveMs,
-      preBufferSeconds: opts.preBufferSeconds,
-      powered: opts.powered,
-    });
+    const source = this.sharedLiveSourceFor(sn, opts);
     return new FragmentRecording(source, opts);
   }
 
@@ -843,9 +856,9 @@ export class P2PCommandRouter {
           return Promise.resolve();
         },
         l2: async ({ session: s, channel: ch }) => {
-          const t1 = Date.now();
-          while (!s.hasLevel2Key && Date.now() - t1 < 25000) await new Promise((r) => setTimeout(r, 200));
-          if (!s.hasLevel2Key) throw new Error(`level-2 key not ready for ${sn} — cannot query`);
+          if (!(await s.awaitLevel2Key(LEVEL2_GRACE_MS, "call"))) {
+            throw new Error(`level-2 key not ready for ${sn} — cannot query`);
+          }
           s.sendRawLevel2(json, ch, P2P_ENVELOPE.CONTROL_PAYLOAD);
         },
       }).catch((e) => {
@@ -917,14 +930,15 @@ export class P2PCommandRouter {
     const accountId = ((raw.member as any)?.admin_user_id as string) ?? this.deps.mega.auth?.userId ?? "";
 
     const t0 = Date.now();
-    while (!session.isConnected && Date.now() - t0 < 20000) await new Promise((r) => setTimeout(r, 200));
+    while (!session.isConnected && Date.now() - t0 < CONNECT_WAIT_MS) await new Promise((r) => setTimeout(r, 200));
     if (!session.isConnected) throw new Error(`P2P session for ${parentSn} did not connect`);
     if (opts.waitLevel2) {
       const soft = opts.waitLevel2 === "soft";
-      const budget = soft ? 8000 : 25000;
-      const t1 = Date.now();
-      while (!session.hasLevel2Key && Date.now() - t1 < budget) await new Promise((r) => setTimeout(r, 200));
-      if (!session.hasLevel2Key && !soft) throw new Error(`level-2 key not ready for ${parentSn}`);
+      const ready = await session.awaitLevel2Key(
+        soft ? LEVEL2_SOFT_GRACE_MS : LEVEL2_GRACE_MS,
+        soft ? "session" : "call",
+      );
+      if (!ready && !soft) throw new Error(`level-2 key not ready for ${parentSn}`);
     }
     return { session, parentSn, channel, accountId, homeBaseAttached };
   }
@@ -1347,9 +1361,9 @@ export class P2PCommandRouter {
         return Promise.resolve();
       },
       l2: async ({ session, channel }) => {
-        const t1 = Date.now();
-        while (!session.hasLevel2Key && Date.now() - t1 < 25000) await new Promise((r) => setTimeout(r, 200));
-        if (!session.hasLevel2Key) throw new Error(`level-2 key not ready for ${sn} — cannot route HomeBase command`);
+        if (!(await session.awaitLevel2Key(LEVEL2_GRACE_MS, "call"))) {
+          throw new Error(`level-2 key not ready for ${sn} — cannot route HomeBase command`);
+        }
         session.sendRawLevel2(json, channel, outerCmd);
       },
     });
