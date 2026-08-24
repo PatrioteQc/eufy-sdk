@@ -12,7 +12,7 @@ import {
   decodeConsumableHours,
   decodeDoNotDisturb,
   decodeDoNotDisturbActive,
-  decodeSessionCleanTime,
+  decodeCleanStat,
   decodeVacuumFault,
   encodeModeCtrl,
   ModeCtrlMethod,
@@ -730,32 +730,115 @@ describe("doNotDisturbActive — a second reading of one DP (`readsFrom`)", () =
   });
 });
 
-describe("decodeSessionCleanTime (CleanStatistics.single → clearTime)", () => {
+describe("decodeCleanStat (CleanStatistics — the run beside the lifetime totals)", () => {
   it("reads the current run's duration", () => {
-    expect(decodeSessionCleanTime(frame(sub(1, int(1, 4200))), byteCodec)).toBe(4200);
+    expect(decodeCleanStat(frame(sub(1, int(1, 4200))), byteCodec, 1, 1)).toBe(4200);
   });
 
   it("reads a started-but-zero run as 0, not as missing", () => {
-    expect(decodeSessionCleanTime(frame(sub(1, [])), byteCodec)).toBe(0);
+    expect(decodeCleanStat(frame(sub(1, [])), byteCodec, 1, 1)).toBe(0);
   });
 
   it("ignores the lifetime accumulators beside it", () => {
     // total(2) and user_total(3) carry a clean_duration at the same inner field number; reading the
     // wrong container would report a lifetime figure as the current run.
     const payload = frame([...sub(1, int(1, 60)), ...sub(2, int(1, 999999)), ...sub(3, int(1, 888888))]);
-    expect(decodeSessionCleanTime(payload, byteCodec)).toBe(60);
+    expect(decodeCleanStat(payload, byteCodec, 1, 1)).toBe(60);
   });
 
   it("reads the Tuya line's plain integer on the same property", () => {
-    expect(decodeSessionCleanTime(4200, byteCodec)).toBe(4200);
-    expect(decodeSessionCleanTime("4200", undefined)).toBe(4200);
-    expect(decodeSessionCleanTime(0, undefined)).toBe(0);
+    expect(decodeCleanStat(4200, byteCodec, 1, 1)).toBe(4200);
+    expect(decodeCleanStat("4200", undefined, 1, 1)).toBe(4200);
+    expect(decodeCleanStat(0, undefined, 1, 1)).toBe(0);
   });
 
   it("is undefined when the device has not stated a run", () => {
-    expect(decodeSessionCleanTime(frame([]), byteCodec)).toBeUndefined();
-    expect(decodeSessionCleanTime(frame(sub(1, int(1, 60))), undefined)).toBeUndefined();
-    expect(decodeSessionCleanTime(undefined, byteCodec)).toBeUndefined();
+    expect(decodeCleanStat(frame([]), byteCodec, 1, 1)).toBeUndefined();
+    expect(decodeCleanStat(frame(sub(1, int(1, 60))), undefined, 1, 1)).toBeUndefined();
+    expect(decodeCleanStat(undefined, byteCodec, 1, 1)).toBeUndefined();
+  });
+});
+
+describe("one figure, two clean lines — CleanStatistics as a second source", () => {
+  /** `single{duration,area}` + `user_total{duration,area,count}`, as an AIoT robot reports them. */
+  const stats = frame([
+    ...sub(1, [...int(1, 600), ...int(2, 12)]),
+    ...sub(3, [...int(1, 360000), ...int(2, 4200), ...int(3, 210)]),
+  ]);
+
+  it("reads every figure out of the one DP 167 report on the AIoT line", () => {
+    const { acts } = bind<VacuumCleanActions>(
+      "vacuum_clean",
+      fakeCtx(undefined, undefined, new Set([VACUUM_DP.CLEAN_STATS])),
+      {
+        rawDp: byteCodec,
+        read: (name) => (name === "clearTime" ? { value: stats } : undefined),
+      },
+    );
+    expect(acts.clearTime).toBe(600);
+    expect(acts.clearArea).toBe(12);
+    expect(acts.lifetimeCleanTime).toBe(360000);
+    expect(acts.lifetimeCleanArea).toBe(4200);
+    expect(acts.lifetimeCleanCount).toBe(210);
+  });
+
+  it("keeps reading the Tuya line's own DPs under the same names", () => {
+    // The point of the second source: one name per figure, whichever family the device is on. A Tuya
+    // robot reports each figure on its own DP and must not be routed through the protobuf path.
+    const tuyaDps = new Set([
+      TUYA_VACUUM_DP.CLEAR_TIME,
+      TUYA_VACUUM_DP.CLEAR_AREA,
+      TUYA_VACUUM_DP.CLEAR_TOTAL_TIME,
+      TUYA_VACUUM_DP.CLEAR_TOTAL_AREA,
+    ]);
+    const values: Record<string, number> = {
+      clearTime: 600,
+      clearArea: 12,
+      lifetimeCleanTime: 360000,
+      lifetimeCleanArea: 4200,
+    };
+    const { acts } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, "eufy_home_tuya", tuyaDps), {
+      rawDp: byteCodec,
+      read: (name) => (name in values ? { value: values[name] } : undefined),
+    });
+    expect(acts.clearTime).toBe(600);
+    expect(acts.clearArea).toBe(12);
+    expect(acts.lifetimeCleanTime).toBe(360000);
+    expect(acts.lifetimeCleanArea).toBe(4200);
+    // No Tuya DP carries a run count, and DP 167 is absent here — so it is not offered at all.
+    expect(acts.lifetimeCleanCount).toBeUndefined();
+  });
+
+  it("prefers a member's own wire over the borrowed payload", () => {
+    // A device reporting both must answer from its own DP. Borrowing is the fallback, not the default.
+    const both = new Set([VACUUM_DP.CLEAN_STATS, TUYA_VACUUM_DP.CLEAR_AREA]);
+    const { acts } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, undefined, both), {
+      rawDp: byteCodec,
+      read: (name) => (name === "clearTime" ? { value: stats } : name === "clearArea" ? { value: 99 } : undefined),
+    });
+    expect(acts.clearArea).toBe(99);
+  });
+
+  it("still publishes one property per DP — the borrowed id is not claimed twice", () => {
+    const named = (dp: number) => VACUUM_CLEAN.properties.filter((p) => p.paramType === dp).map((p) => p.name);
+    expect(named(VACUUM_DP.CLEAN_STATS)).toEqual(["clearTime"]);
+    // Each second-source member keeps its OWN spec, which is what makes it readable on the Tuya line.
+    expect(named(TUYA_VACUUM_DP.CLEAR_AREA)).toEqual(["clearArea"]);
+    expect(named(TUYA_VACUUM_DP.CLEAR_TOTAL_AREA)).toEqual(["lifetimeCleanArea"]);
+  });
+
+  it("grows no setters — every one of these is an accumulator the device owns", () => {
+    const { acts } = bind<VacuumCleanActions>(
+      "vacuum_clean",
+      fakeCtx(undefined, undefined, new Set([VACUUM_DP.CLEAN_STATS])),
+      {
+        rawDp: byteCodec,
+      },
+    );
+    const a = acts as Record<string, unknown>;
+    for (const n of ["setClearArea", "setLifetimeCleanTime", "setLifetimeCleanArea", "setLifetimeCleanCount"]) {
+      expect(a[n]).toBeUndefined();
+    }
   });
 });
 

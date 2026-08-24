@@ -112,12 +112,19 @@ describe("property id integrity (cross-module)", () => {
     expect(collisions).toEqual([]);
   });
 
-  it("a `readsFrom` member borrows a real owner's param and never claims a wire of its own", () => {
+  it("a `readsFrom` member borrows a real owner's payload, and never grows a write for it", () => {
     // The counterpart to the one-owner rule above, and the reason that rule needs no exception: several
-    // members reading different fields of ONE payload are not two capabilities disagreeing about an id,
-    // so they must not publish a second spec for it. `Device` keys stored params by id and keeps the
-    // first spec that claims one, so a second spec here would leave the extra getters reading a name
-    // nothing is ever stored under — `undefined` forever, silently.
+    // members reading different fields of ONE payload are not two capabilities disagreeing about an id.
+    //
+    // A member with NO param of its own must publish no spec for the borrowed one — `Device` keys stored
+    // params by id and keeps the first spec that claims one, so a second spec would leave that getter
+    // reading a name nothing is ever stored under, `undefined` forever and silently. `propertiesOf`
+    // enforces that structurally by skipping any paramless member.
+    //
+    // A member WITH a param is a different case and is allowed one: it keeps its own wire and its own
+    // spec, and only reaches into the owner's payload on a device that did not report that wire. That is
+    // how one property spans both clean lines. What stays forbidden in both shapes is a WRITE — setting
+    // a field inside a shared message means re-encoding the whole thing, so the owner keeps that wire.
     const offenders: string[] = [];
     for (const [cap, m] of Object.entries(CAPABILITY_MODULES)) {
       const members = (m as Mod).members;
@@ -130,14 +137,14 @@ describe("property id integrity (cross-module)", () => {
         if (!owner) offenders.push(`${where} → readsFrom "${v.readsFrom}", which is not a member here`);
         else if (owner.param === undefined) offenders.push(`${where} → owner "${v.readsFrom}" declares no param`);
         else if (owner.readsFrom !== undefined) offenders.push(`${where} → owner "${v.readsFrom}" is itself derived`);
-        // Its value is a field of someone else's payload, so it can only be reached by decoding one.
+        // The borrowed value is a field of someone else's message; only a decode can reach it.
         if (v.decode === undefined) offenders.push(`${where} → readsFrom without a decode`);
-        // A wire id, an alias or a write would all be claims on a param this member does not own. The
-        // write is the sharp one: setting a field means re-encoding the whole message, so the owner
-        // keeps the wire and a derived read never grows a setter behind its back.
-        if (v.param !== undefined) offenders.push(`${where} → readsFrom AND its own param ${v.param}`);
-        if (v.readAliases !== undefined) offenders.push(`${where} → readsFrom AND its own readAliases`);
+        // Never a write, whichever shape: the owner keeps the wire the payload rides on.
         if (v.write !== undefined) offenders.push(`${where} → readsFrom AND a write`);
+        // A member must not claim the OWNER's id as its own — that is the two-specs-one-param failure.
+        if (owner && v.param !== undefined && v.param === owner.param) {
+          offenders.push(`${where} → readsFrom "${v.readsFrom}" AND claims its param ${v.param}`);
+        }
       }
     }
     expect(offenders).toEqual([]);

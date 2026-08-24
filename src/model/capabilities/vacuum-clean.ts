@@ -29,7 +29,7 @@ export const VACUUM_DP = {
   BATTERY: 163,
   /** UndisturbedResponse (DP 157, Raw protobuf) — the do-not-disturb window (see {@link decodeDoNotDisturb}). */
   DO_NOT_DISTURB: 157,
-  /** CleanStatistics (DP 167, Raw protobuf) — session and lifetime totals (see {@link decodeSessionCleanTime}). */
+  /** CleanStatistics (DP 167, Raw protobuf) — session and lifetime totals (see {@link decodeCleanStat}). */
   CLEAN_STATS: 167,
   /** ConsumableRuntime (DP 168, Raw protobuf) — hours used per replaceable part (see {@link decodeConsumableHours}). */
   CONSUMABLES: 168,
@@ -651,40 +651,63 @@ export function decodeDoNotDisturbActive(
 }
 
 /**
- * Field numbers inside `CleanStatistics` (DP 167).
+ * Field numbers inside `CleanStatistics` (DP 167) — three accumulators, one shape.
  *
- * `SINGLE` is the run in progress. Two lifetime accumulators sit beside it — `total`(2), which survives
- * a factory reset, and `user_total`(3), which does not — and neither is read here: the property is one
- * number and the session figure is the one that changes while a caller is watching.
+ * `single` is the run in progress. Two lifetime accumulators sit beside it: `total`(2), which survives
+ * a factory reset, and `user_total`(3), which does not. The USER total is the one read here, because it
+ * is the figure the app shows and the one a user recognises — a lifetime that resets when they reset the
+ * robot. `total`(2) is left unread rather than unknown.
+ *
+ * All three carry their fields at the same inner numbers, which is the trap: reading the right field of
+ * the wrong container silently reports a lifetime figure as the current run.
  */
 const CLEAN_STATS_FIELD = {
   /** `single` — statistics for the current run. */
   SINGLE: 1,
-  /** `clean_duration` within a `Single`, in seconds. */
+  /** `user_total` — the lifetime accumulator that a factory reset clears. */
+  USER_TOTAL: 3,
+  /** `clean_duration` within any of them, in seconds. */
   DURATION: 1,
+  /** `clean_area` within any of them, in m². */
+  AREA: 2,
+  /** `clean_count` — completed runs. Only `user_total` carries it. */
+  COUNT: 3,
 } as const;
 
 /**
- * Decode the current run's cleaning duration from either clean line.
+ * Read one figure out of a `CleanStatistics` (DP 167), or take a plain number as it stands.
  *
- * Tuya reports DP 109 as a plain integer of seconds; AIoT reports DP 167 as a `CleanStatistics` whose
- * `single.clean_duration` carries the same figure in the same unit. Shape discrimination again.
+ * Both clean lines answer through this. The legacy Tuya line puts each figure on its own DP as a bare
+ * integer; the AIoT line buries all of them in one message. The value's SHAPE says which arrived — the
+ * same discrimination {@link decodeCleanType} and {@link decodeVacuumFault} use to span the two lines on
+ * one property, and the reason these figures need only one name each rather than one per platform.
  *
- * A present-but-empty `Single` reads as `0` — a run that has just started has elapsed no time, and
- * proto3 omits the zero. An absent `Single` is `undefined`.
+ * A present-but-empty container reads as `0`: a robot that has just started a run has cleaned no area,
+ * and proto3 omits the zero. An absent container is `undefined` — this device does not report it.
+ *
+ * **The plain-number passthrough belongs to a member that owns its own Tuya DP**, where that DP carries
+ * exactly the figure being asked for. A member with no wire of its own must not use it: its owner may
+ * have been installed by a read ALIAS, and it would then be handed another figure entirely — the Tuya
+ * DP 109 session duration reported as a lifetime run count. Such a member screens the value first; see
+ * `lifetimeCleanCount`.
  * @internal
  */
-export function decodeSessionCleanTime(raw: ParamValue | undefined, codec: RawDpCodec | undefined): number | undefined {
+export function decodeCleanStat(
+  raw: ParamValue | undefined,
+  codec: RawDpCodec | undefined,
+  container: number,
+  field: number,
+): number | undefined {
   if (typeof raw === "number") return raw;
   if (typeof raw !== "string") return undefined;
   if (/^\d+$/.test(raw)) return Number(raw);
   if (!codec) return undefined;
 
-  const single = codec.decode(raw)?.find((f) => f.field === CLEAN_STATS_FIELD.SINGLE);
-  if (single?.kind !== "bytes") return undefined;
-  const duration = codec.nested(single.value)?.find((f) => f.field === CLEAN_STATS_FIELD.DURATION);
-  if (duration === undefined) return 0;
-  return duration.kind === "int" ? Number(duration.value) : undefined;
+  const group = codec.decode(raw)?.find((f) => f.field === container);
+  if (group?.kind !== "bytes") return undefined;
+  const value = codec.nested(group.value)?.find((f) => f.field === field);
+  if (value === undefined) return 0;
+  return value.kind === "int" ? Number(value.value) : undefined;
 }
 
 /**
@@ -1115,7 +1138,8 @@ export const VACUUM_CLEAN_MEMBERS = {
     kind: "seconds",
     provenance: "mega",
     readAliases: [{ paramType: TUYA_VACUUM_DP.CLEAR_TIME, available: isTuyaVacuum }],
-    decode: (raw, codec) => decodeSessionCleanTime(raw as ParamValue | undefined, codec),
+    decode: (raw, codec) =>
+      decodeCleanStat(raw as ParamValue | undefined, codec, CLEAN_STATS_FIELD.SINGLE, CLEAN_STATS_FIELD.DURATION),
     decodedKind: "seconds",
     description:
       "Session cleaning duration in seconds — CleanStatistics.single.clean_duration (DP 167 AIoT, Raw " +
@@ -1126,10 +1150,16 @@ export const VACUUM_CLEAN_MEMBERS = {
    */
   clearArea: {
     param: TUYA_VACUUM_DP.CLEAR_AREA,
+    readsFrom: "clearTime",
     type: "number",
     kind: "scalar",
     provenance: "mega",
-    description: "Session cleaned area in m² from DP 110 (ClearArea). X8 Pro Tuya clean line. Live-confirmed.",
+    decode: (raw, codec) =>
+      decodeCleanStat(raw as ParamValue | undefined, codec, CLEAN_STATS_FIELD.SINGLE, CLEAN_STATS_FIELD.AREA),
+    decodedKind: "scalar",
+    description:
+      "Session cleaned area in m² — the plain DP 110 integer on the Tuya clean line, or " +
+      "CleanStatistics.single.clean_area (DP 167 AIoT, Raw protobuf).",
   },
   /**
    * Speaker loudness 0-100 (DP 111, Value). Live-confirmed 38.
@@ -1150,12 +1180,17 @@ export const VACUUM_CLEAN_MEMBERS = {
    */
   lifetimeCleanTime: {
     param: TUYA_VACUUM_DP.CLEAR_TOTAL_TIME,
+    readsFrom: "clearTime",
     type: "number",
     unit: "s",
     kind: "seconds",
     provenance: "mega",
+    decode: (raw, codec) =>
+      decodeCleanStat(raw as ParamValue | undefined, codec, CLEAN_STATS_FIELD.USER_TOTAL, CLEAN_STATS_FIELD.DURATION),
+    decodedKind: "seconds",
     description:
-      "Lifetime total cleaning time in seconds from DP 119 (ClearTotalTime). X8 Pro Tuya clean line. Schema-confirmed.",
+      "Lifetime cleaning time in seconds — the plain DP 119 integer on the Tuya clean line, or " +
+      "CleanStatistics.user_total.clean_duration (DP 167 AIoT, Raw protobuf).",
   },
   /**
    * Lifetime total cleaned area in m² (DP 120, Value). Counts across all sessions.
@@ -1164,11 +1199,39 @@ export const VACUUM_CLEAN_MEMBERS = {
    */
   lifetimeCleanArea: {
     param: TUYA_VACUUM_DP.CLEAR_TOTAL_AREA,
+    readsFrom: "clearTime",
     type: "number",
     kind: "scalar",
     provenance: "mega",
+    decode: (raw, codec) =>
+      decodeCleanStat(raw as ParamValue | undefined, codec, CLEAN_STATS_FIELD.USER_TOTAL, CLEAN_STATS_FIELD.AREA),
+    decodedKind: "scalar",
     description:
-      "Lifetime total cleaned area in m² from DP 120 (ClearTotalArea). X8 Pro Tuya clean line. Schema-confirmed.",
+      "Lifetime cleaned area in m² — the plain DP 120 integer on the Tuya clean line, or " +
+      "CleanStatistics.user_total.clean_area (DP 167 AIoT, Raw protobuf).",
+  },
+  /**
+   * How many runs the robot has completed in its lifetime.
+   *
+   * AIoT only — it rides inside the same `CleanStatistics` the two figures above read, and the Tuya
+   * clean line has no DP for it. So this one borrows without a wire of its own, where its siblings keep
+   * theirs and only fall back to the payload.
+   */
+  lifetimeCleanCount: {
+    readsFrom: "clearTime",
+    type: "number",
+    kind: "scalar",
+    provenance: "mega",
+    // Refuses a bare number outright. Its owner also answers from a Tuya DP via a read alias, and that
+    // DP carries a session DURATION — passing it through would report seconds as a run count. A member
+    // with no wire of its own can only be answered by the protobuf, so anything else is `undefined`.
+    decode: (raw, codec) =>
+      typeof raw === "string" && !/^\d+$/.test(raw)
+        ? decodeCleanStat(raw, codec, CLEAN_STATS_FIELD.USER_TOTAL, CLEAN_STATS_FIELD.COUNT)
+        : undefined,
+    decodedKind: "scalar",
+    description: "Completed runs in the robot's lifetime — CleanStatistics.user_total.clean_count (DP 167 AIoT).",
+    available: (ctx: AvailabilityContext) => ctx.paramIds?.has(VACUUM_DP.CLEAN_STATS) ?? false,
   },
   /**
    * Water tank attached (DP 127, Bool ro). Confirmed from `thing.m.device.ref.info.list` v5.4.

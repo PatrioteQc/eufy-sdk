@@ -63,14 +63,15 @@ const tableReads = (m: CapabilityModule, paramIds: Set<number>): string[] =>
       // A getter installs only where the member is available for this device — the same one
       // availability decision the manifest and setter apply (here the ctx is a plain camera).
       if (v.available && !v.available(ctxWith(paramIds))) return false;
-      // A `readsFrom` member has no wire of its own: the OWNER's param is the evidence that installs
-      // it, exactly as `bindMembers` resolves it. Its own `available` above still applies.
+      // Either wire installs a `readsFrom` member: its own param where it has one, or the OWNER's
+      // payload that carries the same value on the other device family — exactly as `bindMembers`
+      // resolves it. Its own `available` above still applies.
       const owner = (v.readsFrom === undefined ? undefined : (m.members?.[v.readsFrom] as ValueMember)) ?? v;
-      return (
-        owner.realtime === true ||
-        (owner.param !== undefined && paramIds.has(owner.param)) ||
-        owner.readAliases?.some((a) => paramIds.has(a.paramType)) === true
-      );
+      const evident = (x: ValueMember): boolean =>
+        x.realtime === true ||
+        (x.param !== undefined && paramIds.has(x.param)) ||
+        x.readAliases?.some((a) => paramIds.has(a.paramType)) === true;
+      return evident(v) || (owner !== v && evident(owner));
     })
     .map(([name]) => name);
 
