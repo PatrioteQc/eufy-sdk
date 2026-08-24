@@ -1,4 +1,4 @@
-import type { RawDpCodec } from "../../core/contracts.js";
+import type { RawDpCodec, RawDpField } from "../../core/contracts.js";
 import type { ParamValue } from "../types.js";
 import type { AvailabilityContext, CapabilityModule } from "./types.js";
 import { asBool } from "../../core/util.js";
@@ -27,6 +27,14 @@ export const VACUUM_DP = {
   LANGUAGE: 162,
   /** Battery level 0-100 (DP 163, Value) — a clean-namespace DP, NOT the security param 1101. */
   BATTERY: 163,
+  /** UndisturbedResponse (DP 157, Raw protobuf) — the do-not-disturb window (see {@link decodeDoNotDisturb}). */
+  DO_NOT_DISTURB: 157,
+  /** CleanStatistics (DP 167, Raw protobuf) — session and lifetime totals (see {@link decodeSessionCleanTime}). */
+  CLEAN_STATS: 167,
+  /** UnisettingResponse (DP 176, Raw protobuf) — the device-wide setting toggles (see {@link decodeChildLock}). */
+  SETTINGS: 176,
+  /** ErrorCode (DP 177 fault alert, Raw protobuf) — the robot's faults and warnings (see {@link decodeVacuumFault}). */
+  FAULT_ALERT: 177,
 } as const;
 
 /**
@@ -204,7 +212,8 @@ export const VACUUM_ACTIVITIES = ["idle", "error", "docked", "cleaning", "return
 
 /**
  * The robot's high-level activity — what `dev.vacuumClean()?.activity` reports. `"unknown"` covers a
- * status the SDK can't classify yet. Several finer states collapse into `"cleaning"` today.
+ * status the SDK can't classify yet. `"cleaning"` is the widest member: it also covers mapping,
+ * cruising and manual remote driving, which the wire distinguishes and this union does not.
  */
 export type VacuumActivity = (typeof VACUUM_ACTIVITIES)[number];
 
@@ -246,30 +255,119 @@ export function decodeTuyaWorkStatus(raw: ParamValue | undefined): VacuumActivit
 /**
  * `WorkStatus.state` (protobuf field #2) → {@link VacuumActivity}.
  *
- * Only three values are **live-verified** on a T2351 — a start→return→charge run reported `5`(cleaning)
- * → `7`(returning) → `3`(docked), matching the physical actions. Every other value is carried from the
- * legacy `eufy-clean` `control.proto` enum and is **UNVERIFIED** (flagged inline, the same way the
- * arming module marks its unconfirmed mode ids); each is best-effort until captured on-device.
+ * Three values are **live-verified** on a T2351 — a start→return→charge run reported `5`(cleaning) →
+ * `7`(returning) → `3`(docked), matching the physical actions. The rest come from the vendor's own
+ * `WorkStatus.State` enumeration, which those three corroborate exactly: it declares `CHARGING = 3`,
+ * `CLEANING = 5` and `GO_HOME = 7` at the same positions the device reported them.
  *
- * Known gap — `state == 5` is not final; it carries a sub-state this decoder does not read (it only
- * reads field #2). The reversed `WorkStatus` shows the same `5` also means **paused**
- * (`cleaning.state == 1`) or **parked at the dock running its wash/dry cycle** (`go_wash.mode ∈ {1,2}`
- * / `station` washing-drying), not just actively cleaning. So a paused robot AND one washing/drying on
- * the dock both currently read as `"cleaning"`, and the standalone `15` (paused) value may be
- * unreachable in practice. Resolving it needs those sub-fields decoded; they are not guessed here.
+ * The vendor's remaining names are narrower than this union can express, so several collapse onto
+ * `"cleaning"` — the closest true answer for a robot that is off the dock and driving:
+ * `FAST_MAPPING`(4) is mapping a floor, `REMOTE_CTRL`(6) is being driven by hand, `CRUISIING`(8) is
+ * patrolling. A caller that needs to tell those apart cannot use this read to do it.
+ *
+ * The enumeration ends at `8`. An earlier revision carried a `15 → "paused"` entry, which no device
+ * can report — pause is a **sub-state** of `5`, resolved by {@link resolveCleaningState} rather than by
+ * a state of its own.
  */
 const WORK_STATE_ACTIVITY: Record<number, VacuumActivity> = {
-  0: "idle", // ⚠️ unverified — legacy eufy-clean enum, see doc above
-  1: "idle", // ⚠️ unverified — legacy eufy-clean enum, see doc above
-  2: "error", // ⚠️ unverified — legacy eufy-clean enum, see doc above
-  3: "docked", // ✅ live T2351
-  4: "cleaning", // ⚠️ unverified — legacy eufy-clean enum, see doc above
-  5: "cleaning", // ✅ live T2351
-  6: "cleaning", // ⚠️ unverified — legacy eufy-clean enum, see doc above
-  7: "returning", // ✅ live T2351
-  8: "cleaning", // ⚠️ unverified — legacy eufy-clean enum, see doc above
-  15: "paused", // ⚠️ unverified — legacy eufy-clean enum; may be unreachable, see "Known gap" above
+  0: "idle", // STANDBY — also every paused-* state; the sub-state carries which
+  1: "idle", // SLEEP
+  2: "error", // FAULT
+  3: "docked", // CHARGING ✅ live T2351
+  4: "cleaning", // FAST_MAPPING — driving, no narrower member
+  5: "cleaning", // CLEANING ✅ live T2351 — refined by resolveCleaningState
+  6: "cleaning", // REMOTE_CTRL — driving, no narrower member
+  7: "returning", // GO_HOME ✅ live T2351
+  8: "cleaning", // CRUISIING — driving, no narrower member
 };
+
+/** The one {@link WORK_STATE_ACTIVITY} entry that is not final on its own — see {@link resolveCleaningState}. */
+const WORK_STATE_CLEANING = 5;
+
+/**
+ * Field numbers inside `WorkStatus` that refine state `5`, and inside the sub-messages they carry.
+ *
+ * Each sub-message follows the vendor's stated rule: **an absent message means that sub-state is
+ * idle**, so presence is the signal and the fields inside it only narrow further.
+ */
+const WORK_STATUS_FIELD = {
+  /** `state` — the one field read for every other state. */
+  STATE: 2,
+  /** `cleaning` — carries `state`(1) `DOING`/`PAUSED`. */
+  CLEANING: 6,
+  /** `go_wash` — carries `mode`(2) `NAVIGATION`/`WASHING`/`DRYING`. */
+  GO_WASH: 7,
+  /** `station` — carries `washing_drying_system`(3) while the dock runs a mop cycle. */
+  STATION: 14,
+} as const;
+
+/** `Cleaning.state` — the run state of a cleaning job. `DOING` is the proto3 default, so it is absent on the wire. */
+const CLEANING_STATE_PAUSED = 1;
+
+/** `GoWash.mode` values that mean the robot is parked ON the dock rather than driving toward it. */
+const GO_WASH_ON_DOCK = new Set([1, 2]);
+
+/** `Station.washing_drying_system` — present while the dock is washing or drying mops. */
+const STATION_WASHING_DRYING = 3;
+
+/** `mode`'s field number inside `GoWash` — which leg of the wash cycle the robot is in. */
+const SUB_MODE_FIELD = 2;
+
+/** `state`'s field number inside `Cleaning` — whether the job is running or paused. */
+const SUB_STATE_FIELD = 1;
+
+/**
+ * Read one `uint32`-valued field out of a nested sub-message, or `0` when it is absent.
+ *
+ * Absent is not missing data: proto3 omits a zero-valued field, so an empty sub-message states the
+ * enum's zero member — `DOING` for a run state, `NAVIGATION` for a wash mode — and reading it as `0`
+ * is what the encoding means.
+ */
+function subValue(codec: RawDpCodec, body: Buffer, field: number): number {
+  const found = codec.nested(body)?.find((f) => f.field === field);
+  return found?.kind === "int" ? Number(found.value) : 0;
+}
+
+/**
+ * Refine `WorkStatus.state == 5` into the activity the robot is actually in.
+ *
+ * State `5` is not one state. The vendor's own enumeration lists it as covering positioning, global
+ * and area cleaning, spot cleaning **and** returning-to-wash / washing mops — and the sub-messages
+ * beside it are what separate those. Without this, a paused robot and one parked on its dock running a
+ * wash cycle both read as `"cleaning"`, which is the single most visible wrong answer this capability
+ * can give.
+ *
+ * Resolution order matters, and follows the device's own precedence: being **on** the dock beats being
+ * paused, because a robot that paused itself to go wash reports both. `go_wash` with a driving mode
+ * (`NAVIGATION`) is deliberately NOT docked — it is still en route.
+ *
+ * Falls through to `"cleaning"` whenever no sub-message claims it, so a frame this does not recognise
+ * degrades to the previous behaviour rather than to a worse one.
+ *
+ * **The station branch is the softest read here, and the one to confirm on-device first.** It takes the
+ * PRESENCE of `washing_drying_system` as washing-or-drying and does not read its value, where `go_wash`
+ * above reads the actual mode. That follows the schema's own "an absent message is IDLE" rule, and it
+ * degrades into the `"cleaning"` fallback rather than into a wrong dock state — but unlike the go_wash
+ * and paused branches it is not corroborated by a capture, so a live report of a robot washing at its
+ * dock is what would settle whether presence alone is enough.
+ */
+function resolveCleaningState(fields: readonly RawDpField[], codec: RawDpCodec): VacuumActivity {
+  const sub = (field: number): Buffer | undefined => {
+    const found = fields.find((f) => f.field === field);
+    return found?.kind === "bytes" ? found.value : undefined;
+  };
+
+  const goWash = sub(WORK_STATUS_FIELD.GO_WASH);
+  if (goWash && GO_WASH_ON_DOCK.has(subValue(codec, goWash, SUB_MODE_FIELD))) return "docked";
+
+  const station = sub(WORK_STATUS_FIELD.STATION);
+  if (station && codec.nested(station)?.some((f) => f.field === STATION_WASHING_DRYING)) return "docked";
+
+  const cleaning = sub(WORK_STATUS_FIELD.CLEANING);
+  if (cleaning && !goWash && subValue(codec, cleaning, SUB_STATE_FIELD) === CLEANING_STATE_PAUSED) return "paused";
+
+  return "cleaning";
+}
 
 /**
  * Every value {@link VacuumCleanType} can take — the read's declared domain, see `VACUUM_ACTIVITIES`.
@@ -347,22 +445,210 @@ export function decodeCleanType(
   return value.kind === "int" ? CLEAN_TYPE[Number(value.value)] : undefined;
 }
 
-/** `state`'s field number inside the `WorkStatus` message — the one field of DP 153 read today. */
-const WORK_STATUS_STATE_FIELD = 2;
+/**
+ * Field numbers inside the `ErrorCode` message (DP 177).
+ *
+ * Both lists are `repeated uint32`, which proto3 encodes PACKED by default — one length-delimited run
+ * of varints rather than one field per value. {@link firstRepeatedCode} reads either form, because a
+ * sender is free to emit the unpacked one and a reader that assumed packing would silently see nothing.
+ */
+const ERROR_CODE_FIELD = {
+  /** `error` — faults that stop the robot. */
+  ERROR: 2,
+  /** `warn` — conditions the robot reports while continuing. */
+  WARN: 3,
+} as const;
+
+/** No fault: the message decoded and listed neither an error nor a warning. */
+const NO_FAULT = 0;
+
+/**
+ * Read the first value of a `repeated uint32`, accepting both encodings.
+ *
+ * Packed arrives as one length-delimited run of varints, unpacked as a plain varint field repeated —
+ * so the first match wins in either case. Returns `undefined` when the field is absent or the packed
+ * run is empty, which the caller reads as "this list said nothing" rather than as a zero code.
+ *
+ * **Assumes a code below 2³¹.** The accumulate uses JavaScript's `<<`, which is a 32-bit signed
+ * operation, so a wider varint would wrap. Every documented range is four digits — 1-119 robot,
+ * 1010-5112 component, 6010-6311 station, 7000-7055 situational — so this holds today and is stated
+ * rather than assumed silently, in case the vendor's table ever grows a wider code.
+ */
+function firstRepeatedCode(fields: readonly RawDpField[], field: number): number | undefined {
+  const found = fields.find((f) => f.field === field);
+  if (found === undefined) return undefined;
+  if (found.kind === "int") return Number(found.value);
+
+  let value = 0;
+  let shift = 0;
+  for (const byte of found.value) {
+    value |= (byte & 0x7f) << shift;
+    if (!(byte & 0x80)) return value;
+    shift += 7;
+  }
+  return undefined;
+}
+
+/**
+ * Decode the robot's current fault code from either clean line.
+ *
+ * The two lines carry the same meaning on different wires, so this discriminates on the value's SHAPE
+ * the way {@link decodeCleanType} does: the legacy Tuya line reports DP 106 as a plain integer, the
+ * AIoT line reports DP 177 as an `ErrorCode` protobuf.
+ *
+ * `error` is preferred over `warn`: a fault that stops the robot is the more urgent answer when both
+ * are listed. Only the FIRST code of the winning list is answered — the property is one number, and a
+ * caller needing the whole set needs a shape this schema cannot express (see the module's members).
+ *
+ * `0` means the device stated no fault. `undefined` means it did not state one at all — an unbound
+ * device, or a payload that does not decode — and the two are deliberately different.
+ * @internal
+ */
+export function decodeVacuumFault(raw: ParamValue | undefined, codec: RawDpCodec | undefined): number | undefined {
+  if (typeof raw === "number") return raw;
+  if (typeof raw !== "string") return undefined;
+  if (/^\d+$/.test(raw)) return Number(raw);
+  if (!codec) return undefined;
+  const fields = codec.decode(raw);
+  if (!fields) return undefined;
+  return (
+    firstRepeatedCode(fields, ERROR_CODE_FIELD.ERROR) ?? firstRepeatedCode(fields, ERROR_CODE_FIELD.WARN) ?? NO_FAULT
+  );
+}
+
+/**
+ * Field numbers inside `UndisturbedResponse` (DP 157) and the messages it nests.
+ *
+ * `ACTIVE` is deliberately NOT read: it reports whether the window is open right now, which is a
+ * different question from whether the feature is switched on, and the latter is what the property means.
+ */
+const UNDISTURBED_FIELD = {
+  /** `undisturbed` — the configured window; `active`(1) beside it is the live in-window flag. */
+  UNDISTURBED: 2,
+  /** `sw` within an `Undisturbed` — the enable switch. */
+  SWITCH: 1,
+  /** `value` within a `Switch`. */
+  VALUE: 1,
+} as const;
+
+/**
+ * Decode the do-not-disturb switch from either clean line.
+ *
+ * Discriminates on the value's SHAPE, as {@link decodeCleanType} and {@link decodeVacuumFault} do: the
+ * Tuya line reports DP 107 as a plain bool, the AIoT line reports DP 157 as an `UndisturbedResponse`.
+ *
+ * A present-but-empty `Switch` reads as `false` rather than as missing — proto3 omits a zero-valued
+ * field, so "switched off" and "said nothing about the switch" are the same bytes once the container
+ * around them is there. An absent CONTAINER is still `undefined`: that is the device not answering.
+ * @internal
+ */
+export function decodeDoNotDisturb(raw: ParamValue | undefined, codec: RawDpCodec | undefined): boolean | undefined {
+  if (typeof raw === "boolean") return raw;
+  if (typeof raw === "number") return raw !== 0;
+  if (typeof raw !== "string") return undefined;
+  if (raw === "true" || raw === "false") return raw === "true";
+  if (raw === "0" || raw === "1") return raw === "1";
+  if (!codec) return undefined;
+
+  const window = codec.decode(raw)?.find((f) => f.field === UNDISTURBED_FIELD.UNDISTURBED);
+  if (window?.kind !== "bytes") return undefined;
+  const sw = codec.nested(window.value)?.find((f) => f.field === UNDISTURBED_FIELD.SWITCH);
+  if (sw === undefined) return false;
+  if (sw.kind !== "bytes") return undefined;
+  const value = codec.nested(sw.value)?.find((f) => f.field === UNDISTURBED_FIELD.VALUE);
+  if (value === undefined) return false;
+  return value.kind === "int" ? value.value !== 0n : undefined;
+}
+
+/**
+ * Field numbers inside `CleanStatistics` (DP 167).
+ *
+ * `SINGLE` is the run in progress. Two lifetime accumulators sit beside it — `total`(2), which survives
+ * a factory reset, and `user_total`(3), which does not — and neither is read here: the property is one
+ * number and the session figure is the one that changes while a caller is watching.
+ */
+const CLEAN_STATS_FIELD = {
+  /** `single` — statistics for the current run. */
+  SINGLE: 1,
+  /** `clean_duration` within a `Single`, in seconds. */
+  DURATION: 1,
+} as const;
+
+/**
+ * Decode the current run's cleaning duration from either clean line.
+ *
+ * Tuya reports DP 109 as a plain integer of seconds; AIoT reports DP 167 as a `CleanStatistics` whose
+ * `single.clean_duration` carries the same figure in the same unit. Shape discrimination again.
+ *
+ * A present-but-empty `Single` reads as `0` — a run that has just started has elapsed no time, and
+ * proto3 omits the zero. An absent `Single` is `undefined`.
+ * @internal
+ */
+export function decodeSessionCleanTime(raw: ParamValue | undefined, codec: RawDpCodec | undefined): number | undefined {
+  if (typeof raw === "number") return raw;
+  if (typeof raw !== "string") return undefined;
+  if (/^\d+$/.test(raw)) return Number(raw);
+  if (!codec) return undefined;
+
+  const single = codec.decode(raw)?.find((f) => f.field === CLEAN_STATS_FIELD.SINGLE);
+  if (single?.kind !== "bytes") return undefined;
+  const duration = codec.nested(single.value)?.find((f) => f.field === CLEAN_STATS_FIELD.DURATION);
+  if (duration === undefined) return 0;
+  return duration.kind === "int" ? Number(duration.value) : undefined;
+}
+
+/**
+ * Field numbers inside `UnisettingResponse` (DP 176).
+ *
+ * The message carries fifteen toggles; only the child lock is read, because the property schema allows
+ * one property per data point. **Its REQUEST counterpart numbers the same settings differently** — only
+ * `children_lock` sits at 1 in both — so a reader and a writer of this DP can never share a table.
+ */
+const UNISETTING_FIELD = {
+  /** `children_lock` — field 1 of the RESPONSE. */
+  CHILDREN_LOCK: 1,
+  /** `value` within a `Switch`. */
+  VALUE: 1,
+} as const;
+
+/**
+ * Decode the child-lock switch out of a `UnisettingResponse` (DP 176).
+ *
+ * A present-but-empty `Switch` reads as `false`: proto3 omits a zero, so "off" and "said nothing about
+ * this toggle" are the same bytes once the wrapper is there. An absent wrapper is `undefined` — the
+ * device did not report the setting at all.
+ * @internal
+ */
+export function decodeChildLock(raw: ParamValue | undefined, codec: RawDpCodec | undefined): boolean | undefined {
+  if (typeof raw !== "string" || !codec) return undefined;
+  const lock = codec.decode(raw)?.find((f) => f.field === UNISETTING_FIELD.CHILDREN_LOCK);
+  if (lock?.kind !== "bytes") return undefined;
+  const value = codec.nested(lock.value)?.find((f) => f.field === UNISETTING_FIELD.VALUE);
+  if (value === undefined) return false;
+  return value.kind === "int" ? value.value !== 0n : undefined;
+}
 
 /**
  * Decode a `WorkStatus` (DP 153) Raw-DP value to a {@link VacuumActivity}. That DP carries a whole
  * protobuf message rather than a scalar, so the payload is read through the injected {@link RawDpCodec}:
  * the codec owns the structure, this owns which field number carries which meaning. `"unknown"` covers
- * every way the answer can be absent — an unbound device (no codec), a malformed payload, no field
- * {@link WORK_STATUS_STATE_FIELD}, or a state value missing from {@link WORK_STATE_ACTIVITY}.
+ * every way the answer can be absent — an unbound device (no codec), a malformed payload, no
+ * `state` field, or a state value missing from {@link WORK_STATE_ACTIVITY}.
+ *
+ * `CLEANING` is the one state that is not final on its own; {@link resolveCleaningState} reads the
+ * sub-messages beside it to separate cleaning from paused and from a mop cycle on the dock.
  * @internal
  */
 export function decodeVacuumActivity(raw: ParamValue | undefined, codec: RawDpCodec | undefined): VacuumActivity {
   if (typeof raw !== "string" || !codec) return "unknown";
-  const state = codec.decode(raw)?.find((f) => f.field === WORK_STATUS_STATE_FIELD);
-  if (state?.kind !== "int") return "unknown";
-  return WORK_STATE_ACTIVITY[Number(state.value)] ?? "unknown";
+  const fields = codec.decode(raw);
+  const state = fields?.find((f) => f.field === WORK_STATUS_FIELD.STATE);
+  if (!fields || state?.kind !== "int") return "unknown";
+  const activity = WORK_STATE_ACTIVITY[Number(state.value)];
+  if (activity === undefined) return "unknown";
+  return activity === "cleaning" && Number(state.value) === WORK_STATE_CLEANING
+    ? resolveCleaningState(fields, codec)
+    : activity;
 }
 
 /**
@@ -424,7 +710,9 @@ export const VACUUM_CLEAN_MEMBERS = {
     decode: (raw, codec) => decodeVacuumActivity(raw as ParamValue | undefined, codec),
     decodedKind: "enum",
     decodedValues: VACUUM_ACTIVITIES,
-    description: "High-level activity from WorkStatus.state (DP 153 work status, Raw protobuf).",
+    description:
+      "High-level activity from WorkStatus (DP 153 work status, Raw protobuf). Reads the state field, " +
+      "then the sub-messages that separate cleaning from paused and from a mop cycle on the dock.",
   },
   /**
    * The robot's own speaker loudness — its spoken prompts and chimes, nothing to do with suction noise.
@@ -488,15 +776,32 @@ export const VACUUM_CLEAN_MEMBERS = {
     description: "Configured cleaning type from CleanParam.clean_type (DP 154 AIoT protobuf) or DP 113 Tuya Enum.",
   },
   /**
-   * Error code from the legacy Tuya clean line (DP 106, Int ro). 0 = ok; non-zero is a device fault.
-   * Exact fault code semantics have not been captured live.
+   * The robot's current fault, as a numeric code. `0` is no fault; `undefined` is a device that has not
+   * said, which is not the same thing.
+   *
+   * One number for both clean lines: the AIoT line reports an `ErrorCode` message on DP 177 carrying a
+   * list of faults and a list of warnings, and the legacy Tuya line reports a plain integer on DP 106.
+   * {@link decodeVacuumFault} answers the first fault, or the first warning when there is no fault.
+   *
+   * The code's MEANING is the vendor's own table and is not interpreted here — a host that wants text
+   * maps the number itself.
+   *
+   * The DP 106 alias is DELIBERATELY ungated, unlike `battery` and `cleanType` which gate their
+   * legacy aliases on `isTuyaVacuum`. A fault is the one reading worth surfacing even when the
+   * family classification is wrong or absent, and {@link decodeVacuumFault} discriminates on the
+   * value's SHAPE rather than on the family — so a device carrying DP 106 decodes sanely whichever
+   * line it turns out to be on. The asymmetry is the point, not an oversight.
    */
   errorCode: {
-    param: LEGACY_VACUUM_DP.ERROR_CODE,
+    param: VACUUM_DP.FAULT_ALERT,
     type: "number",
-    kind: "scalar",
     provenance: "mega",
-    description: "Error code, 0 = ok (DP 106, Int ro). Legacy Tuya G-series/X8 clean line.",
+    readAliases: [{ paramType: LEGACY_VACUUM_DP.ERROR_CODE }],
+    decode: (raw, codec) => decodeVacuumFault(raw as ParamValue | undefined, codec),
+    decodedKind: "scalar",
+    description:
+      "Current fault code, 0 = none. ErrorCode.error[0] (DP 177 faultAlert, Raw protobuf) falling " +
+      "back to ErrorCode.warn[0], or the plain DP 106 integer on the legacy Tuya clean line.",
   },
   /**
    * High-level activity for the X8 Pro Tuya clean line (DP 15, Enum string). Decoded from the device's
@@ -579,13 +884,17 @@ export const VACUUM_CLEAN_MEMBERS = {
    * Read-only — no write is expected for a session counter.
    */
   clearTime: {
-    param: TUYA_VACUUM_DP.CLEAR_TIME,
+    param: VACUUM_DP.CLEAN_STATS,
     type: "number",
     unit: "s",
     kind: "seconds",
     provenance: "mega",
+    readAliases: [{ paramType: TUYA_VACUUM_DP.CLEAR_TIME, available: isTuyaVacuum }],
+    decode: (raw, codec) => decodeSessionCleanTime(raw as ParamValue | undefined, codec),
+    decodedKind: "seconds",
     description:
-      "Session cleaning duration in seconds from DP 109 (ClearTime). X8 Pro Tuya clean line. Live-confirmed.",
+      "Session cleaning duration in seconds — CleanStatistics.single.clean_duration (DP 167 AIoT, Raw " +
+      "protobuf) or the plain DP 109 integer on the Tuya clean line.",
   },
   /**
    * Session cleaned area in m² (DP 110, Value). Live-confirmed 54 at rest. Read-only.
@@ -660,17 +969,40 @@ export const VACUUM_CLEAN_MEMBERS = {
     description: "Mop pad attached (DP 129, Bool ro). X8 Pro Tuya clean line. Schema-confirmed.",
   },
   /**
-   * Do-not-disturb mode (DP 107, Bool rw). When `true` the robot suppresses voice announcements;
-   * the app allows toggling this from its settings screen. Tuya clean line only — no equivalent
-   * DP confirmed on AIoT. Schema-confirmed from `thing.m.device.ref.info.list` v5.4 (forbid_mode).
+   * Child lock — when on, the robot ignores its physical buttons.
+   *
+   * AIoT clean line only; no equivalent is confirmed on the Tuya schema, so there is no read alias.
    */
-  doNotDisturb: {
-    param: TUYA_VACUUM_DP.FORBID_MODE,
+  childLock: {
+    param: VACUUM_DP.SETTINGS,
     type: "bool",
     kind: "boolean",
     provenance: "mega",
-    description: "Do-not-disturb mode (DP 107, Bool ro). X8 Pro Tuya clean line. Live-confirmed.",
-    available: (ctx: AvailabilityContext) => ctx.paramIds?.has(TUYA_VACUUM_DP.FORBID_MODE) ?? false,
+    decode: (raw, codec) => decodeChildLock(raw as ParamValue | undefined, codec),
+    decodedKind: "boolean",
+    description: "Child lock from UnisettingResponse.children_lock (DP 176 commonSettings, Raw protobuf).",
+    available: (ctx: AvailabilityContext) => ctx.paramIds?.has(VACUUM_DP.SETTINGS) ?? false,
+  },
+  /**
+   * Do-not-disturb — when on, the robot suppresses its voice announcements.
+   *
+   * Reports whether the feature is SWITCHED ON, not whether the quiet window happens to be open right
+   * now; `UndisturbedResponse` carries that as a separate `active` flag which this deliberately skips.
+   */
+  doNotDisturb: {
+    param: VACUUM_DP.DO_NOT_DISTURB,
+    type: "bool",
+    kind: "boolean",
+    provenance: "mega",
+    readAliases: [{ paramType: TUYA_VACUUM_DP.FORBID_MODE, available: isTuyaVacuum }],
+    decode: (raw, codec) => decodeDoNotDisturb(raw as ParamValue | undefined, codec),
+    decodedKind: "boolean",
+    description:
+      "Do-not-disturb switch — Undisturbed.sw (DP 157 AIoT, Raw protobuf) or the plain DP 107 bool on " +
+      "the Tuya clean line. Whether the feature is ON, not whether the window is open right now.",
+    available: (ctx: AvailabilityContext) =>
+      (ctx.paramIds?.has(VACUUM_DP.DO_NOT_DISTURB) ?? false) ||
+      (ctx.paramIds?.has(TUYA_VACUUM_DP.FORBID_MODE) ?? false),
   },
   /**
    * WiFi RSSI in dBm (DP 134, Value ro). Schema-confirmed from `thing.m.device.ref.info.list` v5.4.

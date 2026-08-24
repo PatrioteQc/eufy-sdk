@@ -7,6 +7,10 @@ import {
   TUYA_VACUUM_DP,
   decodeVacuumActivity,
   decodeCleanType,
+  decodeChildLock,
+  decodeDoNotDisturb,
+  decodeSessionCleanTime,
+  decodeVacuumFault,
   encodeModeCtrl,
   ModeCtrlMethod,
   type VacuumCleanActions,
@@ -15,6 +19,7 @@ import {
   type TuyaCleanType,
 } from "../vacuum-clean.js";
 import { bind } from "./bind.js";
+import { byteCodec, frame, int, sub, varint } from "./proto-bytes.js";
 
 /**
  * The capability is exercised against a FAKE codec, never the real `transport/raw-dp.ts` — importing
@@ -100,6 +105,7 @@ describe("vacuum_clean capability module", () => {
       "lifetimeCleanArea",
       "waterTank",
       "mopPad",
+      "childLock",
       "doNotDisturb",
       "rssi",
     ]);
@@ -136,7 +142,11 @@ describe("decodeVacuumActivity (WorkStatus.state → activity)", () => {
     expect(decodeVacuumActivity("payload", workStatus(3))).toBe("docked");
     expect(decodeVacuumActivity("payload", workStatus(5))).toBe("cleaning");
     expect(decodeVacuumActivity("payload", workStatus(7))).toBe("returning");
-    expect(decodeVacuumActivity("payload", workStatus(15))).toBe("paused");
+  });
+
+  it("has no state above the vendor enum's last member — 15 is not a state a device can report", () => {
+    expect(decodeVacuumActivity("payload", workStatus(9))).toBe("unknown");
+    expect(decodeVacuumActivity("payload", workStatus(15))).toBe("unknown");
   });
 
   it("picks field #2 out of a full frame, ignoring the fields around it", () => {
@@ -168,6 +178,59 @@ describe("decodeVacuumActivity (WorkStatus.state → activity)", () => {
   it("returns 'unknown' for a non-string value", () => {
     expect(decodeVacuumActivity(undefined, workStatus(3))).toBe("unknown");
     expect(decodeVacuumActivity(7, workStatus(3))).toBe("unknown");
+  });
+});
+
+/** `WorkStatus.state` = CLEANING(5), plus whichever sub-messages the fixture states. */
+function cleaningFrame(...subs: number[][]): string {
+  return frame([...int(2, 5), ...subs.flat()]);
+}
+
+/**
+ * State 5 is the vendor's catch-all for "off the dock or servicing mops", and separating its members is
+ * the whole point of reading the sub-messages. Each case here is a physical situation a T2351 reaches.
+ */
+describe("decodeVacuumActivity — WorkStatus state 5 sub-states", () => {
+  it("is cleaning when no sub-message narrows it", () => {
+    expect(decodeVacuumActivity(cleaningFrame(), byteCodec)).toBe("cleaning");
+  });
+
+  it("is paused when the cleaning job reports PAUSED", () => {
+    expect(decodeVacuumActivity(cleaningFrame(sub(6, int(1, 1))), byteCodec)).toBe("paused");
+  });
+
+  it("is cleaning when the cleaning job is present but running — an empty sub-message means DOING", () => {
+    expect(decodeVacuumActivity(cleaningFrame(sub(6, [])), byteCodec)).toBe("cleaning");
+  });
+
+  it("is docked while the dock washes or dries the mops", () => {
+    expect(decodeVacuumActivity(cleaningFrame(sub(7, int(2, 1))), byteCodec)).toBe("docked");
+    expect(decodeVacuumActivity(cleaningFrame(sub(7, int(2, 2))), byteCodec)).toBe("docked");
+  });
+
+  it("is still cleaning while DRIVING to the dock to wash — navigation is not arrival", () => {
+    expect(decodeVacuumActivity(cleaningFrame(sub(7, [])), byteCodec)).toBe("cleaning");
+  });
+
+  it("is docked when the station reports a washing/drying cycle", () => {
+    expect(decodeVacuumActivity(cleaningFrame(sub(14, sub(3, []))), byteCodec)).toBe("docked");
+  });
+
+  it("is cleaning when the station is reported but idle", () => {
+    expect(decodeVacuumActivity(cleaningFrame(sub(14, [])), byteCodec)).toBe("cleaning");
+  });
+
+  it("prefers the dock over the pause — a robot that paused itself to go wash reports both", () => {
+    expect(decodeVacuumActivity(cleaningFrame(sub(6, int(1, 1)), sub(7, int(2, 1))), byteCodec)).toBe("docked");
+  });
+
+  it("refines only state 5 — every other state answers from the state field alone", () => {
+    expect(decodeVacuumActivity(frame([...int(2, 3), ...sub(6, int(1, 1))]), byteCodec)).toBe("docked");
+    expect(decodeVacuumActivity(frame([...int(2, 7), ...sub(7, int(2, 2))]), byteCodec)).toBe("returning");
+  });
+
+  it("falls back to cleaning on a frame whose sub-messages it cannot read", () => {
+    expect(decodeVacuumActivity(cleaningFrame(sub(6, [0xff])), byteCodec)).toBe("cleaning");
   });
 });
 
@@ -277,6 +340,154 @@ export const _surfaceAssertions = [
   _language,
   _volume,
 ];
+
+/**
+ * `ErrorCode` (DP 177). Both code lists are `repeated uint32`, which proto3 encodes PACKED by
+ * default — one length-delimited run of varints, not one field per value. A sender may still emit the
+ * unpacked form, so both are exercised against real bytes.
+ */
+/** A packed `repeated uint32` field: one length-delimited run of concatenated varints. */
+function packed(field: number, values: readonly number[]): number[] {
+  return sub(
+    field,
+    values.flatMap((v) => varint(v)),
+  );
+}
+
+describe("decodeVacuumFault (ErrorCode → fault code)", () => {
+  it("reads the first packed error code", () => {
+    expect(decodeVacuumFault(frame(packed(2, [77])), byteCodec)).toBe(77);
+    expect(decodeVacuumFault(frame(packed(2, [77, 3, 21])), byteCodec)).toBe(77);
+  });
+
+  it("reads a multi-byte code — the station and situational ranges are all above 127", () => {
+    expect(decodeVacuumFault(frame(packed(2, [6113])), byteCodec)).toBe(6113);
+    expect(decodeVacuumFault(frame(packed(3, [7055])), byteCodec)).toBe(7055);
+  });
+
+  it("reads the unpacked encoding too — a sender may emit either", () => {
+    expect(decodeVacuumFault(frame(int(2, 40)), byteCodec)).toBe(40);
+  });
+
+  it("falls back to the first warning when no error is listed", () => {
+    expect(decodeVacuumFault(frame(packed(3, [50, 51])), byteCodec)).toBe(50);
+  });
+
+  it("prefers an error over a warning — a fault that stops the robot is the more urgent answer", () => {
+    expect(decodeVacuumFault(frame([...packed(2, [77]), ...packed(3, [50])]), byteCodec)).toBe(77);
+  });
+
+  it("is 0 when the device states no fault, including an empty list", () => {
+    expect(decodeVacuumFault(frame([]), byteCodec)).toBe(0);
+    expect(decodeVacuumFault(frame(packed(2, [])), byteCodec)).toBe(0);
+    expect(decodeVacuumFault(frame([...packed(2, []), ...packed(3, [])]), byteCodec)).toBe(0);
+  });
+
+  it("ignores the fields around the code lists", () => {
+    expect(decodeVacuumFault(frame([...int(1, 999), ...packed(2, [21]), ...sub(4, [])]), byteCodec)).toBe(21);
+  });
+
+  it("reads the legacy Tuya line's plain integer on the same property", () => {
+    expect(decodeVacuumFault(0, byteCodec)).toBe(0);
+    expect(decodeVacuumFault(106, byteCodec)).toBe(106);
+    expect(decodeVacuumFault("77", byteCodec)).toBe(77);
+    expect(decodeVacuumFault(3, undefined)).toBe(3);
+  });
+
+  it("is undefined when the device has not stated a fault at all", () => {
+    expect(decodeVacuumFault(undefined, byteCodec)).toBeUndefined();
+    expect(decodeVacuumFault(frame(packed(2, [77])), undefined)).toBeUndefined();
+    expect(decodeVacuumFault("!!not-base64!!", byteCodec)).toBeUndefined();
+  });
+});
+
+/**
+ * `UndisturbedResponse` (DP 157) and `CleanStatistics` (DP 167). Both wrap their payload one or two
+ * containers deep, and both rely on proto3 omitting zero values — so an empty container is a real
+ * answer (off / no elapsed time), while an absent one is the device not answering.
+ */
+describe("decodeChildLock (UnisettingResponse.children_lock)", () => {
+  it("reads the switch through its wrapper", () => {
+    expect(decodeChildLock(frame(sub(1, int(1, 1))), byteCodec)).toBe(true);
+  });
+
+  it("reads an omitted zero as off", () => {
+    expect(decodeChildLock(frame(sub(1, [])), byteCodec)).toBe(false);
+  });
+
+  it("ignores the other toggles in the same message", () => {
+    expect(decodeChildLock(frame([...sub(1, int(1, 1)), ...sub(3, int(1, 1)), ...sub(9, [])]), byteCodec)).toBe(true);
+  });
+
+  it("is undefined when the setting is not reported at all", () => {
+    expect(decodeChildLock(frame(sub(3, int(1, 1))), byteCodec)).toBeUndefined();
+    expect(decodeChildLock(frame(sub(1, int(1, 1))), undefined)).toBeUndefined();
+    expect(decodeChildLock(undefined, byteCodec)).toBeUndefined();
+  });
+});
+
+describe("decodeDoNotDisturb (Undisturbed.sw → doNotDisturb)", () => {
+  /** `UndisturbedResponse.undisturbed.sw.value` = on, with the live `active` flag beside it. */
+  const dnd = (on: boolean): string => frame([...sub(1, int(1, 1)), ...sub(2, sub(1, on ? int(1, 1) : []))]);
+
+  it("reads the switch through both wrapper messages", () => {
+    expect(decodeDoNotDisturb(dnd(true), byteCodec)).toBe(true);
+  });
+
+  it("reads an omitted zero as off, at either level", () => {
+    expect(decodeDoNotDisturb(dnd(false), byteCodec)).toBe(false);
+    expect(decodeDoNotDisturb(frame(sub(2, [])), byteCodec)).toBe(false);
+  });
+
+  it("reads the switch, not the live in-window flag", () => {
+    // active(1) = true while the window is open, but the feature itself is off. The property means
+    // "is it enabled", so this has to answer false.
+    expect(decodeDoNotDisturb(frame([...sub(1, int(1, 1)), ...sub(2, sub(1, []))]), byteCodec)).toBe(false);
+  });
+
+  it("reads the Tuya line's plain bool on the same property", () => {
+    expect(decodeDoNotDisturb(true, byteCodec)).toBe(true);
+    expect(decodeDoNotDisturb(false, byteCodec)).toBe(false);
+    expect(decodeDoNotDisturb("true", undefined)).toBe(true);
+    expect(decodeDoNotDisturb(1, undefined)).toBe(true);
+    expect(decodeDoNotDisturb("0", undefined)).toBe(false);
+  });
+
+  it("is undefined when the device has not stated a window at all", () => {
+    expect(decodeDoNotDisturb(frame([]), byteCodec)).toBeUndefined();
+    expect(decodeDoNotDisturb(dnd(true), undefined)).toBeUndefined();
+    expect(decodeDoNotDisturb(undefined, byteCodec)).toBeUndefined();
+  });
+});
+
+describe("decodeSessionCleanTime (CleanStatistics.single → clearTime)", () => {
+  it("reads the current run's duration", () => {
+    expect(decodeSessionCleanTime(frame(sub(1, int(1, 4200))), byteCodec)).toBe(4200);
+  });
+
+  it("reads a started-but-zero run as 0, not as missing", () => {
+    expect(decodeSessionCleanTime(frame(sub(1, [])), byteCodec)).toBe(0);
+  });
+
+  it("ignores the lifetime accumulators beside it", () => {
+    // total(2) and user_total(3) carry a clean_duration at the same inner field number; reading the
+    // wrong container would report a lifetime figure as the current run.
+    const payload = frame([...sub(1, int(1, 60)), ...sub(2, int(1, 999999)), ...sub(3, int(1, 888888))]);
+    expect(decodeSessionCleanTime(payload, byteCodec)).toBe(60);
+  });
+
+  it("reads the Tuya line's plain integer on the same property", () => {
+    expect(decodeSessionCleanTime(4200, byteCodec)).toBe(4200);
+    expect(decodeSessionCleanTime("4200", undefined)).toBe(4200);
+    expect(decodeSessionCleanTime(0, undefined)).toBe(0);
+  });
+
+  it("is undefined when the device has not stated a run", () => {
+    expect(decodeSessionCleanTime(frame([]), byteCodec)).toBeUndefined();
+    expect(decodeSessionCleanTime(frame(sub(1, int(1, 60))), undefined)).toBeUndefined();
+    expect(decodeSessionCleanTime(undefined, byteCodec)).toBeUndefined();
+  });
+});
 
 describe("vacuum_clean — DP-based action routing", () => {
   // AIoT device: has reported DP 151 (power) and DP 153 (work status). DP 152 (MODE_CTRL) is write-only and never in paramIds.
