@@ -88,6 +88,25 @@ export class LiveSnapshotUnavailableError extends Error {
   }
 }
 
+/** Why a live stream failed before delivering its first video keyframe. */
+export type LiveStreamStartFailureReason = "warm-timeout" | "source-error" | "source-ended";
+
+/**
+ * Emitted by {@link LiveStreamHandle} when its bounded warm-up policy ends without a video keyframe.
+ * `attempts` includes the initial media start and every retry issued before the deadline.
+ */
+export class LiveStreamStartError extends Error {
+  constructor(
+    readonly reason: LiveStreamStartFailureReason,
+    readonly timeoutMs: number,
+    readonly attempts: number,
+    options?: { cause?: unknown },
+  ) {
+    super(`live stream failed to start (${reason} after ${attempts} attempts; ${timeoutMs}ms deadline)`, options);
+    this.name = "LiveStreamStartError";
+  }
+}
+
 /**
  * Wire form for a scalar {@link Command} `"set-param"` intent. `"auto"` lets the transport choose the
  * right encoding for the device's session; `"int-string"` / `"direct-binary"` pin a specific encoding

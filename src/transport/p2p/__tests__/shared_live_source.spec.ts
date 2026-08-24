@@ -161,21 +161,21 @@ describe("SharedLiveSource", () => {
     source.attach();
     expect(last().started).toBe(1);
     vi.advanceTimersByTime(2000);
-    expect(last().nudged).toBe(1); // no frame yet → re-issue start
+    expect(last().nudged).toBe(1);
     vi.advanceTimersByTime(2000);
     expect(last().nudged).toBe(2);
-    last().video(frame(true)); // first frame → warmed
+    last().video(frame(true));
     const at = last().nudged;
     vi.advanceTimersByTime(6000);
-    expect(last().nudged).toBe(at); // no more warm-retry nudges once streaming
+    expect(last().nudged).toBe(at);
   });
 
-  it("stalls: emits error to consumers and tears down when no frame arrives in the warm window", () => {
+  it("stalls: emits error to consumers and tears down when no keyframe arrives in the warm window", () => {
     const { source, last } = mk({ warmRetryMs: 2000, warmTimeoutMs: 6000 });
     const c = source.attach();
     let err: Error | undefined;
     c.on("error", (e) => (err = e));
-    vi.advanceTimersByTime(6000); // deadline with no frame
+    vi.advanceTimersByTime(6000);
     expect(err).toBeInstanceOf(Error);
     expect(err!.message).toMatch(/failed to start/);
     expect(last().stopped).toBe(1);
@@ -245,6 +245,7 @@ describe("SharedLiveSource", () => {
     const a = source.attach();
     let ended = false;
     a.on("stop", () => (ended = true));
+    last().video(frame(true));
     last().emit("stop");
     expect(ended).toBe(true);
     expect(source.state).toBe("stopped");

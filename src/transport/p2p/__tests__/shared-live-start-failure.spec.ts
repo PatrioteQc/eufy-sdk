@@ -1,4 +1,5 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import { LiveStreamStartError } from "../../../core/contracts.js";
 import { SharedLiveSource } from "../shared-live-source.js";
 import { H264, streamFactory, unit, videoFrame } from "./live-source-fixtures.js";
 
@@ -33,7 +34,7 @@ describe("SharedLiveSource — reporting a failed start", () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
 
-  it("reports a failed start once the warm window elapses with no frame", () => {
+  it("reports a failed start once the warm window elapses with no keyframe", () => {
     const { source, onStartFailed } = mk();
     const consumer = source.attach();
     const errors: Error[] = [];
@@ -42,6 +43,21 @@ describe("SharedLiveSource — reporting a failed start", () => {
     vi.advanceTimersByTime(6000);
 
     expect(errors).toHaveLength(1);
+    expect(errors[0]).toBeInstanceOf(LiveStreamStartError);
+    expect(errors[0]).toMatchObject({ reason: "warm-timeout", timeoutMs: 6000, attempts: 4 });
+    expect(onStartFailed).toHaveBeenCalledTimes(1);
+    expect(source.state).toBe("stopped");
+  });
+
+  it("keeps the warm-up bounded until a keyframe arrives", () => {
+    const { source, onStartFailed, streams } = mk();
+    const errors: Error[] = [];
+    source.attach().on("error", (error) => errors.push(error));
+
+    streams[0].video(videoFrame(unit(H264.delta), { keyframe: false }));
+    vi.advanceTimersByTime(6000);
+
+    expect(errors[0]).toMatchObject({ reason: "warm-timeout", timeoutMs: 6000, attempts: 4 });
     expect(onStartFailed).toHaveBeenCalledTimes(1);
     expect(source.state).toBe("stopped");
   });
@@ -67,21 +83,26 @@ describe("SharedLiveSource — reporting a failed start", () => {
     expect(onStartFailed).toHaveBeenCalledTimes(1);
   });
 
-  it("reports an upstream error that arrives before the first frame", () => {
+  it("reports an upstream error that arrives before the first keyframe", () => {
     const { source, onStartFailed, streams } = mk();
-    source.attach().on("error", () => {});
+    const errors: Error[] = [];
+    source.attach().on("error", (error) => errors.push(error));
+    const cause = new Error("upstream gone");
 
-    streams[0].emit("error", new Error("upstream gone"));
+    streams[0].emit("error", cause);
 
+    expect(errors[0]).toMatchObject({ reason: "source-error", cause });
     expect(onStartFailed).toHaveBeenCalledTimes(1);
   });
 
-  it("reports an upstream stop that arrives before the first frame", () => {
+  it("reports an upstream stop that arrives before the first keyframe", () => {
     const { source, onStartFailed, streams } = mk();
-    source.attach();
+    const errors: Error[] = [];
+    source.attach().on("error", (error) => errors.push(error));
 
     streams[0].emit("stop");
 
+    expect(errors[0]).toMatchObject({ reason: "source-ended" });
     expect(onStartFailed).toHaveBeenCalledTimes(1);
   });
 

@@ -25,6 +25,7 @@
  * @module p2p/shared-live-source
  */
 import { EventEmitter } from "node:events";
+import { LiveStreamStartError } from "../../core/contracts.js";
 import { noopLogger, type Logger } from "../../core/logger.js";
 import { Timer } from "../../core/util.js";
 import { updatedParamSets, type ParamSets } from "./annexb.js";
@@ -55,13 +56,13 @@ export interface SharedLiveSourceOptions {
   /** Advisory HomeBase concurrent-stream cap, surfaced for observability only. */
   concurrentCap?: number;
   /**
-   * Warm-up start retry interval (default 2000ms). After warming, if no frame has arrived, the source
+   * Warm-up start retry interval (default 2000ms). After warming, if no keyframe has arrived, the source
    * re-issues the start ({@link LiveStreamHandle.nudge}) every interval — self-healing a start that
    * raced the level-2 key negotiation, independent of any caller keepalive.
    */
   warmRetryMs?: number;
   /**
-   * Warm-up deadline (default 20000ms). If no frame arrives within it, the source emits `error` to
+   * Warm-up deadline (default 20000ms). If no keyframe arrives within it, the source emits `error` to
    * consumers ("failed to start") and tears down, so `live()` never hangs silently on a dead start.
    */
   warmTimeoutMs?: number;
@@ -88,14 +89,14 @@ export interface SharedLiveSourceOptions {
   /** Called when the LAST consumer detaches (1→0) — the router releases its session user. See {@link onActive}. */
   onIdle?: () => void;
   /**
-   * Called when a stream is torn down having **never delivered a frame**, AFTER consumers have been told.
+   * Called when a stream is torn down having **never delivered a keyframe**, AFTER consumers have been told.
    *
    * A source can only rebuild its stream; it holds a factory, not the session that stream rides on. When
    * the session — or the per-device state carried on it — is what has stopped serving this device, every
    * rebuild starts another stream over the same session and dies the same way, so the owner of the session
    * has to hear about it to do anything else.
    *
-   * The condition is deliberately "no frame ever arrived", not "the warm-up deadline fired". A start can
+   * The condition is deliberately "no keyframe ever arrived", not "the warm-up deadline fired". A start can
    * fail without that deadline being reached — an upstream error or stop can arrive first, the battery
    * budget can stop the pull, and a caller that gives up before the deadline cancels it on the way out
    * (`clearWarmWatch`) — and all of those are the same dead start. Enumerating the ways instead of naming
@@ -260,8 +261,8 @@ export class SharedLiveSource {
   private _state: SharedLiveState = "idle";
   private disposed = false;
 
-  /** Whether the CURRENT stream generation has delivered a frame; reset by every {@link warm}. */
-  private deliveredFrame = false;
+  /** Whether the CURRENT stream generation has delivered a keyframe; reset by every {@link warm}. */
+  private deliveredKeyframe = false;
   /** Last keyframe access unit seen — replayed to a joining consumer (keyframe-prime). */
   private lastKeyframe?: Extract<TimedMediaFrame, { kind: "video" }>;
   /** Last parameter sets the stream announced — see {@link parameterSets}. */
@@ -269,9 +270,10 @@ export class SharedLiveSource {
   /** Rolling prebuffer, keyframe-alignable on drain. */
   private ring: TimedMediaFrame[] = [];
 
-  /** Warm-up start-retry ticker (interval) + single-shot deadline; cleared once the first frame arrives. */
+  /** Warm-up start-retry ticker (interval) + single-shot deadline; cleared once the first keyframe arrives. */
   private warmRetryTimer?: ReturnType<typeof setInterval>;
   private readonly warmDeadlineTimer = new Timer();
+  private warmAttempts = 0;
   /** Battery budget timer + post-notice grace timer (battery/solar sources only). */
   private readonly budgetTimer = new Timer();
   private readonly budgetGraceTimer = new Timer();
@@ -372,7 +374,8 @@ export class SharedLiveSource {
   /** Build + start the underlying stream, wire its frames into the fan-out, and watch the warm-up. */
   private warm(): void {
     this._state = "warming";
-    this.deliveredFrame = false;
+    this.deliveredKeyframe = false;
+    this.warmAttempts = 1;
     this.logger.debug(`${this.tag} warming (retry=${this.warmRetryMs}ms deadline=${this.warmTimeoutMs}ms)`);
     const stream = this.opts.makeStream();
     this.stream = stream;
@@ -381,9 +384,12 @@ export class SharedLiveSource {
     stream.on("stop", () => this.onUpstreamEnd());
     stream.on("error", (err) => this.onUpstreamError(err));
     stream.start();
-    // Warm-up watch: re-issue the start until a frame flows (self-heals a start that raced the
-    // level-2 key), and fail loudly if none arrives within the deadline instead of hanging silently.
-    this.warmRetryTimer = setInterval(() => this.stream?.nudge?.(), this.warmRetryMs);
+    this.warmRetryTimer = setInterval(() => {
+      const nudge = this.stream?.nudge;
+      if (!nudge) return;
+      this.warmAttempts++;
+      nudge.call(this.stream);
+    }, this.warmRetryMs);
     this.warmDeadlineTimer.arm(this.warmTimeoutMs, () => this.onWarmTimeout());
   }
 
@@ -432,25 +438,25 @@ export class SharedLiveSource {
   }
 
   /**
-   * No frame within the warm-up window — surface a start failure to consumers, tear down, and report the
+   * No keyframe within the warm-up window — surface a start failure to consumers, tear down, and report the
    * failed start to the owner (see {@link SharedLiveSourceOptions.onStartFailed}) so it can recycle what
    * this source cannot reach.
    */
   private onWarmTimeout(): void {
     if (this.disposed || !this.stream) return;
-    const err = new Error("live stream failed to start (no frames within warm-up window)");
+    const err = new LiveStreamStartError("warm-timeout", this.warmTimeoutMs, this.warmAttempts);
     this.logger.warn(`${this.tag} ${err.message} (${this.warmTimeoutMs}ms, consumers=${this.consumers.size})`);
     for (const c of [...this.consumers]) c.fail(err);
     this.teardown("stopped");
   }
 
   private onVideo(frame: LiveVideoFrame): void {
-    this.deliveredFrame = true;
     const item = { kind: "video", frame, timestampMs: Date.now() } as const;
-    if (this.warmRetryTimer || this.warmDeadlineTimer.pending) {
-      this.clearWarmWatch(); // first frame → warmed
+    if (frame.keyframe && (this.warmRetryTimer || this.warmDeadlineTimer.pending)) {
+      this.deliveredKeyframe = true;
+      this.clearWarmWatch();
       this.logger.debug(
-        `${this.tag} first frame — live (${frame.width}x${frame.height} ${frame.codec}, powered=${this.powered})`,
+        `${this.tag} first keyframe — live (${frame.width}x${frame.height} ${frame.codec}, powered=${this.powered})`,
       );
       if (this.powered === "battery") this.armBudget(); // battery drain starts now
     }
@@ -565,7 +571,7 @@ export class SharedLiveSource {
    */
   private teardown(state: SharedLiveState, report = true): void {
     const stream = this.stream;
-    const startFailed = stream !== undefined && !this.deliveredFrame;
+    const startFailed = stream !== undefined && !this.deliveredKeyframe;
     this.stream = undefined;
     this.clearWarmWatch();
     this.clearBudget();
@@ -588,6 +594,10 @@ export class SharedLiveSource {
     this.logger.debug(
       `${this.tag} upstream ended (station max-duration / reconnect) — notifying ${this.consumers.size} consumer(s)`,
     );
+    if (!this.deliveredKeyframe) {
+      const error = new LiveStreamStartError("source-ended", this.warmTimeoutMs, this.warmAttempts);
+      for (const c of [...this.consumers]) c.fail(error);
+    }
     for (const c of [...this.consumers]) c.end();
     this.teardown("stopped");
   }
@@ -595,7 +605,10 @@ export class SharedLiveSource {
   private onUpstreamError(err: Error): void {
     if (this.disposed) return;
     this.logger.warn(`${this.tag} upstream error: ${err.message} — tearing down (consumers=${this.consumers.size})`);
-    for (const c of [...this.consumers]) c.fail(err);
+    const error = this.deliveredKeyframe
+      ? err
+      : new LiveStreamStartError("source-error", this.warmTimeoutMs, this.warmAttempts, { cause: err });
+    for (const c of [...this.consumers]) c.fail(error);
     this.teardown("stopped");
   }
 

@@ -322,9 +322,10 @@ session idle-detaches so a battery device sleeps — see [Connectivity & battery
 
 ## Reliability
 
-- **No silent hang.** `live()` re-issues the media-start (`nudge`) until the first frame arrives; if
-  none arrives within the warm-up window the stream emits an `error` (a start stall) rather than
-  hanging forever. Handle `error`.
+- **No silent hang.** `live()` re-issues the media-start (`nudge`) until the first keyframe arrives; if
+  none arrives within the warm-up window the stream emits a `LiveStreamStartError` rather than hanging
+  forever. Its `reason`, `timeoutMs`, and `attempts` distinguish the bounded source-start failure without
+  requiring transport logs. Handle `error`.
 - **Reconnect.** On a session close the source stops and consumers get `stop`/`error`; re-attach
   (`cam.live()` again) to rebuild the pull.
 
