@@ -15,6 +15,10 @@ import {
   decodeCleanStat,
   decodeVacuumFault,
   encodeModeCtrl,
+  encodeSelectRoomsClean,
+  encodeSelectZonesClean,
+  encodeSceneClean,
+  ModeCtrlParamMethod,
   ModeCtrlMethod,
   type VacuumCleanActions,
   type VacuumActivity,
@@ -987,5 +991,98 @@ describe("ModeCtrl verbs — vocabulary declared, wire still unconfirmed", () =>
       { field: 1, kind: "int", value: 12n },
       { field: 2, kind: "int", value: 1n },
     ]);
+  });
+});
+
+describe("area-selecting ModeCtrl frames (Tier B — encoders only)", () => {
+  /** Walk into the Param sub-message of a built frame. */
+  const paramOf = (value: string, field: number): readonly RawDpField[] => {
+    const p = byteCodec.decode(value)?.find((f) => f.field === field);
+    return byteCodec.nested((p as { value: Buffer }).value) ?? [];
+  };
+
+  it("puts the payload in the Param field its method names", () => {
+    const { method, param } = ModeCtrlParamMethod.SELECT_ROOMS;
+    const fields = byteCodec.decode(encodeSelectRoomsClean(3, [{ id: 7 }]));
+    expect(fields?.find((f) => f.field === 1)).toMatchObject({ kind: "int", value: BigInt(method) });
+    expect(fields?.find((f) => f.field === param)).toMatchObject({ kind: "bytes" });
+  });
+
+  it("repeats one Room entry per room, carrying the map id beside them", () => {
+    const inner = paramOf(
+      encodeSelectRoomsClean(
+        9,
+        [
+          { id: 4, order: 1 },
+          { id: 5, order: 2 },
+        ],
+        2,
+      ),
+      4,
+    );
+    expect(inner.filter((f) => f.field === 1)).toHaveLength(2);
+    expect(inner.find((f) => f.field === 2)).toMatchObject({ value: 2n }); // clean_times
+    expect(inner.find((f) => f.field === 3)).toMatchObject({ value: 9n }); // map_id
+    const first = byteCodec.nested((inner.find((f) => f.field === 1) as { value: Buffer }).value);
+    expect(first).toEqual([
+      { field: 1, kind: "int", value: 4n },
+      { field: 2, kind: "int", value: 1n },
+    ]);
+  });
+
+  it("ZigZags zone coordinates, so a negative one stays one byte and stays negative", () => {
+    // The sharpest edge in the file. As a plain varint, -1 encodes as 2^64-1 and the robot drives
+    // somewhere real and wrong. ZigZag maps -1 onto 1, and the frame stays small.
+    const zone = {
+      corners: [
+        { x: -1, y: 2 },
+        { x: 3, y: -4 },
+        { x: 0, y: 0 },
+        { x: 5, y: 6 },
+      ],
+    };
+    const inner = paramOf(encodeSelectZonesClean(1, [zone]), 5);
+    // Param → zones(1) → the Zone → quadrangle(1) → p0..p3, each a Point of two signed values.
+    const zoneFields = byteCodec.nested((inner.find((f) => f.field === 1) as { value: Buffer }).value)!;
+    const quad = byteCodec.nested((zoneFields.find((f) => f.field === 1) as { value: Buffer }).value)!;
+    const p0 = byteCodec.nested((quad.find((f) => f.field === 1) as { value: Buffer }).value);
+    expect(p0).toEqual([
+      { field: 1, kind: "int", value: 1n }, // zigzag(-1)
+      { field: 2, kind: "int", value: 4n }, // zigzag(2)
+    ]);
+    const p1 = byteCodec.nested((quad.find((f) => f.field === 2) as { value: Buffer }).value);
+    expect(p1).toEqual([
+      { field: 1, kind: "int", value: 6n }, // zigzag(3)
+      { field: 2, kind: "int", value: 7n }, // zigzag(-4)
+    ]);
+  });
+
+  it("lays the four corners out as consecutive fields p0..p3", () => {
+    const zone = { corners: [0, 1, 2, 3].map((n) => ({ x: n, y: n })) };
+    const inner = paramOf(encodeSelectZonesClean(1, [zone]), 5);
+    const zoneFields = byteCodec.nested((inner.find((f) => f.field === 1) as { value: Buffer }).value)!;
+    const quad = byteCodec.nested((zoneFields.find((f) => f.field === 1) as { value: Buffer }).value)!;
+    expect(quad.map((f) => f.field)).toEqual([1, 2, 3, 4]);
+  });
+
+  it("carries a scene by its id alone", () => {
+    const inner = paramOf(encodeSceneClean(12), ModeCtrlParamMethod.SCENE.param);
+    expect(inner).toEqual([{ field: 1, kind: "int", value: 12n }]);
+  });
+
+  it("requires a map id rather than defaulting one", () => {
+    // A default here is a guess dressed as an API: on a two-floor home it sends the right room ids
+    // against the wrong floor's map. The signature makes the caller answer.
+    const rooms: Parameters<typeof encodeSelectRoomsClean> = [3, [{ id: 1 }]];
+    expect(typeof rooms[0]).toBe("number");
+    expect(paramOf(encodeSelectRoomsClean(...rooms), 4).find((f) => f.field === 3)).toMatchObject({ value: 3n });
+  });
+
+  it("installs no setter for any of them — these are encoders, not controls", () => {
+    const { acts } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, "eufy_home", new Set([151])));
+    const a = acts as Record<string, unknown>;
+    for (const name of ["cleanRooms", "cleanZones", "startScene", "setCleanRooms"]) {
+      expect(a[name]).toBeUndefined();
+    }
   });
 });

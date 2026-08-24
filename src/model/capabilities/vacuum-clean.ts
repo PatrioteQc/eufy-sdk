@@ -2,7 +2,7 @@ import type { RawDpCodec, RawDpField } from "../../core/contracts.js";
 import type { ParamValue } from "../types.js";
 import type { AvailabilityContext, CapabilityModule } from "./types.js";
 import { asBool } from "../../core/util.js";
-import { rawDp } from "../../core/raw-dp-writer.js";
+import { rawDp, type RawDpWriter } from "../../core/raw-dp-writer.js";
 import { isAiotVacuum, isTuyaVacuum } from "../device-family.js";
 import { pickDpParams, aiotDp } from "./access.js";
 import { method, propertiesOf, type Members, type Surface } from "./members.js";
@@ -224,6 +224,150 @@ export const ModeCtrlMethod = {
  * message's business, not the encoder's.
  * @internal
  */
+/**
+ * The area-selecting `ModeCtrlRequest` methods, and the `Param` field each one's payload rides in.
+ *
+ * Kept apart from {@link ModeCtrlMethod} because these are a different kind of thing: a parameterless
+ * verb is complete on its own, whereas each of these is meaningless without an argument the caller has
+ * to supply. Sending one with an empty payload is a well-formed frame that means something nobody
+ * intended, which is exactly why the numbers do not sit beside the others where a caller might reach
+ * for them by accident.
+ */
+export const ModeCtrlParamMethod = {
+  /** `START_SELECT_ROOMS_CLEAN` — clean the named rooms of a named map. */
+  SELECT_ROOMS: { method: 1, param: 4 },
+  /** `START_SELECT_ZONES_CLEAN` — clean the given rectangles of a named map. */
+  SELECT_ZONES: { method: 2, param: 5 },
+  /** `START_GOTO_CLEAN` — drive to a point and clean around it. */
+  GOTO: { method: 4, param: 7 },
+  /** `START_SCENE_CLEAN` — run a saved scene by its id. */
+  SCENE: { method: 24, param: 14 },
+} as const;
+
+/** Field numbers inside `SelectRoomsClean`, and inside the `Room` entries it repeats. */
+const SELECT_ROOMS_FIELD = {
+  /** `rooms` — repeated, one entry per room. */
+  ROOMS: 1,
+  /** `clean_times` — how many passes to make. */
+  CLEAN_TIMES: 2,
+  /** `map_id` — WHICH saved map the room ids belong to. */
+  MAP_ID: 3,
+  /** `id` within a `Room`. */
+  ROOM_ID: 1,
+  /** `order` within a `Room` — the sequence to visit them in. */
+  ROOM_ORDER: 2,
+} as const;
+
+/** Field numbers inside `SelectZonesClean`, its `Zone` entries, and the `Quadrangle` each zone carries. */
+const SELECT_ZONES_FIELD = {
+  /** `zones` — repeated, one entry per rectangle. */
+  ZONES: 1,
+  /** `map_id` — which saved map the coordinates belong to. */
+  MAP_ID: 2,
+  /** `quadrangle` within a `Zone` — its four corners. */
+  QUADRANGLE: 1,
+  /** `clean_times` within a `Zone`. */
+  ZONE_CLEAN_TIMES: 2,
+  /** `x` within a `Point`, SIGNED centimetres. */
+  POINT_X: 1,
+  /** `y` within a `Point`, SIGNED centimetres. */
+  POINT_Y: 2,
+} as const;
+
+/** `scene_id` within a `SceneClean`. */
+const SCENE_CLEAN_ID = 1;
+
+/** One room to clean, and where it falls in the running order. */
+export interface VacuumRoomTarget {
+  /** The room's id, as the device's own map data names it. */
+  readonly id: number;
+  /** Where this room falls in the run. Omitted rooms are visited in the order given. */
+  readonly order?: number;
+}
+
+/** One rectangular zone to clean, as four corners in centimetres. */
+export interface VacuumZoneTarget {
+  /** The four corners, in centimetres, in the device's own map frame. Exactly four points. */
+  readonly corners: readonly { readonly x: number; readonly y: number }[];
+  /** How many passes to make over this zone. */
+  readonly cleanTimes?: number;
+}
+
+/**
+ * Build a `ModeCtrlRequest` carrying a `Param` payload — the area-selecting cleans.
+ *
+ * Shares the outer frame with every other mode-control verb: `method`(1), `seq`(2), and the payload in
+ * whichever `Param` field the method names.
+ *
+ * **Coordinates are `sint32` and go through ZigZag.** Map coordinates are signed centimetres and
+ * negative ones are ordinary — the origin sits wherever the robot first mapped from. Written as a plain
+ * varint, −1 becomes 18446744073709551615, and the robot drives somewhere real and wrong. That is the
+ * single sharpest edge in this whole file, which is why the writer keeps `sint` as its own call rather
+ * than inferring it.
+ * @internal
+ */
+function encodeModeCtrlParam(method: number, paramField: number, build: (w: RawDpWriter) => void): string {
+  return rawDp((w) => {
+    if (method !== 0) w.int(MODE_CTRL_FIELD.METHOD, method);
+    w.int(MODE_CTRL_FIELD.SEQ, nextModeCtrlSeq());
+    w.sub(paramField, build);
+  });
+}
+
+/**
+ * Build a room-select clean for a named map.
+ *
+ * `mapId` is required and has no default, deliberately. The obvious shortcut is to assume the map a
+ * single-floor home would have; on a two-floor home that silently sends the robot's ids against the
+ * wrong floor's map. A caller that cannot name the map cannot safely make this call, and saying so is
+ * better than picking for them.
+ * @internal
+ */
+export function encodeSelectRoomsClean(mapId: number, rooms: readonly VacuumRoomTarget[], cleanTimes = 1): string {
+  const { method, param } = ModeCtrlParamMethod.SELECT_ROOMS;
+  return encodeModeCtrlParam(method, param, (p) => {
+    for (const room of rooms) {
+      p.sub(SELECT_ROOMS_FIELD.ROOMS, (r) => {
+        r.int(SELECT_ROOMS_FIELD.ROOM_ID, room.id);
+        if (room.order !== undefined) r.int(SELECT_ROOMS_FIELD.ROOM_ORDER, room.order);
+      });
+    }
+    p.int(SELECT_ROOMS_FIELD.CLEAN_TIMES, cleanTimes);
+    p.int(SELECT_ROOMS_FIELD.MAP_ID, mapId);
+  });
+}
+
+/**
+ * Build a zone-select clean for a named map. Same `mapId` reasoning as {@link encodeSelectRoomsClean}.
+ * @internal
+ */
+export function encodeSelectZonesClean(mapId: number, zones: readonly VacuumZoneTarget[]): string {
+  const { method, param } = ModeCtrlParamMethod.SELECT_ZONES;
+  return encodeModeCtrlParam(method, param, (p) => {
+    for (const zone of zones) {
+      p.sub(SELECT_ZONES_FIELD.ZONES, (z) => {
+        z.sub(SELECT_ZONES_FIELD.QUADRANGLE, (q) => {
+          for (const [i, corner] of zone.corners.entries()) {
+            // p0..p3 are consecutive fields, each a Point of two signed centimetre values.
+            q.sub(i + 1, (pt) => {
+              pt.sint(SELECT_ZONES_FIELD.POINT_X, corner.x);
+              pt.sint(SELECT_ZONES_FIELD.POINT_Y, corner.y);
+            });
+          }
+        });
+        if (zone.cleanTimes !== undefined) z.int(SELECT_ZONES_FIELD.ZONE_CLEAN_TIMES, zone.cleanTimes);
+      });
+    }
+    p.int(SELECT_ZONES_FIELD.MAP_ID, mapId);
+  });
+}
+
+/** Build a scene clean, which needs only the scene's own id. @internal */
+export function encodeSceneClean(sceneId: number): string {
+  const { method, param } = ModeCtrlParamMethod.SCENE;
+  return encodeModeCtrlParam(method, param, (p) => p.int(SCENE_CLEAN_ID, sceneId));
+}
+
 /**
  * The next `ModeCtrlRequest.seq`, shared by every verb on DP 152.
  *
