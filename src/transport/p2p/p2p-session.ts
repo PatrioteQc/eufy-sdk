@@ -56,6 +56,7 @@ import {
   readNullTerminatedString,
 } from "./codec.js";
 import { commandName } from "./commands.js";
+import { traceLiveStart } from "./live-trace.js";
 import { noopLogger, type Logger } from "../../core/logger.js";
 
 const LOCAL_LOOKUP_PORT = 32108;
@@ -125,9 +126,39 @@ const AUDIO_SEND_HEADER_BYTES = 16;
  */
 const AUDIO_RETRANSMIT_MS = 700;
 const AUDIO_MAX_SENDS = 2;
-/** One byte-identical retry for an unacknowledged live start, matching captured app transport behavior. */
+/**
+ * An own-session live start is acknowledged like an audio frame, and a start the device never took leaves
+ * the camera silent with nothing to time out against but the warm-up deadline. It is retained and repeated
+ * on the same terms: byte-identical, at most once, then abandoned.
+ *
+ * The interval is well under the 9 ms acknowledgement measured for the app's own start, so a repeat only
+ * happens when the datagram is genuinely gone rather than merely slow. Byte-identical matters because the
+ * frame carries its sequence number and its ciphertext: a rebuilt start is a different message to a device
+ * that de-duplicates by sequence, so it would be taken as a second start instead of a repair.
+ */
 const LIVE_START_RETRANSMIT_MS = 500;
 const LIVE_START_MAX_SENDS = 2;
+/**
+ * Half the 16-bit sequence space: a datagram whose distance from the last one exceeds this is read as
+ * arriving from behind rather than as a near-full-space jump forward, which is how the numbering wraps
+ * without the datagram after the wrap looking like a huge gap.
+ */
+const SEQUENCE_LOOKBACK = 0x8000;
+/**
+ * Datagram gaps traced per live start. A lossy channel can drop hundreds of datagrams in one start, and the
+ * first few establish the pattern; the rest would only flood a host's log, so the trace stops there while
+ * reassembly carries on unchanged.
+ */
+const MAX_TRACED_DATAGRAM_GAPS = 8;
+/**
+ * A datagram retained for retransmission until the device acknowledges its sequence number: the exact bytes
+ * that were sent, when they last went out, and how many times they have been sent.
+ */
+interface RetainedDatagram {
+  data: Buffer;
+  sentAt: number;
+  sends: number;
+}
 /** CMD_SET_PAYLOAD (1350) wraps a JSON command; CMD_DATABASE_IMAGE (1308) is the image reply. */
 const CMD_SET_PAYLOAD = 1350;
 /** CMD_NOTIFY_PAYLOAD (1351) — the station's unsolicited JSON notification. */
@@ -240,7 +271,7 @@ export class P2PSession extends EventEmitter {
    * the datagram (not just the payload) means a retransmit is byte-identical, which is what the
    * device's ordered channel expects.
    */
-  private unackedAudio = new Map<number, { data: Buffer; sentAt: number; sends: number }>();
+  private unackedAudio = new Map<number, RetainedDatagram>();
   /**
    * Whether the audio channel is currently in a stall — set when a frame is abandoned, cleared by the
    * next acknowledgement of any frame.
@@ -290,10 +321,7 @@ export class P2PSession extends EventEmitter {
    * change (the level-2 key arrived after an initial level-1 start), otherwise sends the 1139 nudge.
    */
   private readonly liveStartedChannels = new Map<number, "l1" | "l2">();
-  private readonly unackedLiveStarts = new Map<
-    number,
-    { channel: number; data: Buffer; sentAt: number; sends: number }
-  >();
+  private readonly unackedLiveStarts = new Map<number, RetainedDatagram & { channel: number }>();
   private liveStartRetransmitTimer?: ReturnType<typeof setInterval>;
 
   private readonly logger: Logger;
@@ -457,6 +485,7 @@ export class P2PSession extends EventEmitter {
     this.connecting = true;
     this.closed = false;
     this.connectionGeneration += 1;
+    this.resetInboundSequencing();
     if (!this.level2Key) {
       this.level2Pending = this.cfg.resolveCipherKey !== undefined;
       this.level2Negotiating = false;
@@ -663,15 +692,21 @@ export class P2PSession extends EventEmitter {
    *  - `homeBaseAttached` (the camera rides a HomeBase's session): `CMD_SET_PAYLOAD` (1350) wrapping
    *    `{cmd:1003, mChannel:channel}` at level-2, where `mChannel` picks the camera on the base.
    *  - own-session (the session is the camera itself): `CMD_CONTROL_PAYLOAD` (1700) / inner cmd 1000
-   *    START_LIVE (see the private `sendStartLiveOwnSession`).
-   * An own-session start is retained until its DATA acknowledgement, retransmitted byte-identically once
-   * after 500ms if unacknowledged, then forgotten. This matches the app's bounded command delivery without
-   * changing the sequence or GCM ciphertext between sends.
-   * Use the `LiveStream` helper for a managed feed with keepalive.
+   *    START_LIVE, then the 1139 keepalive to hold the stream. A bare 1003 is read as a status query
+   *    there, not a stream.
+   *
+   * An own-session start's encryption follows the session key, not the device family: level-2 GCM once a
+   * key is negotiated, level-1 ECB before that. A key that arrives after a level-1 start makes the next
+   * keepalive tick re-issue the start at level-2, so a camera that only accepts level-2 recovers from a
+   * `live()` that raced ahead of key negotiation.
+   *
+   * Each start is retained until its DATA acknowledgement and repeated once if unacknowledged
+   * ({@link LIVE_START_RETRANSMIT_MS}). Use the `LiveStream` helper for a managed feed with keepalive.
    */
   startLiveMedia(channel: number = STATION_CHANNEL, accountId = "", homeBaseAttached = false): void {
+    this.tracedDatagramGaps = 0;
     if (homeBaseAttached) {
-      this.logger.debug("[live] start trace", {
+      traceLiveStart(this.logger, {
         phase: "media-command",
         topology: "attached",
         action: "start",
@@ -680,14 +715,9 @@ export class P2PSession extends EventEmitter {
       this.sendMediaPayloadLevel2(CMD_START_REALTIME_MEDIA, channel, accountId, {});
       return;
     }
-    // Own-session camera: send the START_LIVE frame, then hold the stream with a 1139 keepalive. The
-    // start encryption is chosen by the session key (GCM if negotiated, else ECB). If the key arrives
-    // AFTER an initial level-1 start, the next keepalive tick re-issues the start as level-2 — so a
-    // camera that requires level-2 recovers even when `live()` raced ahead of key negotiation. (A bare
-    // 1003 here is read as a status query, not a stream.)
     const want: "l1" | "l2" = this.level2Key ? "l2" : "l1";
     if (this.liveStartedChannels.get(channel) === want) {
-      this.logger.debug("[live] start trace", {
+      traceLiveStart(this.logger, {
         phase: "media-command",
         topology: "own",
         action: "keepalive",
@@ -695,19 +725,21 @@ export class P2PSession extends EventEmitter {
       });
       this.sendCommand(CMD_STREAM_KEEPALIVE, channel);
     } else {
-      this.tracedDatagramGaps = 0;
-      this.logger.debug("[live] start trace", {
-        phase: "media-command",
-        topology: "own",
-        action: "start",
-        level2: want === "l2",
-      });
+      traceLiveStart(this.logger, { phase: "media-command", topology: "own", action: "start", level2: want === "l2" });
       this.sendStartLiveOwnSession(channel, accountId);
       this.liveStartedChannels.set(channel, want);
     }
   }
 
-  /** The current app's `{commandType:1000, data:{…encryptkey…}}` START_LIVE wrapper JSON. */
+  /**
+   * The own-session START_LIVE wrapper JSON (`{commandType: 1000, data: {…}}`).
+   *
+   * Every field is byte-verified against the current app's own start for an own-session camera, decrypted
+   * from a level-2 capture: `msg_id` is 1, `extValue` repeats the inner command id 1000, `streamtype` is 2,
+   * `video_type` is 12, and `transaction` is the millisecond timestamp as a string. The device answers a
+   * start carrying these values with a keyframe; `encryptkey` is the modulus it RSA-wraps each keyframe's
+   * AES media key with (unwrapped by {@link decodeVideoFrame}).
+   */
   private startLiveJson(channel: number, accountId: string): Buffer {
     const now = Date.now();
     return Buffer.from(
@@ -778,35 +810,31 @@ export class P2PSession extends EventEmitter {
     this.send(this.connectAddress, RequestMessageType.DATA, data);
   }
 
-  /** Retransmit an unacknowledged own-session START_LIVE once, preserving its sequence and ciphertext. */
+  /**
+   * Repeat unacknowledged own-session live starts. Runs only while a start is outstanding.
+   *
+   * A start that exhausts {@link LIVE_START_MAX_SENDS} is traced as `media-command-unacknowledged`: the
+   * camera was never told to stream, so the warm-up that follows can only ever time out, and the trace is
+   * what separates that from a camera that got the start and stayed silent.
+   */
   private armLiveStartRetransmit(): void {
     if (this.liveStartRetransmitTimer) return;
     this.liveStartRetransmitTimer = setInterval(() => {
-      if (!this.unackedLiveStarts.size || !this.connectAddress) {
-        clearInterval(this.liveStartRetransmitTimer);
-        this.liveStartRetransmitTimer = undefined;
-        return;
-      }
-      const now = Date.now();
-      for (const [sequence, held] of this.unackedLiveStarts) {
-        if (now - held.sentAt < LIVE_START_RETRANSMIT_MS) continue;
-        this.unackedLiveStarts.delete(sequence);
-        if (held.sends >= LIVE_START_MAX_SENDS) {
-          this.logger.debug("[live] start trace", { phase: "media-command-unacknowledged", action: "start" });
-          continue;
-        }
-        held.sends++;
-        held.sentAt = now;
-        this.unackedLiveStarts.set(sequence, held);
-        this.logger.debug("[live] start trace", { phase: "media-command-retry", action: "start" });
-        this.send(this.connectAddress, RequestMessageType.DATA, held.data);
-      }
-      if (!this.unackedLiveStarts.size) {
-        clearInterval(this.liveStartRetransmitTimer);
-        this.liveStartRetransmitTimer = undefined;
-      }
+      const outstanding = this.retransmitUnacked(this.unackedLiveStarts, {
+        retransmitMs: LIVE_START_RETRANSMIT_MS,
+        maxSends: LIVE_START_MAX_SENDS,
+        onResent: () => traceLiveStart(this.logger, { phase: "media-command-retry", action: "start" }),
+        onAbandoned: () => traceLiveStart(this.logger, { phase: "media-command-unacknowledged", action: "start" }),
+      });
+      if (!outstanding) this.clearLiveStartRetransmit();
     }, LIVE_START_RETRANSMIT_MS / 2);
     this.liveStartRetransmitTimer.unref?.();
+  }
+
+  private clearLiveStartRetransmit(): void {
+    if (!this.liveStartRetransmitTimer) return;
+    clearInterval(this.liveStartRetransmitTimer);
+    this.liveStartRetransmitTimer = undefined;
   }
 
   /**
@@ -1015,28 +1043,57 @@ export class P2PSession extends EventEmitter {
   private armAudioRetransmit(): void {
     if (this.audioRetransmitTimer) return;
     this.audioRetransmitTimer = setInterval(() => {
-      if (!this.unackedAudio.size || !this.connectAddress) {
+      const outstanding = this.retransmitUnacked(this.unackedAudio, {
+        retransmitMs: AUDIO_RETRANSMIT_MS,
+        maxSends: AUDIO_MAX_SENDS,
+        onAbandoned: (sequence) => {
+          if (this.audioStalled) return;
+          this.audioStalled = true;
+          this.emit("audioGap", sequence);
+        },
+      });
+      if (!outstanding) {
         clearInterval(this.audioRetransmitTimer);
         this.audioRetransmitTimer = undefined;
-        return;
-      }
-      const now = Date.now();
-      for (const [seq, held] of this.unackedAudio) {
-        if (now - held.sentAt < AUDIO_RETRANSMIT_MS) continue;
-        this.unackedAudio.delete(seq);
-        if (held.sends >= AUDIO_MAX_SENDS) {
-          if (!this.audioStalled) {
-            this.audioStalled = true;
-            this.emit("audioGap", seq);
-          }
-          continue;
-        }
-        held.sends++;
-        held.sentAt = now;
-        this.unackedAudio.set(seq, held);
-        this.send(this.connectAddress, RequestMessageType.DATA, held.data);
       }
     }, AUDIO_RETRANSMIT_MS / 2);
+  }
+
+  /**
+   * One retransmission sweep over an acknowledged channel's retained datagrams: resend those past
+   * `retransmitMs` byte-identically, abandon those already sent `maxSends` times, and answer whether any
+   * datagram is still outstanding — a caller stops its ticker once nothing is.
+   *
+   * Both acknowledged directions — outbound audio and the own-session live start — repeat on these same
+   * terms, so the policy has one implementation and the callers differ only in their timings and in what
+   * they report when a datagram is abandoned. Datagrams are only ever retained by a send, and a send needs
+   * a connect address, so the no-address case has nothing retained to sweep and simply reports idle.
+   */
+  private retransmitUnacked(
+    retained: Map<number, RetainedDatagram>,
+    policy: {
+      retransmitMs: number;
+      maxSends: number;
+      onAbandoned: (sequence: number) => void;
+      onResent?: (sequence: number) => void;
+    },
+  ): boolean {
+    if (!this.connectAddress) return false;
+    const now = Date.now();
+    for (const [sequence, held] of retained) {
+      if (now - held.sentAt < policy.retransmitMs) continue;
+      retained.delete(sequence);
+      if (held.sends >= policy.maxSends) {
+        policy.onAbandoned(sequence);
+        continue;
+      }
+      held.sends++;
+      held.sentAt = now;
+      retained.set(sequence, held);
+      policy.onResent?.(sequence);
+      this.send(this.connectAddress, RequestMessageType.DATA, held.data);
+    }
+    return retained.size > 0;
   }
 
   /**
@@ -1053,13 +1110,10 @@ export class P2PSession extends EventEmitter {
       for (let i = 0; i < count && 10 + 2 * i <= msg.length; i++) {
         const sequence = msg.readUInt16BE(8 + 2 * i);
         if (this.unackedLiveStarts.delete(sequence)) {
-          this.logger.debug("[live] start trace", { phase: "media-command-ack", action: "start" });
+          traceLiveStart(this.logger, { phase: "media-command-ack", action: "start" });
         }
       }
-      if (!this.unackedLiveStarts.size && this.liveStartRetransmitTimer) {
-        clearInterval(this.liveStartRetransmitTimer);
-        this.liveStartRetransmitTimer = undefined;
-      }
+      if (!this.unackedLiveStarts.size) this.clearLiveStartRetransmit();
       return;
     }
     if (msg[5] !== P2PDataType.VIDEO) return;
@@ -1376,34 +1430,36 @@ export class P2PSession extends EventEmitter {
   }
 
   /**
-   * Acknowledge and reassemble one DATA datagram independently per data type. Duplicate and stale sequence
-   * numbers are normal retransmissions and are ignored after acknowledgement; only a forward gap invalidates
-   * an incomplete logical frame.
+   * Acknowledge and reassemble one DATA datagram, sequenced independently per data type.
+   *
+   * The device numbers each data type's datagrams in its own 16-bit space and repeats what it thinks was
+   * lost, so a datagram that does not advance the sequence — a duplicate, or one already superseded — is a
+   * retransmission of something already reassembled: it is acknowledged, then ignored. Distance is measured
+   * modulo the sequence space and read as backwards beyond {@link SEQUENCE_LOOKBACK}, which is what lets the
+   * numbering wrap without the next datagram looking like a jump of nearly a full space.
+   *
+   * Only a forward gap means a datagram is genuinely missing. A logical frame's payload spans datagrams that
+   * carry no header of their own, so the bytes cannot be reassembled around the hole: whatever was pending
+   * for that data type is discarded, and the frame is rebuilt from the next header.
    */
   private onData(msg: Buffer, addr: Address): void {
     const dataTypeBuffer = msg.subarray(4, 6);
     const seqNo = msg.subarray(6, 8).readUInt16BE();
     const dataType = dataTypeBuffer[1]; // 0=DATA 1=VIDEO 2=CONTROL 3=BINARY
-    // ACK every DATA frame so the station keeps streaming notifications.
     this.send(addr, RequestMessageType.ACK, buildAckPayload(this.ackTypeHeader(dataType), seqNo));
 
     const prevSeq = this.lastSeqByType.get(dataType);
     const advance = prevSeq === undefined ? 1 : (seqNo - prevSeq) & 0xffff;
-    if (advance === 0 || advance > 0x8000) return;
+    if (advance === 0 || advance > SEQUENCE_LOOKBACK) return;
     const gap = advance > 1;
     this.lastSeqByType.set(dataType, seqNo);
     if (gap && this.pendingByDataType.has(dataType)) {
-      if (this.tracedDatagramGaps++ < 8) {
-        this.logger.debug("[live] start trace", { phase: "datagram-gap", dataType });
+      if (this.tracedDatagramGaps++ < MAX_TRACED_DATAGRAM_GAPS) {
+        traceLiveStart(this.logger, { phase: "datagram-gap", dataType });
       }
       this.pendingByDataType.delete(dataType);
     }
 
-    // A logical frame's payload (bytesToRead) can exceed one datagram and continue
-    // across the next datagrams (which carry NO new XZYH header). We reassemble:
-    // a frame whose payload is incomplete becomes `pending`; following datagrams
-    // append to it until `bytesToRead` is reached, then it's dispatched whole.
-    // (Big responses like the edge-AI face DB are ~150 KB across dozens of datagrams.)
     const pending = this.pendingByDataType.get(dataType);
     let body = pending ? Buffer.concat([pending.buf, msg.subarray(8)]) : msg.subarray(8);
     const carryHeader = pending?.header;
@@ -1430,6 +1486,20 @@ export class P2PSession extends EventEmitter {
       this.handleFrame(header, payload.subarray(0, header.bytesToRead), dataType);
       body = body.subarray(P2P_DATA_HEADER_BYTES + header.bytesToRead);
     }
+  }
+
+  /**
+   * Forget where each data type's sequence numbering had reached, and drop any half-reassembled frame.
+   *
+   * A device numbers datagrams per connection and starts over on the next one, so carrying the previous
+   * connection's high-water mark across would make the new connection's first datagrams look like
+   * retransmissions from behind and drop them all. Half a frame from a connection that is gone can never be
+   * completed either.
+   */
+  private resetInboundSequencing(): void {
+    this.lastSeqByType.clear();
+    this.pendingByDataType.clear();
+    this.tracedDatagramGaps = 0;
   }
 
   private ackTypeHeader(dataType: number): Buffer {
@@ -1558,7 +1628,7 @@ export class P2PSession extends EventEmitter {
     if (this.liveStartRetransmitTimer) clearInterval(this.liveStartRetransmitTimer);
     this.liveStartRetransmitTimer = undefined;
     this.unackedLiveStarts.clear();
-    this.pendingByDataType.clear();
+    this.resetInboundSequencing();
     if (this.connectAddress) this.send(this.connectAddress, RequestMessageType.END);
     await new Promise<void>((resolve) => {
       if (!this.socket) return resolve();

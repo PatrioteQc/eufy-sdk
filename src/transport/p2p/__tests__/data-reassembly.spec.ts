@@ -6,11 +6,15 @@ import {
   P2PDataTypeHeader,
   RequestMessageType,
 } from "../codec.js";
+import { LIVE_TRACE_MESSAGE } from "../live-trace.js";
 import { P2PSession, type P2PFrame } from "../p2p-session.js";
 
 const STATION_SN = "T8000P0000000000";
 const P2P_DID = "XXXXXXX-000000-XXXXX";
+const ADDRESS = { host: "127.0.0.1", port: 1 };
+const VIDEO_DATA_TYPE = 1;
 
+/** One inbound DATA datagram: the 4-byte data-type + sequence header the device prefixes, then the body. */
 function dataPacket(sequence: number, body: Buffer, dataTypeHeader = P2PDataTypeHeader.VIDEO): Buffer {
   const header = Buffer.alloc(4);
   dataTypeHeader.copy(header);
@@ -18,122 +22,119 @@ function dataPacket(sequence: number, body: Buffer, dataTypeHeader = P2PDataType
   return frameMessage(RequestMessageType.DATA, Buffer.concat([header, body]));
 }
 
+/** A framed command whose payload the device splits across datagrams. */
+function commandFrame(sequence: number, commandId: number, payload: Buffer): Buffer {
+  const dataTypeHeader = commandId === 1351 ? P2PDataTypeHeader.CONTROL : P2PDataTypeHeader.VIDEO;
+  return Buffer.concat([
+    buildCommandHeader(sequence, commandId, dataTypeHeader).subarray(4),
+    buildRawCommandPayload(payload),
+  ]);
+}
+
+/**
+ * A session fed datagrams directly, with its socket send stubbed: reassembly is reached through `onData`
+ * because that is the seam the device's datagrams arrive on, and every case here is about what reassembly
+ * does with a sequence number.
+ */
+function harness() {
+  const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+  const session = new P2PSession({ stationSn: STATION_SN, p2pDid: P2P_DID, logger });
+  const target = session as unknown as {
+    onData: (message: Buffer, address: typeof ADDRESS) => void;
+    send: () => void;
+  };
+  target.send = vi.fn();
+  const received: P2PFrame[] = [];
+  session.on("data", (frame) => received.push(frame));
+  return {
+    received,
+    debug: logger.debug,
+    feed: (packet: Buffer) => target.onData(packet, ADDRESS),
+    close: () => session.close(),
+    gapTraces: () =>
+      logger.debug.mock.calls.filter(
+        ([message, trace]) => message === LIVE_TRACE_MESSAGE && (trace as { phase?: string })?.phase === "datagram-gap",
+      ),
+  };
+}
+
 describe("P2P data reassembly", () => {
   it("ignores a retransmitted continuation without discarding the frame being assembled", () => {
-    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
-    const session = new P2PSession({ stationSn: STATION_SN, p2pDid: P2P_DID, logger });
-    const target = session as unknown as {
-      onData: (message: Buffer, address: { host: string; port: number }) => void;
-      send: () => void;
-    };
-    target.send = vi.fn();
-    const received: P2PFrame[] = [];
-    session.on("data", (frame) => received.push(frame));
-
+    const { feed, received, gapTraces } = harness();
     const payload = Buffer.alloc(48, 7);
-    const frame = Buffer.concat([
-      buildCommandHeader(40, 1300, P2PDataTypeHeader.VIDEO).subarray(4),
-      buildRawCommandPayload(payload),
-    ]);
-    const first = dataPacket(40, frame.subarray(0, 24));
+    const frame = commandFrame(40, 1300, payload);
     const middle = dataPacket(41, frame.subarray(24, 40));
-    const last = dataPacket(42, frame.subarray(40));
-    const address = { host: "127.0.0.1", port: 1 };
 
-    target.onData(first, address);
-    target.onData(middle, address);
-    target.onData(dataPacket(40, frame.subarray(0, 24)), address);
-    target.onData(middle, address);
-    target.onData(last, address);
+    feed(dataPacket(40, frame.subarray(0, 24)));
+    feed(middle);
+    feed(dataPacket(40, frame.subarray(0, 24)));
+    feed(middle);
+    feed(dataPacket(42, frame.subarray(40)));
 
     expect(received).toHaveLength(1);
     expect(received[0]!.commandId).toBe(1300);
     expect(received[0]!.raw).toEqual(payload);
-    expect(logger.debug).not.toHaveBeenCalledWith(
-      "[live] start trace",
-      expect.objectContaining({ phase: "datagram-gap" }),
-    );
+    expect(gapTraces()).toHaveLength(0);
   });
 
   it("drops an incomplete frame on a genuine forward sequence gap and resynchronizes", () => {
-    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
-    const session = new P2PSession({ stationSn: STATION_SN, p2pDid: P2P_DID, logger });
-    const target = session as unknown as {
-      onData: (message: Buffer, address: { host: string; port: number }) => void;
-      send: () => void;
-    };
-    target.send = vi.fn();
-    const received: P2PFrame[] = [];
-    session.on("data", (frame) => received.push(frame));
-    const address = { host: "127.0.0.1", port: 1 };
-    const payload = Buffer.alloc(48, 7);
-    const incomplete = Buffer.concat([
-      buildCommandHeader(40, 1300, P2PDataTypeHeader.VIDEO).subarray(4),
-      buildRawCommandPayload(payload).subarray(0, 20),
-    ]);
-    const complete = Buffer.concat([
-      buildCommandHeader(43, 1301, P2PDataTypeHeader.VIDEO).subarray(4),
-      buildRawCommandPayload(Buffer.from([1, 2, 3])),
-    ]);
+    const { feed, received, debug } = harness();
+    const incomplete = commandFrame(40, 1300, Buffer.alloc(48, 7)).subarray(0, 20);
 
-    target.onData(dataPacket(40, incomplete), address);
-    target.onData(dataPacket(42, Buffer.alloc(8)), address);
-    target.onData(dataPacket(43, complete), address);
+    feed(dataPacket(40, incomplete));
+    feed(dataPacket(42, Buffer.alloc(8)));
+    feed(dataPacket(43, commandFrame(43, 1301, Buffer.from([1, 2, 3]))));
 
     expect(received).toHaveLength(1);
     expect(received[0]!.commandId).toBe(1301);
-    expect(logger.debug).toHaveBeenCalledWith("[live] start trace", { phase: "datagram-gap", dataType: 1 });
+    expect(debug).toHaveBeenCalledWith(LIVE_TRACE_MESSAGE, { phase: "datagram-gap", dataType: VIDEO_DATA_TYPE });
+  });
+
+  it("traces a bounded number of datagram gaps however many the channel drops", () => {
+    const { feed, gapTraces } = harness();
+
+    for (let i = 0; i < 40; i++) {
+      feed(dataPacket(100 + i * 3, commandFrame(100 + i * 3, 1300, Buffer.alloc(48, 7)).subarray(0, 20)));
+    }
+
+    expect(gapTraces().length).toBeGreaterThan(0);
+    expect(gapTraces().length).toBeLessThanOrEqual(8);
   });
 
   it("reassembles video independently of an interleaved control frame", () => {
-    const session = new P2PSession({ stationSn: STATION_SN, p2pDid: P2P_DID });
-    const target = session as unknown as {
-      onData: (message: Buffer, address: { host: string; port: number }) => void;
-      send: () => void;
-    };
-    target.send = vi.fn();
-    const received: P2PFrame[] = [];
-    session.on("data", (frame) => received.push(frame));
-    const address = { host: "127.0.0.1", port: 1 };
+    const { feed, received } = harness();
     const videoPayload = Buffer.alloc(48, 7);
-    const video = Buffer.concat([
-      buildCommandHeader(50, 1300, P2PDataTypeHeader.VIDEO).subarray(4),
-      buildRawCommandPayload(videoPayload).subarray(0),
-    ]);
-    const controlPayload = Buffer.from([1, 2, 3]);
-    const control = Buffer.concat([
-      buildCommandHeader(7, 1351, P2PDataTypeHeader.CONTROL).subarray(4),
-      buildRawCommandPayload(controlPayload),
-    ]);
+    const video = commandFrame(50, 1300, videoPayload);
 
-    target.onData(dataPacket(50, video.subarray(0, 24)), address);
-    target.onData(dataPacket(7, control, P2PDataTypeHeader.CONTROL), address);
-    target.onData(dataPacket(51, video.subarray(24)), address);
+    feed(dataPacket(50, video.subarray(0, 24)));
+    feed(dataPacket(7, commandFrame(7, 1351, Buffer.from([1, 2, 3])), P2PDataTypeHeader.CONTROL));
+    feed(dataPacket(51, video.subarray(24)));
 
     expect(received.map(({ commandId }) => commandId)).toEqual([1351, 1300]);
     expect(received[1]!.raw).toEqual(videoPayload);
   });
 
   it("accepts an in-order continuation across sequence wraparound", () => {
-    const session = new P2PSession({ stationSn: STATION_SN, p2pDid: P2P_DID });
-    const target = session as unknown as {
-      onData: (message: Buffer, address: { host: string; port: number }) => void;
-      send: () => void;
-    };
-    target.send = vi.fn();
-    const received: P2PFrame[] = [];
-    session.on("data", (frame) => received.push(frame));
-    const address = { host: "127.0.0.1", port: 1 };
+    const { feed, received } = harness();
     const payload = Buffer.alloc(48, 7);
-    const frame = Buffer.concat([
-      buildCommandHeader(65_535, 1300, P2PDataTypeHeader.VIDEO).subarray(4),
-      buildRawCommandPayload(payload),
-    ]);
+    const frame = commandFrame(65_535, 1300, payload);
 
-    target.onData(dataPacket(65_535, frame.subarray(0, 24)), address);
-    target.onData(dataPacket(0, frame.subarray(24)), address);
+    feed(dataPacket(65_535, frame.subarray(0, 24)));
+    feed(dataPacket(0, frame.subarray(24)));
 
     expect(received).toHaveLength(1);
     expect(received[0]!.raw).toEqual(payload);
+  });
+
+  it("takes a new connection's low sequence numbers instead of reading them as retransmissions", async () => {
+    const { feed, received, close } = harness();
+    const payload = Buffer.alloc(48, 7);
+
+    feed(dataPacket(40_000, commandFrame(40_000, 1300, payload)));
+    await close();
+    feed(dataPacket(5, commandFrame(5, 1300, payload)));
+
+    expect(received).toHaveLength(2);
+    expect(received[1]!.raw).toEqual(payload);
   });
 });

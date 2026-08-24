@@ -8,93 +8,101 @@ import {
   P2PDataTypeHeader,
   ResponseMessageType,
 } from "../codec.js";
+import { LIVE_TRACE_MESSAGE } from "../live-trace.js";
 import { P2PSession } from "../p2p-session.js";
 
 const STATION_SN = "T8000P0000000000";
 const P2P_DID = "XXXXXXX-000000-XXXXX";
+const ADMIN_ACCOUNT_ID = "0000000000000000000000000000000000000000";
+const ADDRESS = { host: "127.0.0.1", port: 1 };
+/** The frame header sits 4 bytes in, and its encrypted body 16 bytes after that. */
+const FRAME_BODY_OFFSET = 20;
+
+/**
+ * A connected own-session camera whose socket send is captured: the start frame and its retransmission are
+ * what the device would receive, so the assertions read the exact bytes handed to the socket.
+ */
+function harness() {
+  const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+  const session = new P2PSession({ stationSn: STATION_SN, p2pDid: P2P_DID, logger });
+  const send = vi.fn();
+  const target = session as unknown as {
+    connectAddress: typeof ADDRESS;
+    send: typeof send;
+    onAck: (message: Buffer) => void;
+  };
+  target.connectAddress = ADDRESS;
+  target.send = send;
+  return {
+    session,
+    send,
+    debug: logger.debug,
+    sentFrame: (index: number) => send.mock.calls[index]![2] as Buffer,
+    acknowledge: (sequence: number) =>
+      target.onAck(frameMessage(ResponseMessageType.ACK, buildAckPayload(P2PDataTypeHeader.DATA, sequence))),
+  };
+}
 
 describe("live start acknowledgement diagnostics", () => {
   afterEach(() => vi.useRealTimers());
 
   it("reports when the camera acknowledges an own-session live start", () => {
     vi.useFakeTimers();
-    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
-    const session = new P2PSession({
-      stationSn: STATION_SN,
-      p2pDid: P2P_DID,
-      logger,
-    });
-    const send = vi.fn();
-    const target = session as unknown as {
-      connectAddress: { host: string; port: number };
-      send: typeof send;
-      onAck: (message: Buffer) => void;
-    };
-    target.connectAddress = { host: "127.0.0.1", port: 1 };
-    target.send = send;
+    const { session, send, debug, acknowledge } = harness();
 
     session.startLiveMedia();
-    target.onAck(frameMessage(ResponseMessageType.ACK, buildAckPayload(P2PDataTypeHeader.DATA, 0)));
+    acknowledge(0);
 
-    expect(logger.debug).toHaveBeenCalledWith("[live] start trace", {
-      phase: "media-command-ack",
-      action: "start",
-    });
+    expect(debug).toHaveBeenCalledWith(LIVE_TRACE_MESSAGE, { phase: "media-command-ack", action: "start" });
     vi.advanceTimersByTime(1000);
     expect(send).toHaveBeenCalledTimes(1);
   });
 
   it("uses the current app's own-session START_LIVE fields", () => {
-    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
-    const session = new P2PSession({
-      stationSn: STATION_SN,
-      p2pDid: P2P_DID,
-      logger,
-    });
-    const send = vi.fn();
-    const target = session as unknown as {
-      connectAddress: { host: string; port: number };
-      send: typeof send;
-    };
-    target.connectAddress = { host: "127.0.0.1", port: 1 };
-    target.send = send;
+    const { session, sentFrame } = harness();
 
-    session.startLiveMedia(0, "0000000000000000000000000000000000000000");
-    const data = send.mock.calls[0]![2] as Buffer;
+    session.startLiveMedia(0, ADMIN_ACCOUNT_ID);
+    const data = sentFrame(0);
     const header = parseDataFrameHeader(data.subarray(4));
-    const encrypted = data.subarray(20, 20 + header.bytesToRead);
+    const encrypted = data.subarray(FRAME_BODY_OFFSET, FRAME_BODY_OFFSET + header.bytesToRead);
     const value = JSON.parse(
       decryptP2PData(encrypted, Buffer.from(p2pCommandEncryptionKey(STATION_SN, P2P_DID)))
         .toString("utf8")
         .replace(/\0+$/, ""),
     );
 
-    expect(value.data).toMatchObject({ msg_id: 1, extValue: 1000 });
+    expect(value).toMatchObject({ commandType: 1000 });
+    expect(value.data).toMatchObject({ cmd: 1000, msg_id: 1, extValue: 1000, streamtype: 2, video_type: 12 });
   });
 
   it("retransmits one unacknowledged live start with the same sequence", () => {
     vi.useFakeTimers();
-    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
-    const session = new P2PSession({ stationSn: STATION_SN, p2pDid: P2P_DID, logger });
-    const send = vi.fn();
-    const target = session as unknown as {
-      connectAddress: { host: string; port: number };
-      send: typeof send;
-    };
-    target.connectAddress = { host: "127.0.0.1", port: 1 };
-    target.send = send;
+    const { session, send, debug, sentFrame } = harness();
 
     session.startLiveMedia();
-    const first = send.mock.calls[0]![2] as Buffer;
+    const first = sentFrame(0);
     vi.advanceTimersByTime(500);
 
     expect(send).toHaveBeenCalledTimes(2);
-    expect(send.mock.calls[1]![2]).toEqual(first);
+    expect(sentFrame(1)).toEqual(first);
     vi.advanceTimersByTime(500);
     expect(send).toHaveBeenCalledTimes(2);
-    expect(logger.debug).toHaveBeenCalledWith("[live] start trace", {
-      phase: "media-command-unacknowledged",
-      action: "start",
-    });
+    expect(debug).toHaveBeenCalledWith(LIVE_TRACE_MESSAGE, { phase: "media-command-unacknowledged", action: "start" });
+  });
+
+  it("stops retransmitting once the acknowledgement lands", () => {
+    vi.useFakeTimers();
+    const { session, send, debug, acknowledge } = harness();
+
+    session.startLiveMedia();
+    vi.advanceTimersByTime(500);
+    acknowledge(0);
+    vi.advanceTimersByTime(5000);
+
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(debug).not.toHaveBeenCalledWith(
+      LIVE_TRACE_MESSAGE,
+      expect.objectContaining({ phase: "media-command-unacknowledged" }),
+    );
   });
 });

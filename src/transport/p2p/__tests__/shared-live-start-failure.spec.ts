@@ -44,7 +44,12 @@ describe("SharedLiveSource — reporting a failed start", () => {
 
     expect(errors).toHaveLength(1);
     expect(errors[0]).toBeInstanceOf(LiveStreamStartError);
-    expect(errors[0]).toMatchObject({ reason: "warm-timeout", timeoutMs: 6000, attempts: 4 });
+    expect(errors[0]).toMatchObject({
+      reason: "warm-timeout",
+      stage: "awaiting-first-frame",
+      timeoutMs: 6000,
+      attempts: 3,
+    });
     expect(onStartFailed).toHaveBeenCalledTimes(1);
     expect(source.state).toBe("stopped");
   });
@@ -57,9 +62,25 @@ describe("SharedLiveSource — reporting a failed start", () => {
     streams[0].video(videoFrame(unit(H264.delta), { keyframe: false }));
     vi.advanceTimersByTime(6000);
 
-    expect(errors[0]).toMatchObject({ reason: "warm-timeout", timeoutMs: 6000, attempts: 4 });
+    expect(errors[0]).toMatchObject({
+      reason: "warm-timeout",
+      stage: "awaiting-keyframe",
+      timeoutMs: 6000,
+      attempts: 3,
+    });
     expect(onStartFailed).toHaveBeenCalledTimes(1);
     expect(source.state).toBe("stopped");
+  });
+
+  it("counts one attempt per media start actually issued", () => {
+    const { source, streams } = mk({ warmRetryMs: 2000, warmTimeoutMs: 5000 });
+    const errors: Error[] = [];
+    source.attach().on("error", (error) => errors.push(error));
+
+    vi.advanceTimersByTime(5000);
+
+    expect(streams[0].nudged).toBe(2);
+    expect(errors[0]).toMatchObject({ attempts: 3 });
   });
 
   it("tells consumers before reporting it, so the report can dispose the source", () => {
@@ -102,8 +123,20 @@ describe("SharedLiveSource — reporting a failed start", () => {
 
     streams[0].emit("stop");
 
-    expect(errors[0]).toMatchObject({ reason: "source-ended" });
+    expect(errors[0]).toMatchObject({ reason: "source-ended", stage: "awaiting-first-frame" });
     expect(onStartFailed).toHaveBeenCalledTimes(1);
+  });
+
+  it("explains an upstream stop before the first keyframe, then closes the consumer", () => {
+    const { source, streams } = mk();
+    const signals: string[] = [];
+    const consumer = source.attach();
+    consumer.on("error", (error) => signals.push(`error:${(error as LiveStreamStartError).reason}`));
+    consumer.on("stop", () => signals.push("stop"));
+
+    streams[0].emit("stop");
+
+    expect(signals).toEqual(["error:source-ended", "stop"]);
   });
 
   it("reports it exactly once, though stopping the stream re-enters teardown", () => {
