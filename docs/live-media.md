@@ -322,6 +322,9 @@ session idle-detaches so a battery device sleeps — see [Connectivity & battery
 
 ## Reliability
 
+- **UDP retransmissions.** Duplicate and stale datagrams are acknowledged and ignored without discarding a
+  different frame being assembled. A missing datagram still drops that incomplete frame so corrupt media is
+  never delivered. An unacknowledged own-session `START_LIVE` is retransmitted once with identical bytes.
 - **No silent hang.** `live()` re-issues the media-start (`nudge`) until the first keyframe arrives; if
   none arrives within the warm-up window the stream emits a `LiveStreamStartError` rather than hanging
   forever. Its `reason`, `timeoutMs`, and `attempts` distinguish the bounded source-start failure without
