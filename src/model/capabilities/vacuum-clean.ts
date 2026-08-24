@@ -2,6 +2,7 @@ import type { RawDpCodec, RawDpField } from "../../core/contracts.js";
 import type { ParamValue } from "../types.js";
 import type { AvailabilityContext, CapabilityModule } from "./types.js";
 import { asBool } from "../../core/util.js";
+import { rawDp } from "../../core/raw-dp-writer.js";
 import { isAiotVacuum, isTuyaVacuum } from "../device-family.js";
 import { pickDpParams, aiotDp } from "./access.js";
 import { method, propertiesOf, type Members, type Surface } from "./members.js";
@@ -162,6 +163,14 @@ export const TUYA_CLEAN_TYPES = ["Sweep", "SweepMop", "Mop"] as const;
 /** @internal */
 export type TuyaCleanType = (typeof TUYA_CLEAN_TYPES)[number];
 
+/** Field numbers inside `ModeCtrlRequest` (DP 152). Both live-verified on a T2351. */
+const MODE_CTRL_FIELD = {
+  /** `method` — which verb the robot is being asked to run. */
+  METHOD: 1,
+  /** `seq` — the request's own sequence number, echoed back in the response. */
+  SEQ: 2,
+} as const;
+
 /**
  * `ModeCtrlRequest.method` values for DP 152. Live-verified on T2351: START_AUTO_CLEAN → 0
  * (omitted from the wire when zero), START_GOHOME → 6, PAUSE_TASK → 13.
@@ -173,33 +182,23 @@ export const ModeCtrlMethod = {
 } as const;
 
 /**
- * Encode a `ModeCtrlRequest` protobuf (DP 152) as a base64 string: `varint(bodyLen) ++ body`
- * where `body = {field#1:method, field#2:seq}`.
+ * Encode a `ModeCtrlRequest` protobuf (DP 152) as a DP value: `varint(bodyLen) ++ {method:1, seq:2}`.
  *
- * Uses a hand-rolled varint rather than importing protobufjs — the model layer may not import
- * transport deps and the field count is small enough to inline. Method 0 (START_AUTO_CLEAN) is
- * omitted from the wire per the proto3 default-field rule (confirmed on a live T2351 capture).
+ * Built on {@link RawDpWriter} rather than hand-rolled bytes. The frame is unchanged and the existing
+ * byte-level test is what proves it — that test was written against a live T2351 capture, so it holds
+ * the writer to the wire rather than to this function's own idea of the wire.
+ *
+ * Method 0 (START_AUTO_CLEAN) is omitted rather than written as an explicit zero, per the proto3
+ * default-field rule and confirmed on that same capture. The writer deliberately does not apply that
+ * rule for the caller: whether an explicit zero and an absent field mean the same thing is the
+ * message's business, not the encoder's.
  * @internal
  */
 export function encodeModeCtrl(method: number, seq: number): string {
-  const writeVarint = (buf: number[], n: number): void => {
-    let v = n;
-    while (v > 0x7f) {
-      buf.push((v & 0x7f) | 0x80);
-      v >>>= 7;
-    }
-    buf.push(v);
-  };
-  const body: number[] = [];
-  if (method !== 0) {
-    body.push(0x08); // field 1, wire type 0 (varint)
-    writeVarint(body, method);
-  }
-  body.push(0x10); // field 2, wire type 0 (varint)
-  writeVarint(body, seq);
-  const out: number[] = [];
-  writeVarint(out, body.length);
-  return Buffer.from([...out, ...body]).toString("base64");
+  return rawDp((w) => {
+    if (method !== 0) w.int(MODE_CTRL_FIELD.METHOD, method);
+    w.int(MODE_CTRL_FIELD.SEQ, seq);
+  });
 }
 
 /**
