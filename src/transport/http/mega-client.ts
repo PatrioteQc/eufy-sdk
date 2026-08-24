@@ -29,6 +29,7 @@ import { MemorySessionStore, isSessionValid, type SessionStore } from "../../cor
 import { noopLogger, type Logger } from "../../core/logger.js";
 import type { SecureMqttCredentials } from "../mqtt/secure-mqtt.js";
 import { downloadMediaResource, MediaDownloadAuthenticationError } from "./media-download.js";
+import { randomPhoneModel, randomUserAgent } from "./phone-model.js";
 import { normalizePushImage } from "./decodeImageV1.js";
 
 export type RegionShard = "eu-pr" | "us-pr";
@@ -47,15 +48,21 @@ export interface MegaClientConfig {
   appName?: string;
   appVersion?: string;
   /**
-   * Phone model reported to the cloud. Give this client its OWN distinct value
-   * (e.g. "eufy-mega-client") so it appears as a separate device in your eufy
-   * account + 2FA/trust list, instead of impersonating a real phone.
+   * Phone model reported to the cloud as this install's device. Defaults to a realistic, RANDOM model
+   * (see {@link randomPhoneModel}) seeded by `openudid` so it is stable across runs — this keeps many
+   * SDK installs from all reporting one identical model. Set an explicit value to pin your own identity.
    */
   phoneModel?: string;
   /** OS version string reported in headers. */
   osVersion?: string;
   /** Stable per-install device id (the auth token binds to it). Derived from email if absent. */
   openudid?: string;
+  /**
+   * `user-agent` sent on the push-media download path (`downloadMedia`/`downloadImage`). Defaults to a
+   * realistic Android string consistent with `phoneModel` and seeded by `openudid` (stable across runs);
+   * override to pin your own. Not the account identity — that's `phoneModel`.
+   */
+  mediaUserAgent?: string;
   /** Persist + reuse the session (token + session key) across runs. Default: in-memory. */
   store?: SessionStore;
   /** Diagnostics sink. Omit for silence; pass a `Logger` (or `new ConsoleLogger()`) to see logs. */
@@ -287,6 +294,10 @@ export class MegaHttpClient {
   private tokenExpiresAt = 0;
   /** Stable per-install device id — the auth token is bound to it. */
   private openudid: string;
+  /** The device model reported to the cloud (explicit `phoneModel`, else a stable random one). */
+  private readonly phoneModel: string;
+  /** The `user-agent` for the media-download path (explicit `mediaUserAgent`, else derived from the model). */
+  private readonly mediaUserAgent: string;
   private readonly store: SessionStore;
   private readonly logger: Logger;
   /** Remembered working Content-Type per host (the gateway is picky + inconsistent). */
@@ -304,14 +315,24 @@ export class MegaHttpClient {
       appName: "eufy_mega",
       appVersion: "6.0.41_26142",
       countryCode: "US",
-      phoneModel: "eufy-mega-client",
       osVersion: "36",
       ...cfg,
     };
     this.region = cfg.region ?? "us-pr";
-    this.openudid = cfg.openudid ?? createHash("md5").update(`eufy-mega:${cfg.email}`).digest("hex").slice(0, 16);
     this.store = cfg.store ?? new MemorySessionStore();
     this.logger = cfg.logger ?? noopLogger;
+
+    // The device identity (openudid + phone model + media UA) is generated ONCE and persisted, so it
+    // survives a token expiry AND a change to the generator — a shifting identity would look like a new
+    // device every run and re-trigger 2FA. Prefer an explicit config, then the stored value, then a
+    // fresh (deterministic, openudid-seeded) generate that persist() saves. Identity is reused even when
+    // the stored token itself has expired.
+    const saved = this.store.load();
+    this.openudid =
+      cfg.openudid ?? saved?.openudid ?? createHash("md5").update(`eufy-mega:${cfg.email}`).digest("hex").slice(0, 16);
+    this.phoneModel = cfg.phoneModel ?? saved?.phoneModel ?? randomPhoneModel(this.openudid);
+    this.mediaUserAgent =
+      cfg.mediaUserAgent ?? saved?.mediaUserAgent ?? randomUserAgent(this.openudid, this.phoneModel);
 
     this.hydrateFromStore();
   }
@@ -322,12 +343,15 @@ export class MegaHttpClient {
    *
    * Read at construction, and again when a rejection is being recovered from — a store SHARED with another
    * client may already hold the session that client obtained, which is cheaper to adopt than to compete with.
+   *
+   * Note: the device identity (openudid + phone model + media UA) is NOT restored here — it is resolved once
+   * in the constructor, where an explicit config wins over the stored value, and must not be re-derived from a
+   * session this may adopt from a shared store during recovery.
    */
   private hydrateFromStore(): string | undefined {
     const saved = this.store.load();
     if (!isSessionValid(saved) || !saved) return undefined;
     this.region = saved.region;
-    this.openudid = saved.openudid;
     this.auth_ = { userId: saved.userId, authToken: saved.authToken, geoKey: saved.geoKey };
     this.tokenExpiresAt = saved.tokenExpiresAt;
     this.sessionKey = {
@@ -372,7 +396,7 @@ export class MegaHttpClient {
   private baseHeaders(): Record<string, string> {
     const v = this.cfg.appVersion;
     const osv = this.cfg.osVersion ?? "36";
-    const model = this.cfg.phoneModel ?? "eufy-mega-client";
+    const model = this.phoneModel;
     return {
       "app-name": this.cfg.appName,
       "app-version": v,
@@ -741,7 +765,7 @@ export class MegaHttpClient {
         gtoken: gtoken(this.auth_.userId),
         "app-name": "eufy_mega",
         "model-type": "PHONE",
-        "user-agent": "Dalvik/2.1.0 (Linux; U; Android 16; Pixel 6a Build/CP1A.260405.005)",
+        "user-agent": this.mediaUserAgent,
       });
     } catch (error) {
       if (error instanceof MediaDownloadAuthenticationError) {
@@ -1115,6 +1139,8 @@ export class MegaHttpClient {
       geoKey: this.auth_.geoKey,
       region: this.region,
       openudid: this.openudid,
+      phoneModel: this.phoneModel,
+      mediaUserAgent: this.mediaUserAgent,
       shareKey: this.sessionKey.shareKey,
       keyIdent: this.sessionKey.keyIdent,
       tokenExpiresAt: this.tokenExpiresAt,

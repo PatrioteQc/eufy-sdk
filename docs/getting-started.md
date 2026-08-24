@@ -46,7 +46,7 @@ const eufy = new EufyMega({
   email: "you@example.com",
   password: "…",
   countryCode: "GB", // region auto-discovers (GB → eu-pr)
-  phoneModel: "eufy-mega-client", // this client's device identity in your account
+  // phoneModel: "…",  // optional — defaults to a stable random model (see below)
   store: new FileSessionStore("./.eufy-session.json"), // persist + reuse session
 });
 
@@ -95,8 +95,11 @@ Notes:
   instead of trading logins — repeated logins are what makes an account start demanding captchas. The
   rejection you get then names the likely cause. A replacement that keeps working for ten minutes clears
   the wait.
-- **Device identity:** set a distinct `phoneModel` / `openudid` so this client appears as its own
-  trusted device rather than impersonating your phone.
+- **Device identity:** `phoneModel` defaults to a **realistic random model**, seeded by `openudid` so it
+  stays stable across runs (many installs no longer all report one identical model), and is persisted
+  with the session. `openudid` itself defaults to a per-account value — give each client on the same
+  account its own (see above). Set either explicitly to pin your own identity — e.g. a fixed `phoneModel`
+  if you want this client to appear as one specific device in your account.
 
 ## Logging
 
