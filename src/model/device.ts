@@ -101,7 +101,10 @@ function coerce(
 ): boolean | number | string {
   // A custom decode (e.g. a bitfield the app reinterprets) fully owns the value — no type-coerce/invert.
   if (spec.decode) return spec.decode(raw);
-  const v = coerceByType(spec.type, raw, spec.name, logger);
+  // A structured payload is stored verbatim and read by the capability's getter, so its declared type
+  // describes the ANSWER and not the wire. Coercion still runs — a base64 string is not a number, so it
+  // passes through unchanged — but it is not a mistake worth logging. See `PropertySpec.raw`.
+  const v = coerceByType(spec.type, raw, spec.name, spec.raw ? noopLogger : logger);
   // A `bool` param that is a disable flag reads inverted ("0"/false ⇒ TRUE). `invert` comes from
   // the spec (its own paramType) or the matched read-alias — see specByParam construction.
   return spec.type === "bool" && invert ? !v : v;

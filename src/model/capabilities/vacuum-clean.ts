@@ -4,6 +4,7 @@ import type { AvailabilityContext, CapabilityModule } from "./types.js";
 import { asBool } from "../../core/util.js";
 import { rawDp, type RawDpWriter } from "../../core/raw-dp-writer.js";
 import { isAiotVacuum, isTuyaVacuum } from "../device-family.js";
+import { VACUUM_DOCK_INFO_SOURCE } from "./vacuum-dock.js";
 import { pickDpParams, aiotDp } from "./access.js";
 import { method, propertiesOf, type Members, type Surface } from "./members.js";
 import {
@@ -1062,6 +1063,58 @@ export function decodeUnisetting(
 }
 
 /**
+ * Field numbers inside `DeviceInfo` (DP 169) — the ROBOT's half of it.
+ *
+ * The dock's firmware sits at field 11 of this same message and belongs to `vacuum_dock`, which owns
+ * the id; these are the fields beside it. Reported once when the robot comes online, and again when its
+ * IP or the account using it changes — so a value here can be stale in the way any cached fact is, and
+ * absent entirely on a robot that has not reconnected since binding.
+ *
+ * **`last_user_id` (8) and `video_sn` (2) are deliberately unread.** The first is an account id and the
+ * second a serial the caller already has by another name; neither is a value to hand out for the sake
+ * of completeness. Same reasoning as `TimerInfo.Addition` in the schedules read.
+ */
+const ROBOT_INFO_FIELD = {
+  PRODUCT_NAME: 1,
+  DEVICE_MAC: 3,
+  SOFTWARE: 4,
+  HARDWARE: 5,
+  WIFI_NAME: 6,
+  WIFI_IP: 7,
+} as const;
+
+/**
+ * Read one top-level `string` field out of a `DeviceInfo` (DP 169).
+ *
+ * An absent or empty field answers `undefined`: proto3 omits an empty string, so "this robot did not
+ * say" and "it said nothing" are the same bytes, and an empty SSID is not a network name.
+ * @internal
+ */
+export function decodeRobotInfoText(
+  raw: ParamValue | undefined,
+  codec: RawDpCodec | undefined,
+  field: number,
+): string | undefined {
+  if (typeof raw !== "string" || !codec) return undefined;
+  const hit = codec.decode(raw)?.find((f) => f.field === field);
+  return hit?.kind === "bytes" && hit.value.length > 0 ? hit.value.toString("utf-8") : undefined;
+}
+
+/**
+ * Read the robot's hardware revision out of a `DeviceInfo` (DP 169) — a plain integer, unlike every
+ * other field of this message.
+ * @internal
+ */
+export function decodeRobotHardware(raw: ParamValue | undefined, codec: RawDpCodec | undefined): number | undefined {
+  if (typeof raw !== "string" || !codec) return undefined;
+  const fields = codec.decode(raw);
+  if (!fields) return undefined;
+  const hit = fields.find((f) => f.field === ROBOT_INFO_FIELD.HARDWARE);
+  if (hit === undefined) return 0;
+  return hit.kind === "int" ? Number(hit.value) : undefined;
+}
+
+/**
  * Field numbers inside `LanguageResponse` (DP 162).
  *
  * The DP the plan's §2 called out: it is a voice-pack descriptor, not a locale. Nothing here is a
@@ -2093,6 +2146,59 @@ export const VACUUM_CLEAN_MEMBERS = {
       (ctx: AvailabilityContext) => ctx.paramIds?.has(VACUUM_DP.SCENES) ?? false,
     ),
     answers: true,
+  },
+  /**
+   * The network name the robot is joined to — `DeviceInfo.wifi_name` (DP 169).
+   *
+   * Reads a payload the DOCK capability owns. `DeviceInfo` is one message carrying the robot's network
+   * facts beside the dock's firmware version, and the one-owner rule is per product line, so DP 169 has
+   * a single owner — `vacuumDock().dockFirmwareVersion` — and these four members borrow it by name.
+   * Putting them on the dock object instead would have filed the robot's IP under the wrong thing.
+   *
+   * Reported when the robot comes online and again when its IP changes, so it is as current as the last
+   * such report and absent on a robot that has not reconnected since binding.
+   */
+  wifiSsid: {
+    readsFrom: VACUUM_DOCK_INFO_SOURCE,
+    type: "string",
+    kind: "text",
+    provenance: "mega",
+    decode: (raw, codec) => decodeRobotInfoText(raw as ParamValue | undefined, codec, ROBOT_INFO_FIELD.WIFI_NAME),
+    decodedKind: "text",
+    description: "The WiFi network the robot is on — DeviceInfo.wifi_name (DP 169, Raw protobuf).",
+  },
+  /** The robot's address on that network — `DeviceInfo.wifi_ip` (DP 169). */
+  wifiIp: {
+    readsFrom: VACUUM_DOCK_INFO_SOURCE,
+    type: "string",
+    kind: "text",
+    provenance: "mega",
+    decode: (raw, codec) => decodeRobotInfoText(raw as ParamValue | undefined, codec, ROBOT_INFO_FIELD.WIFI_IP),
+    decodedKind: "text",
+    description: "The robot's IP on its WiFi network — DeviceInfo.wifi_ip (DP 169, Raw protobuf).",
+  },
+  /** The robot's MAC address — `DeviceInfo.device_mac` (DP 169). */
+  macAddress: {
+    readsFrom: VACUUM_DOCK_INFO_SOURCE,
+    type: "string",
+    kind: "identifier",
+    provenance: "mega",
+    decode: (raw, codec) => decodeRobotInfoText(raw as ParamValue | undefined, codec, ROBOT_INFO_FIELD.DEVICE_MAC),
+    decodedKind: "identifier",
+    description: "The robot's MAC address — DeviceInfo.device_mac (DP 169, Raw protobuf).",
+  },
+  /**
+   * The robot's hardware revision — `DeviceInfo.hardware` (DP 169). A bare integer the vendor gives no
+   * scale for; useful for telling two builds of one model apart, not for comparing models.
+   */
+  hardwareVersion: {
+    readsFrom: VACUUM_DOCK_INFO_SOURCE,
+    type: "number",
+    kind: "scalar",
+    provenance: "mega",
+    decode: (raw, codec) => decodeRobotHardware(raw as ParamValue | undefined, codec),
+    decodedKind: "scalar",
+    description: "The robot's hardware revision — DeviceInfo.hardware (DP 169, Raw protobuf).",
   },
   /**
    * WiFi RSSI in dBm (DP 134, Value ro). Schema-confirmed from `thing.m.device.ref.info.list` v5.4.

@@ -32,6 +32,17 @@ const DEVICE_INFO_FIELD = {
 } as const;
 
 /**
+ * The DP 169 property name the ROBOT's own readings borrow, and the id carrying it.
+ *
+ * `DeviceInfo` is one message spanning two capabilities: the dock's firmware sits at field 11 and the
+ * robot's MAC, SSID and IP sit beside it. The one-owner rule is per product line, so one of the two has
+ * to own the id — this capability does, because it claimed it first and because moving it would break a
+ * shipped surface. The clean capability names this pair to read the rest. Exported so the far side
+ * cites a constant rather than retyping a string and a number that must agree.
+ */
+export const VACUUM_DOCK_INFO_SOURCE = { property: "dockFirmwareVersion", param: VACUUM_DOCK_INFO_DP } as const;
+
+/**
  * Decode the DOCK's firmware version from `DeviceInfo` (DP 169).
  *
  * `undefined` covers every way it is not stated: no codec, a payload that does not decode, a robot not

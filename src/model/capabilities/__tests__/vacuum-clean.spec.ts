@@ -30,7 +30,7 @@ import {
   type VoicePackState,
 } from "../vacuum-clean.js";
 import { bind } from "./bind.js";
-import { byteCodec, frame, int, sub, varint } from "./proto-bytes.js";
+import { byteCodec, frame, int, str, sub, varint } from "./proto-bytes.js";
 
 /**
  * The capability is exercised against a FAKE codec, never the real `transport/raw-dp.ts` — importing
@@ -1012,6 +1012,82 @@ describe("vacuum_clean — DP-based action routing", () => {
     expect(acts.voicePackVersion).toBe(22);
     expect(acts.voicePackState).toBe("updating");
     expect(acts.volume).toBe(38);
+  });
+});
+
+describe("DeviceInfo (DP 169) — a payload read across two capabilities", () => {
+  const INFO_DP = 169;
+  // DeviceInfo: product_name 1, device_mac 3, software 4, hardware 5, wifi_name 6, wifi_ip 7,
+  // station 11 { software 1 }. Synthetic throughout — a real one carries a real MAC, SSID and LAN IP.
+  const info = frame([
+    ...str(1, "eufy Clean X10 Pro Omni"),
+    ...str(3, "00:00:00:00:00:00"),
+    ...str(4, "1.2.3"),
+    ...int(5, 2),
+    ...str(6, "example-ssid"),
+    ...str(7, "192.0.2.10"),
+    ...sub(11, str(1, "4.5.6")),
+  ]);
+
+  const bound = (paramIds: Set<number>) =>
+    bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, "eufy_home", paramIds), {
+      // The payload is stored under the name the DOCK capability owns — one flat namespace, one param,
+      // one stored value, read from both objects.
+      read: (name) => (name === "dockFirmwareVersion" ? { value: info } : undefined),
+      rawDp: byteCodec,
+    }).acts;
+
+  it("reads the robot's own network facts off the dock capability's payload", () => {
+    const acts = bound(new Set([INFO_DP]));
+
+    expect(acts.wifiSsid).toBe("example-ssid");
+    expect(acts.wifiIp).toBe("192.0.2.10");
+    expect(acts.macAddress).toBe("00:00:00:00:00:00");
+    expect(acts.hardwareVersion).toBe(2);
+  });
+
+  it("installs nothing when the device never reported DP 169", () => {
+    // The borrowed param IS the evidence gate: no report, no getter — the same rule an owning member
+    // follows, applied to an owner in another module.
+    const acts = bound(new Set([VACUUM_DP.POWER])) as Record<string, unknown>;
+
+    expect(acts.wifiSsid).toBeUndefined();
+    expect("wifiSsid" in acts).toBe(false);
+  });
+
+  it("publishes no DP 169 property, so the dock capability keeps sole ownership", () => {
+    // The whole reason these members borrow instead of claiming the id. A second spec for one param
+    // would leave `Device` storing under the first name only, and these getters reading a name nothing
+    // is ever stored under — undefined forever, and silently.
+    expect(VACUUM_CLEAN.properties.filter((p) => p.paramType === INFO_DP)).toEqual([]);
+  });
+
+  it("answers undefined for a field the robot omitted rather than an empty string", () => {
+    const sparse = frame([...str(3, "00:00:00:00:00:00")]);
+    const acts = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, "eufy_home", new Set([INFO_DP])), {
+      read: (name) => (name === "dockFirmwareVersion" ? { value: sparse } : undefined),
+      rawDp: byteCodec,
+    }).acts;
+
+    expect(acts.macAddress).toBe("00:00:00:00:00:00");
+    expect(acts.wifiSsid).toBeUndefined();
+    expect(acts.wifiIp).toBeUndefined();
+  });
+
+  it("reads an omitted hardware revision as the proto3 zero", () => {
+    const acts = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, "eufy_home", new Set([INFO_DP])), {
+      read: (name) => (name === "dockFirmwareVersion" ? { value: frame(str(6, "example-ssid")) } : undefined),
+      rawDp: byteCodec,
+    }).acts;
+
+    expect(acts.hardwareVersion).toBe(0);
+  });
+
+  it("does not read the account id or the video serial beside them", () => {
+    // `last_user_id` (8) and `video_sn` (2) are in the message and deliberately unread — an account id
+    // and a serial the caller already has by another name.
+    const acts = bound(new Set([INFO_DP])) as Record<string, unknown>;
+    for (const name of ["lastUserId", "userId", "videoSn", "productName"]) expect(name in acts).toBe(false);
   });
 });
 

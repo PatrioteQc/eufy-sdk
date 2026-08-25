@@ -2,6 +2,7 @@ import { buildActions, CAPABILITY_MODULES, describeCapabilities } from "../index
 import { Device } from "../../device.js";
 import type { Capability } from "../../types.js";
 import type { CapabilityModule, CommandContext } from "../types.js";
+import { borrowedBy } from "../members.js";
 import type { ValueMember } from "../members.js";
 import type { Command, CommandSink, MediaProvider } from "../../../core/contracts.js";
 
@@ -66,12 +67,12 @@ const tableReads = (m: CapabilityModule, paramIds: Set<number>): string[] =>
       // Either wire installs a `readsFrom` member: its own param where it has one, or the OWNER's
       // payload that carries the same value on the other device family — exactly as `bindMembers`
       // resolves it. Its own `available` above still applies.
-      const owner = (v.readsFrom === undefined ? undefined : (m.members?.[v.readsFrom] as ValueMember)) ?? v;
+      const borrowed = borrowedBy(v, m.members ?? {});
       const evident = (x: ValueMember): boolean =>
         x.realtime === true ||
         (x.param !== undefined && paramIds.has(x.param)) ||
         x.readAliases?.some((a) => paramIds.has(a.paramType)) === true;
-      return evident(v) || (owner !== v && evident(owner));
+      return evident(v) || (borrowed !== undefined && paramIds.has(borrowed.param));
     })
     .map(([name]) => name);
 
