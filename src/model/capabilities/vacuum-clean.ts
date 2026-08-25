@@ -7,6 +7,12 @@ import { isAiotVacuum, isTuyaVacuum } from "../device-family.js";
 import { pickDpParams, aiotDp } from "./access.js";
 import { method, propertiesOf, type Members, type Surface } from "./members.js";
 import {
+  decodeUsableVacuumSceneCount,
+  decodeVacuumSceneCount,
+  decodeVacuumScenes,
+  type VacuumScene,
+} from "../vacuum-scenes.js";
+import {
   decodeActiveVacuumScheduleCount,
   decodeVacuumScheduleCount,
   decodeVacuumSchedules,
@@ -84,6 +90,8 @@ export const VACUUM_DP = {
   RESUME_CLEAN: 156,
   /** `timing` (DP 164, Raw) — TimerRequest/TimerResponse. THIS is where schedules live. */
   TIMING: 164,
+  /** SceneResponse (DP 180, Raw protobuf) — the saved cleaning scenes, and a source of real map ids. */
+  SCENES: 180,
   /** ConsumableRuntime (DP 168, Raw protobuf) — hours used per replaceable part (see {@link decodeConsumableHours}). */
   CONSUMABLES: 168,
   /** UnisettingResponse (DP 176, Raw protobuf) — the device-wide setting toggles (see {@link decodeUnisetting}). */
@@ -2033,6 +2041,56 @@ export const VACUUM_CLEAN_MEMBERS = {
           decodeVacuumSchedules(read("scheduleCount")?.value, codec),
       "The robot's schedules, decoded from its last TimerResponse (DP 164, Raw protobuf).",
       (ctx: AvailabilityContext) => ctx.paramIds?.has(VACUUM_DP.TIMING) ?? false,
+    ),
+    answers: true,
+  },
+  /**
+   * How many cleaning scenes the robot holds — the owner of DP 180.
+   *
+   * A scene is a saved routine over rooms or zones. The robot reports the LIST here; the tasks inside
+   * a scene are only ever sent to it, never reported back, so this counts what the device publishes.
+   */
+  sceneCount: {
+    param: VACUUM_DP.SCENES,
+    type: "number",
+    kind: "scalar",
+    provenance: "mega",
+    decode: (raw, codec) => decodeVacuumSceneCount(raw, codec),
+    decodedKind: "scalar",
+    description: "How many cleaning scenes the robot holds — SceneResponse.infos (DP 180, Raw protobuf).",
+    available: (ctx: AvailabilityContext) => ctx.paramIds?.has(VACUUM_DP.SCENES) ?? false,
+  },
+  /**
+   * How many of those scenes can still run. A scene whose map was deleted or no longer matches is kept
+   * and reported invalid rather than removed, so the two counts differ for a real reason a host can
+   * show — and `scenes()` says which reason, per scene.
+   */
+  usableSceneCount: {
+    readsFrom: "sceneCount",
+    type: "number",
+    kind: "scalar",
+    provenance: "mega",
+    decode: (raw, codec) => decodeUsableVacuumSceneCount(raw, codec),
+    decodedKind: "scalar",
+    description: "How many scenes can still run — SceneInfo.valid (DP 180, Raw protobuf).",
+  },
+  /**
+   * The scenes themselves, decoded from the same DP 180 report the two counts read.
+   *
+   * Answers from state already received, like `schedules` — the robot pushes its whole scene list on
+   * boot and after any change, so this sends nothing.
+   *
+   * **Where a caller gets a real map id.** Each scene names the map its rooms belong to, and so does a
+   * scheduled rooms-clean. The plan expected that from B3, multi-map management on DP 172; the vendor's
+   * own `multi_maps.proto` rules it out, sending a map list over p2p rather than the data point.
+   */
+  scenes: {
+    ...method(
+      ({ read, rawDp: codec }) =>
+        (): readonly VacuumScene[] | undefined =>
+          decodeVacuumScenes(read("sceneCount")?.value, codec),
+      "The robot's saved cleaning scenes, decoded from its last SceneResponse (DP 180, Raw protobuf).",
+      (ctx: AvailabilityContext) => ctx.paramIds?.has(VACUUM_DP.SCENES) ?? false,
     ),
     answers: true,
   },
