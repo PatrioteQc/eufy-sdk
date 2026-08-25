@@ -240,8 +240,18 @@ export interface ValueMember {
    * Read-only either way. Setting a field inside a shared payload means re-encoding the whole message,
    * which needs an encoder and a captured write this SDK does not have; the owner keeps that wire.
    * Guarded by `property-id-integrity.spec.ts`.
+   *
+   * **Naming an owner in ANOTHER capability.** A string names a sibling in this table, which covers
+   * every payload whose readings all belong to one capability. Some do not: `DeviceInfo` on DP 169
+   * carries the robot's MAC, SSID and IP beside the DOCK's firmware version, and the one-owner rule is
+   * per product LINE — so one capability must own that id and the other's reading would otherwise have
+   * to hang off the wrong object. The `{ property, param }` form says "read the property another module
+   * owns, gated on the param that carries it", which works because `Device` keys state by NAME in one
+   * flat namespace shared across capabilities. Both halves are stated rather than looked up: a member
+   * declaring this cannot see the other module's table, and the guard checks the pair against the
+   * line's real owner so a rename cannot leave it pointing at nothing.
    */
-  readsFrom?: string;
+  readsFrom?: string | { property: string; param: number };
   /** What the decoded value means, when it differs from the stored property's own {@link kind}. */
   decodedKind?: ValueKind;
   /**
@@ -313,6 +323,29 @@ export interface MethodMember<F> {
    * for code that reaches it deliberately.
    */
   answers?: true;
+}
+
+/**
+ * What a `readsFrom` member actually borrows: the property name holding the payload, and the param
+ * whose presence is the evidence for it.
+ *
+ * One resolution for both forms and for every reader of them — `bindMembers` and the three guards that
+ * check this mechanism all come through here, so a change to the declaration cannot leave one of them
+ * reading the old shape.
+ *
+ * Answers `undefined` when the member borrows nothing, and for a string that names no sibling: that
+ * fallback costs the borrowing member its getter rather than throwing at bind time, which is the
+ * failure a guard catches at build time anyway.
+ */
+export function borrowedBy(
+  m: Pick<ValueMember, "readsFrom">,
+  members: Members,
+): { property: string; param: number } | undefined {
+  if (m.readsFrom === undefined) return undefined;
+  if (typeof m.readsFrom !== "string") return m.readsFrom;
+  const owner = members[m.readsFrom] as ValueMember | undefined;
+  if (!owner || owner.param === undefined) return undefined;
+  return { property: owner.property ?? m.readsFrom, param: owner.param };
 }
 
 /**
@@ -855,17 +888,17 @@ export function bindMembers<M extends Members>(
       continue;
     }
     const prop = m.property ?? name;
-    // A `readsFrom` member reads a FIELD of another member's payload. Falling back to the member itself
-    // when `readsFrom` names nothing costs the getter (that fallback is its own owner, so nothing is
-    // borrowed) rather than throwing at bind time.
-    const owner = ((m.readsFrom === undefined ? undefined : members[m.readsFrom]) ?? m) as ValueMember;
-    const borrowed = owner === m ? undefined : (owner.property ?? String(m.readsFrom));
+    // A `readsFrom` member reads a FIELD of another member's payload — a sibling's, or one owned by
+    // another capability in the same line. Borrowing nothing costs the getter rather than throwing at
+    // bind time; the guard catches that case at build time.
+    const from = borrowedBy(m, members);
+    const borrowed = from?.property;
     // One availability decision across getter, setter and manifest: a member gated off by `available`
     // for this device is not exposed as a getter either (the manifest already omits it).
     const available = !m.available || m.available(ctx);
     // Either wire is evidence: the member's own param where it has one, or the owner's payload that
     // carries the same value on the other device family.
-    const reported = available && (reads(m, ctx) || (borrowed !== undefined && reads(owner, ctx)));
+    const reported = available && (reads(m, ctx) || (from !== undefined && ctx.paramIds.has(from.param)));
     if (reported && !m.writeOnly && !m.unexposed) {
       const decode = m.decode;
       // The member's own wire wins; the owner's payload is the fallback for a device that does not
