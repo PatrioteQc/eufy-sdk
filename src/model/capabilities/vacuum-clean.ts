@@ -1646,7 +1646,8 @@ export const VACUUM_CLEAN_MEMBERS = {
     description: "Obstacle-recognition camera — UnisettingResponse.ai_see (DP 176, Raw protobuf).",
   },
   /**
-   * The vendor's `water_level_sw`. Named after the wire rather than given a friendlier name: what it\n   * switches is not stated anywhere this SDK can point at, and a guessed name would be a claim.
+   * The vendor's `water_level_sw`. Named after the wire rather than given a friendlier name: what it
+   * switches is not stated anywhere this SDK can point at, and a guessed name would be a claim.
    */
   waterLevelSwitch: {
     readsFrom: "childLock",
@@ -1659,7 +1660,8 @@ export const VACUUM_CLEAN_MEMBERS = {
       "UnisettingResponse.water_level_sw (DP 176, Raw protobuf). Vendor name kept — its meaning is unconfirmed.",
   },
   /**
-   * Whether the robot offers restricted-area suggestions after a run — the prompts that ask to fence\n   * off a spot it got stuck in.
+   * Whether the robot offers restricted-area suggestions after a run — the prompts that ask to fence
+   * off a spot it got stuck in.
    */
   suggestRestricted: {
     readsFrom: "childLock",
@@ -1707,7 +1709,8 @@ export const VACUUM_CLEAN_MEMBERS = {
     description: "Capture stills while cleaning — UnisettingResponse.live_photo_sw (DP 176, Raw protobuf).",
   },
   /**
-   * Smart-follow mode. Numbered 13 in the response and 12 in the request — the widest gap in a message\n   * whose two directions disagree about almost every field.
+   * Smart-follow mode. Numbered 13 in the response and 12 in the request — the widest gap in a message
+   * whose two directions disagree about almost every field.
    */
   smartFollow: {
     readsFrom: "childLock",
@@ -1719,7 +1722,12 @@ export const VACUUM_CLEAN_MEMBERS = {
     description: "Smart-follow mode — UnisettingResponse.smart_follow_sw (DP 176, Raw protobuf).",
   },
   /**
-   * Hours run on the current side brush.\n   *\n   * The owner of DP 168 — the other eight counters read their own field out of this same payload, which\n   * is why they declare `readsFrom` rather than a wire of their own. Hours USED, counting up: the\n   * vendor sends no life expectancy, so a percentage remaining is the host's calibration to make, not\n   * a number this SDK can invent.
+   * Hours run on the current side brush.
+   *
+   * The owner of DP 168 — the other eight counters read their own field out of this same payload, which
+   * is why they declare `readsFrom` rather than a wire of their own. Hours USED, counting up: the
+   * vendor sends no life expectancy, so a percentage remaining is the host's calibration to make, not
+   * a number this SDK can invent.
    */
   sideBrushHours: {
     param: VACUUM_DP.CONSUMABLES,
@@ -1811,7 +1819,8 @@ export const VACUUM_CLEAN_MEMBERS = {
     description: "Dust-bag hours used — ConsumableRuntime.dustbag (DP 168, Raw protobuf).",
   },
   /**
-   * Hours since the waste-water tank was last emptied. Field 10, not 8 — the vendor leaves 8 and 9\n   * unused and closing that gap would read the wrong counter.
+   * Hours since the waste-water tank was last emptied. Field 10, not 8 — the vendor leaves 8 and 9
+   * unused and closing that gap would read the wrong counter.
    */
   dirtyWaterTankHours: {
     readsFrom: "sideBrushHours",
@@ -1905,7 +1914,8 @@ export const VACUUM_CLEAN_MEMBERS = {
    * can only be resumed by starting a fresh run.
    */
   /**
-   * End the current job outright, as opposed to {@link VACUUM_CLEAN_MEMBERS.pauseCleaning}, which\n   * leaves it resumable.
+   * End the current job outright, as opposed to {@link VACUUM_CLEAN_MEMBERS.pauseCleaning}, which
+   * leaves it resumable.
    */
   stopCleaning: {
     type: "bool",
@@ -1919,7 +1929,8 @@ export const VACUUM_CLEAN_MEMBERS = {
       "Stop the current job (ModeCtrlRequest method 12 over DP 152). Method number not captured — unverified.",
   },
   /**
-   * Carry on with a paused job rather than starting a new one — the counterpart the pause verb has\n   * been missing.
+   * Carry on with a paused job rather than starting a new one — the counterpart the pause verb has
+   * been missing.
    */
   resumeCleaning: method(
     ({ sink }) =>
@@ -1929,7 +1940,8 @@ export const VACUUM_CLEAN_MEMBERS = {
     isAiotVacuum,
   ),
   /**
-   * Send the robot to the dock to wash its mops. Distinct from the dock's own `washMops`, which asks\n   * the STATION to run its cycle: this one moves the robot there first.
+   * Send the robot to the dock to wash its mops. Distinct from the dock's own `washMops`, which asks
+   * the STATION to run its cycle: this one moves the robot there first.
    */
   startWashingMops: {
     type: "bool",
@@ -1971,7 +1983,8 @@ export const VACUUM_CLEAN_MEMBERS = {
       "Stop returning to the dock (ModeCtrlRequest method 15 over DP 152). Method number not captured — unverified.",
   },
   /**
-   * Clean the robot's immediate surroundings. Takes no target — the spot is wherever it is standing,\n   * which is why this one needs no `Param` and its area-selecting cousins do.
+   * Clean the robot's immediate surroundings. Takes no target — the spot is wherever it is standing,
+   * which is why this one needs no `Param` and its area-selecting cousins do.
    */
   startSpotClean: {
     type: "bool",
@@ -2013,7 +2026,8 @@ export const VACUUM_CLEAN_MEMBERS = {
       "Start a global cruise (ModeCtrlRequest method 20 over DP 152). Method number not captured — unverified.",
   },
   /**
-   * Enter remote-control cleaning, where the app drives. The SDK offers no steering wire, so this is\n   * only half a feature until one exists — declared for completeness of the vocabulary.
+   * Enter remote-control cleaning, where the app drives. The SDK offers no steering wire, so this is
+   * only half a feature until one exists — declared for completeness of the vocabulary.
    */
   startRemoteControl: {
     type: "bool",
@@ -2083,7 +2097,8 @@ export const VACUUM_CLEAN_MEMBERS = {
     available: (ctx: AvailabilityContext) => ctx.paramIds?.has(VACUUM_DP.RESUME_CLEAN) ?? false,
   },
   /**
-   * Stop smart-follow mode. There is no start verb in the vendor's parameterless set — the mode is\n   * switched on through `smartFollow` in the DP 176 settings, and only stopped from here.
+   * Stop smart-follow mode. There is no start verb in the vendor's parameterless set — the mode is
+   * switched on through `smartFollow` in the DP 176 settings, and only stopped from here.
    */
   stopSmartFollow: {
     type: "bool",
