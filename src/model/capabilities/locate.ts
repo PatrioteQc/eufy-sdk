@@ -1,12 +1,17 @@
 import { isAiotVacuum, isTuyaVacuum } from "../device-family.js";
+import { TUYA_VACUUM_DP } from "./vacuum-clean.js";
 import { pickDpParams, aiotDp } from "./access.js";
 import { method, propertiesOf, type Members, type Surface } from "./members.js";
 import type { CapabilityModule } from "./types.js";
 
 /** DP id for the locate (find-robot) toggle. */
 const LOCATE_DP = 160 as const;
-/** DP id for the locate (find-robot) toggle on the legacy Tuya clean line (G-series/X8). */
-const LEGACY_LOCATE_DP = 103 as const;
+/**
+ * DP id for the locate (find-robot) toggle on the Tuya clean line (G-series / X8) — the vendor's
+ * `look_for_sweeper`. Taken from the clean capability's own table rather than respelled here, so the
+ * Tuya line's ids have one home.
+ */
+const LEGACY_LOCATE_DP = TUYA_VACUUM_DP.LOOK_FOR_SWEEPER;
 
 /**
  * Every `locate` feature, declared once.

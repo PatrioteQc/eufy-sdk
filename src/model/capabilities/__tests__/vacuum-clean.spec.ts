@@ -3,7 +3,6 @@ import type { CommandContext } from "../types.js";
 import {
   VACUUM_CLEAN,
   VACUUM_DP,
-  LEGACY_VACUUM_DP,
   TUYA_VACUUM_DP,
   decodeVacuumActivity,
   decodeCleanType,
@@ -914,7 +913,7 @@ describe("vacuum_clean — DP-based action routing", () => {
   // AIoT device: has reported DP 151 (power) and DP 153 (work status). DP 152 (MODE_CTRL) is write-only and never in paramIds.
   const aiotDps = new Set([VACUUM_DP.POWER, VACUUM_DP.WORK_STATUS]);
   // Tuya device: has reported DP 2 (play/pause) and DP 101 (go home).
-  const tuyaDps = new Set([LEGACY_VACUUM_DP.PLAY_PAUSE, LEGACY_VACUUM_DP.GO_HOME]);
+  const tuyaDps = new Set([TUYA_VACUUM_DP.PLAY_PAUSE, TUYA_VACUUM_DP.GO_HOME]);
 
   it("write actions are present for non-Tuya-category devices — AIoT path (isAiotVacuum)", () => {
     const { acts } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx("T2250", undefined, aiotDps));
@@ -1012,6 +1011,39 @@ describe("vacuum_clean — DP-based action routing", () => {
     expect(acts.voicePackVersion).toBe(22);
     expect(acts.voicePackState).toBe("updating");
     expect(acts.volume).toBe(38);
+  });
+});
+
+describe("the Tuya clean line has one DP table", () => {
+  it("covers every id the third-party legacy map names", () => {
+    // The C2 diff, kept as a check rather than as a paragraph: `jeppesens/eufy-clean`'s
+    // `LEGACY_DPS_MAP` lists these nine, and all nine are here, live-confirmed on a real X8 Pro. If one
+    // is ever dropped, this fails and the comparison does not silently go stale.
+    const legacyDpsMap = [2, 3, 5, 15, 101, 102, 103, 104, 106];
+    const ours = new Set<number>(Object.values(TUYA_VACUUM_DP));
+
+    expect(legacyDpsMap.filter((dp) => !ours.has(dp))).toEqual([]);
+  });
+
+  it("spells the find-robot id once, in the table, not in the capability that uses it", () => {
+    expect(TUYA_VACUUM_DP.LOOK_FOR_SWEEPER).toBe(103);
+  });
+
+  it("names each id exactly once", () => {
+    // A second table for this line is what this reconciliation removed; a duplicate id inside the
+    // surviving one would be the same failure a level down.
+    const ids = Object.values(TUYA_VACUUM_DP);
+    expect(ids.length).toBe(new Set(ids).size);
+  });
+
+  it("does not reach into the scalar device class that reuses these numbers", () => {
+    // The G50-class scalar line puts unrelated meanings on ids this table also uses — a brush-detangle
+    // trigger on 153, a schedule blob on 151 — so it has to be told apart by value shape. Those ids
+    // belong to the AIoT table here and must never be borrowed into the Tuya one.
+    const scalarOnly = [118, 122, 135, 139, 142, 150, 151, 153, 154];
+    const ours = new Set<number>(Object.values(TUYA_VACUUM_DP));
+
+    expect(scalarOnly.filter((dp) => ours.has(dp))).toEqual([]);
   });
 });
 
