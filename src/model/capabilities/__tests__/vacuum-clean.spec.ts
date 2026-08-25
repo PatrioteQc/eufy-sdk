@@ -454,19 +454,27 @@ describe("decodeConsumableHours (ConsumableRuntime parts)", () => {
   const SIDE_BRUSH = 1;
   const MOP = 6;
   const DIRTY_WATERTANK = 10;
+  /**
+   * The report WRAPS the runtime block at field 1 — the parts sit one level down, not at the top.
+   *
+   * Every fixture here reached through the top level until a live T2351 report showed otherwise, and
+   * the decode agreed with them, so these tests passed while the feature answered `undefined` on real
+   * hardware. That is the mistake a synthetic fixture cannot catch alone: it can only ever confirm the
+   * assumption it was written from.
+   */
+  const report = (parts: number[]): string => frame(sub(1, parts));
 
-  it("reads a part's hours through its Duration wrapper", () => {
-    expect(decodeConsumableHours(frame(sub(SIDE_BRUSH, int(1, 42))), byteCodec, SIDE_BRUSH)).toBe(42);
+  it("reads a part's hours through the runtime wrapper and its Duration", () => {
+    expect(decodeConsumableHours(report(sub(SIDE_BRUSH, int(1, 42))), byteCodec, SIDE_BRUSH)).toBe(42);
   });
 
   it("reads a fitted-but-unused part as 0, not as missing", () => {
-    expect(decodeConsumableHours(frame(sub(MOP, [])), byteCodec, MOP)).toBe(0);
+    expect(decodeConsumableHours(report(sub(MOP, [])), byteCodec, MOP)).toBe(0);
   });
 
   it("reads each part out of one message, and respects the gap at 8 and 9", () => {
-    // The vendor leaves 8 and 9 unused; the waste-water tank really is at 10. Renumbering around the
-    // hole would report the water filter's hours as the tank's.
-    const payload = frame([
+    // The vendor leaves 8 and 9 unused; a live report carries 1-7 and then jumps past them.
+    const payload = report([
       ...sub(SIDE_BRUSH, int(1, 10)),
       ...sub(MOP, int(1, 20)),
       ...sub(DIRTY_WATERTANK, int(1, 30)),
@@ -478,10 +486,24 @@ describe("decodeConsumableHours (ConsumableRuntime parts)", () => {
     expect(decodeConsumableHours(payload, byteCodec, 9)).toBeUndefined();
   });
 
+  it("reads the real shape a T2351 sends", () => {
+    // Trimmed from a live report: runtime(1) wrapping side_brush(1)=77h, rolling_brush(2)=19h and a
+    // present-but-zero mop(6). Read at the top level this finds the wrapper where a part should be
+    // and answers undefined for every counter — which is what shipped before this capture.
+    const live = report([...sub(1, int(1, 77)), ...sub(2, int(1, 19)), ...sub(6, [])]);
+    expect(decodeConsumableHours(live, byteCodec, 1)).toBe(77);
+    expect(decodeConsumableHours(live, byteCodec, 2)).toBe(19);
+    expect(decodeConsumableHours(live, byteCodec, 6)).toBe(0);
+  });
+
   it("is undefined for a part this robot does not track", () => {
-    expect(decodeConsumableHours(frame(sub(SIDE_BRUSH, int(1, 5))), byteCodec, MOP)).toBeUndefined();
-    expect(decodeConsumableHours(frame(sub(SIDE_BRUSH, int(1, 5))), undefined, SIDE_BRUSH)).toBeUndefined();
+    expect(decodeConsumableHours(report(sub(SIDE_BRUSH, int(1, 5))), byteCodec, MOP)).toBeUndefined();
+    expect(decodeConsumableHours(report(sub(SIDE_BRUSH, int(1, 5))), undefined, SIDE_BRUSH)).toBeUndefined();
     expect(decodeConsumableHours(undefined, byteCodec, SIDE_BRUSH)).toBeUndefined();
+  });
+
+  it("is undefined when the runtime wrapper is missing altogether", () => {
+    expect(decodeConsumableHours(frame(sub(SIDE_BRUSH, int(1, 5))), byteCodec, SIDE_BRUSH)).toBeUndefined();
   });
 });
 
@@ -641,7 +663,8 @@ describe("CleanParam settings on the bound surface", () => {
 
 describe("one payload, many reads — DP 176 settings and DP 168 consumables", () => {
   const settings = frame([...sub(1, int(1, 1)), ...sub(3, []), ...sub(13, int(1, 1))]);
-  const consumables = frame([...sub(1, int(1, 120)), ...sub(6, []), ...sub(10, int(1, 30))]);
+  // runtime(1) wraps the parts — the shape a live T2351 actually sends.
+  const consumables = frame(sub(1, [...sub(1, int(1, 120)), ...sub(6, []), ...sub(10, int(1, 30))]));
   const dps = new Set([VACUUM_DP.SETTINGS, VACUUM_DP.CONSUMABLES]);
 
   const bound = () =>
@@ -954,9 +977,10 @@ describe("ModeCtrl verbs — vocabulary declared, wire still unconfirmed", () =>
     expect(typeof a.returnToDock).toBe("function");
     // Method number from the vendor enum alone. A wrong number is a different command reaching real
     // hardware on a fire-and-forget wire, so declaring the verb must not install it.
+    // Captured on a live T2351, so this one IS installed — the only mode verb that is.
+    expect(typeof a.resumeCleaning).toBe("function");
     for (const name of [
       "stopCleaning",
-      "resumeCleaning",
       "startWashingMops",
       "stopWashingMops",
       "stopReturnToDock",
@@ -1138,5 +1162,70 @@ describe("what the T2351 product catalogue settled", () => {
     expect(a.setResumeClean).toBeUndefined();
     expect(a.setRemoteControlDirection).toBeUndefined();
     expect(a.remoteControlDirection).toBeUndefined();
+  });
+});
+
+describe("what the live T2351 capture confirmed", () => {
+  const aiot = fakeCtx(undefined, "eufy_home", new Set([VACUUM_DP.POWER]));
+
+  it("advances one seq across DIFFERENT verbs, as the app does", () => {
+    // Captured: start(no method, seq 124) → pause(13, 125) → resume(14, 126) → gohome(6, 127).
+    // One sequence over four verbs. Per-verb counters would have repeated a number and made two
+    // outstanding requests indistinguishable, which is the one thing seq exists to prevent.
+    const { acts, sent } = bind<VacuumCleanActions>("vacuum_clean", aiot);
+    return Promise.all([acts.startCleaning!(), acts.pauseCleaning!(), acts.resumeCleaning!()]).then(() => {
+      const seqs = sent.map((c) => {
+        const f = byteCodec.decode((c as { value: string }).value);
+        return Number((f?.find((x) => x.field === 2) as { value: bigint }).value);
+      });
+      expect(new Set(seqs).size).toBe(seqs.length);
+      expect(seqs[1]).toBe(seqs[0] + 1);
+      expect(seqs[2]).toBe(seqs[1] + 1);
+    });
+  });
+
+  it("omits method 0 from the wire, and names the rest", () => {
+    // The app's start carried NO method field — proto3 drops the zero, and the robot reads its
+    // absence as START_AUTO_CLEAN. Exactly what `encodeModeCtrl` does.
+    const start = byteCodec.decode(encodeModeCtrl(ModeCtrlMethod.START_AUTO_CLEAN, 124));
+    expect(start).toEqual([{ field: 2, kind: "int", value: 124n }]);
+    expect(byteCodec.decode(encodeModeCtrl(ModeCtrlMethod.RESUME_TASK, 126))).toEqual([
+      { field: 1, kind: "int", value: 14n },
+      { field: 2, kind: "int", value: 126n },
+    ]);
+  });
+
+  it("installs resume — the one mode verb a capture has proven", () => {
+    const { acts } = bind<VacuumCleanActions>("vacuum_clean", aiot);
+    const a = acts as Record<string, unknown>;
+    expect(typeof a.resumeCleaning).toBe("function");
+    // Its neighbours in the same enum stay off: sharing a frame is not sharing evidence.
+    for (const n of ["stopCleaning", "startWashingMops", "startMapping"]) expect(a[n]).toBeUndefined();
+  });
+
+  it("reads a paused robot as paused, from the captured WorkStatus shape", () => {
+    // Live: state(2)=5 with cleaning(6){state(1)=1} while paused, and cleaning(6){} while running.
+    const paused = frame([...int(2, 5), ...sub(6, int(1, 1))]);
+    const running = frame([...int(2, 5), ...sub(6, [])]);
+    expect(decodeVacuumActivity(paused, byteCodec)).toBe("paused");
+    expect(decodeVacuumActivity(running, byteCodec)).toBe("cleaning");
+  });
+
+  it("does not read a station field present mid-clean as docked", () => {
+    // The live report carried station(14){#4{}} WHILE cleaning. Treating any station field as
+    // washing/drying would have called that "docked"; only field 3 means that.
+    const cleaningWithStation = frame([...int(2, 5), ...sub(6, []), ...sub(14, sub(4, []))]);
+    expect(decodeVacuumActivity(cleaningWithStation, byteCodec)).toBe("cleaning");
+  });
+
+  it("reads the do-not-disturb window the capture showed", () => {
+    // active(1){value=1} beside undisturbed(2){sw{value=1}, begin{hour=9}, end{hour=23}} — a robot
+    // inside its quiet window. The switch is ON and the window is OPEN, and they are separate reads.
+    const live = frame([
+      ...sub(1, int(1, 1)),
+      ...sub(2, [...sub(1, int(1, 1)), ...sub(2, int(1, 9)), ...sub(3, int(1, 23))]),
+    ]);
+    expect(decodeDoNotDisturb(live, byteCodec)).toBe(true);
+    expect(decodeDoNotDisturbActive(live, byteCodec)).toBe(true);
   });
 });

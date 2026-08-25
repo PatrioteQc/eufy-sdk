@@ -236,6 +236,7 @@ export const ModeCtrlMethod = {
   START_FAST_MAPPING: 9,
   START_GOWASH: 10,
   STOP_TASK: 12,
+  /** Live-verified on a T2351: the app's Resume sends method 14, seq continuing the shared counter. */
   RESUME_TASK: 14,
   STOP_GOHOME: 15,
   STOP_RC_CLEAN: 16,
@@ -412,12 +413,14 @@ export function encodeSceneClean(sceneId: number): string {
 }
 
 /**
- * The next `ModeCtrlRequest.seq`, shared by every verb on DP 152.
+ * The next `ModeCtrlRequest.seq` — ONE counter for every verb on DP 152.
  *
- * The three verified verbs each keep their own counter inside a `method` closure. A table-declared
- * member has no closure to hold one, and a shared counter is the better behaviour anyway: `seq`
- * identifies a request so its response can be matched to it, and two verbs handing out the same number
- * would make two outstanding requests indistinguishable. Starts where the existing verbs start.
+ * Confirmed against a live T2351: the app's start, pause, resume and go-home sent seq 124, 125, 126
+ * and 127 — a single sequence advancing across four different verbs, not a counter per verb. That is
+ * what `seq` is for, since it identifies a request so its response can be matched to it; per-verb
+ * counters would hand two outstanding requests the same number.
+ *
+ * Each verb used to keep its own `let seq = 111` inside its closure. They now share this.
  */
 let modeCtrlSeq = 111;
 function nextModeCtrlSeq(): number {
@@ -863,10 +866,10 @@ export function decodeDoNotDisturb(raw: ParamValue | undefined, codec: RawDpCode
  * one reports whether the quiet window is open RIGHT NOW — two different questions the same DP answers,
  * which is why this member reads its sibling's payload instead of claiming a wire of its own.
  *
- * **Both shapes of `active` are read.** Whether the vendor wraps it in a `Switch` the way `sw` is
- * wrapped, or sends it as a bare bool, is not confirmed — so a varint is taken at face value and a
- * sub-message is opened for its `value`. That is not a guess about which arrives: both readings mean
- * the same flag, so handling either is what removes the guess.
+ * **`active` is `Switch`-wrapped** — confirmed on a live T2351, which inside its quiet window reports
+ * `active { value: 1 }` beside `undisturbed { sw { value: 1 }, begin { hour: 9 }, end { hour: 23 } }`.
+ * The bare-varint branch is kept regardless: it costs one comparison, and a reader that accepts both
+ * cannot be broken by a firmware that changes its mind.
  *
  * The AIoT line only. On the Tuya line DP 107 is a plain bool carrying the SWITCH, and no wire there
  * states the window — so a non-protobuf value answers `undefined` rather than borrowing the switch.
@@ -1022,6 +1025,13 @@ export function decodeUnisetting(
  * calibration, not something the device reports, so a host that wants a percentage owns that choice.
  */
 const CONSUMABLE_FIELD = {
+  /**
+   * The `ConsumableRuntime` block, which the report WRAPS at field 1 rather than sending bare.
+   *
+   * Confirmed against a live T2351 report. Reading the parts at the top level — as this decode first
+   * did — finds the wrapper where a part should be and answers `undefined` for every counter.
+   */
+  RUNTIME: 1,
   SIDE_BRUSH: 1,
   ROLLING_BRUSH: 2,
   FILTER_MESH: 3,
@@ -1051,7 +1061,11 @@ export function decodeConsumableHours(
   field: number,
 ): number | undefined {
   if (typeof raw !== "string" || !codec) return undefined;
-  const part = codec.decode(raw)?.find((f) => f.field === field);
+  // The parts sit one level DOWN, inside the report's field 1 — not at the top level, which an
+  // earlier revision assumed and which made every counter answer `undefined` on a real robot.
+  const runtime = codec.decode(raw)?.find((f) => f.field === CONSUMABLE_FIELD.RUNTIME);
+  if (runtime?.kind !== "bytes") return undefined;
+  const part = codec.nested(runtime.value)?.find((f) => f.field === field);
   if (part?.kind !== "bytes") return undefined;
   const duration = codec.nested(part.value)?.find((f) => f.field === CONSUMABLE_FIELD.DURATION);
   if (duration === undefined) return 0;
@@ -1830,17 +1844,13 @@ export const VACUUM_CLEAN_MEMBERS = {
   /**
    * Carry on with a paused job rather than starting a new one — the counterpart the pause verb has\n   * been missing.
    */
-  resumeCleaning: {
-    type: "bool",
-    kind: "boolean",
-    writeOnly: true,
-    unverified: true,
-    write: () => aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.RESUME_TASK, nextModeCtrlSeq())),
-    available: (ctx: AvailabilityContext) => isAiotVacuum(ctx),
-    provenance: "mega",
-    description:
-      "Resume a paused job (ModeCtrlRequest method 14 over DP 152). Method number not captured — unverified.",
-  },
+  resumeCleaning: method(
+    ({ sink }) =>
+      (): Promise<void> =>
+        sink.dispatch(aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.RESUME_TASK, nextModeCtrlSeq()))),
+    "Resume a paused job (ModeCtrlRequest method 14 over DP 152). Captured on a live T2351.",
+    isAiotVacuum,
+  ),
   /**
    * Send the robot to the dock to wash its mops. Distinct from the dock's own `washMops`, which asks\n   * the STATION to run its cycle: this one moves the robot there first.
    */
@@ -2011,31 +2021,25 @@ export const VACUUM_CLEAN_MEMBERS = {
   },
   /** Start an auto-clean run via ModeCtrlRequest method 0 (DP 152). AIoT only — Tuya write unverified. */
   startCleaning: method(
-    ({ sink }) => {
-      let seq = 111;
-      return (): Promise<void> =>
-        sink.dispatch(aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.START_AUTO_CLEAN, ++seq)));
-    },
+    ({ sink }) =>
+      (): Promise<void> =>
+        sink.dispatch(aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.START_AUTO_CLEAN, nextModeCtrlSeq()))),
     "Start an auto-clean run (ModeCtrlRequest method 0 over DP 152).",
     isAiotVacuum,
   ),
   /** Return to the dock via ModeCtrlRequest method 6 (DP 152). AIoT only — Tuya write unverified. */
   returnToDock: method(
-    ({ sink }) => {
-      let seq = 111;
-      return (): Promise<void> =>
-        sink.dispatch(aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.START_GOHOME, ++seq)));
-    },
+    ({ sink }) =>
+      (): Promise<void> =>
+        sink.dispatch(aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.START_GOHOME, nextModeCtrlSeq()))),
     "Return to the dock (ModeCtrlRequest method 6 over DP 152).",
     isAiotVacuum,
   ),
   /** Pause the current cleaning task via ModeCtrlRequest method 13 (DP 152). AIoT only — Tuya write unverified. */
   pauseCleaning: method(
-    ({ sink }) => {
-      let seq = 111;
-      return (): Promise<void> =>
-        sink.dispatch(aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.PAUSE_TASK, ++seq)));
-    },
+    ({ sink }) =>
+      (): Promise<void> =>
+        sink.dispatch(aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.PAUSE_TASK, nextModeCtrlSeq()))),
     "Pause the current cleaning task (ModeCtrlRequest method 13 over DP 152).",
     isAiotVacuum,
   ),
