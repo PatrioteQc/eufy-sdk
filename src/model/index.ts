@@ -15,6 +15,13 @@ export { Device, UNKNOWN_PARAM_PREFIX, type RawParams } from "./device.js";
 export { SECURITY_PARAMS, CLEAN_PARAMS, type ParamDef } from "./param-dictionary.js";
 export { LIFE_PARAMS } from "./life-params.js";
 export { parseCleanRecords, EMPTY_CLEAN_RECORD_PAGE, type CleanRecord, type CleanRecordPage } from "./clean-records.js";
+export {
+  parseCleanRecordDetail,
+  unwrapCleanRecordBlob,
+  CLEAN_FINISH_REASONS,
+  type CleanRecordDetail,
+  type CleanFinishReason,
+} from "./clean-record-detail.js";
 export { paramDef, namespaceForCodec, type ParamNamespace } from "./param-namespace.js";
 export { inspectParams, formatInspection, type ParamInspection, type DeviceInspection } from "./inspect.js";
 // The capability surface: the typed `dev.<cap>()` objects, the member tables they derive from, and the

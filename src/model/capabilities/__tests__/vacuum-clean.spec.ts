@@ -15,6 +15,11 @@ import {
   decodeCleanStat,
   decodeVacuumFault,
   encodeModeCtrl,
+  encodeSelectRoomsClean,
+  encodeSelectZonesClean,
+  encodeSceneClean,
+  ModeCtrlParamMethod,
+  VACUUM_DP_MESSAGE,
   ModeCtrlMethod,
   type VacuumCleanActions,
   type VacuumActivity,
@@ -112,6 +117,7 @@ describe("vacuum_clean capability module", () => {
       "sideBrushHours",
       "doNotDisturb",
       "rssi",
+      "resumeClean",
     ]);
   });
 
@@ -448,19 +454,27 @@ describe("decodeConsumableHours (ConsumableRuntime parts)", () => {
   const SIDE_BRUSH = 1;
   const MOP = 6;
   const DIRTY_WATERTANK = 10;
+  /**
+   * The report WRAPS the runtime block at field 1 — the parts sit one level down, not at the top.
+   *
+   * Every fixture here reached through the top level until a live T2351 report showed otherwise, and
+   * the decode agreed with them, so these tests passed while the feature answered `undefined` on real
+   * hardware. That is the mistake a synthetic fixture cannot catch alone: it can only ever confirm the
+   * assumption it was written from.
+   */
+  const report = (parts: number[]): string => frame(sub(1, parts));
 
-  it("reads a part's hours through its Duration wrapper", () => {
-    expect(decodeConsumableHours(frame(sub(SIDE_BRUSH, int(1, 42))), byteCodec, SIDE_BRUSH)).toBe(42);
+  it("reads a part's hours through the runtime wrapper and its Duration", () => {
+    expect(decodeConsumableHours(report(sub(SIDE_BRUSH, int(1, 42))), byteCodec, SIDE_BRUSH)).toBe(42);
   });
 
   it("reads a fitted-but-unused part as 0, not as missing", () => {
-    expect(decodeConsumableHours(frame(sub(MOP, [])), byteCodec, MOP)).toBe(0);
+    expect(decodeConsumableHours(report(sub(MOP, [])), byteCodec, MOP)).toBe(0);
   });
 
   it("reads each part out of one message, and respects the gap at 8 and 9", () => {
-    // The vendor leaves 8 and 9 unused; the waste-water tank really is at 10. Renumbering around the
-    // hole would report the water filter's hours as the tank's.
-    const payload = frame([
+    // The vendor leaves 8 and 9 unused; a live report carries 1-7 and then jumps past them.
+    const payload = report([
       ...sub(SIDE_BRUSH, int(1, 10)),
       ...sub(MOP, int(1, 20)),
       ...sub(DIRTY_WATERTANK, int(1, 30)),
@@ -472,10 +486,24 @@ describe("decodeConsumableHours (ConsumableRuntime parts)", () => {
     expect(decodeConsumableHours(payload, byteCodec, 9)).toBeUndefined();
   });
 
+  it("reads the real shape a T2351 sends", () => {
+    // Trimmed from a live report: runtime(1) wrapping side_brush(1)=77h, rolling_brush(2)=19h and a
+    // present-but-zero mop(6). Read at the top level this finds the wrapper where a part should be
+    // and answers undefined for every counter — which is what shipped before this capture.
+    const live = report([...sub(1, int(1, 77)), ...sub(2, int(1, 19)), ...sub(6, [])]);
+    expect(decodeConsumableHours(live, byteCodec, 1)).toBe(77);
+    expect(decodeConsumableHours(live, byteCodec, 2)).toBe(19);
+    expect(decodeConsumableHours(live, byteCodec, 6)).toBe(0);
+  });
+
   it("is undefined for a part this robot does not track", () => {
-    expect(decodeConsumableHours(frame(sub(SIDE_BRUSH, int(1, 5))), byteCodec, MOP)).toBeUndefined();
-    expect(decodeConsumableHours(frame(sub(SIDE_BRUSH, int(1, 5))), undefined, SIDE_BRUSH)).toBeUndefined();
+    expect(decodeConsumableHours(report(sub(SIDE_BRUSH, int(1, 5))), byteCodec, MOP)).toBeUndefined();
+    expect(decodeConsumableHours(report(sub(SIDE_BRUSH, int(1, 5))), undefined, SIDE_BRUSH)).toBeUndefined();
     expect(decodeConsumableHours(undefined, byteCodec, SIDE_BRUSH)).toBeUndefined();
+  });
+
+  it("is undefined when the runtime wrapper is missing altogether", () => {
+    expect(decodeConsumableHours(frame(sub(SIDE_BRUSH, int(1, 5))), byteCodec, SIDE_BRUSH)).toBeUndefined();
   });
 });
 
@@ -635,7 +663,8 @@ describe("CleanParam settings on the bound surface", () => {
 
 describe("one payload, many reads — DP 176 settings and DP 168 consumables", () => {
   const settings = frame([...sub(1, int(1, 1)), ...sub(3, []), ...sub(13, int(1, 1))]);
-  const consumables = frame([...sub(1, int(1, 120)), ...sub(6, []), ...sub(10, int(1, 30))]);
+  // runtime(1) wraps the parts — the shape a live T2351 actually sends.
+  const consumables = frame(sub(1, [...sub(1, int(1, 120)), ...sub(6, []), ...sub(10, int(1, 30))]));
   const dps = new Set([VACUUM_DP.SETTINGS, VACUUM_DP.CONSUMABLES]);
 
   const bound = () =>
@@ -934,5 +963,306 @@ describe("vacuum_clean — DP-based action routing", () => {
     });
     expect(acts.language).toBe("en");
     expect(acts.volume).toBe(38);
+  });
+});
+
+describe("ModeCtrl verbs — vocabulary declared, wire still unconfirmed", () => {
+  const AIOT = new Set([VACUUM_DP.POWER, VACUUM_DP.WORK_STATUS]);
+
+  it("keeps the captured verbs callable and every uncaptured one off the surface", () => {
+    const { acts } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, "eufy_home", AIOT));
+    const a = acts as Record<string, unknown>;
+    // Live-verified on a T2351 — these three stay.
+    expect(typeof a.startCleaning).toBe("function");
+    expect(typeof a.returnToDock).toBe("function");
+    // Method number from the vendor enum alone. A wrong number is a different command reaching real
+    // hardware on a fire-and-forget wire, so declaring the verb must not install it.
+    // Captured on a live T2351, so this one IS installed — the only mode verb that is.
+    expect(typeof a.resumeCleaning).toBe("function");
+    for (const name of [
+      "stopCleaning",
+      "startWashingMops",
+      "stopWashingMops",
+      "stopReturnToDock",
+      "startSpotClean",
+      "startMapping",
+      "startCruise",
+      "startRemoteControl",
+      "stopRemoteControl",
+      "stopSmartFollow",
+    ]) {
+      expect(a[name]).toBeUndefined();
+      expect(a[`set${name[0].toUpperCase()}${name.slice(1)}`]).toBeUndefined();
+    }
+  });
+
+  it("gives the whole vocabulary distinct method numbers", () => {
+    // A duplicate here would silently make two verbs the same command.
+    const numbers = Object.values(ModeCtrlMethod);
+    expect(new Set(numbers).size).toBe(numbers.length);
+  });
+
+  it("leaves the param-carrying methods out of the enum entirely", () => {
+    // Room, zone, goto and scene cleans need an argument this SDK cannot answer yet. Listing their
+    // numbers would invite sending one with an empty payload — a valid frame meaning something else.
+    expect(Object.values(ModeCtrlMethod)).not.toContain(24);
+    expect(Object.values(ModeCtrlMethod)).not.toContain(1);
+  });
+
+  it("advances seq per request, so two outstanding writes stay distinguishable", () => {
+    const first = encodeModeCtrl(ModeCtrlMethod.STOP_TASK, 1);
+    const second = encodeModeCtrl(ModeCtrlMethod.STOP_TASK, 2);
+    expect(first).not.toBe(second);
+    expect(byteCodec.decode(first)).toEqual([
+      { field: 1, kind: "int", value: 12n },
+      { field: 2, kind: "int", value: 1n },
+    ]);
+  });
+});
+
+describe("area-selecting ModeCtrl frames (Tier B — encoders only)", () => {
+  /** Walk into the Param sub-message of a built frame. */
+  const paramOf = (value: string, field: number): readonly RawDpField[] => {
+    const p = byteCodec.decode(value)?.find((f) => f.field === field);
+    return byteCodec.nested((p as { value: Buffer }).value) ?? [];
+  };
+
+  it("puts the payload in the Param field its method names", () => {
+    const { method, param } = ModeCtrlParamMethod.SELECT_ROOMS;
+    const fields = byteCodec.decode(encodeSelectRoomsClean(3, [{ id: 7 }]));
+    expect(fields?.find((f) => f.field === 1)).toMatchObject({ kind: "int", value: BigInt(method) });
+    expect(fields?.find((f) => f.field === param)).toMatchObject({ kind: "bytes" });
+  });
+
+  it("repeats one Room entry per room, carrying the map id beside them", () => {
+    const inner = paramOf(
+      encodeSelectRoomsClean(
+        9,
+        [
+          { id: 4, order: 1 },
+          { id: 5, order: 2 },
+        ],
+        2,
+      ),
+      4,
+    );
+    expect(inner.filter((f) => f.field === 1)).toHaveLength(2);
+    expect(inner.find((f) => f.field === 2)).toMatchObject({ value: 2n }); // clean_times
+    expect(inner.find((f) => f.field === 3)).toMatchObject({ value: 9n }); // map_id
+    const first = byteCodec.nested((inner.find((f) => f.field === 1) as { value: Buffer }).value);
+    expect(first).toEqual([
+      { field: 1, kind: "int", value: 4n },
+      { field: 2, kind: "int", value: 1n },
+    ]);
+  });
+
+  it("ZigZags zone coordinates, so a negative one stays one byte and stays negative", () => {
+    // The sharpest edge in the file. As a plain varint, -1 encodes as 2^64-1 and the robot drives
+    // somewhere real and wrong. ZigZag maps -1 onto 1, and the frame stays small.
+    const zone = {
+      corners: [
+        { x: -1, y: 2 },
+        { x: 3, y: -4 },
+        { x: 0, y: 0 },
+        { x: 5, y: 6 },
+      ],
+    };
+    const inner = paramOf(encodeSelectZonesClean(1, [zone]), 5);
+    // Param → zones(1) → the Zone → quadrangle(1) → p0..p3, each a Point of two signed values.
+    const zoneFields = byteCodec.nested((inner.find((f) => f.field === 1) as { value: Buffer }).value)!;
+    const quad = byteCodec.nested((zoneFields.find((f) => f.field === 1) as { value: Buffer }).value)!;
+    const p0 = byteCodec.nested((quad.find((f) => f.field === 1) as { value: Buffer }).value);
+    expect(p0).toEqual([
+      { field: 1, kind: "int", value: 1n }, // zigzag(-1)
+      { field: 2, kind: "int", value: 4n }, // zigzag(2)
+    ]);
+    const p1 = byteCodec.nested((quad.find((f) => f.field === 2) as { value: Buffer }).value);
+    expect(p1).toEqual([
+      { field: 1, kind: "int", value: 6n }, // zigzag(3)
+      { field: 2, kind: "int", value: 7n }, // zigzag(-4)
+    ]);
+  });
+
+  it("lays the four corners out as consecutive fields p0..p3", () => {
+    const zone = { corners: [0, 1, 2, 3].map((n) => ({ x: n, y: n })) };
+    const inner = paramOf(encodeSelectZonesClean(1, [zone]), 5);
+    const zoneFields = byteCodec.nested((inner.find((f) => f.field === 1) as { value: Buffer }).value)!;
+    const quad = byteCodec.nested((zoneFields.find((f) => f.field === 1) as { value: Buffer }).value)!;
+    expect(quad.map((f) => f.field)).toEqual([1, 2, 3, 4]);
+  });
+
+  it("carries a scene by its id alone", () => {
+    const inner = paramOf(encodeSceneClean(12), ModeCtrlParamMethod.SCENE.param);
+    expect(inner).toEqual([{ field: 1, kind: "int", value: 12n }]);
+  });
+
+  it("requires a map id rather than defaulting one", () => {
+    // A default here is a guess dressed as an API: on a two-floor home it sends the right room ids
+    // against the wrong floor's map. The signature makes the caller answer.
+    const rooms: Parameters<typeof encodeSelectRoomsClean> = [3, [{ id: 1 }]];
+    expect(typeof rooms[0]).toBe("number");
+    expect(paramOf(encodeSelectRoomsClean(...rooms), 4).find((f) => f.field === 3)).toMatchObject({ value: 3n });
+  });
+
+  it("installs no setter for any of them — these are encoders, not controls", () => {
+    const { acts } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, "eufy_home", new Set([151])));
+    const a = acts as Record<string, unknown>;
+    for (const name of ["cleanRooms", "cleanZones", "startScene", "setCleanRooms"]) {
+      expect(a[name]).toBeUndefined();
+    }
+  });
+});
+
+describe("what the T2351 product catalogue settled", () => {
+  it("puts schedules on DP 164, which no source previously named", () => {
+    // The open question was which DP carries `timing.proto`. The catalogue answers it outright:
+    // dp 164 `timing`, TimerRequest down / TimerResponse up.
+    expect(VACUUM_DP.TIMING).toBe(164);
+    expect(VACUUM_DP_MESSAGE[164]).toEqual({ send: "TimerRequest", report: "TimerResponse" });
+  });
+
+  it("confirms the two DP numbers that were resolved offline and flagged as disputed", () => {
+    expect(VACUUM_DP_MESSAGE[157]).toMatchObject({ report: "UndisturbedResponse" });
+    expect(VACUUM_DP_MESSAGE[168]).toMatchObject({ report: "ConsumableRuntime" });
+    expect(VACUUM_DP.DO_NOT_DISTURB).toBe(157);
+    expect(VACUUM_DP.CONSUMABLES).toBe(168);
+  });
+
+  it("records DP 162 as a message pair, not a locale string", () => {
+    // The reason the DP 162 write is still held: the catalogue types it Raw carrying
+    // LanguageRequest/LanguageResponse, so a plain locale string was never the wire.
+    expect(VACUUM_DP_MESSAGE[162]).toEqual({ send: "LanguageRequest", report: "LanguageResponse" });
+  });
+
+  it("marks the vendor's own dead ends as carrying no message", () => {
+    // DP 150 is annotated "reserved, not used"; 165 and 175 are reserved with no message at all.
+    // Recorded so nobody builds on them and then wonders why nothing answers.
+    for (const dp of [150, 165, 175]) expect(VACUUM_DP_MESSAGE[dp]).toEqual({});
+  });
+
+  it("leaves remote control via STOP_TASK, as the DP 155 note specifies", () => {
+    // Not STOP_RC_CLEAN(16), which an earlier revision assumed from the name alone. The catalogue
+    // spells the flow out: enter with START_RC_CLEAN or a direction, leave with STOP_TASK.
+    const { acts } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, "eufy_home", new Set([151])));
+    expect((acts as Record<string, unknown>).stopRemoteControl).toBeUndefined(); // still unverified
+    expect(ModeCtrlMethod.STOP_TASK).toBe(12);
+  });
+
+  it("keeps every newly named DP off the callable surface until a capture exists", () => {
+    const dps = new Set([VACUUM_DP.REMOTE_CTRL, VACUUM_DP.RESUME_CLEAN]);
+    const { acts } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, "eufy_home", dps), {
+      // Stored as a real boolean: `Device.applyParams` coerces by the declared type before storing,
+      // so a getter never sees the wire's "1". A string here reads as undefined, correctly.
+      read: (name) => (name === "resumeClean" ? { value: true } : undefined),
+    });
+    const a = acts as Record<string, unknown>;
+    // A plain Bool DP the device reports — the READ installs on evidence.
+    expect(a.resumeClean).toBe(true);
+    // Every write stays off: the catalogue names the wire, it does not prove what the app sends.
+    expect(a.setResumeClean).toBeUndefined();
+    expect(a.setRemoteControlDirection).toBeUndefined();
+    expect(a.remoteControlDirection).toBeUndefined();
+  });
+});
+
+describe("what the live T2351 capture confirmed", () => {
+  const aiot = fakeCtx(undefined, "eufy_home", new Set([VACUUM_DP.POWER]));
+
+  it("advances one seq across DIFFERENT verbs, as the app does", () => {
+    // Captured: start(no method, seq 124) → pause(13, 125) → resume(14, 126) → gohome(6, 127).
+    // One sequence over four verbs. Per-verb counters would have repeated a number and made two
+    // outstanding requests indistinguishable, which is the one thing seq exists to prevent.
+    const { acts, sent } = bind<VacuumCleanActions>("vacuum_clean", aiot);
+    return Promise.all([acts.startCleaning!(), acts.pauseCleaning!(), acts.resumeCleaning!()]).then(() => {
+      const seqs = sent.map((c) => {
+        const f = byteCodec.decode((c as { value: string }).value);
+        return Number((f?.find((x) => x.field === 2) as { value: bigint }).value);
+      });
+      expect(new Set(seqs).size).toBe(seqs.length);
+      expect(seqs[1]).toBe(seqs[0] + 1);
+      expect(seqs[2]).toBe(seqs[1] + 1);
+    });
+  });
+
+  it("omits method 0 from the wire, and names the rest", () => {
+    // The app's start carried NO method field — proto3 drops the zero, and the robot reads its
+    // absence as START_AUTO_CLEAN. Exactly what `encodeModeCtrl` does.
+    const start = byteCodec.decode(encodeModeCtrl(ModeCtrlMethod.START_AUTO_CLEAN, 124));
+    expect(start).toEqual([{ field: 2, kind: "int", value: 124n }]);
+    expect(byteCodec.decode(encodeModeCtrl(ModeCtrlMethod.RESUME_TASK, 126))).toEqual([
+      { field: 1, kind: "int", value: 14n },
+      { field: 2, kind: "int", value: 126n },
+    ]);
+  });
+
+  it("installs resume — the one mode verb a capture has proven", () => {
+    const { acts } = bind<VacuumCleanActions>("vacuum_clean", aiot);
+    const a = acts as Record<string, unknown>;
+    expect(typeof a.resumeCleaning).toBe("function");
+    // Its neighbours in the same enum stay off: sharing a frame is not sharing evidence.
+    for (const n of ["stopCleaning", "startWashingMops", "startMapping"]) expect(a[n]).toBeUndefined();
+  });
+
+  it("reads a paused robot as paused, from the captured WorkStatus shape", () => {
+    // Live: state(2)=5 with cleaning(6){state(1)=1} while paused, and cleaning(6){} while running.
+    const paused = frame([...int(2, 5), ...sub(6, int(1, 1))]);
+    const running = frame([...int(2, 5), ...sub(6, [])]);
+    expect(decodeVacuumActivity(paused, byteCodec)).toBe("paused");
+    expect(decodeVacuumActivity(running, byteCodec)).toBe("cleaning");
+  });
+
+  it("does not read a station field present mid-clean as docked", () => {
+    // The live report carried station(14){#4{}} WHILE cleaning. Treating any station field as
+    // washing/drying would have called that "docked"; only field 3 means that.
+    const cleaningWithStation = frame([...int(2, 5), ...sub(6, []), ...sub(14, sub(4, []))]);
+    expect(decodeVacuumActivity(cleaningWithStation, byteCodec)).toBe("cleaning");
+  });
+
+  it("reads the do-not-disturb window the capture showed", () => {
+    // active(1){value=1} beside undisturbed(2){sw{value=1}, begin{hour=9}, end{hour=23}} — a robot
+    // inside its quiet window. The switch is ON and the window is OPEN, and they are separate reads.
+    const live = frame([
+      ...sub(1, int(1, 1)),
+      ...sub(2, [...sub(1, int(1, 1)), ...sub(2, int(1, 9)), ...sub(3, int(1, 23))]),
+    ]);
+    expect(decodeDoNotDisturb(live, byteCodec)).toBe(true);
+    expect(decodeDoNotDisturbActive(live, byteCodec)).toBe(true);
+  });
+});
+
+describe("mop_mode — two scalars in one wrapper", () => {
+  /** `clean_param(1) { mop_mode(4) { level(1), corner_clean(2) } }`, as a live T2351 sends it. */
+  const mop = (body: number[]): string => frame(sub(1, sub(4, body)));
+
+  it("reads level and corner_clean as the separate settings they are", () => {
+    // Captured: water level High then edge-hug on gave mop_mode { level: 2, corner_clean: 1 }.
+    const both = mop([...int(1, 2), ...int(2, 1)]);
+    expect(decodeCleanParamValue(both, byteCodec, 4, 1)).toBe(2);
+    expect(decodeCleanParamValue(both, byteCodec, 4, 2)).toBe(1);
+  });
+
+  it("does not read the level as the corner setting when only the level is set", () => {
+    // The trap the named inner field exists for. Taking "the first varint" would answer 2 for BOTH,
+    // reporting edge-hug as on because the water level happened to be high.
+    const levelOnly = mop(int(1, 2));
+    expect(decodeCleanParamValue(levelOnly, byteCodec, 4, 1)).toBe(2);
+    expect(decodeCleanParamValue(levelOnly, byteCodec, 4, 2)).toBe(0);
+    // …which is what the un-named form still does, and why it is only used on single-valued wrappers.
+    expect(decodeCleanParamValue(levelOnly, byteCodec, 4)).toBe(2);
+  });
+
+  it("surfaces both on the bound device", () => {
+    const acts = bind<VacuumCleanActions>(
+      "vacuum_clean",
+      fakeCtx(undefined, undefined, new Set([VACUUM_DP.CLEAN_PARAM])),
+      { rawDp: byteCodec, read: (n) => (n === "cleanType" ? { value: mop([...int(1, 2), ...int(2, 1)]) } : undefined) },
+    ).acts;
+    expect(acts.mopLevel).toBe("high");
+    expect(acts.mopCornerClean).toBe(true);
+  });
+
+  it("still publishes one property for DP 154, now with six readings of it", () => {
+    const named = VACUUM_CLEAN.properties.filter((p) => p.paramType === VACUUM_DP.CLEAN_PARAM).map((p) => p.name);
+    expect(named).toEqual(["cleanType"]);
   });
 });

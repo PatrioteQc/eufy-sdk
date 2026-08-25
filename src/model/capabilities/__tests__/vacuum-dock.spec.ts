@@ -4,6 +4,7 @@ import {
   DOCK_ACTIVITIES,
   decodeDockActivity,
   decodeDockFirmware,
+  encodeStationCommand,
   type VacuumDockActions,
 } from "../vacuum-dock.js";
 import { bind } from "./bind.js";
@@ -147,5 +148,35 @@ describe("decodeDockFirmware (DeviceInfo.station.software)", () => {
     expect(decodeDockFirmware(deviceInfo("9.9.9", "1.2.3"), undefined)).toBeUndefined();
     expect(decodeDockFirmware(undefined, byteCodec)).toBeUndefined();
     expect(decodeDockFirmware(7, byteCodec)).toBeUndefined();
+  });
+});
+
+describe("StationRequest — frames built, deliberately not callable", () => {
+  it("wraps one manual command in manual_cmd(2), set to true", () => {
+    // go_collect_dust is field 3 of the oneof. The frame is StationRequest{ manual_cmd{ 3: true } }.
+    const fields = byteCodec.decode(encodeStationCommand(3));
+    expect(fields).toHaveLength(1);
+    expect(fields?.[0]).toMatchObject({ field: 2, kind: "bytes" });
+    expect(byteCodec.nested((fields?.[0] as { value: Buffer }).value)).toEqual([{ field: 3, kind: "int", value: 1n }]);
+  });
+
+  it("sets exactly one command per frame, as a oneof requires", () => {
+    for (const cmd of [1, 2, 3, 4, 5, 6]) {
+      const inner = byteCodec.nested((byteCodec.decode(encodeStationCommand(cmd))?.[0] as { value: Buffer }).value);
+      expect(inner).toEqual([{ field: cmd, kind: "int", value: 1n }]);
+    }
+  });
+
+  it("installs NO setter for any dock command, however plausible its frame", () => {
+    // The whole point of `unverified`. These frames come from the vendor proto and have never been
+    // driven on a device; an AIoT DP write is fire-and-forget, so a wrong one looks like success.
+    // Having written the bytes must not be mistaken for having confirmed them.
+    const { acts, sent } = bind<VacuumDockActions>("vacuum_dock", dockCtx("T2351", "eufy_home"));
+    const a = acts as Record<string, unknown>;
+    for (const name of ["emptyDust", "washMops", "dryMops", "selfMaintain", "removeScale", "cutHair"]) {
+      expect(a[name]).toBeUndefined();
+      expect(a[`set${name[0].toUpperCase()}${name.slice(1)}`]).toBeUndefined();
+    }
+    expect(sent).toEqual([]);
   });
 });

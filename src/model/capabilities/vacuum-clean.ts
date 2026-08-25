@@ -2,6 +2,7 @@ import type { RawDpCodec, RawDpField } from "../../core/contracts.js";
 import type { ParamValue } from "../types.js";
 import type { AvailabilityContext, CapabilityModule } from "./types.js";
 import { asBool } from "../../core/util.js";
+import { rawDp, type RawDpWriter } from "../../core/raw-dp-writer.js";
 import { isAiotVacuum, isTuyaVacuum } from "../device-family.js";
 import { pickDpParams, aiotDp } from "./access.js";
 import { method, propertiesOf, type Members, type Surface } from "./members.js";
@@ -12,6 +13,43 @@ import { method, propertiesOf, type Members, type Surface } from "./members.js";
  * number, the same way the P2P capabilities name their feature-command ids (`CAMERA_CMD`, `LIGHT_CMD`).
  * Values confirmed against a live T2351 DP dump.
  */
+/**
+ * Which protobuf message each Raw DP carries, in each direction — the product catalogue's own
+ * `下发`(downlink) / `上报`(uplink) note per data point, transcribed.
+ *
+ * The single most useful thing the catalogue gives that a DP number alone does not: a DP is Raw, and
+ * knowing WHICH message it frames is what makes it decodable. Recorded here rather than rediscovered,
+ * and deliberately as data rather than as code — nothing dispatches on it. It is the map a reader
+ * needs when they reach a DP this SDK does not decode yet.
+ *
+ * Two entries are the vendor's own dead ends: DP 150 is marked "预留。不使用。" — reserved, NOT used —
+ * and 165/175 are reserved with no message at all. Do not build on them.
+ */
+export const VACUUM_DP_MESSAGE: Readonly<Record<number, { readonly send?: string; readonly report?: string }>> = {
+  150: {}, // `proto` — reserved, explicitly not used
+  152: { send: "ModeCtrlRequest", report: "ModeCtrlResponse" },
+  153: { report: "WorkStatus" },
+  154: { send: "CleanParamRequest", report: "CleanParamResponse" },
+  157: { send: "UndisturbedRequest", report: "UndisturbedResponse" },
+  162: { send: "LanguageRequest", report: "LanguageResponse" },
+  164: { send: "TimerRequest", report: "TimerResponse" },
+  165: {}, // reserved
+  166: { send: "DebugRequest", report: "DebugResponse" },
+  167: { report: "CleanStatistics" },
+  168: { send: "ConsumableRequest", report: "ConsumableRuntime" },
+  169: { send: "AppInfo", report: "DeviceInfo" },
+  170: { send: "MapEditRequest", report: "MapEditResponse" },
+  171: { send: "MultiMapsCtrlRequest", report: "MultiMapsCtrlResponse" },
+  172: { send: "MultiMapsManageRequest", report: "MultiMapsManageResponse" },
+  173: { send: "StationRequest", report: "StationResponse" },
+  174: { send: "MediaManagerRequest", report: "MediaManagerResponse" },
+  175: {}, // reserved
+  177: { send: "ErrorCode", report: "ErrorCode" }, // downlink is a MUTE list, not a fault report
+  178: { send: "PromptCode", report: "PromptCode" }, // same: downlink mutes prompts
+  179: { send: "AnalysisRequest", report: "AnalysisResponse" },
+  180: { send: "SceneRequest", report: "SceneResponse" },
+};
+
 export const VACUUM_DP = {
   /** Power on/off (DP 151 power switch, Bool). */
   POWER: 151,
@@ -31,6 +69,12 @@ export const VACUUM_DP = {
   DO_NOT_DISTURB: 157,
   /** CleanStatistics (DP 167, Raw protobuf) — session and lifetime totals (see {@link decodeCleanStat}). */
   CLEAN_STATS: 167,
+  /** Remote-control direction (DP 155, Enum: Brake/Forward/Back/Left/Right). Steering, not a ModeCtrl verb. */
+  REMOTE_CTRL: 155,
+  /** `pause_job` (DP 156, Bool) — resume an interrupted job after charging. The vendor's 断点续扫. */
+  RESUME_CLEAN: 156,
+  /** `timing` (DP 164, Raw) — TimerRequest/TimerResponse. THIS is where schedules live. */
+  TIMING: 164,
   /** ConsumableRuntime (DP 168, Raw protobuf) — hours used per replaceable part (see {@link decodeConsumableHours}). */
   CONSUMABLES: 168,
   /** UnisettingResponse (DP 176, Raw protobuf) — the device-wide setting toggles (see {@link decodeUnisetting}). */
@@ -162,44 +206,232 @@ export const TUYA_CLEAN_TYPES = ["Sweep", "SweepMop", "Mop"] as const;
 /** @internal */
 export type TuyaCleanType = (typeof TUYA_CLEAN_TYPES)[number];
 
+/** Field numbers inside `ModeCtrlRequest` (DP 152). Both live-verified on a T2351. */
+const MODE_CTRL_FIELD = {
+  /** `method` — which verb the robot is being asked to run. */
+  METHOD: 1,
+  /** `seq` — the request's own sequence number, echoed back in the response. */
+  SEQ: 2,
+} as const;
+
 /**
  * `ModeCtrlRequest.method` values for DP 152. Live-verified on T2351: START_AUTO_CLEAN → 0
  * (omitted from the wire when zero), START_GOHOME → 6, PAUSE_TASK → 13.
  */
 export const ModeCtrlMethod = {
+  /** Live-verified on a T2351. Zero, so it is omitted from the wire per the proto3 default rule. */
   START_AUTO_CLEAN: 0,
+  /** Live-verified on a T2351. */
   START_GOHOME: 6,
+  /** Live-verified on a T2351. */
   PAUSE_TASK: 13,
+
+  // ── Parameterless verbs from the vendor's own `ModeCtrlRequest.Method`, NOT yet captured ────────
+  // Same frame as the three above — the two fields every method shares are live-proven, so the only
+  // unconfirmed thing about each is its number. That is not a small thing: a wrong number is a
+  // different command reaching real hardware, and an AIoT write is fire-and-forget. Every member built
+  // on one of these carries `unverified`.
+  START_SPOT_CLEAN: 3,
+  START_RC_CLEAN: 5,
+  START_FAST_MAPPING: 9,
+  START_GOWASH: 10,
+  STOP_TASK: 12,
+  /** Live-verified on a T2351: the app's Resume sends method 14, seq continuing the shared counter. */
+  RESUME_TASK: 14,
+  STOP_GOHOME: 15,
+  STOP_RC_CLEAN: 16,
+  STOP_GOWASH: 17,
+  STOP_SMART_FOLLOW: 18,
+  START_GLOBAL_CRUISE: 20,
 } as const;
 
 /**
- * Encode a `ModeCtrlRequest` protobuf (DP 152) as a base64 string: `varint(bodyLen) ++ body`
- * where `body = {field#1:method, field#2:seq}`.
+ * The methods that carry a `Param` oneof — room, zone, goto, schedule, cruise and scene cleans.
  *
- * Uses a hand-rolled varint rather than importing protobufjs — the model layer may not import
- * transport deps and the field count is small enough to inline. Method 0 (START_AUTO_CLEAN) is
- * omitted from the wire per the proto3 default-field rule (confirmed on a live T2351 capture).
+ * Deliberately absent from {@link ModeCtrlMethod}. Each needs an argument the caller has to supply and
+ * this SDK cannot yet answer: a room or zone id comes from map data, which is not decodable here, and a
+ * coordinate is signed centimetres in a frame no capture has pinned. Listing their numbers beside the
+ * parameterless ones would invite a caller to send one with an empty payload, which is a valid frame
+ * meaning something nobody intended.
+ */
+
+/**
+ * Encode a `ModeCtrlRequest` protobuf (DP 152) as a DP value: `varint(bodyLen) ++ {method:1, seq:2}`.
+ *
+ * Built on {@link RawDpWriter} rather than hand-rolled bytes. The frame is unchanged and the existing
+ * byte-level test is what proves it — that test was written against a live T2351 capture, so it holds
+ * the writer to the wire rather than to this function's own idea of the wire.
+ *
+ * Method 0 (START_AUTO_CLEAN) is omitted rather than written as an explicit zero, per the proto3
+ * default-field rule and confirmed on that same capture. The writer deliberately does not apply that
+ * rule for the caller: whether an explicit zero and an absent field mean the same thing is the
+ * message's business, not the encoder's.
  * @internal
  */
-export function encodeModeCtrl(method: number, seq: number): string {
-  const writeVarint = (buf: number[], n: number): void => {
-    let v = n;
-    while (v > 0x7f) {
-      buf.push((v & 0x7f) | 0x80);
-      v >>>= 7;
+/**
+ * The area-selecting `ModeCtrlRequest` methods, and the `Param` field each one's payload rides in.
+ *
+ * Kept apart from {@link ModeCtrlMethod} because these are a different kind of thing: a parameterless
+ * verb is complete on its own, whereas each of these is meaningless without an argument the caller has
+ * to supply. Sending one with an empty payload is a well-formed frame that means something nobody
+ * intended, which is exactly why the numbers do not sit beside the others where a caller might reach
+ * for them by accident.
+ */
+export const ModeCtrlParamMethod = {
+  /** `START_SELECT_ROOMS_CLEAN` — clean the named rooms of a named map. */
+  SELECT_ROOMS: { method: 1, param: 4 },
+  /** `START_SELECT_ZONES_CLEAN` — clean the given rectangles of a named map. */
+  SELECT_ZONES: { method: 2, param: 5 },
+  /** `START_GOTO_CLEAN` — drive to a point and clean around it. */
+  GOTO: { method: 4, param: 7 },
+  /** `START_SCENE_CLEAN` — run a saved scene by its id. */
+  SCENE: { method: 24, param: 14 },
+} as const;
+
+/** Field numbers inside `SelectRoomsClean`, and inside the `Room` entries it repeats. */
+const SELECT_ROOMS_FIELD = {
+  /** `rooms` — repeated, one entry per room. */
+  ROOMS: 1,
+  /** `clean_times` — how many passes to make. */
+  CLEAN_TIMES: 2,
+  /** `map_id` — WHICH saved map the room ids belong to. */
+  MAP_ID: 3,
+  /** `id` within a `Room`. */
+  ROOM_ID: 1,
+  /** `order` within a `Room` — the sequence to visit them in. */
+  ROOM_ORDER: 2,
+} as const;
+
+/** Field numbers inside `SelectZonesClean`, its `Zone` entries, and the `Quadrangle` each zone carries. */
+const SELECT_ZONES_FIELD = {
+  /** `zones` — repeated, one entry per rectangle. */
+  ZONES: 1,
+  /** `map_id` — which saved map the coordinates belong to. */
+  MAP_ID: 2,
+  /** `quadrangle` within a `Zone` — its four corners. */
+  QUADRANGLE: 1,
+  /** `clean_times` within a `Zone`. */
+  ZONE_CLEAN_TIMES: 2,
+  /** `x` within a `Point`, SIGNED centimetres. */
+  POINT_X: 1,
+  /** `y` within a `Point`, SIGNED centimetres. */
+  POINT_Y: 2,
+} as const;
+
+/** `scene_id` within a `SceneClean`. */
+const SCENE_CLEAN_ID = 1;
+
+/** One room to clean, and where it falls in the running order. */
+export interface VacuumRoomTarget {
+  /** The room's id, as the device's own map data names it. */
+  readonly id: number;
+  /** Where this room falls in the run. Omitted rooms are visited in the order given. */
+  readonly order?: number;
+}
+
+/** One rectangular zone to clean, as four corners in centimetres. */
+export interface VacuumZoneTarget {
+  /** The four corners, in centimetres, in the device's own map frame. Exactly four points. */
+  readonly corners: readonly { readonly x: number; readonly y: number }[];
+  /** How many passes to make over this zone. */
+  readonly cleanTimes?: number;
+}
+
+/**
+ * Build a `ModeCtrlRequest` carrying a `Param` payload — the area-selecting cleans.
+ *
+ * Shares the outer frame with every other mode-control verb: `method`(1), `seq`(2), and the payload in
+ * whichever `Param` field the method names.
+ *
+ * **Coordinates are `sint32` and go through ZigZag.** Map coordinates are signed centimetres and
+ * negative ones are ordinary — the origin sits wherever the robot first mapped from. Written as a plain
+ * varint, −1 becomes 18446744073709551615, and the robot drives somewhere real and wrong. That is the
+ * single sharpest edge in this whole file, which is why the writer keeps `sint` as its own call rather
+ * than inferring it.
+ * @internal
+ */
+function encodeModeCtrlParam(method: number, paramField: number, build: (w: RawDpWriter) => void): string {
+  return rawDp((w) => {
+    if (method !== 0) w.int(MODE_CTRL_FIELD.METHOD, method);
+    w.int(MODE_CTRL_FIELD.SEQ, nextModeCtrlSeq());
+    w.sub(paramField, build);
+  });
+}
+
+/**
+ * Build a room-select clean for a named map.
+ *
+ * `mapId` is required and has no default, deliberately. The obvious shortcut is to assume the map a
+ * single-floor home would have; on a two-floor home that silently sends the robot's ids against the
+ * wrong floor's map. A caller that cannot name the map cannot safely make this call, and saying so is
+ * better than picking for them.
+ * @internal
+ */
+export function encodeSelectRoomsClean(mapId: number, rooms: readonly VacuumRoomTarget[], cleanTimes = 1): string {
+  const { method, param } = ModeCtrlParamMethod.SELECT_ROOMS;
+  return encodeModeCtrlParam(method, param, (p) => {
+    for (const room of rooms) {
+      p.sub(SELECT_ROOMS_FIELD.ROOMS, (r) => {
+        r.int(SELECT_ROOMS_FIELD.ROOM_ID, room.id);
+        if (room.order !== undefined) r.int(SELECT_ROOMS_FIELD.ROOM_ORDER, room.order);
+      });
     }
-    buf.push(v);
-  };
-  const body: number[] = [];
-  if (method !== 0) {
-    body.push(0x08); // field 1, wire type 0 (varint)
-    writeVarint(body, method);
-  }
-  body.push(0x10); // field 2, wire type 0 (varint)
-  writeVarint(body, seq);
-  const out: number[] = [];
-  writeVarint(out, body.length);
-  return Buffer.from([...out, ...body]).toString("base64");
+    p.int(SELECT_ROOMS_FIELD.CLEAN_TIMES, cleanTimes);
+    p.int(SELECT_ROOMS_FIELD.MAP_ID, mapId);
+  });
+}
+
+/**
+ * Build a zone-select clean for a named map. Same `mapId` reasoning as {@link encodeSelectRoomsClean}.
+ * @internal
+ */
+export function encodeSelectZonesClean(mapId: number, zones: readonly VacuumZoneTarget[]): string {
+  const { method, param } = ModeCtrlParamMethod.SELECT_ZONES;
+  return encodeModeCtrlParam(method, param, (p) => {
+    for (const zone of zones) {
+      p.sub(SELECT_ZONES_FIELD.ZONES, (z) => {
+        z.sub(SELECT_ZONES_FIELD.QUADRANGLE, (q) => {
+          for (const [i, corner] of zone.corners.entries()) {
+            // p0..p3 are consecutive fields, each a Point of two signed centimetre values.
+            q.sub(i + 1, (pt) => {
+              pt.sint(SELECT_ZONES_FIELD.POINT_X, corner.x);
+              pt.sint(SELECT_ZONES_FIELD.POINT_Y, corner.y);
+            });
+          }
+        });
+        if (zone.cleanTimes !== undefined) z.int(SELECT_ZONES_FIELD.ZONE_CLEAN_TIMES, zone.cleanTimes);
+      });
+    }
+    p.int(SELECT_ZONES_FIELD.MAP_ID, mapId);
+  });
+}
+
+/** Build a scene clean, which needs only the scene's own id. @internal */
+export function encodeSceneClean(sceneId: number): string {
+  const { method, param } = ModeCtrlParamMethod.SCENE;
+  return encodeModeCtrlParam(method, param, (p) => p.int(SCENE_CLEAN_ID, sceneId));
+}
+
+/**
+ * The next `ModeCtrlRequest.seq` — ONE counter for every verb on DP 152.
+ *
+ * Confirmed against a live T2351: the app's start, pause, resume and go-home sent seq 124, 125, 126
+ * and 127 — a single sequence advancing across four different verbs, not a counter per verb. That is
+ * what `seq` is for, since it identifies a request so its response can be matched to it; per-verb
+ * counters would hand two outstanding requests the same number.
+ *
+ * Each verb used to keep its own `let seq = 111` inside its closure. They now share this.
+ */
+let modeCtrlSeq = 111;
+function nextModeCtrlSeq(): number {
+  return ++modeCtrlSeq;
+}
+
+export function encodeModeCtrl(method: number, seq: number): string {
+  return rawDp((w) => {
+    if (method !== 0) w.int(MODE_CTRL_FIELD.METHOD, method);
+    w.int(MODE_CTRL_FIELD.SEQ, seq);
+  });
 }
 
 /**
@@ -415,13 +647,37 @@ const CLEAN_PARAM_FIELD = {
   CLEAN_CARPET: 2,
   /** `clean_extent` — how far past the mapped edge to go. */
   CLEAN_EXTENT: 3,
+  /** `mop_mode` — carries TWO bare scalars: level(1) and corner_clean(2). */
+  MOP_MODE: 4,
+  /** `level` within a `mop_mode`. */
+  MOP_LEVEL: 1,
+  /** `corner_clean` within a `mop_mode` — the extra edge pass. */
+  MOP_CORNER: 2,
   /** `smart_mode_sw` — the robot's own judgement about a room, on or off. */
   SMART_MODE: 5,
+  /**
+   * `fan` — the suction level, and the SAME scale DP 158 reports.
+   *
+   * Deliberately not surfaced as its own read. A live capture showed the two moving together: DP 158
+   * went 2 then 0 while `clean_param.fan` went `{value:2}` then absent-for-zero. `suction.level`
+   * already publishes that value from DP 158, and a second name for it here would be one feature
+   * spelled twice. Named so a reader knows what field 6 is, not so anything reads it.
+   */
+  FAN: 6,
   /** `clean_times` — how many passes one job makes. */
   CLEAN_TIMES: 7,
   /** `value` within a `CleanType`. */
   VALUE: 1,
 } as const;
+
+/**
+ * `mop_mode.level` — how much water the mop lays down.
+ *
+ * Confirmed on a live T2351: setting the app's water level to High reported `mop_mode { level: 2 }`.
+ */
+export const MOP_LEVELS = ["low", "middle", "high"] as const;
+export type MopLevel = (typeof MOP_LEVELS)[number];
+const MOP_LEVEL: Record<number, MopLevel> = { 0: "low", 1: "middle", 2: "high" };
 
 /** `clean_carpet.strategy` — what the robot does when it meets a carpet. */
 export const CARPET_STRATEGIES = ["autoRaise", "avoid", "ignore"] as const;
@@ -466,6 +722,7 @@ export function decodeCleanParamValue(
   raw: ParamValue | undefined,
   codec: RawDpCodec | undefined,
   field: number,
+  inner?: number,
 ): number | undefined {
   if (typeof raw !== "string" || !codec) return undefined;
   const configured = codec.decode(raw)?.find((f) => f.field === CLEAN_PARAM_FIELD.CONFIGURED);
@@ -474,8 +731,13 @@ export function decodeCleanParamValue(
   if (setting === undefined) return undefined;
   if (setting.kind === "int") return Number(setting.value);
   if (!setting.value.length) return 0;
-  const value = codec.nested(setting.value)?.find((f) => f.kind === "int");
-  return value === undefined ? 0 : Number(value.value);
+  const fields = codec.nested(setting.value);
+  // A NAMED inner field when the caller knows it, the first varint otherwise. `mop_mode` is why the
+  // distinction exists: it carries two scalars side by side — level(1) and corner_clean(2) — so
+  // "whatever comes first" would silently read the level as the corner setting.
+  const value = inner === undefined ? fields?.find((f) => f.kind === "int") : fields?.find((f) => f.field === inner);
+  if (value === undefined) return 0;
+  return value.kind === "int" ? Number(value.value) : undefined;
 }
 
 /**
@@ -634,10 +896,10 @@ export function decodeDoNotDisturb(raw: ParamValue | undefined, codec: RawDpCode
  * one reports whether the quiet window is open RIGHT NOW — two different questions the same DP answers,
  * which is why this member reads its sibling's payload instead of claiming a wire of its own.
  *
- * **Both shapes of `active` are read.** Whether the vendor wraps it in a `Switch` the way `sw` is
- * wrapped, or sends it as a bare bool, is not confirmed — so a varint is taken at face value and a
- * sub-message is opened for its `value`. That is not a guess about which arrives: both readings mean
- * the same flag, so handling either is what removes the guess.
+ * **`active` is `Switch`-wrapped** — confirmed on a live T2351, which inside its quiet window reports
+ * `active { value: 1 }` beside `undisturbed { sw { value: 1 }, begin { hour: 9 }, end { hour: 23 } }`.
+ * The bare-varint branch is kept regardless: it costs one comparison, and a reader that accepts both
+ * cannot be broken by a firmware that changes its mind.
  *
  * The AIoT line only. On the Tuya line DP 107 is a plain bool carrying the SWITCH, and no wire there
  * states the window — so a non-protobuf value answers `undefined` rather than borrowing the switch.
@@ -793,6 +1055,13 @@ export function decodeUnisetting(
  * calibration, not something the device reports, so a host that wants a percentage owns that choice.
  */
 const CONSUMABLE_FIELD = {
+  /**
+   * The `ConsumableRuntime` block, which the report WRAPS at field 1 rather than sending bare.
+   *
+   * Confirmed against a live T2351 report. Reading the parts at the top level — as this decode first
+   * did — finds the wrapper where a part should be and answers `undefined` for every counter.
+   */
+  RUNTIME: 1,
   SIDE_BRUSH: 1,
   ROLLING_BRUSH: 2,
   FILTER_MESH: 3,
@@ -822,7 +1091,11 @@ export function decodeConsumableHours(
   field: number,
 ): number | undefined {
   if (typeof raw !== "string" || !codec) return undefined;
-  const part = codec.decode(raw)?.find((f) => f.field === field);
+  // The parts sit one level DOWN, inside the report's field 1 — not at the top level, which an
+  // earlier revision assumed and which made every counter answer `undefined` on a real robot.
+  const runtime = codec.decode(raw)?.find((f) => f.field === CONSUMABLE_FIELD.RUNTIME);
+  if (runtime?.kind !== "bytes") return undefined;
+  const part = codec.nested(runtime.value)?.find((f) => f.field === field);
   if (part?.kind !== "bytes") return undefined;
   const duration = codec.nested(part.value)?.find((f) => f.field === CONSUMABLE_FIELD.DURATION);
   if (duration === undefined) return 0;
@@ -1027,6 +1300,53 @@ export const VACUUM_CLEAN_MEMBERS = {
     },
     decodedKind: "boolean",
     description: "Smart mode from CleanParam.smart_mode_sw (DP 154 AIoT, Raw protobuf).",
+  },
+  /**
+   * How much water the mop lays down — the AIoT line's own scale.
+   *
+   * Distinct from `mopWater`, which is the Tuya line's DP 105 and reports `Dry`/`Low`/`Mid`/`High`.
+   * The two are NOT merged under one name: this scale has three members and that one has four, so any
+   * mapping between them would be invented rather than read. A host that wants one field checks
+   * whichever its device reports.
+   */
+  mopLevel: {
+    readsFrom: "cleanType",
+    type: "string",
+    provenance: "verified",
+    decode: (raw, codec) => {
+      const v = decodeCleanParamValue(
+        raw as ParamValue | undefined,
+        codec,
+        CLEAN_PARAM_FIELD.MOP_MODE,
+        CLEAN_PARAM_FIELD.MOP_LEVEL,
+      );
+      return v === undefined ? undefined : MOP_LEVEL[v];
+    },
+    decodedKind: "enum",
+    decodedValues: MOP_LEVELS as readonly string[],
+    description: "Mop water level from CleanParam.mop_mode.level (DP 154 AIoT). Captured on a live T2351.",
+  },
+  /**
+   * Whether the robot makes an extra pass along edges while mopping — the app calls it edge-hug
+   * mopping. Sits beside {@link VACUUM_CLEAN_MEMBERS.mopLevel} in the same `mop_mode`, which is why
+   * this read names its inner field rather than taking the first scalar it finds.
+   */
+  mopCornerClean: {
+    readsFrom: "cleanType",
+    type: "bool",
+    kind: "boolean",
+    provenance: "verified",
+    decode: (raw, codec) => {
+      const v = decodeCleanParamValue(
+        raw as ParamValue | undefined,
+        codec,
+        CLEAN_PARAM_FIELD.MOP_MODE,
+        CLEAN_PARAM_FIELD.MOP_CORNER,
+      );
+      return v === undefined ? undefined : v !== 0;
+    },
+    decodedKind: "boolean",
+    description: "Edge-hug mopping from CleanParam.mop_mode.corner_clean (DP 154 AIoT). Captured on a live T2351.",
   },
   /**
    * How many passes one job makes over the same floor. `0` is the device stating no repeat rather than
@@ -1572,33 +1892,231 @@ export const VACUUM_CLEAN_MEMBERS = {
     description: "WiFi RSSI in dBm (DP 134, Value ro). Schema-confirmed.",
     available: (ctx: AvailabilityContext) => ctx.paramIds?.has(TUYA_VACUUM_DP.RSSI) ?? false,
   },
+  /**
+   * The ModeCtrl verbs whose METHOD NUMBER is not yet captured.
+   *
+   * Each shares its frame with the three verified verbs above — same message, same two fields, same
+   * encoder — so what is unconfirmed is the number alone. That still keeps them `unverified`: a wrong
+   * number is a different command arriving at real hardware, and an AIoT DP write is fire-and-forget,
+   * so a mistake looks exactly like success. They are declared so the capability documents what the
+   * robot accepts, and one capture per verb is all that stands between them and a working setter.
+   *
+   * `stopCleaning` and `resumeCleaning` are the pair users notice missing first: today a paused robot
+   * can only be resumed by starting a fresh run.
+   */
+  /**
+   * End the current job outright, as opposed to {@link VACUUM_CLEAN_MEMBERS.pauseCleaning}, which\n   * leaves it resumable.
+   */
+  stopCleaning: {
+    type: "bool",
+    kind: "boolean",
+    writeOnly: true,
+    unverified: true,
+    write: () => aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.STOP_TASK, nextModeCtrlSeq())),
+    available: (ctx: AvailabilityContext) => isAiotVacuum(ctx),
+    provenance: "mega",
+    description:
+      "Stop the current job (ModeCtrlRequest method 12 over DP 152). Method number not captured — unverified.",
+  },
+  /**
+   * Carry on with a paused job rather than starting a new one — the counterpart the pause verb has\n   * been missing.
+   */
+  resumeCleaning: method(
+    ({ sink }) =>
+      (): Promise<void> =>
+        sink.dispatch(aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.RESUME_TASK, nextModeCtrlSeq()))),
+    "Resume a paused job (ModeCtrlRequest method 14 over DP 152). Captured on a live T2351.",
+    isAiotVacuum,
+  ),
+  /**
+   * Send the robot to the dock to wash its mops. Distinct from the dock's own `washMops`, which asks\n   * the STATION to run its cycle: this one moves the robot there first.
+   */
+  startWashingMops: {
+    type: "bool",
+    kind: "boolean",
+    writeOnly: true,
+    unverified: true,
+    write: () => aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.START_GOWASH, nextModeCtrlSeq())),
+    available: (ctx: AvailabilityContext) => isAiotVacuum(ctx),
+    provenance: "mega",
+    description:
+      "Go and wash the mops (ModeCtrlRequest method 10 over DP 152). Method number not captured — unverified.",
+  },
+  /**
+   * Call off a mop-wash trip in progress.
+   */
+  stopWashingMops: {
+    type: "bool",
+    kind: "boolean",
+    writeOnly: true,
+    unverified: true,
+    write: () => aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.STOP_GOWASH, nextModeCtrlSeq())),
+    available: (ctx: AvailabilityContext) => isAiotVacuum(ctx),
+    provenance: "mega",
+    description:
+      "Stop washing the mops (ModeCtrlRequest method 17 over DP 152). Method number not captured — unverified.",
+  },
+  /**
+   * Call off a return-to-dock in progress, leaving the robot where it is.
+   */
+  stopReturnToDock: {
+    type: "bool",
+    kind: "boolean",
+    writeOnly: true,
+    unverified: true,
+    write: () => aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.STOP_GOHOME, nextModeCtrlSeq())),
+    available: (ctx: AvailabilityContext) => isAiotVacuum(ctx),
+    provenance: "mega",
+    description:
+      "Stop returning to the dock (ModeCtrlRequest method 15 over DP 152). Method number not captured — unverified.",
+  },
+  /**
+   * Clean the robot's immediate surroundings. Takes no target — the spot is wherever it is standing,\n   * which is why this one needs no `Param` and its area-selecting cousins do.
+   */
+  startSpotClean: {
+    type: "bool",
+    kind: "boolean",
+    writeOnly: true,
+    unverified: true,
+    write: () => aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.START_SPOT_CLEAN, nextModeCtrlSeq())),
+    available: (ctx: AvailabilityContext) => isAiotVacuum(ctx),
+    provenance: "mega",
+    description:
+      "Spot-clean where the robot stands (ModeCtrlRequest method 3 over DP 152). Method number not captured — unverified.",
+  },
+  /**
+   * Run a fast mapping pass without cleaning — how a robot learns a floor it has not seen.
+   */
+  startMapping: {
+    type: "bool",
+    kind: "boolean",
+    writeOnly: true,
+    unverified: true,
+    write: () => aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.START_FAST_MAPPING, nextModeCtrlSeq())),
+    available: (ctx: AvailabilityContext) => isAiotVacuum(ctx),
+    provenance: "mega",
+    description:
+      "Run a fast mapping pass (ModeCtrlRequest method 9 over DP 152). Method number not captured — unverified.",
+  },
+  /**
+   * Patrol the whole map without cleaning — the camera-equipped models use this to look around.
+   */
+  startCruise: {
+    type: "bool",
+    kind: "boolean",
+    writeOnly: true,
+    unverified: true,
+    write: () => aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.START_GLOBAL_CRUISE, nextModeCtrlSeq())),
+    available: (ctx: AvailabilityContext) => isAiotVacuum(ctx),
+    provenance: "mega",
+    description:
+      "Start a global cruise (ModeCtrlRequest method 20 over DP 152). Method number not captured — unverified.",
+  },
+  /**
+   * Enter remote-control cleaning, where the app drives. The SDK offers no steering wire, so this is\n   * only half a feature until one exists — declared for completeness of the vocabulary.
+   */
+  startRemoteControl: {
+    type: "bool",
+    kind: "boolean",
+    writeOnly: true,
+    unverified: true,
+    write: () => aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.START_RC_CLEAN, nextModeCtrlSeq())),
+    available: (ctx: AvailabilityContext) => isAiotVacuum(ctx),
+    provenance: "mega",
+    description:
+      "Enter remote-control cleaning (ModeCtrlRequest method 5 over DP 152). Method number not captured — unverified.",
+  },
+  /**
+   * Leave remote-control mode.
+   *
+   * **Uses `STOP_TASK`, not `STOP_RC_CLEAN`.** The product catalogue's own note on DP 155 spells the
+   * flow out: enter with `START_RC_CLEAN` or any direction, leave with
+   * `ModeCtrlRequest.method.STOP_TASK`. `STOP_RC_CLEAN`(16) exists in the enum but is not what the app
+   * sends to exit — an earlier revision of this member assumed it was, on nothing but the name.
+   */
+  stopRemoteControl: {
+    type: "bool",
+    kind: "boolean",
+    writeOnly: true,
+    unverified: true,
+    write: () => aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.STOP_TASK, nextModeCtrlSeq())),
+    available: (ctx: AvailabilityContext) => isAiotVacuum(ctx),
+    provenance: "mega",
+    description:
+      "Leave remote-control mode (ModeCtrlRequest method 12 STOP_TASK over DP 152, per the DP 155 " +
+      "catalogue note). Not captured on a device — unverified.",
+  },
+  /**
+   * Steer the robot while it is in remote-control mode — DP 155, an enum of directions rather than a
+   * `ModeCtrlRequest`.
+   *
+   * `brake` stops the current movement without leaving remote-control mode; the catalogue's note says
+   * the app sends it on key-release. Leaving the mode entirely is
+   * {@link VACUUM_CLEAN_MEMBERS.stopRemoteControl}.
+   *
+   * Sending any direction also ENTERS remote control, so a caller does not have to start it first.
+   */
+  remoteControlDirection: {
+    param: VACUUM_DP.REMOTE_CTRL,
+    type: "string",
+    kind: "enum",
+    writeOnly: true,
+    unverified: true,
+    enumValues: { 0: "Brake", 1: "Forward", 2: "Back", 3: "Left", 4: "Right" },
+    write: (v) => aiotDp(VACUUM_DP.REMOTE_CTRL, String(v)),
+    available: (ctx: AvailabilityContext) => isAiotVacuum(ctx),
+    provenance: "mega",
+    description:
+      "Remote-control direction (DP 155 Enum: Brake/Forward/Back/Left/Right). Values from the product " +
+      "catalogue; the wire is not captured — unverified.",
+  },
+  /**
+   * Whether the robot resumes an interrupted job after charging, rather than treating the next start
+   * as a fresh run. The vendor calls this 断点续扫 — "resume from the break point".
+   */
+  resumeClean: {
+    param: VACUUM_DP.RESUME_CLEAN,
+    type: "bool",
+    kind: "boolean",
+    provenance: "mega",
+    description: "Resume an interrupted job after charging (DP 156 pause_job, Bool).",
+    available: (ctx: AvailabilityContext) => ctx.paramIds?.has(VACUUM_DP.RESUME_CLEAN) ?? false,
+  },
+  /**
+   * Stop smart-follow mode. There is no start verb in the vendor's parameterless set — the mode is\n   * switched on through `smartFollow` in the DP 176 settings, and only stopped from here.
+   */
+  stopSmartFollow: {
+    type: "bool",
+    kind: "boolean",
+    writeOnly: true,
+    unverified: true,
+    write: () => aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.STOP_SMART_FOLLOW, nextModeCtrlSeq())),
+    available: (ctx: AvailabilityContext) => isAiotVacuum(ctx),
+    provenance: "mega",
+    description:
+      "Stop smart-follow mode (ModeCtrlRequest method 18 over DP 152). Method number not captured — unverified.",
+  },
   /** Start an auto-clean run via ModeCtrlRequest method 0 (DP 152). AIoT only — Tuya write unverified. */
   startCleaning: method(
-    ({ sink }) => {
-      let seq = 111;
-      return (): Promise<void> =>
-        sink.dispatch(aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.START_AUTO_CLEAN, ++seq)));
-    },
+    ({ sink }) =>
+      (): Promise<void> =>
+        sink.dispatch(aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.START_AUTO_CLEAN, nextModeCtrlSeq()))),
     "Start an auto-clean run (ModeCtrlRequest method 0 over DP 152).",
     isAiotVacuum,
   ),
   /** Return to the dock via ModeCtrlRequest method 6 (DP 152). AIoT only — Tuya write unverified. */
   returnToDock: method(
-    ({ sink }) => {
-      let seq = 111;
-      return (): Promise<void> =>
-        sink.dispatch(aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.START_GOHOME, ++seq)));
-    },
+    ({ sink }) =>
+      (): Promise<void> =>
+        sink.dispatch(aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.START_GOHOME, nextModeCtrlSeq()))),
     "Return to the dock (ModeCtrlRequest method 6 over DP 152).",
     isAiotVacuum,
   ),
   /** Pause the current cleaning task via ModeCtrlRequest method 13 (DP 152). AIoT only — Tuya write unverified. */
   pauseCleaning: method(
-    ({ sink }) => {
-      let seq = 111;
-      return (): Promise<void> =>
-        sink.dispatch(aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.PAUSE_TASK, ++seq)));
-    },
+    ({ sink }) =>
+      (): Promise<void> =>
+        sink.dispatch(aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.PAUSE_TASK, nextModeCtrlSeq()))),
     "Pause the current cleaning task (ModeCtrlRequest method 13 over DP 152).",
     isAiotVacuum,
   ),
