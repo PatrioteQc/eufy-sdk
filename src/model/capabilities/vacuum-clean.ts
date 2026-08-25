@@ -102,35 +102,31 @@ export const VACUUM_DP = {
 } as const;
 
 /**
- * Legacy Tuya DP ids for the G-series / X8 / L-series clean line.
- * DP 101 confirmed (`goHome` → bool). DP 2 type confirmed (bool play/pause).
- * DPs 104 and 106 confirmed as integer read-only values from protocol inspection.
- * @internal
- */
-export const LEGACY_VACUUM_DP = {
-  /** Play/pause toggle (DP 2, Bool rw) — true = start, false = pause. */
-  PLAY_PAUSE: 2,
-  /** Go home (DP 101, Bool rw). */
-  GO_HOME: 101,
-  /** Battery level 0-100 (DP 104, Int ro). */
-  BATTERY_LEVEL: 104,
-  /** Error code, 0 = ok (DP 106, Int ro). */
-  ERROR_CODE: 106,
-} as const;
-
-/**
  * Tuya DP ids for the `eufy_home_tuya` vacuum category (X8 Pro, X-series, and future Tuya clean-line models).
  *
  * Full schema sourced from `thing.m.device.ref.info.list` v5.4 for product `wahqax6ifjgs1c4n`
  * (schemaInfo.schema, 39 DPs). Only the DPs with confirmed read-side values from a live
  * `thing.m.device.dp.get` call are included here. Write direction for all DPs is unverified —
  * no live publishDps capture has been made yet.
+ *
+ * **The one table for this line.** A second, older one listed four of these ids again — the same
+ * numbers with the same meanings, grounded more weakly — and three entries here carried a note saying
+ * which of its keys they duplicated. That is one line spelled twice, which is how two tables come to
+ * disagree while each stays individually plausible. DP 103 was a third spelling: named privately by the
+ * `locate` capability, absent from any DP table.
+ *
+ * **Checked against `jeppesens/eufy-clean`'s `LEGACY_DPS_MAP`** and nothing came back to port. Its nine
+ * ids — 2, 3, 5, 15, 101, 102, 103, 104, 106 — are all here, all live-confirmed on a real X8 Pro, and
+ * all carry their enum value sets, which that map does not. The comparison is recorded so the next
+ * reader does not repeat it. Its `SCALAR_DPS` table is a different matter and deliberately untouched:
+ * that is a separate device class reusing these numbers for unrelated things (153 is a brush-detangle
+ * trigger there and the work status here), so it must be told apart by value SHAPE, never by DP number.
  * @internal
  */
 export const TUYA_VACUUM_DP = {
   /** Power on/off (DP 1, Bool). */
   POWER: 1,
-  /** Play/pause toggle (DP 2, Bool rw) — true = start, false = pause. Shared with {@link LEGACY_VACUUM_DP.PLAY_PAUSE}. */
+  /** Play/pause toggle (DP 2, Bool rw) — true = start, false = pause. */
   PLAY_PAUSE: 2,
   /** Manual direction jog (DP 3, Enum: "forward"|"back"|"left"|"right"). */
   DIRECTION: 3,
@@ -138,15 +134,22 @@ export const TUYA_VACUUM_DP = {
   MODE: 5,
   /** Work status (DP 15, Enum string) — the high-level activity. Live-confirmed "Sleeping". */
   WORK_STATUS: 15,
-  /** Return to dock (DP 101, Bool rw). Shared with {@link LEGACY_VACUUM_DP.GO_HOME}. */
+  /** Return to dock (DP 101, Bool rw). */
   GO_HOME: 101,
   /** Suction/cleaning strength (DP 102, Enum: "Off"|"Quiet"|"Standard"|"Turbo"|"Max"). Live-confirmed "Off". */
   CLEANING_STRENGTH: 102,
-  /** Battery level 0-100 (DP 104, Value ro). Shared with {@link LEGACY_VACUUM_DP.BATTERY_LEVEL}. */
+  /**
+   * Find-robot beep (DP 103, `look_for_sweeper`, Bool). Live-confirmed.
+   *
+   * Read and written by the `locate` capability, which owns the feature across both clean lines —
+   * named here so this table is the one place the Tuya line's ids are spelled.
+   */
+  LOOK_FOR_SWEEPER: 103,
+  /** Battery level 0-100 (DP 104, Value ro). */
   BATTERY_LEVEL: 104,
   /** Mop water flow (DP 105, Enum: "Dry"|"Low"|"Mid"|"High"). Live-confirmed "Mid". */
   MOP_WATER: 105,
-  /** Fault code, 0 = ok (DP 106, Value ro). Shared with {@link LEGACY_VACUUM_DP.ERROR_CODE}. */
+  /** Fault code, 0 = ok (DP 106, Value ro). */
   FAULT_REPORT: 106,
   /** Do-not-disturb / forbid mode (DP 107, Bool). Live-confirmed false. */
   FORBID_MODE: 107,
@@ -1319,7 +1322,7 @@ export const VACUUM_CLEAN_MEMBERS = {
     unit: "%",
     kind: "percent",
     provenance: "mega",
-    readAliases: [{ paramType: LEGACY_VACUUM_DP.BATTERY_LEVEL, available: isTuyaVacuum }],
+    readAliases: [{ paramType: TUYA_VACUUM_DP.BATTERY_LEVEL, available: isTuyaVacuum }],
     description: "Battery level 0-100 (DP 163 AIoT / DP 104 Tuya). NOTE: clean namespace — not param 1101.",
   },
   /**
@@ -1539,7 +1542,7 @@ export const VACUUM_CLEAN_MEMBERS = {
     param: VACUUM_DP.FAULT_ALERT,
     type: "number",
     provenance: "mega",
-    readAliases: [{ paramType: LEGACY_VACUUM_DP.ERROR_CODE }],
+    readAliases: [{ paramType: TUYA_VACUUM_DP.FAULT_REPORT }],
     decode: (raw, codec) => decodeVacuumFault(raw as ParamValue | undefined, codec),
     decodedKind: "scalar",
     description:
@@ -2467,7 +2470,6 @@ export const VACUUM_CLEAN: CapabilityModule = {
   decodeState(signal) {
     const params = pickDpParams(signal.source === "mqtt" ? signal.dpParams : undefined, [
       ...Object.values(VACUUM_DP),
-      ...Object.values(LEGACY_VACUUM_DP),
       ...Object.values(TUYA_VACUUM_DP),
     ]);
     return params ? { params } : null;
