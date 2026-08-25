@@ -216,6 +216,21 @@ export interface PropertySpec {
    */
   decode?: (raw: string | number | boolean) => boolean | number | string;
   /**
+   * This param carries a STRUCTURED PAYLOAD rather than a scalar — a base64 protobuf that the
+   * capability's own getter reads a field out of, with the injected codec in scope.
+   *
+   * The stored value is that payload verbatim, and {@link type} describes what the getter ANSWERS
+   * rather than what arrives on the wire. Those are different for every Raw DP on the clean line: nine
+   * consumable counters are `"number"` over one base64 string, and reading the value as a number is
+   * exactly what must NOT happen at ingest.
+   *
+   * Storage already keeps such a value intact — a non-numeric string cannot be coerced to a number, so
+   * it is passed through. What this flag changes is that the pass-through stops being reported as a
+   * mistake: a robot reporting ten Raw DPs on every push logged ten warnings a time saying its
+   * properties were misdeclared, which is how a real warning goes unread.
+   */
+  raw?: true;
+  /**
    * Extra wire param ids that ALSO carry this property on some device families, with their own
    * polarity. The device's own `paramType` wins; otherwise the first alias the device reports wins.
    * Lets one property (e.g. `enabled`) read correctly across families that report it under

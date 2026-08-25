@@ -570,6 +570,9 @@ export function propertiesOf(members: Members, ctx?: AvailabilityContext): Prope
         provenance: m.provenance,
         invert: promoted?.invert ?? m.invert,
         decode: m.coerce,
+        // A member with a getter-side `decode` reads a field out of a structured payload, so the
+        // stored value is that payload — see `PropertySpec.raw`.
+        raw: m.decode ? true : undefined,
         readAliases: aliases?.slice(promoted ? 1 : 0).map(({ paramType, invert }) => ({ paramType, invert })),
         writable: m.write !== undefined || m.writtenElsewhere === true,
         description: m.description,
