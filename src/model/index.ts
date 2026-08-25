@@ -32,6 +32,16 @@ export {
   type VacuumScheduleAction,
   type VacuumScheduleWeekday,
 } from "./vacuum-schedules.js";
+export {
+  decodeVacuumScenes,
+  decodeVacuumSceneCount,
+  decodeUsableVacuumSceneCount,
+  SCENE_TYPES,
+  SCENE_INVALID_REASONS,
+  type VacuumScene,
+  type SceneType,
+  type SceneInvalidReason,
+} from "./vacuum-scenes.js";
 export { paramDef, namespaceForCodec, type ParamNamespace } from "./param-namespace.js";
 export { inspectParams, formatInspection, type ParamInspection, type DeviceInspection } from "./inspect.js";
 // The capability surface: the typed `dev.<cap>()` objects, the member tables they derive from, and the

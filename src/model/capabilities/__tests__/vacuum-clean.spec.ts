@@ -120,6 +120,7 @@ describe("vacuum_clean capability module", () => {
       "sideBrushHours",
       "doNotDisturb",
       "scheduleCount",
+      "sceneCount",
       "rssi",
       "resumeClean",
     ]);
