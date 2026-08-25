@@ -249,7 +249,10 @@ export const VACUUM_DOCK_MEMBERS = {
       "mop washing/drying/descaling, dust collection, water transfer, disinfectant or hair cutting.",
   },
   /**
-   * Empty the dust bin into the dock. Write side of DP 173 — `StationRequest.manual_cmd.go_collect_dust`.\n   *\n   * The frame is built and reviewable; the member stays `unverified`, so no setter is installed and\n   * the intent path refuses it. What is missing is a capture, not the message shape.
+   * Empty the dust bin into the dock. Write side of DP 173 — `StationRequest.manual_cmd.go_collect_dust`.
+   *
+   * The frame is built and reviewable; the member stays `unverified`, so no setter is installed and
+   * the intent path refuses it. What is missing is a capture, not the message shape.
    */
   emptyDust: {
     type: "bool",
@@ -263,7 +266,8 @@ export const VACUUM_DOCK_MEMBERS = {
       "Empty the dust bin (DP 173 StationRequest.manual_cmd.go_collect_dust). Frame reversed from the vendor proto; unverified until captured on a device.",
   },
   /**
-   * Wash the mops in the dock — `StationRequest.manual_cmd.go_selfcleaning`. Same standing as\n   * {@link VACUUM_DOCK_MEMBERS.emptyDust}: frame built, not yet captured, so no setter is installed.
+   * Wash the mops in the dock — `StationRequest.manual_cmd.go_selfcleaning`. Same standing as
+   * {@link VACUUM_DOCK_MEMBERS.emptyDust}: frame built, not yet captured, so no setter is installed.
    */
   washMops: {
     type: "bool",
@@ -291,7 +295,10 @@ export const VACUUM_DOCK_MEMBERS = {
       "Dry the mops (DP 173 StationRequest.manual_cmd.go_dry). Frame reversed from the vendor proto; unverified until captured on a device.",
   },
   /**
-   * Run the dock's full deep self-clean cycle — `StationRequest.manual_cmd.self_maintain`.\n   *\n   * The longest-running of these and the one a caller is most likely to want gated behind a\n   * confirmation, since it occupies the dock for a while.
+   * Run the dock's full deep self-clean cycle — `StationRequest.manual_cmd.self_maintain`.
+   *
+   * The longest-running of these and the one a caller is most likely to want gated behind a
+   * confirmation, since it occupies the dock for a while.
    */
   selfMaintain: {
     type: "bool",
@@ -305,7 +312,9 @@ export const VACUUM_DOCK_MEMBERS = {
       "Run the dock's full self-maintenance cycle (DP 173 StationRequest.manual_cmd.self_maintain). Frame reversed from the vendor proto; unverified until captured on a device.",
   },
   /**
-   * Run the descaling cycle — `StationRequest.manual_cmd.go_remove_scale`. Only docks that make their\n   * own cleaning solution have this; the `available` gate is family-wide, so a device without it will\n   * simply ignore the frame.
+   * Run the descaling cycle — `StationRequest.manual_cmd.go_remove_scale`. Only docks that make their
+   * own cleaning solution have this; the `available` gate is family-wide, so a device without it will
+   * simply ignore the frame.
    */
   removeScale: {
     type: "bool",

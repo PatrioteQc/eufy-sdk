@@ -6,6 +6,12 @@ import { rawDp, type RawDpWriter } from "../../core/raw-dp-writer.js";
 import { isAiotVacuum, isTuyaVacuum } from "../device-family.js";
 import { pickDpParams, aiotDp } from "./access.js";
 import { method, propertiesOf, type Members, type Surface } from "./members.js";
+import {
+  decodeActiveVacuumScheduleCount,
+  decodeVacuumScheduleCount,
+  decodeVacuumSchedules,
+  type VacuumSchedule,
+} from "../vacuum-schedules.js";
 
 /**
  * RoboVac Tuya **DP ids** this capability reads — the "clean" namespace (ids ~150-180, from the cloud
@@ -61,7 +67,10 @@ export const VACUUM_DP = {
   CLEAN_PARAM: 154,
   /** Speaker volume 0-100 (DP 161, Value). */
   VOLUME: 161,
-  /** Device UI language (DP 162, String rw). Locale code set by the app, e.g. "en", "zh", "de". */
+  /**
+   * LanguageResponse (DP 162, Raw protobuf) — the VOICE PACK, not a locale (see {@link decodeLanguageField}).
+   * Named for the vendor's own `language` code, which is what the catalogue calls it.
+   */
   LANGUAGE: 162,
   /** Battery level 0-100 (DP 163, Value) — a clean-namespace DP, NOT the security param 1101. */
   BATTERY: 163,
@@ -1045,6 +1054,41 @@ export function decodeUnisetting(
 }
 
 /**
+ * Field numbers inside `LanguageResponse` (DP 162).
+ *
+ * The DP the plan's §2 called out: it is a voice-pack descriptor, not a locale. Nothing here is a
+ * language tag — `current_id` names one of the vendor's numbered voice packs, and what that pack
+ * SOUNDS like is a table the vendor ships and this SDK does not have.
+ */
+const LANGUAGE_FIELD = { DEFAULT_ID: 1, CURRENT_ID: 2, VERSION: 3, SET_ID: 4, STATE: 5 } as const;
+
+/** `LanguageResponse.State` — where a voice-pack download has got to. */
+export const VOICE_PACK_STATES = ["idle", "updating", "success", "failure"] as const;
+export type VoicePackState = (typeof VOICE_PACK_STATES)[number];
+
+/**
+ * Read one varint field out of a `LanguageResponse` (DP 162).
+ *
+ * A flat message, so one level rather than the two the consumables and settings reports need. A field
+ * absent from a payload that DID parse reads as `0`, the proto3 default — for `current_id` that is the
+ * vendor's own way of saying the robot is on the pack it shipped with. An unparseable payload is
+ * `undefined`: the device said nothing this can be read from.
+ * @internal
+ */
+export function decodeLanguageField(
+  raw: ParamValue | undefined,
+  codec: RawDpCodec | undefined,
+  field: number,
+): number | undefined {
+  if (typeof raw !== "string" || !codec) return undefined;
+  const fields = codec.decode(raw);
+  if (!fields) return undefined;
+  const hit = fields.find((f) => f.field === field);
+  if (hit === undefined) return 0;
+  return hit.kind === "int" ? Number(hit.value) : undefined;
+}
+
+/**
  * Field numbers inside `ConsumableRuntime` (DP 168) — one per replaceable part.
  *
  * **8 and 9 are deliberately unused by the vendor.** Do not renumber around the gap: the parts after it
@@ -1218,18 +1262,70 @@ export const VACUUM_CLEAN_MEMBERS = {
     description: "Battery level 0-100 (DP 163 AIoT / DP 104 Tuya). NOTE: clean namespace — not param 1101.",
   },
   /**
-   * Device UI language — the locale the robot uses for its voice prompts (DP 162, String rw).
-   * AIoT clean line only; the Tuya X8 Pro has no confirmed language DP in its 1–134 schema.
-   * Write direction confirmed from `get_product_data_point` (`writable: true`); locale format is
-   * an open string (no live report observed for a closed set of values yet).
+   * Which voice pack the robot is speaking — the vendor's own numbered id, not a locale.
+   *
+   * Replaces a `language` read that answered a locale code. It never could: DP 162 carries a
+   * `LanguageResponse`, so what that property published was the base64 of a protobuf message typed as
+   * text. The plan's §2 called this out from the schema and the product catalogue confirmed it — the DP
+   * is Raw in both directions.
+   *
+   * The id alone is what the device reports; which voice it corresponds to is a vendor table keyed by
+   * firmware, and this SDK does not carry one. A host that wants names owns that mapping — which is
+   * also why there is no setter here: selecting a pack means sending a `LanguageRequest.Desc` carrying
+   * a CDN url and an md5 the device verifies, and a descriptor is not something a caller can be asked
+   * to invent.
    */
-  language: {
+  voicePack: {
     param: VACUUM_DP.LANGUAGE,
-    type: "string",
-    kind: "text",
+    type: "number",
+    kind: "identifier",
     provenance: "mega",
-    description: "Device UI language locale code (DP 162, String ro). AIoT clean line.",
+    decode: (raw, codec) => decodeLanguageField(raw as ParamValue | undefined, codec, LANGUAGE_FIELD.CURRENT_ID),
+    decodedKind: "identifier",
+    description: "The voice pack in use — LanguageResponse.current_id (DP 162, Raw protobuf). AIoT clean line.",
     available: (ctx: AvailabilityContext) => isAiotVacuum(ctx),
+  },
+  /**
+   * The voice pack the robot fell back to, which is the one its firmware shipped with. Differs from
+   * {@link VACUUM_CLEAN_MEMBERS.voicePack} exactly when someone has chosen another.
+   */
+  defaultVoicePack: {
+    readsFrom: "voicePack",
+    type: "number",
+    kind: "identifier",
+    provenance: "mega",
+    decode: (raw, codec) => decodeLanguageField(raw as ParamValue | undefined, codec, LANGUAGE_FIELD.DEFAULT_ID),
+    decodedKind: "identifier",
+    description: "The firmware's own voice pack — LanguageResponse.default_id (DP 162, Raw protobuf).",
+  },
+  /**
+   * How a voice-pack change is going. A pack is downloaded from a CDN and md5-checked by the device, so
+   * a selection is not instant and can fail — this is the field that says which happened.
+   */
+  voicePackState: {
+    readsFrom: "voicePack",
+    type: "string",
+    provenance: "mega",
+    decode: (raw, codec) => {
+      const v = decodeLanguageField(raw as ParamValue | undefined, codec, LANGUAGE_FIELD.STATE);
+      return v === undefined ? undefined : VOICE_PACK_STATES[v];
+    },
+    decodedKind: "enum",
+    decodedValues: VOICE_PACK_STATES as readonly string[],
+    description: "Voice-pack download state — LanguageResponse.state (DP 162, Raw protobuf).",
+  },
+  /**
+   * The installed voice pack's version, as the device counts it. Useful only against the vendor's own
+   * catalogue for the same pack id; on its own it is a number that changes when a pack is updated.
+   */
+  voicePackVersion: {
+    readsFrom: "voicePack",
+    type: "number",
+    kind: "scalar",
+    provenance: "mega",
+    decode: (raw, codec) => decodeLanguageField(raw as ParamValue | undefined, codec, LANGUAGE_FIELD.VERSION),
+    decodedKind: "scalar",
+    description: "Installed voice-pack version — LanguageResponse.version (DP 162, Raw protobuf).",
   },
   /**
    * The SETTING for what to do with a surface, not what a running job is doing — the two disagree while
@@ -1646,7 +1742,8 @@ export const VACUUM_CLEAN_MEMBERS = {
     description: "Obstacle-recognition camera — UnisettingResponse.ai_see (DP 176, Raw protobuf).",
   },
   /**
-   * The vendor's `water_level_sw`. Named after the wire rather than given a friendlier name: what it\n   * switches is not stated anywhere this SDK can point at, and a guessed name would be a claim.
+   * The vendor's `water_level_sw`. Named after the wire rather than given a friendlier name: what it
+   * switches is not stated anywhere this SDK can point at, and a guessed name would be a claim.
    */
   waterLevelSwitch: {
     readsFrom: "childLock",
@@ -1659,7 +1756,8 @@ export const VACUUM_CLEAN_MEMBERS = {
       "UnisettingResponse.water_level_sw (DP 176, Raw protobuf). Vendor name kept — its meaning is unconfirmed.",
   },
   /**
-   * Whether the robot offers restricted-area suggestions after a run — the prompts that ask to fence\n   * off a spot it got stuck in.
+   * Whether the robot offers restricted-area suggestions after a run — the prompts that ask to fence
+   * off a spot it got stuck in.
    */
   suggestRestricted: {
     readsFrom: "childLock",
@@ -1707,7 +1805,8 @@ export const VACUUM_CLEAN_MEMBERS = {
     description: "Capture stills while cleaning — UnisettingResponse.live_photo_sw (DP 176, Raw protobuf).",
   },
   /**
-   * Smart-follow mode. Numbered 13 in the response and 12 in the request — the widest gap in a message\n   * whose two directions disagree about almost every field.
+   * Smart-follow mode. Numbered 13 in the response and 12 in the request — the widest gap in a message
+   * whose two directions disagree about almost every field.
    */
   smartFollow: {
     readsFrom: "childLock",
@@ -1719,7 +1818,12 @@ export const VACUUM_CLEAN_MEMBERS = {
     description: "Smart-follow mode — UnisettingResponse.smart_follow_sw (DP 176, Raw protobuf).",
   },
   /**
-   * Hours run on the current side brush.\n   *\n   * The owner of DP 168 — the other eight counters read their own field out of this same payload, which\n   * is why they declare `readsFrom` rather than a wire of their own. Hours USED, counting up: the\n   * vendor sends no life expectancy, so a percentage remaining is the host's calibration to make, not\n   * a number this SDK can invent.
+   * Hours run on the current side brush.
+   *
+   * The owner of DP 168 — the other eight counters read their own field out of this same payload, which
+   * is why they declare `readsFrom` rather than a wire of their own. Hours USED, counting up: the
+   * vendor sends no life expectancy, so a percentage remaining is the host's calibration to make, not
+   * a number this SDK can invent.
    */
   sideBrushHours: {
     param: VACUUM_DP.CONSUMABLES,
@@ -1811,7 +1915,8 @@ export const VACUUM_CLEAN_MEMBERS = {
     description: "Dust-bag hours used — ConsumableRuntime.dustbag (DP 168, Raw protobuf).",
   },
   /**
-   * Hours since the waste-water tank was last emptied. Field 10, not 8 — the vendor leaves 8 and 9\n   * unused and closing that gap would read the wrong counter.
+   * Hours since the waste-water tank was last emptied. Field 10, not 8 — the vendor leaves 8 and 9
+   * unused and closing that gap would read the wrong counter.
    */
   dirtyWaterTankHours: {
     readsFrom: "sideBrushHours",
@@ -1880,6 +1985,58 @@ export const VACUUM_CLEAN_MEMBERS = {
     available: (ctx: AvailabilityContext) => ctx.paramIds?.has(VACUUM_DP.DO_NOT_DISTURB) ?? false,
   },
   /**
+   * How many schedules the robot holds — the owner of DP 164.
+   *
+   * The device reports its timers in full on every change, so a count is a real reading of that report
+   * rather than a summary of one: zero means no schedules are set, and `undefined` means this robot has
+   * not reported the DP at all. The schedules themselves are a list, which no property can be, so they
+   * are read through {@link VACUUM_CLEAN_MEMBERS.schedules} beside this.
+   */
+  scheduleCount: {
+    param: VACUUM_DP.TIMING,
+    type: "number",
+    kind: "scalar",
+    provenance: "mega",
+    decode: (raw, codec) => decodeVacuumScheduleCount(raw, codec),
+    decodedKind: "scalar",
+    description: "How many schedules the robot holds — TimerResponse.timers (DP 164, Raw protobuf).",
+    available: (ctx: AvailabilityContext) => ctx.paramIds?.has(VACUUM_DP.TIMING) ?? false,
+  },
+  /**
+   * How many of those schedules will actually fire — switched on, and still pointing at something that
+   * exists.
+   *
+   * A timer whose scene or map was deleted is kept and reported `valid: false` rather than removed, so
+   * "three schedules" and "three schedules that work" are genuinely different numbers, and a host
+   * showing the first without the second explains nothing when a run does not happen.
+   */
+  activeScheduleCount: {
+    readsFrom: "scheduleCount",
+    type: "number",
+    kind: "scalar",
+    provenance: "mega",
+    decode: (raw, codec) => decodeActiveVacuumScheduleCount(raw, codec),
+    decodedKind: "scalar",
+    description: "How many schedules are on and usable — TimerInfo.status (DP 164, Raw protobuf).",
+  },
+  /**
+   * The schedules themselves, decoded from the same DP 164 report the two counts above read.
+   *
+   * A query rather than a property: its value is a list, and the property schema holds scalars. It
+   * answers from state already received — the robot pushes its whole timer list on boot and after any
+   * change — so this sends nothing and cannot fail against a device that is merely asleep.
+   */
+  schedules: {
+    ...method(
+      ({ read, rawDp: codec }) =>
+        (): readonly VacuumSchedule[] | undefined =>
+          decodeVacuumSchedules(read("scheduleCount")?.value, codec),
+      "The robot's schedules, decoded from its last TimerResponse (DP 164, Raw protobuf).",
+      (ctx: AvailabilityContext) => ctx.paramIds?.has(VACUUM_DP.TIMING) ?? false,
+    ),
+    answers: true,
+  },
+  /**
    * WiFi RSSI in dBm (DP 134, Value ro). Schema-confirmed from `thing.m.device.ref.info.list` v5.4.
    * Negative integer; closer to zero is stronger. Useful for diagnostics.
    */
@@ -1905,7 +2062,8 @@ export const VACUUM_CLEAN_MEMBERS = {
    * can only be resumed by starting a fresh run.
    */
   /**
-   * End the current job outright, as opposed to {@link VACUUM_CLEAN_MEMBERS.pauseCleaning}, which\n   * leaves it resumable.
+   * End the current job outright, as opposed to {@link VACUUM_CLEAN_MEMBERS.pauseCleaning}, which
+   * leaves it resumable.
    */
   stopCleaning: {
     type: "bool",
@@ -1919,7 +2077,8 @@ export const VACUUM_CLEAN_MEMBERS = {
       "Stop the current job (ModeCtrlRequest method 12 over DP 152). Method number not captured — unverified.",
   },
   /**
-   * Carry on with a paused job rather than starting a new one — the counterpart the pause verb has\n   * been missing.
+   * Carry on with a paused job rather than starting a new one — the counterpart the pause verb has
+   * been missing.
    */
   resumeCleaning: method(
     ({ sink }) =>
@@ -1929,7 +2088,8 @@ export const VACUUM_CLEAN_MEMBERS = {
     isAiotVacuum,
   ),
   /**
-   * Send the robot to the dock to wash its mops. Distinct from the dock's own `washMops`, which asks\n   * the STATION to run its cycle: this one moves the robot there first.
+   * Send the robot to the dock to wash its mops. Distinct from the dock's own `washMops`, which asks
+   * the STATION to run its cycle: this one moves the robot there first.
    */
   startWashingMops: {
     type: "bool",
@@ -1971,7 +2131,8 @@ export const VACUUM_CLEAN_MEMBERS = {
       "Stop returning to the dock (ModeCtrlRequest method 15 over DP 152). Method number not captured — unverified.",
   },
   /**
-   * Clean the robot's immediate surroundings. Takes no target — the spot is wherever it is standing,\n   * which is why this one needs no `Param` and its area-selecting cousins do.
+   * Clean the robot's immediate surroundings. Takes no target — the spot is wherever it is standing,
+   * which is why this one needs no `Param` and its area-selecting cousins do.
    */
   startSpotClean: {
     type: "bool",
@@ -2013,7 +2174,8 @@ export const VACUUM_CLEAN_MEMBERS = {
       "Start a global cruise (ModeCtrlRequest method 20 over DP 152). Method number not captured — unverified.",
   },
   /**
-   * Enter remote-control cleaning, where the app drives. The SDK offers no steering wire, so this is\n   * only half a feature until one exists — declared for completeness of the vocabulary.
+   * Enter remote-control cleaning, where the app drives. The SDK offers no steering wire, so this is
+   * only half a feature until one exists — declared for completeness of the vocabulary.
    */
   startRemoteControl: {
     type: "bool",
@@ -2083,7 +2245,8 @@ export const VACUUM_CLEAN_MEMBERS = {
     available: (ctx: AvailabilityContext) => ctx.paramIds?.has(VACUUM_DP.RESUME_CLEAN) ?? false,
   },
   /**
-   * Stop smart-follow mode. There is no start verb in the vendor's parameterless set — the mode is\n   * switched on through `smartFollow` in the DP 176 settings, and only stopped from here.
+   * Stop smart-follow mode. There is no start verb in the vendor's parameterless set — the mode is
+   * switched on through `smartFollow` in the DP 176 settings, and only stopped from here.
    */
   stopSmartFollow: {
     type: "bool",

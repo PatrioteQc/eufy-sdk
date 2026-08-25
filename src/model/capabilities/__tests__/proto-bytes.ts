@@ -48,6 +48,14 @@ export function sub(field: number, body: number[]): number[] {
   return [...varint((field << 3) | 2), ...varint(body.length), ...body];
 }
 
+/**
+ * A length-delimited string field, always emitted — an empty string is a present field with no bytes,
+ * which is how a device says "this name is blank" rather than "there is no name here".
+ */
+export function str(field: number, value: string): number[] {
+  return sub(field, [...Buffer.from(value, "utf8")]);
+}
+
 /** Wrap a message body in the `varint(len) ++ body` framing a Raw DP value carries, base64-encoded. */
 export function frame(body: number[]): string {
   return Buffer.from([...varint(body.length), ...body]).toString("base64");

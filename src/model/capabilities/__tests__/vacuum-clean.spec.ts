@@ -14,6 +14,8 @@ import {
   decodeDoNotDisturbActive,
   decodeCleanStat,
   decodeVacuumFault,
+  decodeLanguageField,
+  VOICE_PACK_STATES,
   encodeModeCtrl,
   encodeSelectRoomsClean,
   encodeSelectZonesClean,
@@ -25,6 +27,7 @@ import {
   type VacuumActivity,
   type VacuumCleanType,
   type TuyaCleanType,
+  type VoicePackState,
 } from "../vacuum-clean.js";
 import { bind } from "./bind.js";
 import { byteCodec, frame, int, sub, varint } from "./proto-bytes.js";
@@ -99,7 +102,7 @@ describe("vacuum_clean capability module", () => {
       "activity",
       "volume",
       "battery",
-      "language",
+      "voicePack",
       "cleanType",
       "errorCode",
       "workStatus",
@@ -116,6 +119,7 @@ describe("vacuum_clean capability module", () => {
       "childLock",
       "sideBrushHours",
       "doNotDisturb",
+      "scheduleCount",
       "rssi",
       "resumeClean",
     ]);
@@ -330,10 +334,12 @@ const _doNotDisturb: Exact<typeof vac.doNotDisturb, boolean | undefined> = true;
 const _doNotDisturbActive: Exact<typeof vac.doNotDisturbActive, boolean | undefined> = true;
 const _rssi: Exact<typeof vac.rssi, number | undefined> = true;
 
-// language and volume are AIoT-only READS. Neither ships a setter: the write direction for both
-// rests on the product schema's `writable: true` alone, with no live publishDps capture, and an AIoT
-// dp write dispatches for real rather than being refused by a router guard.
-const _language: Exact<typeof vac.language, string | undefined> = true;
+// The voice pack and the volume are AIoT-only READS. Neither ships a setter. For the volume the write
+// direction rests on the product schema's `writable: true` alone, with no live publishDps capture, and
+// an AIoT dp write dispatches for real rather than being refused by a router guard. For the voice pack
+// the write is not a setter's shape at all — it carries a CDN url and an md5 the device verifies.
+const _voicePack: Exact<typeof vac.voicePack, number | undefined> = true;
+const _voicePackState: Exact<typeof vac.voicePackState, VoicePackState | undefined> = true;
 const _volume: Exact<typeof vac.volume, number | undefined> = true;
 
 export const _surfaceAssertions = [
@@ -350,7 +356,8 @@ export const _surfaceAssertions = [
   _doNotDisturb,
   _doNotDisturbActive,
   _rssi,
-  _language,
+  _voicePack,
+  _voicePackState,
   _volume,
 ];
 
@@ -447,6 +454,37 @@ describe("decodeUnisetting (UnisettingResponse toggles)", () => {
     expect(decodeUnisetting(frame(sub(MULTI_MAP, int(1, 1))), byteCodec, CHILD_LOCK)).toBeUndefined();
     expect(decodeUnisetting(frame(sub(CHILD_LOCK, int(1, 1))), undefined, CHILD_LOCK)).toBeUndefined();
     expect(decodeUnisetting(undefined, byteCodec, CHILD_LOCK)).toBeUndefined();
+  });
+});
+
+describe("decodeLanguageField (LanguageResponse → voice pack)", () => {
+  // What the property this replaced actually held. DP 162 is Raw in both directions, so the old
+  // `language` read published this base64 typed as a locale code — a value no caller could use and
+  // none would recognise as wrong at a glance, since a string property answering a string looks fine.
+  const response = frame([...int(1, 1), ...int(2, 7), ...int(3, 22), ...int(5, 2)]);
+
+  it("reads each field of the response", () => {
+    expect(decodeLanguageField(response, byteCodec, 1)).toBe(1);
+    expect(decodeLanguageField(response, byteCodec, 2)).toBe(7);
+    expect(decodeLanguageField(response, byteCodec, 3)).toBe(22);
+    expect(decodeLanguageField(response, byteCodec, 5)).toBe(2);
+  });
+
+  it("reads an absent field as the proto3 zero, not as missing", () => {
+    // A robot on its shipped voice pack sends no `current_id` at all: the id is 0 and proto3 omits it.
+    // Reading that as `undefined` would report "this device does not tell us" about the commonest case
+    // there is.
+    expect(decodeLanguageField(frame([...int(1, 3)]), byteCodec, 2)).toBe(0);
+  });
+
+  it("refuses a payload it cannot parse, and one with no codec", () => {
+    expect(decodeLanguageField("en", byteCodec, 2)).toBeUndefined();
+    expect(decodeLanguageField(response, undefined, 2)).toBeUndefined();
+    expect(decodeLanguageField(undefined, byteCodec, 2)).toBeUndefined();
+  });
+
+  it("names the download states in the vendor's order", () => {
+    expect(VOICE_PACK_STATES).toEqual(["idle", "updating", "success", "failure"]);
   });
 });
 
@@ -945,23 +983,33 @@ describe("vacuum_clean — DP-based action routing", () => {
     expect(acts.doNotDisturb).toBeUndefined();
   });
 
-  it("language and volume are reads only — no setter is installed on any device", () => {
-    // The write direction for DP 161 and DP 162 rests on the product schema's `writable: true` and
-    // no live publishDps capture. Unlike a Tuya dp write, an AIoT one is not refused by a router
-    // guard — it reaches the device — so the setter stays off the surface until a capture exists.
+  it("the voice pack and the volume are reads only — no setter is installed on any device", () => {
+    // The write direction for DP 161 rests on the product schema's `writable: true` and no live
+    // publishDps capture. Unlike a Tuya dp write, an AIoT one is not refused by a router guard — it
+    // reaches the device — so the setter stays off the surface until a capture exists. DP 162's write
+    // is further off than that: a `LanguageRequest.Desc` carries a CDN url and an md5 the device
+    // checks, so there is no value a caller could pass a setter.
     for (const category of ["eufy_home", "eufy_home_tuya", undefined]) {
       const { acts } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, category));
+      expect((acts as Record<string, unknown>).setVoicePack).toBeUndefined();
       expect((acts as Record<string, unknown>).setLanguage).toBeUndefined();
       expect((acts as Record<string, unknown>).setVolume).toBeUndefined();
     }
   });
 
-  it("language and volume still read on an AIoT vacuum", () => {
+  it("the voice pack and the volume still read on an AIoT vacuum", () => {
     const reported = new Set([VACUUM_DP.LANGUAGE, VACUUM_DP.VOLUME]);
+    // A real `LanguageResponse`: default_id 1, current_id 7, version 22, state UPDATING.
+    const payload = frame([...int(1, 1), ...int(2, 7), ...int(3, 22), ...int(5, 1)]);
     const { acts } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, "eufy_home", reported), {
-      read: (name) => (name === "language" ? { value: "en" } : name === "volume" ? { value: 38 } : undefined),
+      read: (name) => (name === "voicePack" ? { value: payload } : name === "volume" ? { value: 38 } : undefined),
+      rawDp: byteCodec,
     });
-    expect(acts.language).toBe("en");
+
+    expect(acts.voicePack).toBe(7);
+    expect(acts.defaultVoicePack).toBe(1);
+    expect(acts.voicePackVersion).toBe(22);
+    expect(acts.voicePackState).toBe("updating");
     expect(acts.volume).toBe(38);
   });
 });
