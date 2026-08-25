@@ -13,6 +13,43 @@ import { method, propertiesOf, type Members, type Surface } from "./members.js";
  * number, the same way the P2P capabilities name their feature-command ids (`CAMERA_CMD`, `LIGHT_CMD`).
  * Values confirmed against a live T2351 DP dump.
  */
+/**
+ * Which protobuf message each Raw DP carries, in each direction — the product catalogue's own
+ * `下发`(downlink) / `上报`(uplink) note per data point, transcribed.
+ *
+ * The single most useful thing the catalogue gives that a DP number alone does not: a DP is Raw, and
+ * knowing WHICH message it frames is what makes it decodable. Recorded here rather than rediscovered,
+ * and deliberately as data rather than as code — nothing dispatches on it. It is the map a reader
+ * needs when they reach a DP this SDK does not decode yet.
+ *
+ * Two entries are the vendor's own dead ends: DP 150 is marked "预留。不使用。" — reserved, NOT used —
+ * and 165/175 are reserved with no message at all. Do not build on them.
+ */
+export const VACUUM_DP_MESSAGE: Readonly<Record<number, { readonly send?: string; readonly report?: string }>> = {
+  150: {}, // `proto` — reserved, explicitly not used
+  152: { send: "ModeCtrlRequest", report: "ModeCtrlResponse" },
+  153: { report: "WorkStatus" },
+  154: { send: "CleanParamRequest", report: "CleanParamResponse" },
+  157: { send: "UndisturbedRequest", report: "UndisturbedResponse" },
+  162: { send: "LanguageRequest", report: "LanguageResponse" },
+  164: { send: "TimerRequest", report: "TimerResponse" },
+  165: {}, // reserved
+  166: { send: "DebugRequest", report: "DebugResponse" },
+  167: { report: "CleanStatistics" },
+  168: { send: "ConsumableRequest", report: "ConsumableRuntime" },
+  169: { send: "AppInfo", report: "DeviceInfo" },
+  170: { send: "MapEditRequest", report: "MapEditResponse" },
+  171: { send: "MultiMapsCtrlRequest", report: "MultiMapsCtrlResponse" },
+  172: { send: "MultiMapsManageRequest", report: "MultiMapsManageResponse" },
+  173: { send: "StationRequest", report: "StationResponse" },
+  174: { send: "MediaManagerRequest", report: "MediaManagerResponse" },
+  175: {}, // reserved
+  177: { send: "ErrorCode", report: "ErrorCode" }, // downlink is a MUTE list, not a fault report
+  178: { send: "PromptCode", report: "PromptCode" }, // same: downlink mutes prompts
+  179: { send: "AnalysisRequest", report: "AnalysisResponse" },
+  180: { send: "SceneRequest", report: "SceneResponse" },
+};
+
 export const VACUUM_DP = {
   /** Power on/off (DP 151 power switch, Bool). */
   POWER: 151,
@@ -32,6 +69,12 @@ export const VACUUM_DP = {
   DO_NOT_DISTURB: 157,
   /** CleanStatistics (DP 167, Raw protobuf) — session and lifetime totals (see {@link decodeCleanStat}). */
   CLEAN_STATS: 167,
+  /** Remote-control direction (DP 155, Enum: Brake/Forward/Back/Left/Right). Steering, not a ModeCtrl verb. */
+  REMOTE_CTRL: 155,
+  /** `pause_job` (DP 156, Bool) — resume an interrupted job after charging. The vendor's 断点续扫. */
+  RESUME_CLEAN: 156,
+  /** `timing` (DP 164, Raw) — TimerRequest/TimerResponse. THIS is where schedules live. */
+  TIMING: 164,
   /** ConsumableRuntime (DP 168, Raw protobuf) — hours used per replaceable part (see {@link decodeConsumableHours}). */
   CONSUMABLES: 168,
   /** UnisettingResponse (DP 176, Raw protobuf) — the device-wide setting toggles (see {@link decodeUnisetting}). */
@@ -1897,18 +1940,60 @@ export const VACUUM_CLEAN_MEMBERS = {
       "Enter remote-control cleaning (ModeCtrlRequest method 5 over DP 152). Method number not captured — unverified.",
   },
   /**
-   * Leave remote-control cleaning.
+   * Leave remote-control mode.
+   *
+   * **Uses `STOP_TASK`, not `STOP_RC_CLEAN`.** The product catalogue's own note on DP 155 spells the
+   * flow out: enter with `START_RC_CLEAN` or any direction, leave with
+   * `ModeCtrlRequest.method.STOP_TASK`. `STOP_RC_CLEAN`(16) exists in the enum but is not what the app
+   * sends to exit — an earlier revision of this member assumed it was, on nothing but the name.
    */
   stopRemoteControl: {
     type: "bool",
     kind: "boolean",
     writeOnly: true,
     unverified: true,
-    write: () => aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.STOP_RC_CLEAN, nextModeCtrlSeq())),
+    write: () => aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.STOP_TASK, nextModeCtrlSeq())),
     available: (ctx: AvailabilityContext) => isAiotVacuum(ctx),
     provenance: "mega",
     description:
-      "Leave remote-control cleaning (ModeCtrlRequest method 16 over DP 152). Method number not captured — unverified.",
+      "Leave remote-control mode (ModeCtrlRequest method 12 STOP_TASK over DP 152, per the DP 155 " +
+      "catalogue note). Not captured on a device — unverified.",
+  },
+  /**
+   * Steer the robot while it is in remote-control mode — DP 155, an enum of directions rather than a
+   * `ModeCtrlRequest`.
+   *
+   * `brake` stops the current movement without leaving remote-control mode; the catalogue's note says
+   * the app sends it on key-release. Leaving the mode entirely is
+   * {@link VACUUM_CLEAN_MEMBERS.stopRemoteControl}.
+   *
+   * Sending any direction also ENTERS remote control, so a caller does not have to start it first.
+   */
+  remoteControlDirection: {
+    param: VACUUM_DP.REMOTE_CTRL,
+    type: "string",
+    kind: "enum",
+    writeOnly: true,
+    unverified: true,
+    enumValues: { 0: "Brake", 1: "Forward", 2: "Back", 3: "Left", 4: "Right" },
+    write: (v) => aiotDp(VACUUM_DP.REMOTE_CTRL, String(v)),
+    available: (ctx: AvailabilityContext) => isAiotVacuum(ctx),
+    provenance: "mega",
+    description:
+      "Remote-control direction (DP 155 Enum: Brake/Forward/Back/Left/Right). Values from the product " +
+      "catalogue; the wire is not captured — unverified.",
+  },
+  /**
+   * Whether the robot resumes an interrupted job after charging, rather than treating the next start
+   * as a fresh run. The vendor calls this 断点续扫 — "resume from the break point".
+   */
+  resumeClean: {
+    param: VACUUM_DP.RESUME_CLEAN,
+    type: "bool",
+    kind: "boolean",
+    provenance: "mega",
+    description: "Resume an interrupted job after charging (DP 156 pause_job, Bool).",
+    available: (ctx: AvailabilityContext) => ctx.paramIds?.has(VACUUM_DP.RESUME_CLEAN) ?? false,
   },
   /**
    * Stop smart-follow mode. There is no start verb in the vendor's parameterless set — the mode is\n   * switched on through `smartFollow` in the DP 176 settings, and only stopped from here.

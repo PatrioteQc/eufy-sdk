@@ -19,6 +19,7 @@ import {
   encodeSelectZonesClean,
   encodeSceneClean,
   ModeCtrlParamMethod,
+  VACUUM_DP_MESSAGE,
   ModeCtrlMethod,
   type VacuumCleanActions,
   type VacuumActivity,
@@ -116,6 +117,7 @@ describe("vacuum_clean capability module", () => {
       "sideBrushHours",
       "doNotDisturb",
       "rssi",
+      "resumeClean",
     ]);
   });
 
@@ -1084,5 +1086,57 @@ describe("area-selecting ModeCtrl frames (Tier B — encoders only)", () => {
     for (const name of ["cleanRooms", "cleanZones", "startScene", "setCleanRooms"]) {
       expect(a[name]).toBeUndefined();
     }
+  });
+});
+
+describe("what the T2351 product catalogue settled", () => {
+  it("puts schedules on DP 164, which no source previously named", () => {
+    // The open question was which DP carries `timing.proto`. The catalogue answers it outright:
+    // dp 164 `timing`, TimerRequest down / TimerResponse up.
+    expect(VACUUM_DP.TIMING).toBe(164);
+    expect(VACUUM_DP_MESSAGE[164]).toEqual({ send: "TimerRequest", report: "TimerResponse" });
+  });
+
+  it("confirms the two DP numbers that were resolved offline and flagged as disputed", () => {
+    expect(VACUUM_DP_MESSAGE[157]).toMatchObject({ report: "UndisturbedResponse" });
+    expect(VACUUM_DP_MESSAGE[168]).toMatchObject({ report: "ConsumableRuntime" });
+    expect(VACUUM_DP.DO_NOT_DISTURB).toBe(157);
+    expect(VACUUM_DP.CONSUMABLES).toBe(168);
+  });
+
+  it("records DP 162 as a message pair, not a locale string", () => {
+    // The reason the DP 162 write is still held: the catalogue types it Raw carrying
+    // LanguageRequest/LanguageResponse, so a plain locale string was never the wire.
+    expect(VACUUM_DP_MESSAGE[162]).toEqual({ send: "LanguageRequest", report: "LanguageResponse" });
+  });
+
+  it("marks the vendor's own dead ends as carrying no message", () => {
+    // DP 150 is annotated "reserved, not used"; 165 and 175 are reserved with no message at all.
+    // Recorded so nobody builds on them and then wonders why nothing answers.
+    for (const dp of [150, 165, 175]) expect(VACUUM_DP_MESSAGE[dp]).toEqual({});
+  });
+
+  it("leaves remote control via STOP_TASK, as the DP 155 note specifies", () => {
+    // Not STOP_RC_CLEAN(16), which an earlier revision assumed from the name alone. The catalogue
+    // spells the flow out: enter with START_RC_CLEAN or a direction, leave with STOP_TASK.
+    const { acts } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, "eufy_home", new Set([151])));
+    expect((acts as Record<string, unknown>).stopRemoteControl).toBeUndefined(); // still unverified
+    expect(ModeCtrlMethod.STOP_TASK).toBe(12);
+  });
+
+  it("keeps every newly named DP off the callable surface until a capture exists", () => {
+    const dps = new Set([VACUUM_DP.REMOTE_CTRL, VACUUM_DP.RESUME_CLEAN]);
+    const { acts } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, "eufy_home", dps), {
+      // Stored as a real boolean: `Device.applyParams` coerces by the declared type before storing,
+      // so a getter never sees the wire's "1". A string here reads as undefined, correctly.
+      read: (name) => (name === "resumeClean" ? { value: true } : undefined),
+    });
+    const a = acts as Record<string, unknown>;
+    // A plain Bool DP the device reports — the READ installs on evidence.
+    expect(a.resumeClean).toBe(true);
+    // Every write stays off: the catalogue names the wire, it does not prove what the app sends.
+    expect(a.setResumeClean).toBeUndefined();
+    expect(a.setRemoteControlDirection).toBeUndefined();
+    expect(a.remoteControlDirection).toBeUndefined();
   });
 });
