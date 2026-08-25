@@ -67,7 +67,10 @@ export const VACUUM_DP = {
   CLEAN_PARAM: 154,
   /** Speaker volume 0-100 (DP 161, Value). */
   VOLUME: 161,
-  /** Device UI language (DP 162, String rw). Locale code set by the app, e.g. "en", "zh", "de". */
+  /**
+   * LanguageResponse (DP 162, Raw protobuf) — the VOICE PACK, not a locale (see {@link decodeLanguageField}).
+   * Named for the vendor's own `language` code, which is what the catalogue calls it.
+   */
   LANGUAGE: 162,
   /** Battery level 0-100 (DP 163, Value) — a clean-namespace DP, NOT the security param 1101. */
   BATTERY: 163,
@@ -1051,6 +1054,41 @@ export function decodeUnisetting(
 }
 
 /**
+ * Field numbers inside `LanguageResponse` (DP 162).
+ *
+ * The DP the plan's §2 called out: it is a voice-pack descriptor, not a locale. Nothing here is a
+ * language tag — `current_id` names one of the vendor's numbered voice packs, and what that pack
+ * SOUNDS like is a table the vendor ships and this SDK does not have.
+ */
+const LANGUAGE_FIELD = { DEFAULT_ID: 1, CURRENT_ID: 2, VERSION: 3, SET_ID: 4, STATE: 5 } as const;
+
+/** `LanguageResponse.State` — where a voice-pack download has got to. */
+export const VOICE_PACK_STATES = ["idle", "updating", "success", "failure"] as const;
+export type VoicePackState = (typeof VOICE_PACK_STATES)[number];
+
+/**
+ * Read one varint field out of a `LanguageResponse` (DP 162).
+ *
+ * A flat message, so one level rather than the two the consumables and settings reports need. A field
+ * absent from a payload that DID parse reads as `0`, the proto3 default — for `current_id` that is the
+ * vendor's own way of saying the robot is on the pack it shipped with. An unparseable payload is
+ * `undefined`: the device said nothing this can be read from.
+ * @internal
+ */
+export function decodeLanguageField(
+  raw: ParamValue | undefined,
+  codec: RawDpCodec | undefined,
+  field: number,
+): number | undefined {
+  if (typeof raw !== "string" || !codec) return undefined;
+  const fields = codec.decode(raw);
+  if (!fields) return undefined;
+  const hit = fields.find((f) => f.field === field);
+  if (hit === undefined) return 0;
+  return hit.kind === "int" ? Number(hit.value) : undefined;
+}
+
+/**
  * Field numbers inside `ConsumableRuntime` (DP 168) — one per replaceable part.
  *
  * **8 and 9 are deliberately unused by the vendor.** Do not renumber around the gap: the parts after it
@@ -1224,18 +1262,70 @@ export const VACUUM_CLEAN_MEMBERS = {
     description: "Battery level 0-100 (DP 163 AIoT / DP 104 Tuya). NOTE: clean namespace — not param 1101.",
   },
   /**
-   * Device UI language — the locale the robot uses for its voice prompts (DP 162, String rw).
-   * AIoT clean line only; the Tuya X8 Pro has no confirmed language DP in its 1–134 schema.
-   * Write direction confirmed from `get_product_data_point` (`writable: true`); locale format is
-   * an open string (no live report observed for a closed set of values yet).
+   * Which voice pack the robot is speaking — the vendor's own numbered id, not a locale.
+   *
+   * Replaces a `language` read that answered a locale code. It never could: DP 162 carries a
+   * `LanguageResponse`, so what that property published was the base64 of a protobuf message typed as
+   * text. The plan's §2 called this out from the schema and the product catalogue confirmed it — the DP
+   * is Raw in both directions.
+   *
+   * The id alone is what the device reports; which voice it corresponds to is a vendor table keyed by
+   * firmware, and this SDK does not carry one. A host that wants names owns that mapping — which is
+   * also why there is no setter here: selecting a pack means sending a `LanguageRequest.Desc` carrying
+   * a CDN url and an md5 the device verifies, and a descriptor is not something a caller can be asked
+   * to invent.
    */
-  language: {
+  voicePack: {
     param: VACUUM_DP.LANGUAGE,
-    type: "string",
-    kind: "text",
+    type: "number",
+    kind: "identifier",
     provenance: "mega",
-    description: "Device UI language locale code (DP 162, String ro). AIoT clean line.",
+    decode: (raw, codec) => decodeLanguageField(raw as ParamValue | undefined, codec, LANGUAGE_FIELD.CURRENT_ID),
+    decodedKind: "identifier",
+    description: "The voice pack in use — LanguageResponse.current_id (DP 162, Raw protobuf). AIoT clean line.",
     available: (ctx: AvailabilityContext) => isAiotVacuum(ctx),
+  },
+  /**
+   * The voice pack the robot fell back to, which is the one its firmware shipped with. Differs from
+   * {@link VACUUM_CLEAN_MEMBERS.voicePack} exactly when someone has chosen another.
+   */
+  defaultVoicePack: {
+    readsFrom: "voicePack",
+    type: "number",
+    kind: "identifier",
+    provenance: "mega",
+    decode: (raw, codec) => decodeLanguageField(raw as ParamValue | undefined, codec, LANGUAGE_FIELD.DEFAULT_ID),
+    decodedKind: "identifier",
+    description: "The firmware's own voice pack — LanguageResponse.default_id (DP 162, Raw protobuf).",
+  },
+  /**
+   * How a voice-pack change is going. A pack is downloaded from a CDN and md5-checked by the device, so
+   * a selection is not instant and can fail — this is the field that says which happened.
+   */
+  voicePackState: {
+    readsFrom: "voicePack",
+    type: "string",
+    provenance: "mega",
+    decode: (raw, codec) => {
+      const v = decodeLanguageField(raw as ParamValue | undefined, codec, LANGUAGE_FIELD.STATE);
+      return v === undefined ? undefined : VOICE_PACK_STATES[v];
+    },
+    decodedKind: "enum",
+    decodedValues: VOICE_PACK_STATES as readonly string[],
+    description: "Voice-pack download state — LanguageResponse.state (DP 162, Raw protobuf).",
+  },
+  /**
+   * The installed voice pack's version, as the device counts it. Useful only against the vendor's own
+   * catalogue for the same pack id; on its own it is a number that changes when a pack is updated.
+   */
+  voicePackVersion: {
+    readsFrom: "voicePack",
+    type: "number",
+    kind: "scalar",
+    provenance: "mega",
+    decode: (raw, codec) => decodeLanguageField(raw as ParamValue | undefined, codec, LANGUAGE_FIELD.VERSION),
+    decodedKind: "scalar",
+    description: "Installed voice-pack version — LanguageResponse.version (DP 162, Raw protobuf).",
   },
   /**
    * The SETTING for what to do with a surface, not what a running job is doing — the two disagree while
