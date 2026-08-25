@@ -116,6 +116,7 @@ describe("vacuum_clean capability module", () => {
       "childLock",
       "sideBrushHours",
       "doNotDisturb",
+      "scheduleCount",
       "rssi",
       "resumeClean",
     ]);

@@ -6,6 +6,12 @@ import { rawDp, type RawDpWriter } from "../../core/raw-dp-writer.js";
 import { isAiotVacuum, isTuyaVacuum } from "../device-family.js";
 import { pickDpParams, aiotDp } from "./access.js";
 import { method, propertiesOf, type Members, type Surface } from "./members.js";
+import {
+  decodeActiveVacuumScheduleCount,
+  decodeVacuumScheduleCount,
+  decodeVacuumSchedules,
+  type VacuumSchedule,
+} from "../vacuum-schedules.js";
 
 /**
  * RoboVac Tuya **DP ids** this capability reads — the "clean" namespace (ids ~150-180, from the cloud
@@ -1887,6 +1893,58 @@ export const VACUUM_CLEAN_MEMBERS = {
     decodedKind: "boolean",
     description: "Whether the do-not-disturb window is open now — Undisturbed.active (DP 157 AIoT, Raw protobuf).",
     available: (ctx: AvailabilityContext) => ctx.paramIds?.has(VACUUM_DP.DO_NOT_DISTURB) ?? false,
+  },
+  /**
+   * How many schedules the robot holds — the owner of DP 164.
+   *
+   * The device reports its timers in full on every change, so a count is a real reading of that report
+   * rather than a summary of one: zero means no schedules are set, and `undefined` means this robot has
+   * not reported the DP at all. The schedules themselves are a list, which no property can be, so they
+   * are read through {@link VACUUM_CLEAN_MEMBERS.schedules} beside this.
+   */
+  scheduleCount: {
+    param: VACUUM_DP.TIMING,
+    type: "number",
+    kind: "scalar",
+    provenance: "mega",
+    decode: (raw, codec) => decodeVacuumScheduleCount(raw, codec),
+    decodedKind: "scalar",
+    description: "How many schedules the robot holds — TimerResponse.timers (DP 164, Raw protobuf).",
+    available: (ctx: AvailabilityContext) => ctx.paramIds?.has(VACUUM_DP.TIMING) ?? false,
+  },
+  /**
+   * How many of those schedules will actually fire — switched on, and still pointing at something that
+   * exists.
+   *
+   * A timer whose scene or map was deleted is kept and reported `valid: false` rather than removed, so
+   * "three schedules" and "three schedules that work" are genuinely different numbers, and a host
+   * showing the first without the second explains nothing when a run does not happen.
+   */
+  activeScheduleCount: {
+    readsFrom: "scheduleCount",
+    type: "number",
+    kind: "scalar",
+    provenance: "mega",
+    decode: (raw, codec) => decodeActiveVacuumScheduleCount(raw, codec),
+    decodedKind: "scalar",
+    description: "How many schedules are on and usable — TimerInfo.status (DP 164, Raw protobuf).",
+  },
+  /**
+   * The schedules themselves, decoded from the same DP 164 report the two counts above read.
+   *
+   * A query rather than a property: its value is a list, and the property schema holds scalars. It
+   * answers from state already received — the robot pushes its whole timer list on boot and after any
+   * change — so this sends nothing and cannot fail against a device that is merely asleep.
+   */
+  schedules: {
+    ...method(
+      ({ read, rawDp: codec }) =>
+        (): readonly VacuumSchedule[] | undefined =>
+          decodeVacuumSchedules(read("scheduleCount")?.value, codec),
+      "The robot's schedules, decoded from its last TimerResponse (DP 164, Raw protobuf).",
+      (ctx: AvailabilityContext) => ctx.paramIds?.has(VACUUM_DP.TIMING) ?? false,
+    ),
+    answers: true,
   },
   /**
    * WiFi RSSI in dBm (DP 134, Value ro). Schema-confirmed from `thing.m.device.ref.info.list` v5.4.

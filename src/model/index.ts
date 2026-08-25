@@ -22,6 +22,16 @@ export {
   type CleanRecordDetail,
   type CleanFinishReason,
 } from "./clean-record-detail.js";
+export {
+  decodeVacuumSchedules,
+  decodeVacuumScheduleCount,
+  decodeActiveVacuumScheduleCount,
+  VACUUM_SCHEDULE_ACTIONS,
+  VACUUM_SCHEDULE_WEEKDAYS,
+  type VacuumSchedule,
+  type VacuumScheduleAction,
+  type VacuumScheduleWeekday,
+} from "./vacuum-schedules.js";
 export { paramDef, namespaceForCodec, type ParamNamespace } from "./param-namespace.js";
 export { inspectParams, formatInspection, type ParamInspection, type DeviceInspection } from "./inspect.js";
 // The capability surface: the typed `dev.<cap>()` objects, the member tables they derive from, and the
