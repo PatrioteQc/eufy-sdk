@@ -647,13 +647,37 @@ const CLEAN_PARAM_FIELD = {
   CLEAN_CARPET: 2,
   /** `clean_extent` — how far past the mapped edge to go. */
   CLEAN_EXTENT: 3,
+  /** `mop_mode` — carries TWO bare scalars: level(1) and corner_clean(2). */
+  MOP_MODE: 4,
+  /** `level` within a `mop_mode`. */
+  MOP_LEVEL: 1,
+  /** `corner_clean` within a `mop_mode` — the extra edge pass. */
+  MOP_CORNER: 2,
   /** `smart_mode_sw` — the robot's own judgement about a room, on or off. */
   SMART_MODE: 5,
+  /**
+   * `fan` — the suction level, and the SAME scale DP 158 reports.
+   *
+   * Deliberately not surfaced as its own read. A live capture showed the two moving together: DP 158
+   * went 2 then 0 while `clean_param.fan` went `{value:2}` then absent-for-zero. `suction.level`
+   * already publishes that value from DP 158, and a second name for it here would be one feature
+   * spelled twice. Named so a reader knows what field 6 is, not so anything reads it.
+   */
+  FAN: 6,
   /** `clean_times` — how many passes one job makes. */
   CLEAN_TIMES: 7,
   /** `value` within a `CleanType`. */
   VALUE: 1,
 } as const;
+
+/**
+ * `mop_mode.level` — how much water the mop lays down.
+ *
+ * Confirmed on a live T2351: setting the app's water level to High reported `mop_mode { level: 2 }`.
+ */
+export const MOP_LEVELS = ["low", "middle", "high"] as const;
+export type MopLevel = (typeof MOP_LEVELS)[number];
+const MOP_LEVEL: Record<number, MopLevel> = { 0: "low", 1: "middle", 2: "high" };
 
 /** `clean_carpet.strategy` — what the robot does when it meets a carpet. */
 export const CARPET_STRATEGIES = ["autoRaise", "avoid", "ignore"] as const;
@@ -698,6 +722,7 @@ export function decodeCleanParamValue(
   raw: ParamValue | undefined,
   codec: RawDpCodec | undefined,
   field: number,
+  inner?: number,
 ): number | undefined {
   if (typeof raw !== "string" || !codec) return undefined;
   const configured = codec.decode(raw)?.find((f) => f.field === CLEAN_PARAM_FIELD.CONFIGURED);
@@ -706,8 +731,13 @@ export function decodeCleanParamValue(
   if (setting === undefined) return undefined;
   if (setting.kind === "int") return Number(setting.value);
   if (!setting.value.length) return 0;
-  const value = codec.nested(setting.value)?.find((f) => f.kind === "int");
-  return value === undefined ? 0 : Number(value.value);
+  const fields = codec.nested(setting.value);
+  // A NAMED inner field when the caller knows it, the first varint otherwise. `mop_mode` is why the
+  // distinction exists: it carries two scalars side by side — level(1) and corner_clean(2) — so
+  // "whatever comes first" would silently read the level as the corner setting.
+  const value = inner === undefined ? fields?.find((f) => f.kind === "int") : fields?.find((f) => f.field === inner);
+  if (value === undefined) return 0;
+  return value.kind === "int" ? Number(value.value) : undefined;
 }
 
 /**
@@ -1270,6 +1300,53 @@ export const VACUUM_CLEAN_MEMBERS = {
     },
     decodedKind: "boolean",
     description: "Smart mode from CleanParam.smart_mode_sw (DP 154 AIoT, Raw protobuf).",
+  },
+  /**
+   * How much water the mop lays down — the AIoT line's own scale.
+   *
+   * Distinct from `mopWater`, which is the Tuya line's DP 105 and reports `Dry`/`Low`/`Mid`/`High`.
+   * The two are NOT merged under one name: this scale has three members and that one has four, so any
+   * mapping between them would be invented rather than read. A host that wants one field checks
+   * whichever its device reports.
+   */
+  mopLevel: {
+    readsFrom: "cleanType",
+    type: "string",
+    provenance: "verified",
+    decode: (raw, codec) => {
+      const v = decodeCleanParamValue(
+        raw as ParamValue | undefined,
+        codec,
+        CLEAN_PARAM_FIELD.MOP_MODE,
+        CLEAN_PARAM_FIELD.MOP_LEVEL,
+      );
+      return v === undefined ? undefined : MOP_LEVEL[v];
+    },
+    decodedKind: "enum",
+    decodedValues: MOP_LEVELS as readonly string[],
+    description: "Mop water level from CleanParam.mop_mode.level (DP 154 AIoT). Captured on a live T2351.",
+  },
+  /**
+   * Whether the robot makes an extra pass along edges while mopping — the app calls it edge-hug
+   * mopping. Sits beside {@link VACUUM_CLEAN_MEMBERS.mopLevel} in the same `mop_mode`, which is why
+   * this read names its inner field rather than taking the first scalar it finds.
+   */
+  mopCornerClean: {
+    readsFrom: "cleanType",
+    type: "bool",
+    kind: "boolean",
+    provenance: "verified",
+    decode: (raw, codec) => {
+      const v = decodeCleanParamValue(
+        raw as ParamValue | undefined,
+        codec,
+        CLEAN_PARAM_FIELD.MOP_MODE,
+        CLEAN_PARAM_FIELD.MOP_CORNER,
+      );
+      return v === undefined ? undefined : v !== 0;
+    },
+    decodedKind: "boolean",
+    description: "Edge-hug mopping from CleanParam.mop_mode.corner_clean (DP 154 AIoT). Captured on a live T2351.",
   },
   /**
    * How many passes one job makes over the same floor. `0` is the device stating no repeat rather than

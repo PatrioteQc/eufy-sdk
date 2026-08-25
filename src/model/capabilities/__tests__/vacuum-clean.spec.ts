@@ -1229,3 +1229,40 @@ describe("what the live T2351 capture confirmed", () => {
     expect(decodeDoNotDisturbActive(live, byteCodec)).toBe(true);
   });
 });
+
+describe("mop_mode — two scalars in one wrapper", () => {
+  /** `clean_param(1) { mop_mode(4) { level(1), corner_clean(2) } }`, as a live T2351 sends it. */
+  const mop = (body: number[]): string => frame(sub(1, sub(4, body)));
+
+  it("reads level and corner_clean as the separate settings they are", () => {
+    // Captured: water level High then edge-hug on gave mop_mode { level: 2, corner_clean: 1 }.
+    const both = mop([...int(1, 2), ...int(2, 1)]);
+    expect(decodeCleanParamValue(both, byteCodec, 4, 1)).toBe(2);
+    expect(decodeCleanParamValue(both, byteCodec, 4, 2)).toBe(1);
+  });
+
+  it("does not read the level as the corner setting when only the level is set", () => {
+    // The trap the named inner field exists for. Taking "the first varint" would answer 2 for BOTH,
+    // reporting edge-hug as on because the water level happened to be high.
+    const levelOnly = mop(int(1, 2));
+    expect(decodeCleanParamValue(levelOnly, byteCodec, 4, 1)).toBe(2);
+    expect(decodeCleanParamValue(levelOnly, byteCodec, 4, 2)).toBe(0);
+    // …which is what the un-named form still does, and why it is only used on single-valued wrappers.
+    expect(decodeCleanParamValue(levelOnly, byteCodec, 4)).toBe(2);
+  });
+
+  it("surfaces both on the bound device", () => {
+    const acts = bind<VacuumCleanActions>(
+      "vacuum_clean",
+      fakeCtx(undefined, undefined, new Set([VACUUM_DP.CLEAN_PARAM])),
+      { rawDp: byteCodec, read: (n) => (n === "cleanType" ? { value: mop([...int(1, 2), ...int(2, 1)]) } : undefined) },
+    ).acts;
+    expect(acts.mopLevel).toBe("high");
+    expect(acts.mopCornerClean).toBe(true);
+  });
+
+  it("still publishes one property for DP 154, now with six readings of it", () => {
+    const named = VACUUM_CLEAN.properties.filter((p) => p.paramType === VACUUM_DP.CLEAN_PARAM).map((p) => p.name);
+    expect(named).toEqual(["cleanType"]);
+  });
+});
