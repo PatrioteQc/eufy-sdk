@@ -261,14 +261,16 @@ export class SharedLiveSource {
   private _state: SharedLiveState = "idle";
   private disposed = false;
 
-  /** Whether the CURRENT stream generation has delivered a keyframe; reset by every {@link warm}. */
-  private deliveredKeyframe = false;
   /**
-   * Whether the CURRENT stream generation has delivered any video access unit; reset by every {@link warm}.
-   * Separates a source that produced nothing from one whose units were never decodable — the two stages of
+   * What the CURRENT stream generation has delivered — replaced wholesale by every {@link warm}, so a new
+   * generation cannot inherit a previous one's evidence and no field can be forgotten in the reset.
+   *
+   * All three are read together to stage a start failure: `keyframe` is what makes a stream live at all,
+   * while `video` and `audio` are what separate a source that produced nothing from one whose units were
+   * never decodable and one that is answering with sound and no picture — the three stages of
    * {@link LiveStreamStartError}.
    */
-  private deliveredVideo = false;
+  private delivered = { keyframe: false, video: false, audio: false };
   /** Last keyframe access unit seen — replayed to a joining consumer (keyframe-prime). */
   private lastKeyframe?: Extract<TimedMediaFrame, { kind: "video" }>;
   /** Last parameter sets the stream announced — see {@link parameterSets}. */
@@ -387,8 +389,7 @@ export class SharedLiveSource {
    */
   private warm(): void {
     this._state = "warming";
-    this.deliveredKeyframe = false;
-    this.deliveredVideo = false;
+    this.delivered = { keyframe: false, video: false, audio: false };
     this.warmAttempts = 1;
     this.logger.debug(`${this.tag} warming (retry=${this.warmRetryMs}ms deadline=${this.warmTimeoutMs}ms)`);
     const stream = this.opts.makeStream();
@@ -466,12 +467,15 @@ export class SharedLiveSource {
 
   /**
    * The typed failure for a start that produced no keyframe, staged by what the source did deliver: nothing
-   * at all, or access units a decoder cannot begin at.
+   * at all, audio without a single video frame, or access units a decoder cannot begin at.
+   *
+   * Video takes precedence when both arrived: audio alongside video says nothing a caller needs, while video
+   * without a keyframe does.
    */
   private startFailure(reason: LiveStreamStartFailureReason, cause?: unknown): LiveStreamStartError {
     return new LiveStreamStartError({
       reason,
-      stage: this.deliveredVideo ? "awaiting-keyframe" : "awaiting-first-frame",
+      stage: this.delivered.video ? "awaiting-keyframe" : this.delivered.audio ? "audio-only" : "awaiting-first-frame",
       timeoutMs: this.warmTimeoutMs,
       attempts: this.warmAttempts,
       cause,
@@ -480,12 +484,12 @@ export class SharedLiveSource {
 
   private onVideo(frame: LiveVideoFrame): void {
     const item = { kind: "video", frame, timestampMs: Date.now() } as const;
-    this.deliveredVideo = true;
+    this.delivered.video = true;
     this.lastParamSets = updatedParamSets(frame.data, this.lastParamSets);
     if (frame.keyframe) {
       this.lastKeyframe = item;
       const wasWarming = this.warmRetryTimer !== undefined || this.warmDeadlineTimer.pending;
-      this.deliveredKeyframe = true;
+      this.delivered.keyframe = true;
       if (this._state === "warming") this._state = "live";
       if (wasWarming) {
         this.clearWarmWatch();
@@ -501,6 +505,7 @@ export class SharedLiveSource {
 
   private onAudio(frame: LiveAudioFrame): void {
     const item = { kind: "audio", frame, timestampMs: Date.now() } as const;
+    this.delivered.audio = true;
     this.pushRing(item);
     for (const c of this.consumers) c.deliverAudio(frame, item.timestampMs);
   }
@@ -601,7 +606,7 @@ export class SharedLiveSource {
    */
   private teardown(state: SharedLiveState, report = true): void {
     const stream = this.stream;
-    const startFailed = stream !== undefined && !this.deliveredKeyframe;
+    const startFailed = stream !== undefined && !this.delivered.keyframe;
     this.stream = undefined;
     this.clearWarmWatch();
     this.clearBudget();
@@ -630,7 +635,7 @@ export class SharedLiveSource {
     this.logger.debug(
       `${this.tag} upstream ended (station max-duration / reconnect) — notifying ${this.consumers.size} consumer(s)`,
     );
-    if (!this.deliveredKeyframe) {
+    if (!this.delivered.keyframe) {
       const error = this.startFailure("source-ended");
       for (const c of [...this.consumers]) c.fail(error);
     }
@@ -641,7 +646,7 @@ export class SharedLiveSource {
   private onUpstreamError(err: Error): void {
     if (this.disposed) return;
     this.logger.warn(`${this.tag} upstream error: ${err.message} — tearing down (consumers=${this.consumers.size})`);
-    const error = this.deliveredKeyframe ? err : this.startFailure("source-error", err);
+    const error = this.delivered.keyframe ? err : this.startFailure("source-error", err);
     for (const c of [...this.consumers]) c.fail(error);
     this.teardown("stopped");
   }

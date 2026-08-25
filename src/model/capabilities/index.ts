@@ -642,6 +642,14 @@ export interface DeviceEventMap {
   dogDetected: PushSemanticEvent & { kind?: "lick" | "poop" };
   /** The guard mode changed. Carries no mode value — re-read the current mode. */
   armingModeChanged: PushSemanticEvent;
+  /**
+   * A camera's own enablement was confirmed changed, after a write this SDK issued was read back off the
+   * device. Carries no value — re-read `enabled`, which has converged by the time this fires.
+   *
+   * Distinct from `cameraEnabled`, which reports the value moving between cloud polls for any reason. This
+   * one says a write LANDED, which is the only thing that can be known about a value nothing pushes.
+   */
+  cameraEnabledChanged: PushSemanticEvent;
   /** Station alarm lifecycle; `phase` says whether it fired or is counting down. */
   alarm: PushSemanticEvent & { phase?: "triggered" | "delayed" };
   /** Lock (un)locked or a lock alarm fired. */

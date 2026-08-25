@@ -85,6 +85,7 @@ export type {
 
 type SemanticEventRefresh = Pick<CommandObservation, "param" | "property" | "resetStandaloneSession" | "timeoutMs"> & {
   expected?: CommandObservation["expected"];
+  observed?: CommandObservation["observed"];
 };
 
 /**
@@ -601,7 +602,16 @@ export class EufyMega extends EventEmitter {
     emit.call(this, "event", { ...payload, eventName: event }); // the catch-all (eufy.on("event", …)); avoids colliding with payload.name
   }
 
-  /** Await one capability-declared reflected param before publishing its valueless transition event. */
+  /**
+   * Await one capability-declared reflected param before publishing its valueless transition event.
+   *
+   * The state already on hand is consulted BEFORE fetching, but only where the observation carries a concrete
+   * value to compare against: a device that reports the written param on its own session lands it through
+   * {@link applyRealtimeState} within seconds, and polling the account device list to learn what the device has
+   * already said costs a dozen requests to reach the same answer. Without an expectation, "converged" means
+   * only "differs from what was read before", which state already on hand can satisfy spuriously — and the
+   * caller that has no expectation is the push path, where the signal itself is the news that a re-read is owed.
+   */
   private refreshEventState(sn: string, refresh: SemanticEventRefresh): Promise<boolean> {
     const epoch = this.realtimeEpoch;
     return (async (): Promise<boolean> => {
@@ -610,10 +620,12 @@ export class EufyMega extends EventEmitter {
       const before = initialDevice?.getProperty(refresh.property)?.value;
       const rawBefore = this.registry.require(sn).params?.[refresh.param];
       const deadline = Date.now() + refresh.timeoutMs;
-      while (Date.now() < deadline) {
-        const remaining = deadline - Date.now();
-        await this.beforeDeadline(this.registry.getDevices(), remaining);
-        if (epoch !== this.realtimeEpoch) return false;
+      /**
+       * Whether the state already on hand satisfies the observation, applying it to the live device when it
+       * does. Reads what is already known and fetches nothing, so a param the DEVICE volunteered over its own
+       * session settles the write for free.
+       */
+      const settled = (): boolean => {
         const device = this.liveDevices.get(sn)?.deref();
         const record = this.registry.require(sn);
         const rawValue = record.params?.[refresh.param];
@@ -623,14 +635,20 @@ export class EufyMega extends EventEmitter {
               ? String(rawValue) !== String(before)
               : rawValue !== rawBefore
             : String(rawValue) === String(refresh.expected);
-        if (converged && device) {
-          device.applyParams(record.params ?? {});
-          if (this.matchesObservation(device.getProperty(refresh.property)?.value, refresh, before)) return true;
-        } else if (converged) {
-          return true;
-        }
+        if (!converged) return false;
+        if (!device) return true;
+        device.applyParams(record.params ?? {});
+        return this.matchesObservation(device.getProperty(refresh.property)?.value, refresh, before);
+      };
+      if (refresh.expected !== undefined && settled()) return true;
+      while (Date.now() < deadline) {
+        const remaining = deadline - Date.now();
+        await this.beforeDeadline(this.registry.getDevices(), remaining);
+        if (epoch !== this.realtimeEpoch) return false;
+        if (settled()) return true;
         const delay = Math.min(500, deadline - Date.now());
         if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
+        if (refresh.expected !== undefined && settled()) return true;
       }
       throw new Error("device state did not converge before semantic event deadline");
     })();
@@ -654,12 +672,21 @@ export class EufyMega extends EventEmitter {
     return tracked;
   }
 
+  /**
+   * Whether the DECODED property now reads what the write asked for.
+   *
+   * Compared against {@link CommandObservation.observed} where the property's decode is not the identity, and
+   * against the raw expectation only where the two coincide. A disable-bit param reports `0` for a property
+   * that reads `true`, so comparing the decoded value against the raw expectation would reject a write that
+   * had landed — the value converged and the transition event never fired.
+   */
   private matchesObservation(
     value: unknown,
-    refresh: SemanticEventRefresh & { expected?: boolean | number | string },
+    refresh: SemanticEventRefresh & { expected?: boolean | number | string; observed?: boolean | number | string },
     before: unknown,
   ): boolean {
-    return refresh.expected === undefined ? value !== before : String(value) === String(refresh.expected);
+    const want = refresh.observed ?? refresh.expected;
+    return want === undefined ? value !== before : String(value) === String(want);
   }
 
   private eventRefreshKey(sn: string, refresh: Pick<CommandObservation, "param">): string {

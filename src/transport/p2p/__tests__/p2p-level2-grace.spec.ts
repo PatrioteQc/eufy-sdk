@@ -264,3 +264,73 @@ describe("level-2 key wait", () => {
     expect(target.hasLevel2Key).toBe(false);
   });
 });
+
+/**
+ * Asking again after a negotiation concluded without a key.
+ *
+ * The negotiation is one-shot per connection: the station is prompted for `CMD_GATEWAYINFO` on connect, and
+ * if that reply never lands the session settles "no key" and every later wait answers false at once. That is
+ * correct for best-effort media, which proceeds at level-1 — but a command whose only wire is level-2 is then
+ * refused for the whole life of that connection, though a fresh session negotiates a key normally.
+ *
+ * Measured: an own-session camera whose power rides the level-2 privacy envelope refused `setEnabled` with
+ * "level-2 key not ready" and stayed refused, leaving the camera switched off; opening a stream built a new
+ * session, which negotiated (cipher id observed) and let the same write through immediately.
+ *
+ * So a caller that cannot proceed without the key may ask the station ONE more time. Media never does — it
+ * has a level-1 path and re-prompting on every frame would be noise.
+ */
+describe("level-2 key re-prompt", () => {
+  it("re-prompts the station once when a settled negotiation left no key", async () => {
+    const target = session(async () => "00".repeat(32));
+    const sent: number[] = [];
+    (target as unknown as { sendCommand(c: number): void }).sendCommand = (c) => sent.push(c);
+    (target as unknown as { connectAddress?: object }).connectAddress = { host: "0.0.0.0", port: 1 };
+
+    // Conclude the negotiation with no key — what a GATEWAYINFO reply that never lands amounts to.
+    (target as unknown as { settleLevel2(): void }).settleLevel2();
+    // The wait is then already exhausted: it answers at once rather than spending its grace.
+    await expect(target.awaitLevel2Key(25_000)).resolves.toBe(false);
+
+    const asked = target.repromptLevel2Key();
+
+    expect(asked).toBe(true);
+    expect(sent).toEqual([1100]); // CMD_GATEWAYINFO
+    // Re-opened: the wait now spends its grace again instead of refusing instantly, so a reply that
+    // arrives late can still satisfy it.
+    const started = Date.now();
+    await expect(target.awaitLevel2Key(120)).resolves.toBe(false);
+    expect(Date.now() - started).toBeGreaterThanOrEqual(100);
+  });
+
+  it("does not re-prompt a session that already holds a key", () => {
+    const target = session(async () => "00".repeat(32));
+    const sent: number[] = [];
+    (target as unknown as { sendCommand(c: number): void }).sendCommand = (c) => sent.push(c);
+    target.setLevel2Key(LEVEL2_KEY);
+
+    expect(target.repromptLevel2Key()).toBe(false);
+    expect(sent).toEqual([]);
+  });
+
+  it("does not re-prompt a session that never negotiates one at all", () => {
+    const target = session(); // no resolveCipherKey → nothing can negotiate
+    const sent: number[] = [];
+    (target as unknown as { sendCommand(c: number): void }).sendCommand = (c) => sent.push(c);
+
+    expect(target.repromptLevel2Key()).toBe(false);
+    expect(sent).toEqual([]);
+  });
+
+  it("asks at most once per connection, so a burst of commands cannot flood the station", () => {
+    const target = session(async () => "00".repeat(32));
+    const sent: number[] = [];
+    (target as unknown as { sendCommand(c: number): void }).sendCommand = (c) => sent.push(c);
+    (target as unknown as { connectAddress?: object }).connectAddress = { host: "0.0.0.0", port: 1 };
+
+    expect(target.repromptLevel2Key()).toBe(true);
+    expect(target.repromptLevel2Key()).toBe(false);
+    expect(target.repromptLevel2Key()).toBe(false);
+    expect(sent).toEqual([1100]);
+  });
+});

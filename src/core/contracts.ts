@@ -97,12 +97,17 @@ export type LiveStreamStartFailureReason = "warm-timeout" | "source-error" | "so
 /**
  * How far the media source got before it failed.
  *
- * `awaiting-first-frame` means no video access unit reached the consumer at all; `awaiting-keyframe` means
- * units arrived but none of them was a keyframe, so nothing was decodable. The two need different answers —
- * one is a source that never produced media, the other a source producing media a decoder cannot start
- * from — and this states which without a caller reading transport logs.
+ * `awaiting-first-frame` means the source delivered nothing at all; `audio-only` means it delivered audio
+ * and never a video frame; `awaiting-keyframe` means video units arrived but none of them was a keyframe, so
+ * nothing was decodable. The three need different answers — a source that is not answering, one that is
+ * answering with sound and no picture, and one producing media a decoder cannot start from — and this states
+ * which without a caller reading transport logs.
+ *
+ * Each names only what the source did, never why. `audio-only` in particular is an observation and not a
+ * diagnosis: a device that is streaming but has no picture to send and one whose video this build cannot read
+ * both reach it.
  */
-export type LiveStreamStartStage = "awaiting-first-frame" | "awaiting-keyframe";
+export type LiveStreamStartStage = "awaiting-first-frame" | "audio-only" | "awaiting-keyframe";
 
 /** The bounded facts a live start failure reports. */
 export interface LiveStreamStartFailure {
@@ -141,6 +146,13 @@ export class LiveStreamStartError extends Error {
  * right encoding for the device's session; `"int-string"` / `"direct-binary"` pin a specific encoding
  * when the firmware requires one.
  */
+/**
+ * How a scalar param write is sealed on the wire. The BODY is the same struct in every case —
+ * `[u32 channel][u32 value][account_id → 128B]` — so these choose only the encryption.
+ *
+ * - `"int-string"` pins level-1 (AES-128-ECB), `"direct-binary"` pins level-2 (AES-256-GCM).
+ * - `"auto"` lets the transport pick the level, which it resolves from the session — see the resolver.
+ */
 export type ScalarForm = "auto" | "int-string" | "direct-binary";
 
 /**
@@ -161,7 +173,17 @@ export interface Ff09Identity {
 /** @internal */
 export interface CommandObservation {
   event: string;
+  /** The RAW param value the device must report before this write counts as landed. */
   expected: boolean | number | string;
+  /**
+   * The DECODED property value to expect once that raw value has been applied, where it differs from the raw
+   * one. Absent when the two coincide.
+   *
+   * They diverge whenever the property's decode is not the identity: a disable-bit param reports `0` for a
+   * property that reads `true`, so checking the decoded value against the raw expectation would reject a write
+   * that had in fact landed. Stating both is what lets each check compare like with like.
+   */
+  observed?: boolean | number | string;
   param: number;
   property: string;
   resetStandaloneSession?: boolean;

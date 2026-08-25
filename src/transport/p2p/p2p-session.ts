@@ -186,6 +186,8 @@ interface RetainedDatagram {
 const CMD_SET_PAYLOAD = 1350;
 /** CMD_NOTIFY_PAYLOAD (1351) — the station's unsolicited JSON notification. */
 const CMD_NOTIFY_PAYLOAD = 1351;
+/** CMD_CAMERA_INFO — a camera reporting its OWN params, as a root-level array. */
+const CMD_CAMERA_INFO = 1103;
 const CMD_DATABASE_IMAGE = 1308;
 /** CMD_DATABASE (1306) — P2P SQLite-ish query; reply carries `{cmd:10000,count,data:[…]}`. */
 const CMD_DATABASE = 1306;
@@ -229,9 +231,11 @@ export interface P2PSessionConfig {
  * those `param_type` ids are the cloud record's own — so this is a format unwrap, not an
  * interpretation. Entries missing an id or a value are skipped rather than stored as `"undefined"`.
  *
- * Only a notify frame is read this way. The caller lands these as the reporting device's params,
- * which widens the evidence its typed reads are gated on, so a reply that merely happens to nest an
- * array under `payload.params` must not be mistaken for a device reporting its own state.
+ * Two frames are read this way, each in ONE shape, because the caller lands these as the reporting device's
+ * params — which widens the evidence its typed reads are gated on, so a reply that merely happens to carry an
+ * array must not be mistaken for a device reporting its own state. A station's notify nests an attached
+ * device's array under `payload`; a camera's own `CMD_CAMERA_INFO` puts it at the root. Reading each only in
+ * its measured shape is what keeps the distinction.
  */
 function paramReport(payload: unknown): Record<number, string> | undefined {
   const list = (payload as { params?: unknown } | undefined)?.params;
@@ -334,6 +338,8 @@ export class P2PSession extends EventEmitter {
   private level2Pending: boolean;
   /** Waiters parked in {@link awaitLevel2Key}, woken the moment the negotiation settles either way. */
   private readonly level2Waiters: Array<(outcome: "key" | "terminal" | "closed") => void> = [];
+  /** Whether this connection has already been asked a second time for its gateway info — see {@link repromptLevel2Key}. */
+  private level2Reprompted = false;
   /** When this session connected — the instant the level-2 negotiation had its chance to start. */
   private connectedAtMs?: number;
   /** Connection generation that owns every asynchronous result derived from its gateway envelope. */
@@ -383,6 +389,12 @@ export class P2PSession extends EventEmitter {
    * beginning later does not restart it: best-effort media can proceed without the key, and restarting
    * would charge another grace to a source that may already be streaming. A session whose negotiation has
    * settled answers without waiting at all, since being one-shot is what makes that answer final.
+   *
+   * An own-session camera whose grace expires here is NOT thereby a camera that will fail to stream. Measured
+   * on one account: own-session cameras of two device types negotiated a key, three others never did, and
+   * cameras from that second group streamed normally at level-1 — including one of the same firmware as an
+   * own-session camera that delivered no video at all for a reason of its own. An expired grace therefore
+   * separates nothing on this path, and a start failure on such a session is not evidence about it.
    */
   async awaitLevel2Key(graceMs: number, graceFrom: "call" | "session" = "call"): Promise<boolean> {
     if (this.closed) return false;
@@ -423,6 +435,31 @@ export class P2PSession extends EventEmitter {
   }
 
   /** Record that the level-2 negotiation has finished, with or without a key, and wake every waiter. */
+  /**
+   * Ask the station for its gateway info a second time, re-opening a negotiation that concluded without a key.
+   *
+   * The negotiation is one-shot per connection: the station is prompted once on connect, and a reply that
+   * never lands settles the wait so {@link awaitLevel2Key} answers `false` at once forever after. That is the
+   * right answer for best-effort media, which proceeds at level-1 — but an operation whose ONLY wire is
+   * level-2 is then refused for the whole life of that connection, while a fresh session over the same
+   * device negotiates a key normally. Measured: a session that had settled refused every such operation
+   * until it was rebuilt, at which point the station answered with a cipher id straight away.
+   *
+   * Bounded to one extra ask per connection, so a burst of such operations cannot turn a silent station into a
+   * flood, and answers whether it asked — `false` when a key is already held, when nothing can negotiate one,
+   * when the ask was already spent, or when there is nowhere to send it. Callers with a level-1 path must not
+   * use this: re-prompting on their behalf would be noise for an answer they do not need.
+   */
+  repromptLevel2Key(): boolean {
+    if (this.closed || this.level2Key || this.level2Reprompted) return false;
+    if (!this.cfg.resolveCipherKey || !this.connectAddress) return false;
+    this.level2Reprompted = true;
+    this.level2Pending = true;
+    this.logger.debug(`[p2p] ${this.cfg.stationSn} asking again for the level-2 key`);
+    this.sendCommand(CMD_GATEWAYINFO);
+    return true;
+  }
+
   private settleLevel2(reason: "terminal" | "closed" = "terminal"): void {
     this.level2Pending = false;
     const outcome = this.level2Key ? "key" : reason;
@@ -512,6 +549,7 @@ export class P2PSession extends EventEmitter {
     if (!this.level2Key) {
       this.level2Pending = this.cfg.resolveCipherKey !== undefined;
       this.level2Negotiating = false;
+      this.level2Reprompted = false;
     }
 
     const socket = dgram.createSocket("udp4");
@@ -648,6 +686,17 @@ export class P2PSession extends EventEmitter {
     }
   }
 
+  /**
+   * Route one inbound UDP datagram by its message type, tracing every non-DATA one and any type this session
+   * does not model.
+   *
+   * An unmodelled type is not by itself evidence about a session that is failing. `0xf169` — a relay-pool
+   * listing answering a cloud lookup, which a connected session has no use for — reaches the UNHANDLED branch
+   * on the sessions of cameras that stream and cameras that do not alike. `0xf121` has been observed
+   * straddling a level-2 wait on a camera whose failure to deliver video had a separate cause, and did not
+   * recur across later probes of it. Correlate an unmodelled type against a WORKING session before reading it
+   * as a cause.
+   */
   private onMessage(msg: Buffer, rinfo: dgram.RemoteInfo): void {
     if (!hasHeader(msg, ResponseMessageType.DATA)) {
       this.logger.debug(
@@ -1613,10 +1662,13 @@ export class P2PSession extends EventEmitter {
       } catch {
         /* not JSON */
       }
-      if (header.commandId === CMD_NOTIFY_PAYLOAD) {
-        const reported = paramReport(frame.json?.payload);
-        if (reported) frame.params = reported;
-      }
+      const reported =
+        header.commandId === CMD_NOTIFY_PAYLOAD
+          ? paramReport(frame.json?.payload)
+          : header.commandId === CMD_CAMERA_INFO
+            ? paramReport(frame.json)
+            : undefined;
+      if (reported) frame.params = reported;
     }
     // CMD_DATABASE_IMAGE reply: { file, content:<base64 image> } → emit decoded bytes.
     if (header.commandId === CMD_DATABASE_IMAGE && frame.json && typeof frame.json.content === "string") {

@@ -65,7 +65,24 @@ export interface ValueMember {
   /** @internal Policy for confirming this write through bounded readback before emitting its transition event. */
   observation?: {
     event: string;
-    expected(value: boolean | number | string): boolean | number | string;
+    /**
+     * The param this write will be reflected under and the raw value to expect there, resolved together for
+     * THIS device — because on some members the family decides both at once.
+     *
+     * Both, not just the value, because the wire written and the wire reported are not always the same one:
+     * camera enablement is written on the enablement param on every family, while the standalone
+     * indoor/outdoor cameras report their state under a read alias and never the param that was written.
+     * Polling the written param there would never converge, so the readback has to name the param the device
+     * actually reports.
+     *
+     * `undefined` means this device offers no readback to confirm against — it reported no such param, or its
+     * write lands on a wire its read does not observe. The command is then dispatched unobserved rather than
+     * waiting out a timeout that could never be satisfied.
+     */
+    reflects(
+      value: boolean | number | string,
+      ctx: CommandContext,
+    ): { param: number; expected: boolean | number | string; observed?: boolean | number | string } | undefined;
     resetStandaloneSession?: boolean;
     timeoutMs: number;
   };
@@ -599,11 +616,13 @@ export function memberWrite(
   if (!inDomain(m, value)) throw new Error(rejection(name, m, value));
   const cmd = m.write?.(value, ctx);
   if (!cmd) throw new Error(rejection(name, m, value));
-  return m.observation && m.param !== undefined
+  const reflected = m.observation?.reflects(value, ctx);
+  return m.observation && reflected
     ? observeCommand(cmd, {
         event: m.observation.event,
-        expected: m.observation.expected(value),
-        param: m.param,
+        expected: reflected.expected,
+        observed: reflected.observed,
+        param: reflected.param,
         property: m.property ?? name,
         resetStandaloneSession: m.observation.resetStandaloneSession,
         timeoutMs: m.observation.timeoutMs,

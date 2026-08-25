@@ -1,7 +1,7 @@
 import { EventEmitter } from "node:events";
 import { Writable } from "node:stream";
 import { splitAnnexbNals } from "../annexb.js";
-import type { LiveStreamHandle, LiveVideoFrame } from "../../../core/contracts.js";
+import type { LiveAudioFrame, LiveStreamHandle, LiveVideoFrame } from "../../../core/contracts.js";
 
 /**
  * Shared fixtures for the shared-live-source specs — a fake upstream stream, the source factory that
@@ -36,6 +36,11 @@ export class FakeStream extends EventEmitter implements LiveStreamHandle {
   /** Emit one video frame to the source. */
   video(frame: LiveVideoFrame): void {
     this.emit("video", frame);
+  }
+
+  /** Emit one audio frame to the source. Defaults to a short AAC-LC payload. */
+  audio(frame: Partial<LiveAudioFrame> = {}): void {
+    this.emit("audio", { codec: "aac-lc", data: Buffer.alloc(8), ...frame });
   }
 }
 
