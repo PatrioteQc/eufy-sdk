@@ -1135,6 +1135,8 @@ const UNISETTING_FIELD = {
    * The one field of this message that is not a sub-message, which is why it needs its own reader.
    */
   AP_SIGNAL: 11,
+  /** `unistate` — a sub-message of device state, not toggles. Its own fields are numbered below. */
+  UNISTATE: 10,
   /** `value` within a `Switch`. */
   VALUE: 1,
 } as const;
@@ -1276,6 +1278,88 @@ export function decodeUnisettingNumber(
   const value = codec.nested(wrapped.value)?.find((f) => f.field === UNISETTING_FIELD.VALUE);
   if (value === undefined) return 0;
   return value.kind === "int" ? Number(value.value) : undefined;
+}
+
+/**
+ * Field numbers inside `UnisettingResponse.unistate`(10) — device STATE, where the rest of the message
+ * is user toggles.
+ *
+ * **Three fields of this sub-message are deliberately not read.** `mop_holder_state_l`(1),
+ * `mop_holder_state_r`(2) and `mop_state`(5) each carry a bool the vendor annotates
+ * "已安装或已取出" — *installed or removed* — without saying which boolean is which. The decompile has
+ * the fields (`mopHolderStateL`, `mopHolderStateR` on the UI model) but only as data, with no branch
+ * that would settle it. A bool whose polarity is a coin flip is the most guess-shaped thing this SDK
+ * could publish: getting it backwards tells a user their mop is fitted while it sits on the bench. One
+ * capture settles all three — pop a pad off and watch the bit — so they wait for that rather than for
+ * a better guess. `custom_clean_mode`(3) is the same shape and the same problem.
+ */
+const UNISTATE_FIELD = {
+  /** `map_valid` — an `Active`, and unambiguous: the device holds at least one map with room outlines. */
+  MAP_VALID: 4,
+  /** `live_map` — a wrapper whose `state_bits`(1) says which layers the live map has. */
+  LIVE_MAP: 6,
+  /** `clean_strategy_version` — a bare `uint32`. */
+  CLEAN_STRATEGY_VERSION: 7,
+  /** `state_bits` within a `LiveMap`. */
+  STATE_BITS: 1,
+} as const;
+
+/**
+ * Which layers the robot's live map carries, by bit position — the vendor's `LiveMap.StateBit`.
+ *
+ * A bitmask rather than an enum: the vendor's own comment says the values combine, so a map with a
+ * base layer and room outlines reports both bits at once. Published so a caller can name a bit rather
+ * than hard-coding a shift.
+ */
+export const LIVE_MAP_BITS = { base: 0, rooms: 1, kitchen: 2, pet: 3 } as const;
+
+/**
+ * Read a `Switch`- or `Active`-wrapped bool out of `UnisettingResponse.unistate` (DP 176).
+ *
+ * Two levels down rather than one: the toggles sit at the top of the message and these sit inside
+ * `unistate`, so the ordinary toggle reader finds nothing here.
+ * @internal
+ */
+export function decodeUnistateFlag(
+  raw: ParamValue | undefined,
+  codec: RawDpCodec | undefined,
+  field: number,
+): boolean | undefined {
+  if (typeof raw !== "string" || !codec) return undefined;
+  const state = codec.decode(raw)?.find((f) => f.field === UNISETTING_FIELD.UNISTATE);
+  if (state?.kind !== "bytes") return undefined;
+  const wrapped = codec.nested(state.value)?.find((f) => f.field === field);
+  if (wrapped?.kind !== "bytes") return undefined;
+  const value = codec.nested(wrapped.value)?.find((f) => f.field === UNISETTING_FIELD.VALUE);
+  if (value === undefined) return false;
+  return value.kind === "int" ? value.value !== 0n : undefined;
+}
+
+/**
+ * Read a bare `uint32` out of `UnisettingResponse.unistate` (DP 176), or one nested a further level
+ * inside a wrapper there — `live_map.state_bits` is the only field that needs the second step.
+ * @internal
+ */
+export function decodeUnistateNumber(
+  raw: ParamValue | undefined,
+  codec: RawDpCodec | undefined,
+  field: number,
+  inner?: number,
+): number | undefined {
+  if (typeof raw !== "string" || !codec) return undefined;
+  const state = codec.decode(raw)?.find((f) => f.field === UNISETTING_FIELD.UNISTATE);
+  if (state?.kind !== "bytes") return undefined;
+  const fields = codec.nested(state.value);
+  if (!fields) return undefined;
+  const hit = fields.find((f) => f.field === field);
+  if (inner === undefined) {
+    if (hit === undefined) return 0;
+    return hit.kind === "int" ? Number(hit.value) : undefined;
+  }
+  if (hit?.kind !== "bytes") return undefined;
+  const nested = codec.nested(hit.value)?.find((f) => f.field === inner);
+  if (nested === undefined) return 0;
+  return nested.kind === "int" ? Number(nested.value) : undefined;
 }
 
 /**
@@ -2090,6 +2174,54 @@ export const VACUUM_CLEAN_MEMBERS = {
     decode: (raw, codec) => decodeUnisetting(raw as ParamValue | undefined, codec, UNISETTING_FIELD.PET_MODE),
     decodedKind: "boolean",
     description: "Pet mode — UnisettingResponse.pet_mode_sw (DP 176, Raw protobuf).",
+  },
+  /**
+   * Whether the robot holds a map it can actually clean from — at least one with room outlines.
+   *
+   * The precondition for every area-select frame: a room or zone clean sent at a robot with no valid
+   * map is a request it cannot honour, and this is the device's own answer rather than an inference
+   * from whether a scene happens to name one.
+   */
+  hasValidMap: {
+    readsFrom: "childLock",
+    type: "bool",
+    kind: "boolean",
+    provenance: "mega",
+    decode: (raw, codec) => decodeUnistateFlag(raw as ParamValue | undefined, codec, UNISTATE_FIELD.MAP_VALID),
+    decodedKind: "boolean",
+    description: "Whether a usable map exists — UnisettingResponse.unistate.map_valid (DP 176, Raw protobuf).",
+  },
+  /**
+   * Which layers the live map carries, as the vendor's own bitmask — see {@link LIVE_MAP_BITS}.
+   *
+   * A bitfield rather than an enum because the vendor says so outright: the values combine, and a map
+   * with a base layer and room outlines reports both at once.
+   */
+  mapLayers: {
+    readsFrom: "childLock",
+    type: "number",
+    kind: "bitfield",
+    provenance: "mega",
+    decode: (raw, codec) =>
+      decodeUnistateNumber(raw as ParamValue | undefined, codec, UNISTATE_FIELD.LIVE_MAP, UNISTATE_FIELD.STATE_BITS),
+    decodedKind: "bitfield",
+    description:
+      "Live-map layers as a bitmask — UnisettingResponse.unistate.live_map.state_bits (DP 176, Raw protobuf).",
+  },
+  /**
+   * The cleaning-strategy version the robot is running. A bare number the vendor gives no scale for —
+   * diagnostic, and useful only against another reading of the same robot.
+   */
+  cleanStrategyVersion: {
+    readsFrom: "childLock",
+    type: "number",
+    kind: "scalar",
+    provenance: "mega",
+    decode: (raw, codec) =>
+      decodeUnistateNumber(raw as ParamValue | undefined, codec, UNISTATE_FIELD.CLEAN_STRATEGY_VERSION),
+    decodedKind: "scalar",
+    description:
+      "Cleaning-strategy version — UnisettingResponse.unistate.clean_strategy_version (DP 176, Raw protobuf).",
   },
   /**
    * WiFi signal strength as a PERCENTAGE, 0-100 — the AIoT line's own reading.
