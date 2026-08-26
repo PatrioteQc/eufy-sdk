@@ -206,6 +206,36 @@ describe("SharedLiveSource — reporting a failed start", () => {
     expect(onStartFailed).not.toHaveBeenCalled();
   });
 
+  it("closes a consumer that never listened for errors, and every consumer behind it", () => {
+    const { source, streams, onStartFailed } = mk();
+    const silent = source.attach();
+    const watching = source.attach();
+    const signals: string[] = [];
+    silent.on("stop", () => signals.push("silent:stop"));
+    watching.on("error", () => signals.push("watching:error"));
+    watching.on("stop", () => signals.push("watching:stop"));
+
+    streams[0].emit("stop");
+
+    expect(signals).toEqual(["watching:error", "silent:stop", "watching:stop"]);
+    expect(source.state).toBe("stopped");
+    expect(streams[0].stopped).toBe(1);
+    expect(onStartFailed).toHaveBeenCalledTimes(1);
+  });
+
+  it("tears the stream down even when a consumer's listener throws", () => {
+    const { source, streams, onStartFailed } = mk();
+    source.attach().on("error", () => {
+      throw new Error("consumer listener");
+    });
+
+    expect(() => streams[0].emit("error", new Error("upstream gone"))).toThrow("consumer listener");
+
+    expect(source.state).toBe("stopped");
+    expect(streams[0].stopped).toBe(1);
+    expect(onStartFailed).toHaveBeenCalledTimes(1);
+  });
+
   it("releases the session user when disposed while consumers are still attached", () => {
     const { source, onActive, onIdle, streams } = mk();
     source.attach();
