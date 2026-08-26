@@ -59,6 +59,29 @@ export function str(field: number, value: string): number[] {
   return sub(field, [...Buffer.from(value, "utf8")]);
 }
 
+/**
+ * A `sint32`/`sint64` field, zig-zag encoded and omitted when zero.
+ *
+ * The map's coordinates are signed centimetres, and the wire does not record which of `int32` and
+ * `sint32` a field was declared as — so a fixture that wrote a negative as a plain varint would be
+ * testing a decode against bytes the device never sends, and would make an un-zigzagged reader look
+ * correct.
+ */
+export function sint(field: number, value: number): number[] {
+  return int(field, value < 0 ? -2 * value - 1 : 2 * value);
+}
+
+/**
+ * A length-delimited field holding arbitrary bytes — a pixel plane, not a sub-message.
+ *
+ * Same wire type as {@link sub}, and kept separate for the same reason the decoders keep their readers
+ * separate: asking for a message where the payload holds image data is how a decoder ends up walking
+ * pixels as if they were fields.
+ */
+export function blob(field: number, value: Uint8Array): number[] {
+  return sub(field, [...value]);
+}
+
 /** Wrap a message body in the `varint(len) ++ body` framing a Raw DP value carries, base64-encoded. */
 export function frame(body: number[]): string {
   return Buffer.from([...varint(body.length), ...body]).toString("base64");
