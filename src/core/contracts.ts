@@ -141,7 +141,10 @@ export class LiveStreamStartError extends Error {
   }
 }
 
-/** What a declared {@link CommandObservation} was still waiting for when its deadline passed. */
+/**
+ * What the observation a write declared was still waiting for when its deadline passed, carried by
+ * {@link StateConvergenceError}.
+ */
 export interface StateConvergenceFailure {
   sn: string;
   /** The decoded property the observation names, which is what a caller reads. */
