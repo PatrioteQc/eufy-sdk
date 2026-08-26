@@ -141,6 +141,51 @@ export class LiveStreamStartError extends Error {
   }
 }
 
+/** What a declared {@link CommandObservation} was still waiting for when its deadline passed. */
+export interface StateConvergenceFailure {
+  sn: string;
+  /** The decoded property the observation names, which is what a caller reads. */
+  property: string;
+  param: number;
+  /** The RAW param value the write asked the device to report. */
+  expected?: boolean | number | string;
+  /** What the param actually read when the deadline passed, absent where the device reported none at all. */
+  observed?: boolean | number | string;
+  timeoutMs: number;
+}
+
+/**
+ * Thrown when a write's declared observation never converges, so the SDK cannot say the write landed.
+ *
+ * A command is acknowledged when the transport has carried it, which is delivery and not convergence, and
+ * the observation a member declares is what decides the second question. Where that observation times out
+ * the write was accepted by the wire and never applied by the device — measured on a battery camera whose
+ * power write is acknowledged and simply ignored — so this is a distinct outcome from a transport fault and
+ * carries the attribution a caller needs to name which member on which device is unconfirmed.
+ */
+export class StateConvergenceError extends Error {
+  readonly sn: string;
+  readonly property: string;
+  readonly param: number;
+  readonly expected?: boolean | number | string;
+  readonly observed?: boolean | number | string;
+  readonly timeoutMs: number;
+
+  constructor(failure: StateConvergenceFailure) {
+    super(
+      `device ${failure.sn} did not report ${failure.property} as ${String(failure.expected)} within ` +
+        `${failure.timeoutMs}ms (param ${failure.param} read ${String(failure.observed)})`,
+    );
+    this.name = "StateConvergenceError";
+    this.sn = failure.sn;
+    this.property = failure.property;
+    this.param = failure.param;
+    this.expected = failure.expected;
+    this.observed = failure.observed;
+    this.timeoutMs = failure.timeoutMs;
+  }
+}
+
 /**
  * Wire form for a scalar {@link Command} `"set-param"` intent. `"auto"` lets the transport choose the
  * right encoding for the device's session; `"int-string"` / `"direct-binary"` pin a specific encoding

@@ -273,6 +273,29 @@ export type EufyMegaEventMap = {
    */
   commandAck: [info: { sn: string; kind: string; acked: boolean; instanceIp?: string; getAcked?: boolean }];
   /**
+   * A write was acknowledged and its declared observation then never converged, so the device never
+   * reported the state the write asked for.
+   *
+   * This is the answer to the question `dispatch` deliberately does not wait for. A command resolves once the
+   * transport has carried it, and the observation a member declares decides separately whether the device
+   * applied it; where that observation times out, the wire accepted the write and the device ignored it — seen
+   * on a battery camera whose power write is acknowledged and never acted on. It is reported here rather than
+   * on `error` because it is an outcome and not a fault, for the same reason `commandAck` has its own channel:
+   * a host wanting convergence visibility should not pattern-match `error`, and the dispatch contract must not
+   * change shape to give it. `observed` is what the param read when the deadline passed, absent where the
+   * device reported none at all.
+   */
+  commandUnconfirmed: [
+    info: {
+      sn: string;
+      property: string;
+      param: number;
+      expected?: boolean | number | string;
+      observed?: boolean | number | string;
+      timeoutMs: number;
+    },
+  ];
+  /**
    * The cloud session was kicked or invalidated — another client logged into the same account, or the
    * token expired. The SDK has already cleared the persisted session; a host should re-drive `login()`
    * (which usually needs 2FA). Distinct from `error` so a host can react to auth loss without
