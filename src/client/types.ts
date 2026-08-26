@@ -13,6 +13,7 @@ import type { Capability } from "../model/index.js";
 import type { P2PFrame } from "../transport/p2p/p2p-session.js";
 import type { PowerTier } from "../transport/p2p/session-manager.js";
 import type { BizMapFrame } from "../transport/mqtt/biz-stream.js";
+import type { VacuumMapSnapshot } from "../model/index.js";
 import type { PushEvent, RawPushMessage } from "../transport/push/types.js";
 import type { AvailabilityObservation, EufyDevice, RealtimeMessage } from "../core/types.js";
 
@@ -278,6 +279,15 @@ export type EufyMegaEventMap = {
    * sends, and the meaning of a channel is settled in one place rather than in this event's shape.
    */
   mapFrame: [info: { deviceSn: string; frame: BizMapFrame }];
+  /**
+   * A device's map changed — a new cell plane, a renamed room, a zone the user drew.
+   *
+   * Carries the whole snapshot rather than the piece that changed, because the pieces are only useful
+   * together: a room outline without the room list names nothing. Emitted only when something actually
+   * changed; the robot republishes its map throughout a clean and a repeat of what is already held is
+   * dropped rather than woken on.
+   */
+  map: [info: { deviceSn: string; map: VacuumMapSnapshot }];
   /**
    * A device reported to the cloud since the last poll — its {@link DeviceState.lastSeenMs} advanced.
    * Carries {@link DeviceState}; the host applies its own staleness threshold.

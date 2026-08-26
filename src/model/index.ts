@@ -91,6 +91,7 @@ export {
   type MapCell,
   type PlacedPlane,
 } from "./map-pixels.js";
+export { VacuumMapStore, type VacuumMapPiece, type VacuumMapSnapshot } from "./vacuum-map-store.js";
 export { paramDef, namespaceForCodec, type ParamNamespace } from "./param-namespace.js";
 export { inspectParams, formatInspection, type ParamInspection, type DeviceInspection } from "./inspect.js";
 // The capability surface: the typed `dev.<cap>()` objects, the member tables they derive from, and the
