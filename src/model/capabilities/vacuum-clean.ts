@@ -554,7 +554,61 @@ const WORK_STATUS_FIELD = {
   GO_WASH: 7,
   /** `station` — carries `washing_drying_system`(3) while the dock runs a mop cycle. */
   STATION: 14,
+  /** `charging` — present while the robot is on contacts, carrying `state`(1). */
+  CHARGING: 3,
+  /** `trigger` — what caused the CURRENT state, carrying `source`(1). */
+  TRIGGER: 20,
 } as const;
+
+/**
+ * `WorkStatus.Charging.state` — whether a charge is running, finished, or faulted.
+ *
+ * `DOING` is the enum's zero and so is absent from the wire, which is why the CONTAINER's presence is
+ * the signal that the robot is on contacts at all: an absent `charging` message means it is not
+ * charging, and a present-but-empty one means it is charging normally.
+ */
+export const CHARGE_STATES = ["charging", "charged", "fault"] as const;
+export type ChargeState = (typeof CHARGE_STATES)[number];
+
+/**
+ * `WorkStatus.Trigger.Source` — who or what caused the state the robot is now in.
+ *
+ * Worth surfacing rather than inferring: an automation that reacts to "returning to dock" behaves
+ * differently when the robot did it because a schedule fired, because someone pressed the button on
+ * its lid, or because it ran low on battery. `"unknown"` is the vendor's own zero and is what a robot
+ * reports just after boot, so it is a real answer rather than a decode failure.
+ */
+export const TRIGGER_SOURCES = ["unknown", "app", "button", "schedule", "robot", "remote"] as const;
+export type TriggerSource = (typeof TRIGGER_SOURCES)[number];
+
+/**
+ * Decode the charge state out of a `WorkStatus` (DP 153).
+ *
+ * `undefined` means the robot is NOT charging — the vendor omits the whole message rather than sending
+ * a "not charging" value, so absence is the answer and not a gap. A present message with no `state`
+ * reads as `"charging"`, the enum's zero.
+ * @internal
+ */
+export function decodeChargeState(raw: ParamValue | undefined, codec: RawDpCodec | undefined): ChargeState | undefined {
+  if (typeof raw !== "string" || !codec) return undefined;
+  const charging = codec.decode(raw)?.find((f) => f.field === WORK_STATUS_FIELD.CHARGING);
+  if (charging?.kind !== "bytes") return undefined;
+  return CHARGE_STATES[subValue(codec, charging.value, SUB_STATE_FIELD)];
+}
+
+/**
+ * Decode what triggered the current state out of a `WorkStatus` (DP 153).
+ * @internal
+ */
+export function decodeTriggerSource(
+  raw: ParamValue | undefined,
+  codec: RawDpCodec | undefined,
+): TriggerSource | undefined {
+  if (typeof raw !== "string" || !codec) return undefined;
+  const trigger = codec.decode(raw)?.find((f) => f.field === WORK_STATUS_FIELD.TRIGGER);
+  if (trigger?.kind !== "bytes") return undefined;
+  return TRIGGER_SOURCES[subValue(codec, trigger.value, SUB_STATE_FIELD)];
+}
 
 /** `Cleaning.state` — the run state of a cleaning job. `DOING` is the proto3 default, so it is absent on the wire. */
 const CLEANING_STATE_PAUSED = 1;
@@ -879,7 +933,45 @@ const UNDISTURBED_FIELD = {
   SWITCH: 1,
   /** `value` within a `Switch`. */
   VALUE: 1,
+  /** `begin` within an `Undisturbed` — when quiet hours start. */
+  BEGIN: 2,
+  /** `end` within an `Undisturbed` — when they stop. */
+  END: 3,
+  /** `hour` within a `TimePoint`. */
+  HOUR: 1,
+  /** `minute` within a `TimePoint`. */
+  MINUTE: 2,
 } as const;
+
+/**
+ * Decode one end of the do-not-disturb window as `"HH:MM"`, or `undefined`.
+ *
+ * One string rather than two numbers per end: four properties for one window is four things a host has
+ * to reassemble, and the pieces are meaningless apart. `undefined` means no window is configured at
+ * all — distinct from `"00:00"`, which is midnight and a real setting.
+ *
+ * The times are the ROBOT's own clock, with no zone attached. The vendor sends none here, unlike a
+ * schedule, which carries the phone's UTC offset per timer.
+ * @internal
+ */
+export function decodeDoNotDisturbTime(
+  raw: ParamValue | undefined,
+  codec: RawDpCodec | undefined,
+  field: number,
+): string | undefined {
+  if (typeof raw !== "string" || !codec) return undefined;
+  const window = codec.decode(raw)?.find((f) => f.field === UNDISTURBED_FIELD.UNDISTURBED);
+  if (window?.kind !== "bytes") return undefined;
+  const point = codec.nested(window.value)?.find((f) => f.field === field);
+  if (point?.kind !== "bytes") return undefined;
+  const parts = codec.nested(point.value);
+  if (!parts) return undefined;
+  const at = (n: number): number => {
+    const hit = parts.find((f) => f.field === n);
+    return hit?.kind === "int" ? Number(hit.value) : 0;
+  };
+  return `${String(at(UNDISTURBED_FIELD.HOUR)).padStart(2, "0")}:${String(at(UNDISTURBED_FIELD.MINUTE)).padStart(2, "0")}`;
+}
 
 /**
  * Decode the do-not-disturb switch from either clean line.
@@ -1033,6 +1125,16 @@ const UNISETTING_FIELD = {
   LIVE_PHOTO: 9,
   /** `smart_follow_sw` — the response numbers this 13, the request 12. */
   SMART_FOLLOW: 13,
+  /** `poop_avoidance_sw` — steer around pet mess rather than through it. */
+  POOP_AVOIDANCE: 14,
+  /** `pet_mode_sw` — the pet-owner profile. */
+  PET_MODE: 15,
+  /**
+   * `ap_signal_strength` — a BARE `uint32` at the top level, 0-100, not a `Switch` wrapper.
+   *
+   * The one field of this message that is not a sub-message, which is why it needs its own reader.
+   */
+  AP_SIGNAL: 11,
   /** `value` within a `Switch`. */
   VALUE: 1,
 } as const;
@@ -1153,6 +1255,50 @@ export function decodeLanguageField(
 }
 
 /**
+ * Read a `Numerical`-wrapped value out of a `UnisettingResponse` (DP 176) as the NUMBER it is.
+ *
+ * `Numerical { uint32 value = 1 }` and `Switch { bool value = 1 }` are the same two bytes on the wire.
+ * That is why `dust_full_remind` read as a boolean for as long as it did: {@link decodeUnisetting}
+ * accepted it without complaint and reported "30 minutes" as `true`. Nothing errored, nothing looked
+ * wrong, and the number was gone.
+ *
+ * A present-but-empty wrapper reads as `0`, which for a duration means the feature is off.
+ * @internal
+ */
+export function decodeUnisettingNumber(
+  raw: ParamValue | undefined,
+  codec: RawDpCodec | undefined,
+  field: number,
+): number | undefined {
+  if (typeof raw !== "string" || !codec) return undefined;
+  const wrapped = codec.decode(raw)?.find((f) => f.field === field);
+  if (wrapped?.kind !== "bytes") return undefined;
+  const value = codec.nested(wrapped.value)?.find((f) => f.field === UNISETTING_FIELD.VALUE);
+  if (value === undefined) return 0;
+  return value.kind === "int" ? Number(value.value) : undefined;
+}
+
+/**
+ * Read a BARE `uint32` off the top level of a `UnisettingResponse` (DP 176).
+ *
+ * `ap_signal_strength` is the one field of this message that is not wrapped in anything, so neither of
+ * the two readers above reaches it: both step into a sub-message that is not there.
+ * @internal
+ */
+export function decodeUnisettingTopLevel(
+  raw: ParamValue | undefined,
+  codec: RawDpCodec | undefined,
+  field: number,
+): number | undefined {
+  if (typeof raw !== "string" || !codec) return undefined;
+  const fields = codec.decode(raw);
+  if (!fields) return undefined;
+  const hit = fields.find((f) => f.field === field);
+  if (hit === undefined) return 0;
+  return hit.kind === "int" ? Number(hit.value) : undefined;
+}
+
+/**
  * Field numbers inside `ConsumableRuntime` (DP 168) — one per replaceable part.
  *
  * **8 and 9 are deliberately unused by the vendor.** Do not renumber around the gap: the parts after it
@@ -1182,6 +1328,62 @@ const CONSUMABLE_FIELD = {
   /** `duration` within a `Duration`, in hours. */
   DURATION: 1,
 } as const;
+
+/**
+ * `ConsumableRequest.Type` — which part a reset clears, in the vendor's REQUEST numbering.
+ *
+ * **These are not the response's field numbers and must never be swapped for them.** The report puts
+ * the side brush at field 1 and the dirty-water tank at 10; the request enumerates from ZERO with no
+ * gap, so the side brush is 0 and the dirty-water tank is 7. Nine parts, two numbering schemes, one
+ * message pair — the same trap `UNISETTING_FIELD` carries, and the reason a reader's table is never a
+ * writer's.
+ */
+/** The replaceable parts a caller can ask the robot to treat as new. */
+export const CONSUMABLE_PARTS = [
+  "sideBrush",
+  "rollingBrush",
+  "filter",
+  "scraper",
+  "sensors",
+  "mop",
+  "dustBag",
+  "dirtyWaterTank",
+  "dirtyWaterFilter",
+] as const;
+export type ConsumablePart = (typeof CONSUMABLE_PARTS)[number];
+
+/** Part name to the vendor's `ConsumableRequest.Type`, in one table so no index arithmetic can drift. */
+export const CONSUMABLE_RESET_TYPE: Readonly<Record<ConsumablePart, number>> = {
+  sideBrush: 0,
+  rollingBrush: 1,
+  filter: 2,
+  scraper: 3,
+  sensors: 4,
+  mop: 5,
+  dustBag: 6,
+  dirtyWaterTank: 7,
+  dirtyWaterFilter: 8,
+};
+
+/** `reset_types` — the repeated field naming which parts to clear. */
+const CONSUMABLE_RESET_FIELD = 1;
+
+/**
+ * Build a `ConsumableRequest` (DP 168) clearing the hours on one part.
+ *
+ * `reset_types` is REPEATED, so the wire shape allows clearing several at once. Only one is offered:
+ * a caller replacing two parts can send two frames, and a single-part call is the one that cannot be
+ * half-right — an accidental multi-reset silently discards service history the device never
+ * recomputes.
+ *
+ * **Unverified.** The message and its enum are the vendor's own, and the app has the feature
+ * (`resetAccessory(deviceId, accessory, callback)` → `resetAccessories`, taking exactly this kind of
+ * integer part id), but no capture has shown the frame accepted — so no setter is installed.
+ * @internal
+ */
+export function encodeConsumableReset(part: ConsumablePart): string {
+  return rawDp((w) => w.int(CONSUMABLE_RESET_FIELD, CONSUMABLE_RESET_TYPE[part]));
+}
 
 /**
  * Decode one part's hours-used out of a `ConsumableRuntime` (DP 168).
@@ -1845,16 +2047,67 @@ export const VACUUM_CLEAN_MEMBERS = {
     description: "Deep corner mopping — UnisettingResponse.deep_mop_corner_sw (DP 176, Raw protobuf).",
   },
   /**
-   * Whether the robot warns when its dust bag is full.
+   * How long the robot waits before warning that its dust bag is full, in MINUTES.
+   *
+   * Read as a boolean until this revision, and wrongly: `dust_full_remind` is a `Numerical`, not a
+   * `Switch`, and the two are the same two bytes on the wire — `{ value = 1 }` either way. So a
+   * thirty-minute setting reported as `true`, nothing errored, and the number was gone. `0` means the
+   * reminder is off, which is the only part the boolean ever got right.
    */
-  dustFullRemind: {
+  dustFullRemindMinutes: {
+    readsFrom: "childLock",
+    type: "number",
+    unit: "min",
+    kind: "scalar",
+    provenance: "mega",
+    decode: (raw, codec) =>
+      decodeUnisettingNumber(raw as ParamValue | undefined, codec, UNISETTING_FIELD.DUST_FULL_REMIND),
+    decodedKind: "scalar",
+    description:
+      "Dust-bag-full reminder delay in minutes, 0 = off — UnisettingResponse.dust_full_remind " +
+      "(DP 176, Raw protobuf). A Numerical, not a switch.",
+  },
+  /**
+   * Whether the robot steers around pet mess rather than through it.
+   */
+  poopAvoidance: {
     readsFrom: "childLock",
     type: "bool",
     kind: "boolean",
     provenance: "mega",
-    decode: (raw, codec) => decodeUnisetting(raw as ParamValue | undefined, codec, UNISETTING_FIELD.DUST_FULL_REMIND),
+    decode: (raw, codec) => decodeUnisetting(raw as ParamValue | undefined, codec, UNISETTING_FIELD.POOP_AVOIDANCE),
     decodedKind: "boolean",
-    description: "Dust-bag-full reminder — UnisettingResponse.dust_full_remind (DP 176, Raw protobuf).",
+    description: "Pet-mess avoidance — UnisettingResponse.poop_avoidance_sw (DP 176, Raw protobuf).",
+  },
+  /**
+   * The pet-owner profile, which changes how the robot treats obstacles and how often it cleans.
+   */
+  petMode: {
+    readsFrom: "childLock",
+    type: "bool",
+    kind: "boolean",
+    provenance: "mega",
+    decode: (raw, codec) => decodeUnisetting(raw as ParamValue | undefined, codec, UNISETTING_FIELD.PET_MODE),
+    decodedKind: "boolean",
+    description: "Pet mode — UnisettingResponse.pet_mode_sw (DP 176, Raw protobuf).",
+  },
+  /**
+   * WiFi signal strength as a PERCENTAGE, 0-100 — the AIoT line's own reading.
+   *
+   * Distinct from `rssi`, which is the Tuya line's DP 134 in dBm and absent on this hardware, so until
+   * now an X10 reported no signal at all. Reported as the vendor states it: eufy-clean converts this to
+   * a dBm-looking number with `(value / 2) - 100`, which is a plausible-looking figure with no basis in
+   * anything the device sends.
+   */
+  wifiSignal: {
+    readsFrom: "childLock",
+    type: "number",
+    unit: "%",
+    kind: "percent",
+    provenance: "mega",
+    decode: (raw, codec) => decodeUnisettingTopLevel(raw as ParamValue | undefined, codec, UNISETTING_FIELD.AP_SIGNAL),
+    decodedKind: "percent",
+    description: "WiFi signal strength 0-100% — UnisettingResponse.ap_signal_strength (DP 176, Raw protobuf).",
   },
   /**
    * Whether the robot captures stills while cleaning.
@@ -2049,6 +2302,70 @@ export const VACUUM_CLEAN_MEMBERS = {
     available: (ctx: AvailabilityContext) => ctx.paramIds?.has(VACUUM_DP.DO_NOT_DISTURB) ?? false,
   },
   /**
+   * When quiet hours start, as `"HH:MM"` on the robot's own clock.
+   *
+   * The window itself, which neither `doNotDisturb` (the switch) nor `doNotDisturbActive` (the live
+   * flag) states — so a host could say quiet hours were ON and in force without ever being able to
+   * show when they run. `undefined` means no window is configured; `"00:00"` is midnight and real.
+   */
+  doNotDisturbStart: {
+    readsFrom: "doNotDisturb",
+    type: "string",
+    kind: "text",
+    provenance: "mega",
+    decode: (raw, codec) => decodeDoNotDisturbTime(raw as ParamValue | undefined, codec, UNDISTURBED_FIELD.BEGIN),
+    decodedKind: "text",
+    description: "Quiet hours start, HH:MM — Undisturbed.begin (DP 157 AIoT, Raw protobuf).",
+    available: (ctx: AvailabilityContext) => ctx.paramIds?.has(VACUUM_DP.DO_NOT_DISTURB) ?? false,
+  },
+  /** When quiet hours end, as `"HH:MM"` on the robot's own clock. */
+  doNotDisturbEnd: {
+    readsFrom: "doNotDisturb",
+    type: "string",
+    kind: "text",
+    provenance: "mega",
+    decode: (raw, codec) => decodeDoNotDisturbTime(raw as ParamValue | undefined, codec, UNDISTURBED_FIELD.END),
+    decodedKind: "text",
+    description: "Quiet hours end, HH:MM — Undisturbed.end (DP 157 AIoT, Raw protobuf).",
+    available: (ctx: AvailabilityContext) => ctx.paramIds?.has(VACUUM_DP.DO_NOT_DISTURB) ?? false,
+  },
+  /**
+   * Whether the robot is taking a charge, and how that is going.
+   *
+   * `undefined` is the answer for a robot that is not charging: the vendor omits the whole `charging`
+   * message rather than sending a "no" value, so absence IS the reading. `"fault"` is the vendor's
+   * `ABNORMAL` — contacts touching but no charge flowing, which is the state a user needs told about
+   * and which `activity` alone reports as a contented `"docked"`.
+   */
+  chargeState: {
+    readsFrom: "activity",
+    type: "string",
+    provenance: "mega",
+    decode: (raw, codec) => decodeChargeState(raw as ParamValue | undefined, codec),
+    decodedKind: "enum",
+    decodedValues: CHARGE_STATES as readonly string[],
+    description: "Charge state — WorkStatus.charging (DP 153, Raw protobuf). Absent while not charging.",
+    available: (ctx: AvailabilityContext) => isAiotVacuum(ctx),
+  },
+  /**
+   * What put the robot in the state it is in — an app, the button on its lid, a schedule, its own
+   * judgement, or the remote.
+   *
+   * The difference between "it went home" and "it went home because the battery ran low", which the
+   * activity alone cannot express. `"unknown"` is the vendor's own zero and what a robot reports just
+   * after boot, so it is an answer rather than a gap.
+   */
+  triggerSource: {
+    readsFrom: "activity",
+    type: "string",
+    provenance: "mega",
+    decode: (raw, codec) => decodeTriggerSource(raw as ParamValue | undefined, codec),
+    decodedKind: "enum",
+    decodedValues: TRIGGER_SOURCES as readonly string[],
+    description: "What caused the current state — WorkStatus.trigger.source (DP 153, Raw protobuf).",
+    available: (ctx: AvailabilityContext) => isAiotVacuum(ctx),
+  },
+  /**
    * How many schedules the robot holds — the owner of DP 164.
    *
    * The device reports its timers in full on every change, so a count is a real reading of that report
@@ -2228,6 +2545,31 @@ export const VACUUM_CLEAN_MEMBERS = {
    * `stopCleaning` and `resumeCleaning` are the pair users notice missing first: today a paused robot
    * can only be resumed by starting a fresh run.
    */
+  /**
+   * Tell the robot a replaceable part is new, clearing its hours.
+   *
+   * The other half of the consumables feature: nine counters are read, and until now nothing could
+   * reset one, so a host could show "side brush: 180 hours" forever after the brush was changed.
+   *
+   * **Unverified, so no setter is installed.** The message, the field and the enum are the vendor's
+   * own, and the app has the feature — `resetAccessory(deviceId, accessory, callback)` calling
+   * through to `resetAccessories`, taking exactly this kind of integer part id. What is missing is a
+   * capture showing the frame accepted, and an AIoT DP write is fire-and-forget, so a wrong one would
+   * look like success while quietly discarding service history the device never recomputes.
+   */
+  resetConsumable: {
+    type: "string",
+    kind: "enum",
+    enumValues: Object.fromEntries(CONSUMABLE_PARTS.map((p, i) => [i, p])),
+    writeOnly: true,
+    unverified: true,
+    write: (value) => aiotDp(VACUUM_DP.CONSUMABLES, encodeConsumableReset(value as ConsumablePart)),
+    available: (ctx: AvailabilityContext) => isAiotVacuum(ctx),
+    provenance: "mega",
+    description:
+      "Clear the hours on one replaceable part (ConsumableRequest.reset_types over DP 168). " +
+      "Frame not captured — unverified.",
+  },
   /**
    * End the current job outright, as opposed to {@link VACUUM_CLEAN_MEMBERS.pauseCleaning}, which
    * leaves it resumable.
