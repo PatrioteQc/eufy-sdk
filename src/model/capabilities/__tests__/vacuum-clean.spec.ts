@@ -14,6 +14,14 @@ import {
   decodeCleanStat,
   decodeVacuumFault,
   decodeLanguageField,
+  decodeUnisettingNumber,
+  decodeUnisettingTopLevel,
+  decodeDoNotDisturbTime,
+  decodeChargeState,
+  decodeTriggerSource,
+  encodeConsumableReset,
+  CONSUMABLE_PARTS,
+  CONSUMABLE_RESET_TYPE,
   VOICE_PACK_STATES,
   encodeModeCtrl,
   encodeSelectRoomsClean,
@@ -27,6 +35,7 @@ import {
   type VacuumCleanType,
   type TuyaCleanType,
   type VoicePackState,
+  type ConsumablePart,
 } from "../vacuum-clean.js";
 import { bind } from "./bind.js";
 import { byteCodec, frame, int, str, sub, varint } from "./proto-bytes.js";
@@ -1011,6 +1020,162 @@ describe("vacuum_clean — DP-based action routing", () => {
     expect(acts.voicePackVersion).toBe(22);
     expect(acts.voicePackState).toBe("updating");
     expect(acts.volume).toBe(38);
+  });
+});
+
+describe("UnisettingResponse — the fields that are not switches", () => {
+  const DUST_FULL_REMIND = 8;
+  const AP_SIGNAL = 11;
+  const POOP_AVOIDANCE = 14;
+  const PET_MODE = 15;
+
+  it("reads dust_full_remind as the minute count it is", () => {
+    // The bug this replaced: `Numerical { uint32 value = 1 }` and `Switch { bool value = 1 }` are the
+    // same two bytes, so the boolean reader accepted this and answered `true` for thirty minutes.
+    // Nothing errored and the number was gone.
+    const payload = frame(sub(DUST_FULL_REMIND, int(1, 30)));
+
+    expect(decodeUnisettingNumber(payload, byteCodec, DUST_FULL_REMIND)).toBe(30);
+    // What the old read said about the same bytes, kept as the demonstration:
+    expect(decodeUnisetting(payload, byteCodec, DUST_FULL_REMIND)).toBe(true);
+  });
+
+  it("reads a zero delay as off rather than as missing", () => {
+    expect(decodeUnisettingNumber(frame(sub(DUST_FULL_REMIND, [])), byteCodec, DUST_FULL_REMIND)).toBe(0);
+  });
+
+  it("reads ap_signal_strength off the TOP level, where it has no wrapper", () => {
+    // The one field of this message that is a bare uint32. Both wrapper-stepping readers miss it
+    // entirely — they look for a sub-message that is not there.
+    const payload = frame([...sub(PET_MODE, int(1, 1)), ...int(AP_SIGNAL, 62)]);
+
+    expect(decodeUnisettingTopLevel(payload, byteCodec, AP_SIGNAL)).toBe(62);
+    expect(decodeUnisetting(payload, byteCodec, AP_SIGNAL)).toBeUndefined();
+  });
+
+  it("reads the two toggles that were never named", () => {
+    const payload = frame([...sub(POOP_AVOIDANCE, int(1, 1)), ...sub(PET_MODE, [])]);
+
+    expect(decodeUnisetting(payload, byteCodec, POOP_AVOIDANCE)).toBe(true);
+    expect(decodeUnisetting(payload, byteCodec, PET_MODE)).toBe(false);
+  });
+
+  it("refuses what it cannot read", () => {
+    expect(decodeUnisettingNumber("nope", byteCodec, DUST_FULL_REMIND)).toBeUndefined();
+    expect(decodeUnisettingTopLevel(undefined, byteCodec, AP_SIGNAL)).toBeUndefined();
+    expect(decodeUnisettingTopLevel(frame(int(AP_SIGNAL, 5)), undefined, AP_SIGNAL)).toBeUndefined();
+  });
+});
+
+describe("the do-not-disturb WINDOW (Undisturbed.begin / end)", () => {
+  const BEGIN = 2;
+  const END = 3;
+  /** Undisturbed(2) { sw 1, begin 2 { hour 1, minute 2 }, end 3 { … } } inside the response. */
+  const window = (beginHM: [number, number], endHM: [number, number]): string =>
+    frame(
+      sub(2, [
+        ...sub(1, int(1, 1)),
+        ...sub(BEGIN, [...int(1, beginHM[0]), ...int(2, beginHM[1])]),
+        ...sub(END, [...int(1, endHM[0]), ...int(2, endHM[1])]),
+      ]),
+    );
+
+  it("reads both ends as HH:MM", () => {
+    const payload = window([22, 30], [7, 0]);
+
+    expect(decodeDoNotDisturbTime(payload, byteCodec, BEGIN)).toBe("22:30");
+    expect(decodeDoNotDisturbTime(payload, byteCodec, END)).toBe("07:00");
+  });
+
+  it("pads a single-digit hour and minute", () => {
+    expect(decodeDoNotDisturbTime(window([9, 5], [9, 5]), byteCodec, BEGIN)).toBe("09:05");
+  });
+
+  it("reads midnight as a real setting, not as absent", () => {
+    // Both halves are the proto3 zero, so the TimePoint is present and empty. That is a configured
+    // window starting at midnight — distinct from no window at all.
+    const payload = frame(sub(2, [...sub(1, int(1, 1)), ...sub(BEGIN, []), ...sub(END, int(1, 6))]));
+
+    expect(decodeDoNotDisturbTime(payload, byteCodec, BEGIN)).toBe("00:00");
+    expect(decodeDoNotDisturbTime(payload, byteCodec, END)).toBe("06:00");
+  });
+
+  it("answers undefined when no window is configured", () => {
+    expect(decodeDoNotDisturbTime(frame(sub(2, sub(1, int(1, 1)))), byteCodec, BEGIN)).toBeUndefined();
+    expect(decodeDoNotDisturbTime(frame([]), byteCodec, BEGIN)).toBeUndefined();
+    expect(decodeDoNotDisturbTime("nope", byteCodec, BEGIN)).toBeUndefined();
+  });
+});
+
+describe("WorkStatus — charging and what triggered the state", () => {
+  const CHARGING = 3;
+  const TRIGGER = 20;
+
+  it("answers undefined while the robot is not charging", () => {
+    // The vendor omits the whole message rather than sending a "no". Absence IS the reading, and
+    // reporting it as a gap would make "not charging" indistinguishable from "did not say".
+    expect(decodeChargeState(frame(int(2, 5)), byteCodec)).toBeUndefined();
+  });
+
+  it("reads a present-but-empty charging message as charging", () => {
+    expect(decodeChargeState(frame(sub(CHARGING, [])), byteCodec)).toBe("charging");
+  });
+
+  it("separates a finished charge from a faulted one", () => {
+    expect(decodeChargeState(frame(sub(CHARGING, int(1, 1))), byteCodec)).toBe("charged");
+    // ABNORMAL: contacts touching, nothing flowing — the state `activity` reports as a contented
+    // "docked" and which a user needs told about.
+    expect(decodeChargeState(frame(sub(CHARGING, int(1, 2))), byteCodec)).toBe("fault");
+  });
+
+  it("reads the trigger source", () => {
+    expect(decodeTriggerSource(frame(sub(TRIGGER, int(1, 3))), byteCodec)).toBe("schedule");
+    expect(decodeTriggerSource(frame(sub(TRIGGER, int(1, 2))), byteCodec)).toBe("button");
+  });
+
+  it("reads an omitted source as the vendor's own UNKNOWN", () => {
+    // What a robot reports just after boot: the message is there, the source is its zero member.
+    expect(decodeTriggerSource(frame(sub(TRIGGER, [])), byteCodec)).toBe("unknown");
+  });
+
+  it("refuses a payload it cannot read", () => {
+    expect(decodeChargeState("nope", byteCodec)).toBeUndefined();
+    expect(decodeTriggerSource(frame(sub(TRIGGER, int(1, 1))), undefined)).toBeUndefined();
+  });
+});
+
+describe("encodeConsumableReset (ConsumableRequest.reset_types)", () => {
+  const readBack = (part: ConsumablePart): number | undefined => {
+    const hit = byteCodec.decode(encodeConsumableReset(part))?.find((f) => f.field === 1);
+    return hit?.kind === "int" ? Number(hit.value) : undefined;
+  };
+
+  it("numbers the parts the REQUEST's way, not the report's", () => {
+    // The trap: the report puts the side brush at field 1 and the dirty-water tank at 10, with 8 and 9
+    // unused. The request enumerates from ZERO with no gap. Borrowing the reader's table here would
+    // reset the wrong part — silently, since the device never says which it cleared.
+    expect(readBack("sideBrush")).toBe(0);
+    expect(readBack("rollingBrush")).toBe(1);
+    expect(readBack("dirtyWaterTank")).toBe(7);
+    expect(readBack("dirtyWaterFilter")).toBe(8);
+  });
+
+  it("disagrees with the report's numbering everywhere it should", () => {
+    // Stated as a whole-table check rather than a spot check, because the two tables agreeing by
+    // accident on one part is exactly how this would go unnoticed.
+    expect(CONSUMABLE_PARTS.map((p) => CONSUMABLE_RESET_TYPE[p])).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8]);
+    expect(Object.keys(CONSUMABLE_RESET_TYPE)).toHaveLength(CONSUMABLE_PARTS.length);
+  });
+
+  it("emits a zero part id explicitly rather than omitting it", () => {
+    // `sideBrush` is 0 and proto3 would normally omit it — but an empty `ConsumableRequest` asks the
+    // device to reset NOTHING, which is a different message. The writer emits what it is told to.
+    expect(byteCodec.decode(encodeConsumableReset("sideBrush"))?.length).toBe(1);
+  });
+
+  it("ships declared and not installed, like every uncaptured write", () => {
+    const { acts } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, "eufy_home", new Set([168])));
+    expect((acts as Record<string, unknown>).setResetConsumable).toBeUndefined();
   });
 });
 
