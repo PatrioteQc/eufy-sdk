@@ -80,6 +80,17 @@ export {
   type VacuumRoomParams,
   type VacuumRoomSettings,
 } from "./vacuum-map.js";
+export {
+  cellAtPoint,
+  mapCellValue,
+  mapCellValueAt,
+  pointAtCell,
+  roomAtPoint,
+  roomIdAt,
+  roomIdAtPoint,
+  type MapCell,
+  type PlacedPlane,
+} from "./map-pixels.js";
 export { paramDef, namespaceForCodec, type ParamNamespace } from "./param-namespace.js";
 export { inspectParams, formatInspection, type ParamInspection, type DeviceInspection } from "./inspect.js";
 // The capability surface: the typed `dev.<cap>()` objects, the member tables they derive from, and the
