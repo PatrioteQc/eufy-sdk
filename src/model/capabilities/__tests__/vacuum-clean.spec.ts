@@ -15,6 +15,9 @@ import {
   decodeVacuumFault,
   decodeLanguageField,
   decodeUnisettingNumber,
+  decodeUnistateFlag,
+  decodeUnistateNumber,
+  LIVE_MAP_BITS,
   decodeUnisettingTopLevel,
   decodeDoNotDisturbTime,
   decodeChargeState,
@@ -1020,6 +1023,71 @@ describe("vacuum_clean — DP-based action routing", () => {
     expect(acts.voicePackVersion).toBe(22);
     expect(acts.voicePackState).toBe("updating");
     expect(acts.volume).toBe(38);
+  });
+});
+
+describe("UnisettingResponse.unistate — device state, two levels down", () => {
+  const UNISTATE = 10;
+  const MAP_VALID = 4;
+  const LIVE_MAP = 6;
+  const STRATEGY = 7;
+  /** The toggles sit at the top of the message; these sit inside `unistate`(10). */
+  const state = (body: number[]): string => frame(sub(UNISTATE, body));
+
+  it("reads map_valid through its Active wrapper", () => {
+    expect(decodeUnistateFlag(state(sub(MAP_VALID, int(1, 1))), byteCodec, MAP_VALID)).toBe(true);
+    expect(decodeUnistateFlag(state(sub(MAP_VALID, [])), byteCodec, MAP_VALID)).toBe(false);
+  });
+
+  it("answers undefined when the robot reports no unistate at all", () => {
+    // Distinct from `false`: one is "this robot has no usable map", the other "it did not say".
+    expect(decodeUnistateFlag(frame(sub(1, int(1, 1))), byteCodec, MAP_VALID)).toBeUndefined();
+  });
+
+  it("does not confuse a top-level toggle with a unistate field of the same number", () => {
+    // `ai_see` is field 4 at the TOP level and `map_valid` is field 4 inside `unistate`. A reader that
+    // stepped only one level would answer one for the other, which is the whole reason this decode
+    // exists separately.
+    const payload = frame([...sub(4, int(1, 1)), ...sub(UNISTATE, sub(MAP_VALID, []))]);
+
+    expect(decodeUnisetting(payload, byteCodec, 4)).toBe(true);
+    expect(decodeUnistateFlag(payload, byteCodec, MAP_VALID)).toBe(false);
+  });
+
+  it("reads the live-map bitmask one level deeper again", () => {
+    // base(0) | rooms(1) = 0b0011
+    const payload = state(sub(LIVE_MAP, int(1, 0b0011)));
+    const bits = decodeUnistateNumber(payload, byteCodec, LIVE_MAP, 1);
+
+    expect(bits).toBe(3);
+    expect((bits! & (1 << LIVE_MAP_BITS.rooms)) !== 0).toBe(true);
+    expect((bits! & (1 << LIVE_MAP_BITS.pet)) !== 0).toBe(false);
+  });
+
+  it("names the vendor's bit positions rather than hard-coding shifts", () => {
+    expect(LIVE_MAP_BITS).toEqual({ base: 0, rooms: 1, kitchen: 2, pet: 3 });
+  });
+
+  it("reads a bare number in unistate, and an omitted one as zero", () => {
+    expect(decodeUnistateNumber(state(int(STRATEGY, 7)), byteCodec, STRATEGY)).toBe(7);
+    expect(decodeUnistateNumber(state([]), byteCodec, STRATEGY)).toBe(0);
+  });
+
+  it("refuses what it cannot read", () => {
+    expect(decodeUnistateFlag("nope", byteCodec, MAP_VALID)).toBeUndefined();
+    expect(decodeUnistateNumber(state(int(STRATEGY, 1)), undefined, STRATEGY)).toBeUndefined();
+    expect(decodeUnistateNumber(state([]), byteCodec, LIVE_MAP, 1)).toBeUndefined();
+  });
+
+  it("leaves the three fields whose polarity is unconfirmed unread", () => {
+    // `mop_holder_state_l`(1), `_r`(2) and `mop_state`(5) are each a bool the vendor annotates
+    // "installed or removed" without saying which is which, and the decompile has them only as data.
+    // No member reads them, on purpose — a backwards bool would tell a user the mop is fitted while it
+    // sits on the bench. One capture settles all three.
+    const surfaced = VACUUM_CLEAN.properties.map((p) => p.name).join(" ");
+    for (const guess of ["mopHolder", "mopPadLeft", "mopPadRight", "customCleanMode"]) {
+      expect(surfaced).not.toContain(guess);
+    }
   });
 });
 
