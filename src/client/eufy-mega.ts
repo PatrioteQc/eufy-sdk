@@ -519,20 +519,6 @@ export class EufyMega extends EventEmitter {
   }
 
   /**
-   * Land state a capability recovered from a realtime signal: into the registry (so the next
-   * {@link getDevice} sees it) AND into any `Device` already handed out (so a caller holding one sees
-   * the new value without re-fetching). Emits `deviceState` so a host can react without polling.
-   *
-   * Both writes matter: the registry alone would leave an existing `Device` stale until its freshness
-   * window expired, and that refresh re-reads the CLOUD record — which for a realtime-only line does
-   * not carry this state at all.
-   *
-   * The reported ids are recorded as evidence BEFORE the re-bind is fired, not after it lands. One
-   * report fans out to one call per capability that decoded it, and the re-bind is a cloud round-trip:
-   * advancing the set here is what stops the second call from firing a duplicate, and what stops a
-   * failed re-bind from re-triggering on every subsequent report.
-   */
-  /**
    * Land ONE report, however many capabilities recognised part of it.
    *
    * A robot's report carries data points several capabilities own a slice of, and each returns its own
@@ -577,6 +563,27 @@ export class EufyMega extends EventEmitter {
     this.applyRealtimeState(sn, Object.assign({}, ...states.map((s) => s.params)));
   }
 
+  /**
+   * Land state a capability recovered from a realtime signal: into the registry (so the next
+   * {@link getDevice} sees it) AND into any `Device` already handed out (so a caller holding one sees
+   * the new value without re-fetching). Announces every property whose value moved, then `deviceState`,
+   * so a host can react without polling.
+   *
+   * Both writes matter: the registry alone would leave an existing `Device` stale until its freshness
+   * window expired, and that refresh re-reads the CLOUD record — which for a realtime-only line does
+   * not carry this state at all.
+   *
+   * This is three of the four inbound paths the security line has, and the ONLY one the clean and life
+   * lines have — a robot's cloud record carries none of its data points — so it is what brings those
+   * lines into scope for a property announcement at all. The announcement is edge-triggered for free:
+   * {@link Device.applyParams} names only the properties whose value actually moved, so a device
+   * re-reporting the same state is silent with no dedupe table to keep.
+   *
+   * The reported ids are recorded as evidence BEFORE the re-bind is fired, not after it lands. One
+   * report fans out to one call per capability that decoded it, and the re-bind is a cloud round-trip:
+   * advancing the set here is what stops the second call from firing a duplicate, and what stops a
+   * failed re-bind from re-triggering on every subsequent report.
+   */
   private applyRealtimeState(sn: string | undefined, params: Record<number, string>): void {
     if (!sn) return;
     const known = this.boundParamIds.get(sn);
@@ -584,7 +591,8 @@ export class EufyMega extends EventEmitter {
     const widens = known ? reported.some((id) => !known.has(id)) : false;
     if (widens && known) this.boundParamIds.set(sn, new Set([...known, ...reported]));
     this.registry.applyRealtimeParams(sn, params);
-    this.liveDevices.get(sn)?.deref()?.applyParams(params);
+    const device = this.liveDevices.get(sn)?.deref();
+    if (device) this.announceChanges(sn, device, device.applyParams(params));
     this.emit("deviceState", this.deviceState(sn));
     if (widens) void this.rebindReads(sn);
   }

@@ -12,7 +12,9 @@ import { EufyMega } from "../eufy-mega.js";
  */
 function withDevice(logger?: { warn: (m: string) => void }) {
   const eufy = new EufyMega({ email: "t@example.com", password: "x", logger: logger as never });
-  const dev = { bindActions: vi.fn(), applyParams: vi.fn() };
+  // A `Device` stand-in over the three methods this path calls. The announcement half has its own spec
+  // (`realtime-property-changes.spec.ts`); here it answers nothing so only the re-bind is observable.
+  const dev = { bindActions: vi.fn(), applyParams: vi.fn(), announcements: vi.fn(() => []) };
   (eufy as never as { liveDevices: Map<string, WeakRef<object>> }).liveDevices.set("VAC", new WeakRef(dev));
   (eufy as never as { boundParamIds: Map<string, ReadonlySet<number>> }).boundParamIds.set("VAC", new Set([0]));
   const context = vi.spyOn(eufy as never as { commandContext: () => unknown }, "commandContext");

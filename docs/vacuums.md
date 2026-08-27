@@ -114,6 +114,11 @@ What you cannot do is **pull** state: a robot reports on change, and the vendor 
 read that returns its current values. So the honest pattern is event-driven — react to `deviceState`
 rather than sampling. A robot that has not reported since you connected simply has no getters yet.
 
+A report also announces each value it moved as [`propertyChanged`](/events), naming the property rather
+than the whole device — so a host can update one reading instead of re-reading the object. The clean
+line's monotonic counters (`clearTime`, `lifetimeCleanTime`, `lifetimeCleanArea`) are deliberately
+excluded: they advance for the whole duration of a run, so announcing them would say nothing.
+
 **Controls** — start / pause / return-to-dock, suction, volume — are not implemented; the robot surface
 is read-only today.
 
