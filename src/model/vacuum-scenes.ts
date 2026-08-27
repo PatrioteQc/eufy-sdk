@@ -16,6 +16,7 @@
  * @module model/vacuum-scenes
  */
 import type { RawDpCodec, RawDpField } from "../core/contracts.js";
+import { each, flag, int, sub, text } from "./proto-read.js";
 
 /**
  * Why the device considers a scene unusable. `"none"` is the healthy case — the vendor's `NORMAL`,
@@ -98,48 +99,6 @@ const ID_FIELD = { VALUE: 1 } as const;
  * took it for one would send an area-select frame naming a floor that does not exist.
  */
 const NO_MAP = 0xff_ff_ff_fe;
-
-/** Read a varint field as a number, or `0` — proto3 omits a zero, so absent and zero are one value. */
-function int(fields: readonly RawDpField[] | undefined, field: number): number {
-  const hit = fields?.find((f) => f.field === field);
-  return hit?.kind === "int" ? Number(hit.value) : 0;
-}
-
-/** Read a bool field on the same terms: absent is `false`, because that is what the vendor omitted. */
-function flag(fields: readonly RawDpField[] | undefined, field: number): boolean {
-  const hit = fields?.find((f) => f.field === field);
-  return hit?.kind === "int" && hit.value !== 0n;
-}
-
-/** Step into a sub-message, or `undefined` when the container is absent or is not one. */
-function sub(
-  codec: RawDpCodec,
-  fields: readonly RawDpField[] | undefined,
-  field: number,
-): readonly RawDpField[] | undefined {
-  const hit = fields?.find((f) => f.field === field);
-  return hit?.kind === "bytes" ? codec.nested(hit.value) : undefined;
-}
-
-/**
- * Read a string field, or `undefined`.
- *
- * An empty string reads as `undefined` too: proto3 omits it, so a device with no name for a scene and
- * one that sent an empty name are the same bytes, and "" is not a name a host should render.
- */
-function text(fields: readonly RawDpField[] | undefined, field: number): string | undefined {
-  const hit = fields?.find((f) => f.field === field);
-  return hit?.kind === "bytes" && hit.value.length > 0 ? hit.value.toString("utf8") : undefined;
-}
-
-/** Every repeat of one length-delimited field, stepped into — `find` would collapse a repeated one. */
-function each(codec: RawDpCodec, fields: readonly RawDpField[] | undefined, field: number): (readonly RawDpField[])[] {
-  return (fields ?? []).flatMap((f) => {
-    if (f.field !== field || f.kind !== "bytes") return [];
-    const inner = codec.nested(f.value);
-    return inner ? [inner] : [];
-  });
-}
 
 /** Decode one `SceneInfo`. */
 function sceneOf(codec: RawDpCodec, info: readonly RawDpField[]): VacuumScene {

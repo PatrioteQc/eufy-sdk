@@ -17,6 +17,7 @@
  * @module model/vacuum-schedules
  */
 import type { RawDpCodec, RawDpField } from "../core/contracts.js";
+import { each, flag, int, sub, text } from "./proto-read.js";
 
 /** What a timer runs when it fires, as the vendor's `Action` oneof names it. */
 export const VACUUM_SCHEDULE_ACTIONS = ["autoClean", "roomsClean", "cruise", "sceneClean"] as const;
@@ -122,49 +123,9 @@ const SCENE_FIELD = { SCENE_ID: 1, SCENE_NAME: 2 } as const;
 /** The `Desc.Trigger` value that means the timer repeats. `SINGLE = 0` is the omitted default. */
 const TRIGGER_CYCLE = 1;
 
-/** Read a varint field as a number, or `0` — proto3 omits a zero, so absent and zero are one value. */
-function int(fields: readonly RawDpField[] | undefined, field: number): number {
-  const hit = fields?.find((f) => f.field === field);
-  return hit?.kind === "int" ? Number(hit.value) : 0;
-}
-
-/** Read a bool field on the same terms: absent is `false`, because that is what the vendor omitted. */
-function flag(fields: readonly RawDpField[] | undefined, field: number): boolean {
-  const hit = fields?.find((f) => f.field === field);
-  return hit?.kind === "int" && hit.value !== 0n;
-}
-
-/** Step into a sub-message, or `undefined` when the container is absent or is not one. */
-function sub(
-  codec: RawDpCodec,
-  fields: readonly RawDpField[] | undefined,
-  field: number,
-): readonly RawDpField[] | undefined {
-  const hit = fields?.find((f) => f.field === field);
-  return hit?.kind === "bytes" ? codec.nested(hit.value) : undefined;
-}
-
-/** Read a string field, or `undefined` when it is absent. */
-function text(fields: readonly RawDpField[] | undefined, field: number): string | undefined {
-  const hit = fields?.find((f) => f.field === field);
-  return hit?.kind === "bytes" ? hit.value.toString("utf8") : undefined;
-}
-
 /** Expand a `Cycle.week_bits` mask to the days it names, in the vendor's Sunday-first bit order. */
 function weekdaysOf(bits: number): readonly VacuumScheduleWeekday[] {
   return VACUUM_SCHEDULE_WEEKDAYS.filter((_, i) => (bits & (1 << i)) !== 0);
-}
-
-/**
- * Every repeat of one length-delimited field, stepped into. A repeated proto3 message arrives as the
- * same field number several times over, which `find` would collapse to the first of.
- */
-function each(codec: RawDpCodec, fields: readonly RawDpField[] | undefined, field: number): (readonly RawDpField[])[] {
-  return (fields ?? []).flatMap((f) => {
-    if (f.field !== field || f.kind !== "bytes") return [];
-    const inner = codec.nested(f.value);
-    return inner ? [inner] : [];
-  });
 }
 
 /** Read the room ids out of whichever of `General` / `Custom` the device populated. */

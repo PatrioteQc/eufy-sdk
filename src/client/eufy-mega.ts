@@ -20,6 +20,9 @@ import { mqttAppName, mqttScopeFor, type MqttScope } from "../transport/mqtt/top
 import { parseStateInfoSignal } from "../transport/mqtt/availability.js";
 import { parseDpMessage, parseAiotDpReport } from "../transport/mqtt/dp-codec.js";
 import { parseBizMapFrame } from "../transport/mqtt/biz-stream.js";
+import type { BizMapFrame } from "../transport/mqtt/biz-stream.js";
+import { decodeMapFrame } from "./map-channels.js";
+import { VacuumMapStore } from "../model/index.js";
 import { type P2PSession, type P2PFrame } from "../transport/p2p/p2p-session.js";
 import { P2PCommandRouter } from "../transport/p2p/command-router.js";
 import type { PowerTier } from "../transport/p2p/session-manager.js";
@@ -276,6 +279,14 @@ export class EufyMega extends EventEmitter {
   private readonly lastStateAnnounced = new Map<string, unknown>();
   /** Latest authoritative availability observation per device; no heuristic path writes this map. */
   private readonly availabilityObservations = new Map<string, AvailabilityObservation>();
+  /**
+   * One map per clean-line device, assembled from the pieces its `biz/…/res` frames carry.
+   *
+   * Created on the first frame that decodes rather than per device: a store for a robot that has never
+   * sent a map would answer `undefined` to everything, which {@link EufyMega.mapFor} already does
+   * without allocating anything.
+   */
+  private readonly mapStores = new Map<string, VacuumMapStore>();
   /** Re-armed after each cloud-param poll; cancelled by {@link disconnect}. */
   private readonly pollTimer = new Timer();
 
@@ -529,6 +540,38 @@ export class EufyMega extends EventEmitter {
    * announce the same report once per capability and, when a report widens the evidence, fire one cloud
    * round-trip per slice for a re-bind that is identical either way.
    */
+  /**
+   * The map this device has sent so far, or `undefined` if it has sent none.
+   *
+   * The pieces arrive on five channels at their own pace, so this fills in over the first minute or so
+   * of a connection and every getter on it answers `undefined` until its own piece has arrived. Nothing
+   * here polls or requests: the robot publishes its map unasked, and a caller that has just connected
+   * has to wait for the next one rather than being handed a stale one.
+   */
+  mapFor(deviceSn: string): VacuumMapStore | undefined {
+    return this.mapStores.get(deviceSn);
+  }
+
+  /**
+   * Feed one map-stream frame to the device's map, and announce it if anything changed.
+   *
+   * Silent about a frame it cannot use. Most of them are: channels nothing reads yet, and fragments of
+   * a split message. Neither is a fault, and logging either would log on every frame of every clean.
+   */
+  private applyMapFrame(deviceSn: string, frame: BizMapFrame): void {
+    const piece = decodeMapFrame(frame, rawDpCodec);
+    if (!piece) return;
+
+    let store = this.mapStores.get(deviceSn);
+    if (!store) {
+      store = new VacuumMapStore();
+      this.mapStores.set(deviceSn, store);
+    }
+    // The device repeats its map while it cleans. Announcing an unchanged one on every repeat would
+    // wake every listener for nothing, so the store's own answer decides.
+    if (store.apply(piece)) this.emit("map", { deviceSn, map: store.snapshot });
+  }
+
   private applyRealtimeReport(sn: string | undefined, states: readonly { params: Record<number, string> }[]): void {
     if (!states.length) return;
     this.applyRealtimeState(sn, Object.assign({}, ...states.map((s) => s.params)));
@@ -1547,6 +1590,7 @@ export class EufyMega extends EventEmitter {
         const frame = parseBizMapFrame(m.raw);
         if (frame) {
           this.emit("mapFrame", { deviceSn: m.deviceSn, frame });
+          this.applyMapFrame(m.deviceSn, frame);
           return;
         }
       }
