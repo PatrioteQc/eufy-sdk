@@ -19,6 +19,7 @@ import type {
   CommandContext,
   ParamEncoding,
   ParamValue,
+  PropertyChange,
   PropertyValueType,
   PropertySpec,
   PropertyValue,
@@ -36,6 +37,10 @@ import {
   type CapabilityAccessors,
   type DeviceManifest,
 } from "./capabilities/index.js";
+// `narrow` is the members table's own read narrowing, imported by direct path because it is internal to
+// `capabilities/` and must not join the barrel's published surface. Sharing it is the point: an
+// announcement carries the value the getter answers, resolved by the one function that decides that.
+import { narrow } from "./capabilities/members.js";
 import { paramDef, namespaceForCodec, type ParamNamespace } from "./param-namespace.js";
 
 /**
@@ -434,6 +439,39 @@ export class Device {
       if (changedVal) changed.push(name);
     }
     return changed;
+  }
+
+  /**
+   * Which of these changed property names are worth ANNOUNCING, each with the value its getter now
+   * answers — the second half of an {@link applyParams} call, and the input a facade turns into a
+   * property-change event.
+   *
+   * Only a name in this device's own schema survives. The schema is what the SDK published and
+   * {@link getProperty} serves every entry of, so announcing one is honest; a dictionary-named param and
+   * an `unknown_<paramType>` passthrough are things the SDK makes no claim about, and announcing either
+   * would promise a value it never agreed to serve. Diagnostics reach those through `inspectParams`.
+   * A member may also opt out for itself (`PropertySpec.unannounced`), for a value that moves on
+   * essentially every report and so carries no news.
+   *
+   * The value comes out of live state — written microseconds earlier by the same call that produced
+   * `changed` — through the same {@link narrow} the capability getters use. Not from the raw wire value:
+   * that is a second conversion and a second answer, which is exactly how a payload comes to disagree
+   * with the getter beside it. And not by invoking the installed getter, which has read side effects
+   * ({@link scheduleRefresh}, a codec call) an announcement must not trigger.
+   *
+   * Kept beside the state and the schema rather than in a caller, because both are here; a caller doing
+   * the join would be re-deriving what this object already holds. Says nothing about the previous value:
+   * a caller that needs the delta already holds it, because it was told last time.
+   */
+  announcements(changed: readonly string[]): PropertyChange[] {
+    const out: PropertyChange[] = [];
+    for (const name of changed) {
+      const spec = this.specByName.get(name);
+      if (!spec || spec.unannounced) continue;
+      const value = spec.raw ? undefined : narrow(spec.type, (n) => this.state.get(n), name);
+      out.push(value === undefined ? { property: name } : { property: name, value });
+    }
+    return out;
   }
 
   /**

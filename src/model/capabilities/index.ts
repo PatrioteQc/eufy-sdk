@@ -6,7 +6,7 @@
  * @module model/capabilities
  */
 
-import type { Capability, CloudRecord, Codec, PropertySpec } from "../types.js";
+import type { Capability, CloudRecord, Codec, PropertyChange, PropertySpec } from "../types.js";
 import { bindMembers, hasRequiredCapabilities, installs, memberWrite, propertiesOf } from "./members.js";
 import { camelCase } from "./access.js";
 import { describeBound, type CapabilityDescriptor } from "./manifest.js";
@@ -646,8 +646,9 @@ export interface DeviceEventMap {
    * A camera's own enablement was confirmed changed, after a write this SDK issued was read back off the
    * device. Carries no value — re-read `enabled`, which has converged by the time this fires.
    *
-   * Distinct from `cameraEnabled`, which reports the value moving between cloud polls for any reason. This
-   * one says a write LANDED, which is the only thing that can be known about a value nothing pushes.
+   * Distinct from {@link propertyChanged}, which reports `enabled` moving for any reason on whichever
+   * inbound path saw it. This one says a write LANDED, which is a different fact and the only thing that
+   * can be known about a value nothing pushes.
    */
   cameraEnabledChanged: PushSemanticEvent;
   /** Station alarm lifecycle; `phase` says whether it fired or is counting down. */
@@ -660,14 +661,34 @@ export interface DeviceEventMap {
    * carried no contact value, so `undefined` means "not reported here", not "closed".
    */
   contactState: PushSemanticEvent & PollSemanticEvent & { open?: boolean };
-  /** Battery level changed (poll). `to` is the new 0–100 level. */
-  batteryLevel: PollSemanticEvent;
   /**
-   * A camera was enabled or disabled (poll). `enabled` is the state after the change, normalised from
-   * whichever id the device reports it under — the two carry opposite polarity, so read `enabled` rather
-   * than `to`. Absent when the change carried no value.
+   * A property this device reports changed value — the generic announcement, derived from the same
+   * `members` table the getters are, for every readable property of every capability.
+   *
+   * `property` is the name {@link Device.getProperty} takes and the one a capability getter answers, so a
+   * caller can re-read immediately; {@link Device.describe} publishes the `{ accessor, property }` pair
+   * for a caller that wants the fluent accessor behind the name. `value` is what the getter now answers,
+   * read from live state rather than re-converted from the wire, and absent where the getter itself
+   * would not give a value — a property whose stored form is a payload, or one whose stored value does
+   * not match its declared type. No wire id travels with it: several ids resolve to one property, which
+   * is the point.
+   *
+   * Announced from the cloud poll and from a realtime report, for a change with any cause — the SDK
+   * cannot tell its own write's echo from a change made in the vendor app, and suppressing on a guess
+   * would lose a real external change in exchange for one redundant re-read. Not announced on first
+   * sight of a device (that is discovery, not a transition), nor on the read-through freshness refresh
+   * (whose timing says only when a caller happened to read), nor inside a write's own confirmation
+   * (already reported through that command's outcome).
+   *
+   * A member may opt out of announcing for itself where its value moves on essentially every report
+   * (`ValueMember.unannounced`); a sensor's own check-in timestamp is one, since that is the liveness
+   * job {@link EufyMega.deviceState} already does.
+   *
+   * Latency is the inbound path's: seconds for a property a device reports over realtime, one poll
+   * interval for one that only ever arrives as a cloud param — which is most of them, and the interval
+   * is the caller's to choose (`EufyMegaOptions.pollMs`, `EufyMega.setPollInterval`).
    */
-  cameraEnabled: PollSemanticEvent & { enabled?: boolean };
+  propertyChanged: SemanticEventBase & PropertyChange;
   /** Battery alert — `state` discriminates low / hot / full. */
   batteryAlert: PushSemanticEvent & { state?: "low" | "hot" | "full" };
   /** Pan/tilt status streamed while the camera moves. */

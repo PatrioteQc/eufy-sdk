@@ -202,6 +202,22 @@ export interface ValueMember {
    */
   unexposed?: true;
   /**
+   * This value moving is NOT news — so it is applied and readable, but never announced.
+   *
+   * A change to any other schema property is announced generically, and the default has to be that,
+   * or every member's author would have to opt in and the ~34 members nothing announces today would
+   * stay silent. What this opts out of is a value that moves on essentially every report and therefore
+   * says nothing about the device that a caller can act on: a sensor's own check-in timestamp moves
+   * whenever it checks in, which duplicates the liveness job `deviceState` already does, and a
+   * monotonic lifetime counter moves for the whole duration of a run.
+   *
+   * Declared HERE, beside the member, rather than filtered centrally by {@link kind}: the model floor
+   * and the facade must not decide which capability values matter by a rule no capability wrote, and a
+   * new member's author has to make the call at declaration time. Carried onto the member's
+   * {@link PropertySpec} so the one place that reads it needs no join back to this table.
+   */
+  unannounced?: true;
+  /**
    * Reinterpret the RAW wire value at ingest, for a param the app reads as something other than its face
    * value — a bitfield the device reports as an object, a code that means a flag.
    *
@@ -625,6 +641,7 @@ export function propertiesOf(members: Members, ctx?: AvailabilityContext): Prope
         raw: m.decode ? true : undefined,
         readAliases: aliases?.slice(promoted ? 1 : 0).map(({ paramType, invert }) => ({ paramType, invert })),
         writable: m.write !== undefined || m.writtenElsewhere === true,
+        unannounced: m.unannounced,
         description: m.description,
       },
     ];
@@ -805,8 +822,13 @@ function reports(requires: readonly number[] | undefined, ctx: CommandContext): 
  * raw string so the mismatch is visible in the log, and a param the dictionary declares `json`-encoded
  * is stored as a decoded object. Handing either through a getter typed `number` is the one lie this
  * table exists to prevent.
+ *
+ * Exported so the ONE narrowing the getters use is also the one a property-change announcement carries.
+ * A second conversion of the wire value is precisely how a payload comes to disagree with the getter
+ * beside it, which would defeat the point of announcing the change at all.
+ * @internal
  */
-function narrow(
+export function narrow(
   type: PropertyValueType,
   read: CapabilityStateReader,
   prop: string,

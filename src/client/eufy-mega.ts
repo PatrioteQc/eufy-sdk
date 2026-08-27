@@ -1402,12 +1402,14 @@ export class EufyMega extends EventEmitter {
   }
 
   /**
-   * One poll pass: re-read the device list, land what moved on the live devices, and emit a semantic
-   * event for every param that changed value since the last pass.
+   * One poll pass: re-read the device list, land what moved on the live devices, announce every property
+   * whose value changed, and emit a semantic event for every param that changed value since the last pass.
    *
-   * This is the producer behind the capabilities' `source:"poll"` event mappings — the channel for
-   * state that has no push of its own (`battery.ts` maps the battery level here; `contact.ts` maps the
-   * contact param as a second path alongside its push).
+   * `propertyChanged` is the generic channel this exists for: most readable members arrive only as a
+   * cloud param and no push carries them, so re-reading was the only way a caller could learn one had
+   * moved and re-reading cannot say WHEN. A capability's own `source:"poll"` mapping is beside it, for a
+   * state that carries something a bare property change cannot (`contact.ts` maps the contact param as a
+   * third transport for a state its push and its station notify also report).
    *
    * Each change is decoded against the reporting device's capabilities, the same argument the push path
    * passes: a param id claimed by more than one capability cannot be resolved without it, so a poll
@@ -1436,8 +1438,8 @@ export class EufyMega extends EventEmitter {
   }
 
   /**
-   * Land a poll pass's fresh params on every live {@link Device}, BEFORE anything derived from them is
-   * emitted.
+   * Land a poll pass's fresh params on every live {@link Device} and announce what moved, BEFORE anything
+   * else derived from them is emitted.
    *
    * Without this the poll updated the registry's record and its own baseline and left live state — the
    * map every capability getter reads — untouched. The only catch-up was the read-through freshness
@@ -1452,7 +1454,31 @@ export class EufyMega extends EventEmitter {
   private applyPolledParams(changes: readonly ParamChange[]): void {
     const byDevice = new Map<string, Record<number, string>>();
     for (const change of changes) byDevice.set(change.deviceSn, change.params);
-    for (const [sn, params] of byDevice) this.liveDevices.get(sn)?.deref()?.applyParams(params);
+    for (const [sn, params] of byDevice) {
+      const device = this.liveDevices.get(sn)?.deref();
+      if (device) this.announceChanges(sn, device, device.applyParams(params));
+    }
+  }
+
+  /**
+   * Announce the properties a param application moved, one `propertyChanged` each.
+   *
+   * The device decides which of the changed names it will stand behind and what value each carries
+   * ({@link Device.announcements}), so this stays a fan-out: no capability name, no member id, and no
+   * second conversion of a wire value that could disagree with the getter beside it.
+   *
+   * Only a device a caller is HOLDING is announced for, because the announced value is read out of that
+   * device's own live state and a serial nobody asked for has none. Such a device's liveness still
+   * reaches a host as `deviceState`.
+   *
+   * Echoes of the SDK's own writes are announced rather than suppressed. A poll pass cannot tell a change
+   * it caused from one an external actor caused, and suppressing on that guess is unsound, not merely
+   * conservative: if a user also changes the value in the vendor app inside the window, the real external
+   * change is the one lost — a wrong state held indefinitely, against one redundant idempotent re-read.
+   */
+  private announceChanges(sn: string, device: Device, changed: readonly string[]): void {
+    for (const change of device.announcements(changed))
+      this.emitSemantic("propertyChanged", { deviceSn: sn, ...change });
   }
 
   /**

@@ -238,6 +238,12 @@ export interface PropertySpec {
    * in the capability spec, not in per-device branches.
    */
   readAliases?: ReadonlyArray<{ paramType: number; invert?: boolean }>;
+  /**
+   * This value moving is not news, so it is applied and readable but never announced as a property
+   * change. Declared on the member that owns the semantics (`ValueMember.unannounced`) and carried here
+   * so the announcement needs no join back to the capability's table.
+   */
+  unannounced?: true;
   /** Short description for docs / discovery. */
   description?: string;
 }
@@ -259,6 +265,34 @@ export interface PropertyValue {
   value: ParamValue;
   /** When the value was last observed (epoch ms). */
   ts: number;
+}
+
+/**
+ * One property whose value moved, as a host is told about it.
+ *
+ * Identified by property NAME and nothing else. The name is unique per device, is what `applyParams`
+ * already answers with, and is the key {@link Device.getProperty} takes — so a caller can re-read
+ * immediately. No wire id travels with it: resolving several ids to one property is the whole job the
+ * param → spec map does, and handing the id back out undoes it and gives a caller a second identifier
+ * to key on, which then breaks on the family where that property's read alias is promoted. The ids stay
+ * available through `inspectDevice` and {@link Device.describe}.
+ *
+ * A caller that wants the capability accessor behind the name already has that mapping:
+ * {@link Device.describe} publishes the `{ accessor, property }` pair, joined once at setup.
+ */
+export interface PropertyChange {
+  /** The property whose value moved — a key of this device's own schema. */
+  property: string;
+  /**
+   * The value the capability's getter now answers, narrowed to the property's declared type.
+   *
+   * Read out of live state, never re-converted from the wire, so it cannot disagree with the getter
+   * beside it. Absent for a property whose stored value is a PAYLOAD rather than the value (see
+   * {@link PropertySpec.raw}), and for one whose stored value does not match its declared type — in
+   * both cases the honest answer is "this moved, re-read it" rather than a value the getter would not
+   * give.
+   */
+  value?: boolean | number | string;
 }
 
 /**

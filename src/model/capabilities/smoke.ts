@@ -27,12 +27,16 @@ export const SMOKE_MEMBERS = {
    * Unix seconds at which the detector last checked in — param 1551, the same last-seen id the other
    * sensor capabilities read. A `timestamp` kind takes no `unit`: the number is an instant, not a
    * duration, and declaring `unit: "s"` beside it fails the value-kind spec.
+   *
+   * Not announced as a property change: it moves whenever the detector reports, so every alarm sensor
+   * would announce it on essentially every pass — and liveness is already `deviceState`'s job.
    */
   lastSeen: {
     param: 1551,
     type: "number",
     kind: "timestamp",
     provenance: "verified",
+    unannounced: true,
     description: "Last-seen unix timestamp, seconds (verified: param 1551).",
   },
 } as const satisfies Members;

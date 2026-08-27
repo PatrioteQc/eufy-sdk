@@ -49,6 +49,23 @@ function liveContactSensor(eufy: EufyMega, sn = "T8000P0000000000"): Device {
   return dev;
 }
 
+/**
+ * A live battery camera a caller is holding, reporting the three members #95 names as announced by
+ * nothing: its enablement (1035), its status LED (1045) and its night-vision mode (1277).
+ */
+function liveCamera(eufy: EufyMega, sn = "T8000P0000000000"): Device {
+  const record = {
+    deviceType: 9,
+    model: "T8410",
+    params: { 1101: "88", 1035: "0", 1045: "1", 1277: "1" },
+    paramUpdatedAt: {},
+  };
+  const dev = Device.fromRecord(sn, record);
+  vi.spyOn((eufy as any).registry, "record").mockResolvedValue(record);
+  (eufy as any).liveDevices.set(sn, new WeakRef(dev));
+  return dev;
+}
+
 describe("cloud-param poll loop", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -56,21 +73,22 @@ describe("cloud-param poll loop", () => {
   });
   afterEach(() => vi.useRealTimers());
 
-  it("turns a changed battery param into a batteryLevel event", async () => {
+  it("announces a changed property with the value its getter now answers", async () => {
     const eufy = makeClient();
+    const dev = liveContactSensor(eufy);
     vi.spyOn((eufy as any).registry, "pollChanges").mockResolvedValue({
-      params: [batteryChange("81")],
+      params: [paramChange(1550, "0", "1")],
       added: [],
       removed: [],
       reported: [],
     });
     const seen: any[] = [];
-    eufy.on("batteryLevel", (e) => seen.push(e));
+    eufy.on("propertyChanged", (e) => seen.push(e));
 
     await (eufy as any).pollOnce();
 
-    expect(seen).toHaveLength(1);
-    expect(seen[0]).toMatchObject({ deviceSn: "T8000P0000000000", paramType: 1101, from: "88", to: "81" });
+    expect(seen).toEqual([{ deviceSn: "T8000P0000000000", property: "contact", value: true }]);
+    expect(dev.getProperty("contact")?.value).toBe(true);
   });
 
   /**
@@ -165,28 +183,128 @@ describe("cloud-param poll loop", () => {
   });
 
   /**
-   * Camera enablement is the state #47 wanted announced: it only ever arrives as a cloud param, so
-   * re-reading was the only way to learn of a change and re-reading cannot say WHEN. Both wire ids
-   * carry it, under opposite polarity — 1035 is a disable bit, 2001 reports it directly — so the event
-   * normalises to `enabled` rather than handing a caller the raw value and its polarity.
+   * Camera enablement is the state #47 asked for and #95 generalised: it only ever arrives as a cloud
+   * param, so re-reading was the only way to learn of a change and re-reading cannot say WHEN. Both wire
+   * ids carry it under opposite polarity — 1035 is a disable bit, 2001 reports it directly — and the
+   * announcement carries the value the getter reads, so the polarity is applied once, where the member
+   * declares it, and there is no second copy to disagree with.
    */
   it("announces a camera enablement change, in the polarity the reporting id uses", async () => {
     const eufy = makeClient();
-    const changes = [paramChange(1035, "0", "1"), paramChange(2001, "false", "true")];
+    const dev = liveCamera(eufy);
+    const pollChanges = vi.spyOn((eufy as any).registry, "pollChanges");
+    const seen: any[] = [];
+    eufy.on("propertyChanged", (e) => seen.push(e));
+
+    pollChanges.mockResolvedValue({ params: [paramChange(1035, "0", "1")], added: [], removed: [], reported: [] });
+    await (eufy as any).pollOnce();
+    pollChanges.mockResolvedValue({
+      params: [paramChange(2001, "false", "true")],
+      added: [],
+      removed: [],
+      reported: [],
+    });
+    await (eufy as any).pollOnce();
+
+    expect(seen).toEqual([
+      { deviceSn: "T8000P0000000000", property: "enabled", value: false },
+      { deviceSn: "T8000P0000000000", property: "enabled", value: true },
+    ]);
+    expect(dev.getProperty("enabled")?.value).toBe(true);
+  });
+
+  /**
+   * The whole point of the generic announcement: a camera's status LED and night vision, a floodlight's
+   * brightness and a device's speaker volume are cloud params with reads that no push carries and no
+   * capability declared an event for. Nothing had to be added per member for these to arrive.
+   */
+  it("announces the members that had no event of their own", async () => {
+    const eufy = makeClient();
+    liveCamera(eufy);
     vi.spyOn((eufy as any).registry, "pollChanges").mockResolvedValue({
-      params: changes,
+      params: [
+        { deviceSn: "T8000P0000000000", paramType: 1045, from: "1", to: "0", params: { 1045: "0", 1277: "2" } },
+        { deviceSn: "T8000P0000000000", paramType: 1277, from: "1", to: "2", params: { 1045: "0", 1277: "2" } },
+      ],
       added: [],
       removed: [],
       reported: [],
     });
     const seen: any[] = [];
-    eufy.on("cameraEnabled", (e) => seen.push(e));
+    eufy.on("propertyChanged", (e) => seen.push(e));
 
     await (eufy as any).pollOnce();
 
-    expect(seen).toHaveLength(2);
-    expect(seen[0]).toMatchObject({ deviceSn: "T8000P0000000000", paramType: 1035, enabled: false });
-    expect(seen[1]).toMatchObject({ paramType: 2001, enabled: true });
+    expect(seen).toEqual([
+      { deviceSn: "T8000P0000000000", property: "statusLed", value: false },
+      { deviceSn: "T8000P0000000000", property: "nightVision", value: 2 },
+    ]);
+  });
+
+  /**
+   * A property change is a device event like any other, so it reaches the catch-all beside the named
+   * listener — a host fanning everything onto a bus gets it without a per-name subscription.
+   */
+  it("reaches the catch-all listener tagged with its event name", async () => {
+    const eufy = makeClient();
+    liveCamera(eufy);
+    vi.spyOn((eufy as any).registry, "pollChanges").mockResolvedValue({
+      params: [paramChange(1045, "1", "0")],
+      added: [],
+      removed: [],
+      reported: [],
+    });
+    const seen: any[] = [];
+    eufy.on("event", (e) => seen.push(e));
+
+    await (eufy as any).pollOnce();
+
+    expect(seen).toEqual([
+      { eventName: "propertyChanged", deviceSn: "T8000P0000000000", property: "statusLed", value: false },
+    ]);
+  });
+
+  /**
+   * `contactState` keeps its name and now overlaps the generic announcement on the poll path — twice for
+   * one movement, idempotently. It is not reducible to a property change: it is the same physical state
+   * arriving on three transports with edge-triggered dedupe across them, and the FCM push path applies no
+   * param at all, so retiring it would make a door-open push announce nothing.
+   */
+  it("announces a contact movement both semantically and as a property change", async () => {
+    const eufy = makeClient();
+    liveContactSensor(eufy);
+    vi.spyOn((eufy as any).registry, "pollChanges").mockResolvedValue({
+      params: [paramChange(1550, "0", "1")],
+      added: [],
+      removed: [],
+      reported: [],
+    });
+    const seen: string[] = [];
+    eufy.on("event", (e) => seen.push(e.eventName));
+
+    await (eufy as any).pollOnce();
+
+    expect(seen).toEqual(["propertyChanged", "contactState"]);
+  });
+
+  /**
+   * The value can only come from a device's own live state, so a serial no caller ever asked for has
+   * none to read and nothing is announced for it. `deviceState` still reports its liveness.
+   */
+  it("announces nothing for a device no caller is holding", async () => {
+    const eufy = makeClient();
+    vi.spyOn((eufy as any).registry, "pollChanges").mockResolvedValue({
+      params: [paramChange(1550, "0", "1")],
+      added: [],
+      removed: [],
+      reported: [],
+    });
+    const seen: any[] = [];
+    eufy.on("propertyChanged", (e) => seen.push(e));
+
+    await (eufy as any).pollOnce();
+
+    expect(seen).toEqual([]);
   });
 
   /**

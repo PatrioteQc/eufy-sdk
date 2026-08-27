@@ -296,23 +296,6 @@ function poweredOf(ctx: CommandContext): "wired" | "battery" {
 }
 
 /**
- * Every wire id that carries the camera's enablement state, with the polarity it reports under — the
- * READ side of {@link CAMERA_MEMBERS}.enabled, read back off that member rather than restated.
- *
- * A second list would be a second answer to "which ids mean enablement, and which way round": the
- * getter would keep one and the poll event the other, and a family whose alias moved would report the
- * inverse of what it reads. `invert` is the member's own convention — the value is a DISABLE bit where
- * it is set.
- */
-function enablementReads(): { paramType: number; invert: boolean }[] {
-  const member = CAMERA_MEMBERS.enabled;
-  return [
-    { paramType: member.param, invert: member.invert },
-    ...member.readAliases.map((alias) => ({ paramType: alias.paramType, invert: alias.invert })),
-  ];
-}
-
-/**
  * The param an enablement write will be reflected under on THIS device, and the raw value to expect there.
  *
  * Written wire and reported wire are not the same one. Every family is written on
@@ -601,26 +584,6 @@ export const CAMERA: CapabilityModule = {
   properties: propertiesOf(CAMERA_MEMBERS),
   /** Every camera-codec device has the power/privacy surface. */
   detection: { codecs: ["camera"] },
-  /**
-   * Inbound `cameraEnabled`: the enablement state changing between cloud polls.
-   *
-   * Enablement only ever arrives as a cloud param — no id pushes it — so re-reading was the only way a
-   * caller could learn it had moved, and re-reading cannot say WHEN. Every id that carries the read is
-   * mapped, from {@link enablementReads}, so the event and the getter cannot disagree about which ids
-   * those are or which polarity each reports under; the raw value is normalised to `enabled` because
-   * the two ids report it inverted from each other.
-   *
-   * Neither id is claimed by another capability, so both emit without capability context — which is the
-   * declared behaviour for an uncontested id, and safe here because both have only ever been reported by
-   * camera devices.
-   */
-  events: enablementReads().map(({ paramType, invert }) => ({
-    source: "poll" as const,
-    match: paramType,
-    emit: "cameraEnabled",
-    derive: (s) =>
-      s.source === "poll" && s.to !== undefined ? { enabled: asBool(s.to) !== invert } : ({} as Record<string, never>),
-  })),
   /** Only the no-argument power verbs, which carry no value for a member to hold. */
   actions(ctx: CommandContext, sink: CommandSink): CapabilityActions {
     return {
