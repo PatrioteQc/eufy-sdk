@@ -33,7 +33,9 @@ export type LiveTrace =
   /** A video payload decoded to nothing, so no access unit could be built from it. */
   | { phase: "video-decode-empty"; signCode: number }
   /** A datagram was missing on a data channel, discarding the logical frame being reassembled. */
-  | { phase: "datagram-gap"; dataType: number };
+  | { phase: "datagram-gap"; dataType: number }
+  /** A data channel's numbering restarted mid-connection, so sequencing resynchronized onto it. */
+  | { phase: "sequence-restart"; dataType: number };
 
 /** Record one startup observation at debug level. */
 export function traceLiveStart(logger: Logger, trace: LiveTrace): void {

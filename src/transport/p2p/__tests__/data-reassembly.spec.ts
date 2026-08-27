@@ -137,4 +137,32 @@ describe("P2P data reassembly", () => {
     expect(received).toHaveLength(2);
     expect(received[1]!.raw).toEqual(payload);
   });
+
+  it("resynchronizes onto numbering the device restarts mid-connection", () => {
+    const { feed, received, debug } = harness();
+    const payload = Buffer.alloc(48, 7);
+    const restarted = commandFrame(0, 1300, payload);
+
+    feed(dataPacket(20_000, commandFrame(20_000, 1300, payload).subarray(0, 20)));
+    feed(dataPacket(0, restarted.subarray(0, 24)));
+    feed(dataPacket(1, restarted.subarray(24)));
+    feed(dataPacket(2, commandFrame(2, 1301, Buffer.from([1, 2, 3]))));
+
+    expect(received.map(({ commandId }) => commandId)).toEqual([1300, 1301]);
+    expect(received[0]!.raw).toEqual(payload);
+    expect(debug).toHaveBeenCalledWith(LIVE_TRACE_MESSAGE, { phase: "sequence-restart", dataType: VIDEO_DATA_TYPE });
+  });
+
+  it("ignores a repeat from as far back as the device has been seen to repeat", () => {
+    const { feed, received } = harness();
+    const payload = Buffer.alloc(48, 7);
+    const frame = commandFrame(1_000, 1300, payload);
+
+    feed(dataPacket(1_000, frame.subarray(0, 24)));
+    feed(dataPacket(880, Buffer.alloc(16, 9))); // 120 behind: the deepest repeat the captures show
+    feed(dataPacket(1_001, frame.subarray(24)));
+
+    expect(received).toHaveLength(1);
+    expect(received[0]!.raw).toEqual(payload);
+  });
 });
