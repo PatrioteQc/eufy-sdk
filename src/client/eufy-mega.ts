@@ -25,6 +25,7 @@ import { MqttCommandRouter } from "../transport/mqtt/command-router.js";
 import { TuyaCommandRouter } from "../transport/tuya/command-router.js";
 import { TuyaDpRouter, parseTuyaDpReport } from "../transport/tuya/dp-codec.js";
 import { rawDpCodec } from "../transport/raw-dp.js";
+import { parseCleanRecordDetail, type CleanRecordDetail } from "../model/clean-record-detail.js";
 import { resolveLightEffect as resolveLightEffectHttp } from "../transport/http/light-catalog.js";
 import {
   buildCommand as buildCapabilityCommand,
@@ -1037,6 +1038,36 @@ export class EufyMega extends EventEmitter {
       this.opts.logger?.debug?.(`[clean] record list failed: ${(err as Error).message}`);
       return EMPTY_CLEAN_RECORD_PAGE;
     }
+  }
+
+  /**
+   * Decode one cleaning run's **detail blob** — the bytes behind a {@link CleanRecord}'s `downloadUrl`.
+   *
+   * The SDK does not fetch that URL: its host is unconfirmed, and this client's binary path is
+   * host-allowlisted with SSRF checks by design, so routing around it would defeat a control that
+   * exists for a reason. Fetch the bytes however your host prefers and hand them here.
+   *
+   * Answers `undefined` when the blob fails its own checksum or is not one of these at all.
+   */
+  parseCleanRecordDetail(blob: Uint8Array): CleanRecordDetail | undefined {
+    return parseCleanRecordDetail(blob, rawDpCodec);
+  }
+
+  /**
+   * One page of a device's stored **map data**, raw.
+   *
+   * Handed back exactly as the cloud sends it, `content` included and undecoded. The decoder for that
+   * content is the vendor's clean-native library, which is not in the app package — so this SDK can
+   * carry the bytes to you and no further. Walk `is_next_page` and `last_offset` to reassemble a map
+   * that spans several responses.
+   */
+  getDeviceMapList<T = unknown>(deviceSn: string, channelId = 0, num = 1, page = 1, lastOffset = 0): Promise<T> {
+    return this.mega.getDeviceMapList<T>(deviceSn, channelId, num, page, lastOffset);
+  }
+
+  /** Stored map content for several channels at once, raw and undecoded. See {@link getDeviceMapList}. */
+  getManyDeviceMapContent<T = unknown>(deviceSn: string, channelIds: readonly number[]): Promise<T> {
+    return this.mega.getManyDeviceMapContent<T>(deviceSn, channelIds);
   }
 
   /** Live param list for one owned device. See `MegaHttpClient.getDeviceParamList`. */

@@ -1,6 +1,7 @@
 import type { RawDpCodec } from "../../core/contracts.js";
 import type { ParamValue } from "../types.js";
-import { pickDpParams } from "./access.js";
+import { pickDpParams, aiotDp } from "./access.js";
+import { rawDp } from "../../core/raw-dp-writer.js";
 import { propertiesOf, type Members, type Surface } from "./members.js";
 import type { AvailabilityContext, CapabilityModule } from "./types.js";
 import { isAiotVacuum } from "../device-family.js";
@@ -29,6 +30,17 @@ const DEVICE_INFO_FIELD = {
   /** `software` within a `Station` — its firmware version string, e.g. "1.2.3". */
   SOFTWARE: 1,
 } as const;
+
+/**
+ * The DP 169 property name the ROBOT's own readings borrow, and the id carrying it.
+ *
+ * `DeviceInfo` is one message spanning two capabilities: the dock's firmware sits at field 11 and the
+ * robot's MAC, SSID and IP sit beside it. The one-owner rule is per product line, so one of the two has
+ * to own the id — this capability does, because it claimed it first and because moving it would break a
+ * shipped surface. The clean capability names this pair to read the rest. Exported so the far side
+ * cites a constant rather than retyping a string and a number that must agree.
+ */
+export const VACUUM_DOCK_INFO_SOURCE = { property: "dockFirmwareVersion", param: VACUUM_DOCK_INFO_DP } as const;
 
 /**
  * Decode the DOCK's firmware version from `DeviceInfo` (DP 169).
@@ -159,6 +171,47 @@ export function decodeDockActivity(
 }
 
 /**
+ * Field numbers for the WRITE side of DP 173 — `StationRequest`, a different message from the
+ * `StationResponse` the read side decodes on the same data point.
+ *
+ * The manual commands are a `oneof`, so exactly one of them is set per frame and setting it to `true`
+ * IS the command. `go_selfpurifying`(7) is marked deprecated by the vendor and is deliberately absent.
+ */
+const STATION_REQUEST_FIELD = {
+  /** `manual_cmd` within a `StationRequest` — the one-shot commands, as opposed to `auto_cfg`(1). */
+  MANUAL_CMD: 2,
+  /** `self_maintain` — the full deep self-clean cycle. */
+  SELF_MAINTAIN: 1,
+  /** `go_dry` — dry the mops. */
+  GO_DRY: 2,
+  /** `go_collect_dust` — empty the dust bin. */
+  GO_COLLECT_DUST: 3,
+  /** `go_selfcleaning` — wash the mops. */
+  GO_SELFCLEANING: 4,
+  /** `go_remove_scale` — run the descaling cycle. */
+  GO_REMOVE_SCALE: 5,
+  /** `go_cut_hair` — run the hair-cutting cycle. */
+  GO_CUT_HAIR: 6,
+} as const;
+
+/**
+ * Build a `StationRequest` carrying one manual dock command.
+ *
+ * Every one of these is the same two-level frame with a different inner field, so one builder serves
+ * them all and each member names only its command.
+ *
+ * **Reversed from the vendor's `station.proto`, NOT confirmed on a device.** Every member built on this
+ * carries `unverified`, so no setter is installed and the frame ships as documentation rather than as a
+ * callable control. An AIoT DP write is not refused by a router guard — it reaches the robot — and a
+ * fire-and-forget write that is wrong looks exactly like success, so the frame being plausible is not
+ * the bar. One `publishDps` capture per verb is what flips it.
+ * @internal
+ */
+export function encodeStationCommand(command: number): string {
+  return rawDp((w) => w.sub(STATION_REQUEST_FIELD.MANUAL_CMD, (cmd) => cmd.bool(command, true)));
+}
+
+/**
  * Every `vacuum_dock` feature, declared once.
  *
  * DP 173 is confirmed in the `get_product_data_point` catalog (raw, rw) as `baseStation`. The read
@@ -207,50 +260,97 @@ export const VACUUM_DOCK_MEMBERS = {
       "mop washing/drying/descaling, dust collection, water transfer, disinfectant or hair cutting.",
   },
   /**
-   * Trigger auto-empty of the dust collection bin. Write side of DP 173 (StationRequest). The
-   * StationRequest protobuf is not yet reversed — `unverified` with no `write` field: no setter is
-   * installed, and the intent path throws rather than guessing a frame.
+   * Empty the dust bin into the dock. Write side of DP 173 — `StationRequest.manual_cmd.go_collect_dust`.
+   *
+   * The frame is built and reviewable; the member stays `unverified`, so no setter is installed and
+   * the intent path refuses it. What is missing is a capture, not the message shape.
    */
   emptyDust: {
     type: "bool",
     kind: "boolean",
     writeOnly: true,
     unverified: true,
+    write: () => aiotDp(VACUUM_DOCK_DP, encodeStationCommand(STATION_REQUEST_FIELD.GO_COLLECT_DUST)),
     available: (ctx: AvailabilityContext) => isAiotVacuum(ctx),
     provenance: "mega",
     description:
-      "Trigger auto-empty dust collection (DP 173 StationRequest). Write wire not yet reversed — " +
-      "unverified until confirmed on a device.",
+      "Empty the dust bin (DP 173 StationRequest.manual_cmd.go_collect_dust). Frame reversed from the vendor proto; unverified until captured on a device.",
   },
   /**
-   * Trigger mop washing in the dock. Write side of DP 173 (StationRequest). Same unverified
-   * standing as {@link emptyDust} — no setter is installed until the frame shape is captured.
+   * Wash the mops in the dock — `StationRequest.manual_cmd.go_selfcleaning`. Same standing as
+   * {@link VACUUM_DOCK_MEMBERS.emptyDust}: frame built, not yet captured, so no setter is installed.
    */
   washMops: {
     type: "bool",
     kind: "boolean",
     writeOnly: true,
     unverified: true,
+    write: () => aiotDp(VACUUM_DOCK_DP, encodeStationCommand(STATION_REQUEST_FIELD.GO_SELFCLEANING)),
     available: (ctx: AvailabilityContext) => isAiotVacuum(ctx),
     provenance: "mega",
     description:
-      "Trigger mop washing in the dock (DP 173 StationRequest). Write wire not yet reversed — " +
-      "unverified until confirmed on a device.",
+      "Wash the mops (DP 173 StationRequest.manual_cmd.go_selfcleaning). Frame reversed from the vendor proto; unverified until captured on a device.",
   },
   /**
-   * Trigger mop drying in the dock. Write side of DP 173 (StationRequest). Same unverified
-   * standing as {@link emptyDust} — no setter is installed until the frame shape is captured.
+   * Dry the mops in the dock — `StationRequest.manual_cmd.go_dry`. Frame built, not yet captured.
    */
   dryMops: {
     type: "bool",
     kind: "boolean",
     writeOnly: true,
     unverified: true,
+    write: () => aiotDp(VACUUM_DOCK_DP, encodeStationCommand(STATION_REQUEST_FIELD.GO_DRY)),
     available: (ctx: AvailabilityContext) => isAiotVacuum(ctx),
     provenance: "mega",
     description:
-      "Trigger mop drying in the dock (DP 173 StationRequest). Write wire not yet reversed — " +
-      "unverified until confirmed on a device.",
+      "Dry the mops (DP 173 StationRequest.manual_cmd.go_dry). Frame reversed from the vendor proto; unverified until captured on a device.",
+  },
+  /**
+   * Run the dock's full deep self-clean cycle — `StationRequest.manual_cmd.self_maintain`.
+   *
+   * The longest-running of these and the one a caller is most likely to want gated behind a
+   * confirmation, since it occupies the dock for a while.
+   */
+  selfMaintain: {
+    type: "bool",
+    kind: "boolean",
+    writeOnly: true,
+    unverified: true,
+    write: () => aiotDp(VACUUM_DOCK_DP, encodeStationCommand(STATION_REQUEST_FIELD.SELF_MAINTAIN)),
+    available: (ctx: AvailabilityContext) => isAiotVacuum(ctx),
+    provenance: "mega",
+    description:
+      "Run the dock's full self-maintenance cycle (DP 173 StationRequest.manual_cmd.self_maintain). Frame reversed from the vendor proto; unverified until captured on a device.",
+  },
+  /**
+   * Run the descaling cycle — `StationRequest.manual_cmd.go_remove_scale`. Only docks that make their
+   * own cleaning solution have this; the `available` gate is family-wide, so a device without it will
+   * simply ignore the frame.
+   */
+  removeScale: {
+    type: "bool",
+    kind: "boolean",
+    writeOnly: true,
+    unverified: true,
+    write: () => aiotDp(VACUUM_DOCK_DP, encodeStationCommand(STATION_REQUEST_FIELD.GO_REMOVE_SCALE)),
+    available: (ctx: AvailabilityContext) => isAiotVacuum(ctx),
+    provenance: "mega",
+    description:
+      "Run the descaling cycle (DP 173 StationRequest.manual_cmd.go_remove_scale). Frame reversed from the vendor proto; unverified until captured on a device.",
+  },
+  /**
+   * Run the hair-cutting cycle on the brush — `StationRequest.manual_cmd.go_cut_hair`.
+   */
+  cutHair: {
+    type: "bool",
+    kind: "boolean",
+    writeOnly: true,
+    unverified: true,
+    write: () => aiotDp(VACUUM_DOCK_DP, encodeStationCommand(STATION_REQUEST_FIELD.GO_CUT_HAIR)),
+    available: (ctx: AvailabilityContext) => isAiotVacuum(ctx),
+    provenance: "mega",
+    description:
+      "Run the hair-cutting cycle (DP 173 StationRequest.manual_cmd.go_cut_hair). Frame reversed from the vendor proto; unverified until captured on a device.",
   },
 } as const satisfies Members;
 

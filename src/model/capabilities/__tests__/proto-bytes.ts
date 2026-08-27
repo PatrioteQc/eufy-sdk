@@ -19,10 +19,13 @@ import type { RawDpCodec, RawDpField } from "../../../core/contracts.js";
 /** Encode an unsigned integer as a protobuf varint. */
 export function varint(n: number): number[] {
   const out: number[] = [];
+  // Division and modulo rather than `&` and `>>>`, for the reason the reader below spells out: a
+  // `uint32` field can legitimately carry a value past 2^31, and the bitwise pair stops being safe
+  // there. Encoding and decoding have to agree across the WHOLE range the protocol uses.
   let v = n;
   while (v > 0x7f) {
-    out.push((v & 0x7f) | 0x80);
-    v >>>= 7;
+    out.push((v % 0x80) | 0x80);
+    v = Math.floor(v / 0x80);
   }
   out.push(v);
   return out;
@@ -46,6 +49,14 @@ export function int(field: number, value: number): number[] {
  */
 export function sub(field: number, body: number[]): number[] {
   return [...varint((field << 3) | 2), ...varint(body.length), ...body];
+}
+
+/**
+ * A length-delimited string field, always emitted — an empty string is a present field with no bytes,
+ * which is how a device says "this name is blank" rather than "there is no name here".
+ */
+export function str(field: number, value: string): number[] {
+  return sub(field, [...Buffer.from(value, "utf8")]);
 }
 
 /** Wrap a message body in the `varint(len) ++ body` framing a Raw DP value carries, base64-encoded. */
@@ -77,23 +88,28 @@ export const byteCodec: RawDpCodec = {
   nested(value: Buffer) {
     const out: RawDpField[] = [];
     let pos = 0;
-    const readVarint = (): number => {
-      let v = 0;
-      let shift = 0;
+    // Accumulated as a BigInt, NOT with `|=` and `<<`. JavaScript's bitwise operators truncate to a
+    // SIGNED 32-bit int, so `0xFFFFFFFE` — the vendor's `-2` sentinel written into a `uint32` — comes
+    // back as `-2` from a shift-based reader while the shipped codec reads it through protobufjs's
+    // `uint64()` and answers `4294967294n`. A double that disagrees with the real thing on a value the
+    // protocol actually sends is worse than no double: it validates a decode against a lie.
+    const readVarint = (): bigint => {
+      let v = 0n;
+      let shift = 0n;
       while (pos < value.length) {
         const b = value[pos++]!;
-        v |= (b & 0x7f) << shift;
-        shift += 7;
+        v |= BigInt(b & 0x7f) << shift;
+        shift += 7n;
         if (!(b & 0x80)) break;
       }
       return v;
     };
     while (pos < value.length) {
-      const tag = readVarint();
+      const tag = Number(readVarint());
       const field = tag >>> 3;
-      if ((tag & 7) === 0) out.push({ field, kind: "int", value: BigInt(readVarint()) });
+      if ((tag & 7) === 0) out.push({ field, kind: "int", value: readVarint() });
       else if ((tag & 7) === 2) {
-        const len = readVarint();
+        const len = Number(readVarint());
         out.push({ field, kind: "bytes", value: value.subarray(pos, pos + len) });
         pos += len;
       } else return undefined;

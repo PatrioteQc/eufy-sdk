@@ -240,8 +240,17 @@ class ConsumerImpl extends EventEmitter implements Consumer {
     this.emit("media", item);
   }
 
+  /**
+   * Tell this consumer why its stream is over.
+   *
+   * Skipped when nothing is listening: `emit("error")` on an `EventEmitter` with no `"error"` listener
+   * throws {@link ERR_UNHANDLED_ERROR} instead of returning, and this emit sits inside a synchronous
+   * fan-out reached from the transport's own datagram handler — so a consumer that only ever wanted `stop`
+   * (a perfectly ordinary caller) would strand every consumer after it in the loop and take the host's
+   * process with it. Such a consumer still gets its `stop` from {@link end}.
+   */
   fail(err: Error): void {
-    if (!this.detached) this.emit("error", err);
+    if (!this.detached && this.listenerCount("error") > 0) this.emit("error", err);
   }
 
   end(): void {
@@ -629,26 +638,38 @@ export class SharedLiveSource {
    * An end before the first keyframe is also a failed start, so those consumers get the typed `error`
    * explaining why nothing played and then the `stop` that closes them — a bare `stop` would look like a
    * normal end of stream to a caller still waiting for its first frame.
+   *
+   * Teardown runs even if notifying a consumer throws, because what it releases — the upstream stream, the
+   * warm-up timers, the ring — belongs to this source and not to the caller whose listener raised. The throw
+   * itself still propagates: a listener that raises is the caller's defect to see, not this source's to
+   * swallow.
    */
   private onUpstreamEnd(): void {
     if (this.disposed || !this.stream) return;
     this.logger.debug(
       `${this.tag} upstream ended (station max-duration / reconnect) — notifying ${this.consumers.size} consumer(s)`,
     );
-    if (!this.delivered.keyframe) {
-      const error = this.startFailure("source-ended");
-      for (const c of [...this.consumers]) c.fail(error);
+    try {
+      if (!this.delivered.keyframe) {
+        const error = this.startFailure("source-ended");
+        for (const c of [...this.consumers]) c.fail(error);
+      }
+      for (const c of [...this.consumers]) c.end();
+    } finally {
+      this.teardown("stopped");
     }
-    for (const c of [...this.consumers]) c.end();
-    this.teardown("stopped");
   }
 
+  /** Underlying stream failed: tell consumers, then tear down regardless (see {@link onUpstreamEnd}). */
   private onUpstreamError(err: Error): void {
     if (this.disposed) return;
     this.logger.warn(`${this.tag} upstream error: ${err.message} — tearing down (consumers=${this.consumers.size})`);
     const error = this.delivered.keyframe ? err : this.startFailure("source-error", err);
-    for (const c of [...this.consumers]) c.fail(error);
-    this.teardown("stopped");
+    try {
+      for (const c of [...this.consumers]) c.fail(error);
+    } finally {
+      this.teardown("stopped");
+    }
   }
 
   /**
