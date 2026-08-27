@@ -28,9 +28,10 @@ To manage nothing automatically (advanced / tests), construct with `{ autoRealti
 ## Battery cameras: open on demand, detach when idle
 
 A standalone **battery** camera is only reached over P2P when something actually needs it — a control
-command, a live stream or fresh `snapshotLive()`, or a doorbell pre-warm. After the last of those finishes, the
-session lingers briefly and then closes, so the camera can return to sleep. A persistent P2P session
-would keep it awake with a heartbeat every few seconds; opening on demand avoids that.
+command, a live stream or fresh `snapshotLive()`, or a pre-warm you opted into. After the last of those
+finishes, the session lingers for the idle window and then closes, so the camera can return to sleep. A
+persistent P2P session would keep it awake with a heartbeat every few seconds; opening on demand avoids
+that.
 
 - **Reads don't wake the camera.** `dev.getProperty(...)` is served from cache / the cloud, never a
   P2P pull — so a host polling a device every ~15 s does not drain the battery.
@@ -79,29 +80,56 @@ open.
   child) is what makes that work — the base session is never torn down to "save" a child that isn't
   draining from it.
 
-## Event pre-warm → instant live view
+## Event pre-warm → instant live view (opt-in)
 
-When a doorbell rings — or the camera detects a person, pet, or package — the event reaches the Home
-app first; the user often taps to watch a few seconds later. To make that tap start instantly, the SDK
-**speculatively opens** the camera's P2P session the moment the event arrives, and holds it for a short
-window. If you open a live view (or, later, talkback) within the window it starts with no spin-up; if
-nobody watches, the session detaches.
+When an event arrives, a user often taps to watch a few seconds later. The SDK can **speculatively open**
+that camera's P2P session the moment the event lands and hold it for a short window, so the tap attaches
+to a warm session instead of paying a cold open — a key lookup plus the P2P connect handshake before the
+first frame.
 
-Pre-warm fires for high-intent events by default — a **doorbell ring** plus the AI detections
-**`personDetected`** (human), **`petDetection`** (animal), and **`packageDelivered`** (object). Raw
-**`motion` is excluded**: a battery camera sees it constantly, which would defeat the idle-detach. Set
-your own list to override (e.g. add `"motion"` for a wired camera, or narrow it to just the doorbell).
+It is **opt-in**: `prewarmEvents` defaults to `[]`, an empty list being what disables it.
 
 ```ts
 new EufyMega({
   email,
   password,
   countryCode,
-  // Defaults shown — override to taste.
-  prewarmEvents: ["doorbellPress", "personDetected", "petDetection", "packageDelivered"],
-  prewarmMs: 28_000, // how long to hold the warm session (default)
+  prewarmEvents: ["doorbellPress"], // default: [] — nothing pre-warms
+  prewarmTiers: ["wired", "battery"], // default: both; ["wired"] keeps batteries asleep
+  prewarmMs: 28_000, // default: how long the pre-warm holds the session it opened
 });
 ```
+
+Name any semantic event — the option is typed to them, so your editor lists them and a typo won't
+compile. A pre-warm rides the **push** channel, so only an event push carries can trigger one; a
+poll-carried event is inert however it is listed. [Events](/events) is where the events, the channel each
+arrives on, and their payloads are described; `dev.describe()` answers which of them a given device
+emits.
+
+### What you take on by enabling it
+
+**One camera pays for it, and it is the one you least want to.** A pre-warm opens a session nobody asked
+for, and an open session heartbeats the device it is open to — but which device is that?
+
+| what fired the event          | station whose session opens | effect of a pre-warm                        |
+| ----------------------------- | --------------------------- | ------------------------------------------- |
+| camera attached to a HomeBase | the **base**                | none — already open, wired, drains nothing  |
+| standalone **wired** camera   | itself                      | none — warmed at login, never idle-detaches |
+| standalone **battery** camera | itself                      | **opens it and heartbeats it**              |
+
+So the only station a pre-warm genuinely opens is a standalone battery camera — the device class the
+on-demand lifecycle above exists to let sleep. `prewarmTiers: ["wired"]` keeps the opt-in and spares
+them, at the price of being close to a no-op: wired stations are warm already, so it only bites after a
+session drops.
+
+**One unwatched pre-warm costs `prewarmMs` _plus_ the station's idle window.** When the window expires the
+hold is released, which arms the idle-detach rather than closing the session — with the defaults that is
+28 s then 5 min, ≈ 5.5 min of heartbeat for an event nobody watched. A second qualifying event inside that
+tail cancels the timer and starts again, so a camera detecting more often than that never sleeps.
+
+**Frequency is a property of your installation, not of the event name.** A camera configured to report
+human detection only fires `personDetected` as often as a busier one fires raw `motion`. Pick the events
+a user actually looks at within the window, and read the rate off your own fleet.
 
 ## Read-through cache
 
@@ -241,15 +269,16 @@ re-authenticating.
 
 ## Options summary
 
-| Option                | Default                           | Effect                                                                                                        |
-| --------------------- | --------------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| `autoRealtime`        | `true`                            | Auto-start push/MQTT on login + on-demand P2P. `false` opts out.                                              |
-| `p2pIdleMs`           | `300000` (5 min)                  | Idle window before a **battery** station detaches.                                                            |
-| `cacheTtlMs`          | `15000` (15 s)                    | Freshness window for cached reads.                                                                            |
-| `prewarmEvents`       | doorbell + person / pet / package | Which semantic events speculatively open P2P (not raw `motion`).                                              |
-| `prewarmMs`           | `28000` (28 s)                    | How long a pre-warmed session is held before idle-detach.                                                     |
-| `pollMs`              | `600000` (10 min)                 | How often cloud params are re-read for changes. `0` disables. Paced to the cloud's own refresh rate.          |
-| `storedSnapshotCache` | `true`                            | Eagerly retain qualifying push JPEGs for passive `snapshotStored()`. `false` omits that method.               |
-| `localAddresses`      | —                                 | LAN address override per station (`sn` → `host[:port]`) for direct P2P when the record's IP is wrong/blocked. |
+| Option                | Default               | Effect                                                                                                        |
+| --------------------- | --------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `autoRealtime`        | `true`                | Auto-start push/MQTT on login + on-demand P2P. `false` opts out.                                              |
+| `p2pIdleMs`           | `300000` (5 min)      | Idle window before a **battery** station detaches.                                                            |
+| `cacheTtlMs`          | `15000` (15 s)        | Freshness window for cached reads.                                                                            |
+| `prewarmEvents`       | `[]` (off)            | Which semantic events speculatively open P2P. Empty disables pre-warm.                                        |
+| `prewarmTiers`        | `["wired","battery"]` | Which station power tiers `prewarmEvents` may open. `["wired"]` spares batteries.                             |
+| `prewarmMs`           | `28000` (28 s)        | How long a pre-warm holds the session it opened; the tier's idle window follows.                              |
+| `pollMs`              | `600000` (10 min)     | How often cloud params are re-read for changes. `0` disables. Paced to the cloud's own refresh rate.          |
+| `storedSnapshotCache` | `true`                | Eagerly retain qualifying push JPEGs for passive `snapshotStored()`. `false` omits that method.               |
+| `localAddresses`      | —                     | LAN address override per station (`sn` → `host[:port]`) for direct P2P when the record's IP is wrong/blocked. |
 
 Next: [Live media](/live-media).

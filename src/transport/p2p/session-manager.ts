@@ -29,7 +29,11 @@ export type PowerTier = "wired" | "battery";
 export const BATTERY_IDLE_MS = 300_000;
 /** How long a single control command holds a session warm after dispatch (a burst keeps re-holding). */
 export const COMMAND_KEEPALIVE_MS = 15_000;
-/** Default speculative pre-warm window (e.g. after a doorbell ring) before auto-detach if unused. */
+/**
+ * Default window a speculative pre-warm (e.g. after a doorbell ring) holds its user for. Expiring
+ * releases that user; it does not close the session — the station's own idle window then runs, so an
+ * unattended pre-warm on a battery station costs this plus {@link BATTERY_IDLE_MS}.
+ */
 export const PREWARM_MS = 28_000;
 
 /**

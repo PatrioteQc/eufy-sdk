@@ -13,6 +13,9 @@ export {
 } from "./shared-live-source.js";
 // `ParamSets` is what `SharedLiveSource.parameterSets` answers with, so a caller has to be able to name it.
 export { type ParamSets } from "./annexb.js";
+// `PowerTier` is what `EufyMegaOptions.prewarmTiers` is a list of, so a caller has to be able to name
+// it. The session lifecycle around it stays internal — the tier is the only part a caller configures.
+export { type PowerTier } from "./session-manager.js";
 export * from "./commands.js";
 export * from "./envelope.js";
 export * from "./write-commands.js";
