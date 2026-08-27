@@ -71,6 +71,7 @@ describe("openReadableFromConsumer", () => {
     r.resume();
     let ended = false;
     r.on("end", () => (ended = true));
+    stream().video(frame(true));
     stream().emit("stop");
     await new Promise((res) => setImmediate(res));
     expect(ended).toBe(true);

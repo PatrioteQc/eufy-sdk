@@ -87,6 +87,22 @@ describe("LiveStream", () => {
     expect(frames[1].keyframe).toBe(false);
   });
 
+  it("reports identity-free startup milestones at debug level", () => {
+    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const { session, live } = mk({ logger });
+    live.start();
+
+    session.push(videoFrame({ keyframe: true, nal: Buffer.from([0x67, 1, 2, 3]) }));
+
+    expect(
+      logger.debug.mock.calls.filter(([message]) => message === "[live] start trace").map(([, detail]) => detail),
+    ).toEqual([
+      { phase: "first-video-command", signCode: 0, accepted: true },
+      { phase: "first-video-unit", keyframe: true },
+      { phase: "first-keyframe" },
+    ]);
+  });
+
   it("sniffs codec on a keyframe and carries it onto following delta frames", () => {
     const { session, live } = mk();
     const frames: any[] = [];
@@ -365,7 +381,9 @@ describe("LiveStream access-unit reassembly", () => {
     }
 
     expect(logger.warn).toHaveBeenCalledTimes(1);
-    expect(logger.debug).toHaveBeenCalledTimes(2);
+    expect(
+      logger.debug.mock.calls.filter(([message]) => String(message).includes("dropped an incomplete")).length,
+    ).toBe(2);
   });
 });
 

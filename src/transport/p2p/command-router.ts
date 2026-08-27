@@ -708,7 +708,7 @@ export class P2PCommandRouter {
   }
 
   /**
-   * A live start produced no frames. Drop the source, and recycle the device's P2P session when doing so
+   * A live start produced no keyframe. Drop the source, and recycle the device's P2P session when doing so
    * is safe.
    *
    * Rebuilding the stream alone is not enough when it is the session, or the per-device state carried on

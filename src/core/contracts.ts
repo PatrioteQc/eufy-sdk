@@ -89,6 +89,54 @@ export class LiveSnapshotUnavailableError extends Error {
 }
 
 /**
+ * How a live stream ended before its first video keyframe: the warm-up deadline elapsed, the source
+ * reported an error, or the source ended on its own.
+ */
+export type LiveStreamStartFailureReason = "warm-timeout" | "source-error" | "source-ended";
+
+/**
+ * How far the media source got before it failed.
+ *
+ * `awaiting-first-frame` means no video access unit reached the consumer at all; `awaiting-keyframe` means
+ * units arrived but none of them was a keyframe, so nothing was decodable. The two need different answers —
+ * one is a source that never produced media, the other a source producing media a decoder cannot start
+ * from — and this states which without a caller reading transport logs.
+ */
+export type LiveStreamStartStage = "awaiting-first-frame" | "awaiting-keyframe";
+
+/** The bounded facts a live start failure reports. */
+export interface LiveStreamStartFailure {
+  reason: LiveStreamStartFailureReason;
+  stage: LiveStreamStartStage;
+  /** The warm-up deadline the source was bounded by, in milliseconds. */
+  timeoutMs: number;
+  /** The initial media start plus every warm-up retry issued before the deadline. */
+  attempts: number;
+  cause?: unknown;
+}
+
+/** Emitted by {@link LiveStreamHandle} when its bounded warm-up policy ends without a video keyframe. */
+export class LiveStreamStartError extends Error {
+  readonly reason: LiveStreamStartFailureReason;
+  readonly stage: LiveStreamStartStage;
+  readonly timeoutMs: number;
+  readonly attempts: number;
+
+  constructor(failure: LiveStreamStartFailure) {
+    super(
+      `live stream failed to start (${failure.reason} at ${failure.stage} after ${failure.attempts} attempts; ` +
+        `${failure.timeoutMs}ms deadline)`,
+      failure.cause === undefined ? undefined : { cause: failure.cause },
+    );
+    this.name = "LiveStreamStartError";
+    this.reason = failure.reason;
+    this.stage = failure.stage;
+    this.timeoutMs = failure.timeoutMs;
+    this.attempts = failure.attempts;
+  }
+}
+
+/**
  * Wire form for a scalar {@link Command} `"set-param"` intent. `"auto"` lets the transport choose the
  * right encoding for the device's session; `"int-string"` / `"direct-binary"` pin a specific encoding
  * when the firmware requires one.

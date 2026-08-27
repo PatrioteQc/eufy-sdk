@@ -25,6 +25,7 @@
  * @module p2p/shared-live-source
  */
 import { EventEmitter } from "node:events";
+import { LiveStreamStartError, type LiveStreamStartFailureReason } from "../../core/contracts.js";
 import { noopLogger, type Logger } from "../../core/logger.js";
 import { Timer } from "../../core/util.js";
 import { updatedParamSets, type ParamSets } from "./annexb.js";
@@ -55,13 +56,13 @@ export interface SharedLiveSourceOptions {
   /** Advisory HomeBase concurrent-stream cap, surfaced for observability only. */
   concurrentCap?: number;
   /**
-   * Warm-up start retry interval (default 2000ms). After warming, if no frame has arrived, the source
+   * Warm-up start retry interval (default 2000ms). After warming, if no keyframe has arrived, the source
    * re-issues the start ({@link LiveStreamHandle.nudge}) every interval — self-healing a start that
    * raced the level-2 key negotiation, independent of any caller keepalive.
    */
   warmRetryMs?: number;
   /**
-   * Warm-up deadline (default 20000ms). If no frame arrives within it, the source emits `error` to
+   * Warm-up deadline (default 20000ms). If no keyframe arrives within it, the source emits `error` to
    * consumers ("failed to start") and tears down, so `live()` never hangs silently on a dead start.
    */
   warmTimeoutMs?: number;
@@ -88,14 +89,14 @@ export interface SharedLiveSourceOptions {
   /** Called when the LAST consumer detaches (1→0) — the router releases its session user. See {@link onActive}. */
   onIdle?: () => void;
   /**
-   * Called when a stream is torn down having **never delivered a frame**, AFTER consumers have been told.
+   * Called when a stream is torn down having **never delivered a keyframe**, AFTER consumers have been told.
    *
    * A source can only rebuild its stream; it holds a factory, not the session that stream rides on. When
    * the session — or the per-device state carried on it — is what has stopped serving this device, every
    * rebuild starts another stream over the same session and dies the same way, so the owner of the session
    * has to hear about it to do anything else.
    *
-   * The condition is deliberately "no frame ever arrived", not "the warm-up deadline fired". A start can
+   * The condition is deliberately "no keyframe ever arrived", not "the warm-up deadline fired". A start can
    * fail without that deadline being reached — an upstream error or stop can arrive first, the battery
    * budget can stop the pull, and a caller that gives up before the deadline cancels it on the way out
    * (`clearWarmWatch`) — and all of those are the same dead start. Enumerating the ways instead of naming
@@ -239,8 +240,17 @@ class ConsumerImpl extends EventEmitter implements Consumer {
     this.emit("media", item);
   }
 
+  /**
+   * Tell this consumer why its stream is over.
+   *
+   * Skipped when nothing is listening: `emit("error")` on an `EventEmitter` with no `"error"` listener
+   * throws {@link ERR_UNHANDLED_ERROR} instead of returning, and this emit sits inside a synchronous
+   * fan-out reached from the transport's own datagram handler — so a consumer that only ever wanted `stop`
+   * (a perfectly ordinary caller) would strand every consumer after it in the loop and take the host's
+   * process with it. Such a consumer still gets its `stop` from {@link end}.
+   */
   fail(err: Error): void {
-    if (!this.detached) this.emit("error", err);
+    if (!this.detached && this.listenerCount("error") > 0) this.emit("error", err);
   }
 
   end(): void {
@@ -260,8 +270,14 @@ export class SharedLiveSource {
   private _state: SharedLiveState = "idle";
   private disposed = false;
 
-  /** Whether the CURRENT stream generation has delivered a frame; reset by every {@link warm}. */
-  private deliveredFrame = false;
+  /** Whether the CURRENT stream generation has delivered a keyframe; reset by every {@link warm}. */
+  private deliveredKeyframe = false;
+  /**
+   * Whether the CURRENT stream generation has delivered any video access unit; reset by every {@link warm}.
+   * Separates a source that produced nothing from one whose units were never decodable — the two stages of
+   * {@link LiveStreamStartError}.
+   */
+  private deliveredVideo = false;
   /** Last keyframe access unit seen — replayed to a joining consumer (keyframe-prime). */
   private lastKeyframe?: Extract<TimedMediaFrame, { kind: "video" }>;
   /** Last parameter sets the stream announced — see {@link parameterSets}. */
@@ -269,9 +285,10 @@ export class SharedLiveSource {
   /** Rolling prebuffer, keyframe-alignable on drain. */
   private ring: TimedMediaFrame[] = [];
 
-  /** Warm-up start-retry ticker (interval) + single-shot deadline; cleared once the first frame arrives. */
+  /** Warm-up start-retry ticker (interval) + single-shot deadline; cleared once the first keyframe arrives. */
   private warmRetryTimer?: ReturnType<typeof setInterval>;
   private readonly warmDeadlineTimer = new Timer();
+  private warmAttempts = 0;
   /** Battery budget timer + post-notice grace timer (battery/solar sources only). */
   private readonly budgetTimer = new Timer();
   private readonly budgetGraceTimer = new Timer();
@@ -369,10 +386,19 @@ export class SharedLiveSource {
     return consumer;
   }
 
-  /** Build + start the underlying stream, wire its frames into the fan-out, and watch the warm-up. */
+  /**
+   * Build + start the underlying stream, wire its frames into the fan-out, and watch the warm-up.
+   *
+   * The deadline is armed before the retry ticker so that a retry falling on the same instant as the
+   * deadline is never issued, which keeps `attempts` on {@link LiveStreamStartError} equal to the number of
+   * media starts actually sent. A stream with no `nudge` cannot be retried, so its warm-up stays at one
+   * attempt however long the deadline is.
+   */
   private warm(): void {
     this._state = "warming";
-    this.deliveredFrame = false;
+    this.deliveredKeyframe = false;
+    this.deliveredVideo = false;
+    this.warmAttempts = 1;
     this.logger.debug(`${this.tag} warming (retry=${this.warmRetryMs}ms deadline=${this.warmTimeoutMs}ms)`);
     const stream = this.opts.makeStream();
     this.stream = stream;
@@ -381,10 +407,13 @@ export class SharedLiveSource {
     stream.on("stop", () => this.onUpstreamEnd());
     stream.on("error", (err) => this.onUpstreamError(err));
     stream.start();
-    // Warm-up watch: re-issue the start until a frame flows (self-heals a start that raced the
-    // level-2 key), and fail loudly if none arrives within the deadline instead of hanging silently.
-    this.warmRetryTimer = setInterval(() => this.stream?.nudge?.(), this.warmRetryMs);
     this.warmDeadlineTimer.arm(this.warmTimeoutMs, () => this.onWarmTimeout());
+    this.warmRetryTimer = setInterval(() => {
+      const current = this.stream;
+      if (!current?.nudge) return;
+      this.warmAttempts++;
+      current.nudge();
+    }, this.warmRetryMs);
   }
 
   /** Arm the battery budget timer (battery/solar sources) — replaces any pending budget/grace. */
@@ -432,32 +461,48 @@ export class SharedLiveSource {
   }
 
   /**
-   * No frame within the warm-up window — surface a start failure to consumers, tear down, and report the
+   * No keyframe within the warm-up window — surface a start failure to consumers, tear down, and report the
    * failed start to the owner (see {@link SharedLiveSourceOptions.onStartFailed}) so it can recycle what
    * this source cannot reach.
    */
   private onWarmTimeout(): void {
     if (this.disposed || !this.stream) return;
-    const err = new Error("live stream failed to start (no frames within warm-up window)");
-    this.logger.warn(`${this.tag} ${err.message} (${this.warmTimeoutMs}ms, consumers=${this.consumers.size})`);
+    const err = this.startFailure("warm-timeout");
+    this.logger.warn(`${this.tag} ${err.message} (consumers=${this.consumers.size})`);
     for (const c of [...this.consumers]) c.fail(err);
     this.teardown("stopped");
   }
 
+  /**
+   * The typed failure for a start that produced no keyframe, staged by what the source did deliver: nothing
+   * at all, or access units a decoder cannot begin at.
+   */
+  private startFailure(reason: LiveStreamStartFailureReason, cause?: unknown): LiveStreamStartError {
+    return new LiveStreamStartError({
+      reason,
+      stage: this.deliveredVideo ? "awaiting-keyframe" : "awaiting-first-frame",
+      timeoutMs: this.warmTimeoutMs,
+      attempts: this.warmAttempts,
+      cause,
+    });
+  }
+
   private onVideo(frame: LiveVideoFrame): void {
-    this.deliveredFrame = true;
     const item = { kind: "video", frame, timestampMs: Date.now() } as const;
-    if (this.warmRetryTimer || this.warmDeadlineTimer.pending) {
-      this.clearWarmWatch(); // first frame → warmed
-      this.logger.debug(
-        `${this.tag} first frame — live (${frame.width}x${frame.height} ${frame.codec}, powered=${this.powered})`,
-      );
-      if (this.powered === "battery") this.armBudget(); // battery drain starts now
-    }
+    this.deliveredVideo = true;
     this.lastParamSets = updatedParamSets(frame.data, this.lastParamSets);
     if (frame.keyframe) {
       this.lastKeyframe = item;
+      const wasWarming = this.warmRetryTimer !== undefined || this.warmDeadlineTimer.pending;
+      this.deliveredKeyframe = true;
       if (this._state === "warming") this._state = "live";
+      if (wasWarming) {
+        this.clearWarmWatch();
+        this.logger.debug(
+          `${this.tag} first keyframe — live (${frame.width}x${frame.height} ${frame.codec}, powered=${this.powered})`,
+        );
+        if (this.powered === "battery") this.armBudget(); // battery drain starts now
+      }
     }
     this.pushRing(item);
     for (const c of this.consumers) c.deliverVideo(frame, item.timestampMs);
@@ -565,7 +610,7 @@ export class SharedLiveSource {
    */
   private teardown(state: SharedLiveState, report = true): void {
     const stream = this.stream;
-    const startFailed = stream !== undefined && !this.deliveredFrame;
+    const startFailed = stream !== undefined && !this.deliveredKeyframe;
     this.stream = undefined;
     this.clearWarmWatch();
     this.clearBudget();
@@ -582,21 +627,44 @@ export class SharedLiveSource {
     if (startFailed && report) this.opts.onStartFailed?.();
   }
 
-  /** Underlying stream ended unexpectedly (station max-duration / reconnect): tell consumers. */
+  /**
+   * Underlying stream ended unexpectedly (station max-duration / reconnect): tell consumers.
+   *
+   * An end before the first keyframe is also a failed start, so those consumers get the typed `error`
+   * explaining why nothing played and then the `stop` that closes them — a bare `stop` would look like a
+   * normal end of stream to a caller still waiting for its first frame.
+   *
+   * Teardown runs even if notifying a consumer throws, because what it releases — the upstream stream, the
+   * warm-up timers, the ring — belongs to this source and not to the caller whose listener raised. The throw
+   * itself still propagates: a listener that raises is the caller's defect to see, not this source's to
+   * swallow.
+   */
   private onUpstreamEnd(): void {
     if (this.disposed || !this.stream) return;
     this.logger.debug(
       `${this.tag} upstream ended (station max-duration / reconnect) — notifying ${this.consumers.size} consumer(s)`,
     );
-    for (const c of [...this.consumers]) c.end();
-    this.teardown("stopped");
+    try {
+      if (!this.deliveredKeyframe) {
+        const error = this.startFailure("source-ended");
+        for (const c of [...this.consumers]) c.fail(error);
+      }
+      for (const c of [...this.consumers]) c.end();
+    } finally {
+      this.teardown("stopped");
+    }
   }
 
+  /** Underlying stream failed: tell consumers, then tear down regardless (see {@link onUpstreamEnd}). */
   private onUpstreamError(err: Error): void {
     if (this.disposed) return;
     this.logger.warn(`${this.tag} upstream error: ${err.message} — tearing down (consumers=${this.consumers.size})`);
-    for (const c of [...this.consumers]) c.fail(err);
-    this.teardown("stopped");
+    const error = this.deliveredKeyframe ? err : this.startFailure("source-error", err);
+    try {
+      for (const c of [...this.consumers]) c.fail(error);
+    } finally {
+      this.teardown("stopped");
+    }
   }
 
   /**
