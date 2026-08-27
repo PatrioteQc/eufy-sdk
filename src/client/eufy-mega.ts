@@ -21,6 +21,7 @@ import { parseStateInfoSignal } from "../transport/mqtt/availability.js";
 import { parseDpMessage, parseAiotDpReport } from "../transport/mqtt/dp-codec.js";
 import { type P2PSession, type P2PFrame } from "../transport/p2p/p2p-session.js";
 import { P2PCommandRouter } from "../transport/p2p/command-router.js";
+import type { PowerTier } from "../transport/p2p/session-manager.js";
 import { MqttCommandRouter } from "../transport/mqtt/command-router.js";
 import { TuyaCommandRouter } from "../transport/tuya/command-router.js";
 import { TuyaDpRouter, parseTuyaDpReport } from "../transport/tuya/dp-codec.js";
@@ -122,18 +123,12 @@ function tuyaDevIdFrom(raw: Record<string, unknown>): string | undefined {
 const DEFAULT_POLL_MS = 600_000;
 
 /**
- * Semantic events that speculatively pre-warm a camera's P2P session by default, so a tap-to-view /
- * talkback right after starts instantly: a doorbell ring plus the high-intent AI detections — human
- * (`personDetected`), animal (`petDetection`), object/package (`packageDelivered`). Raw `motion` is
- * deliberately excluded (a battery camera sees it constantly, which would defeat the idle-detach).
- * Overridable per client via {@link EufyMegaOptions.prewarmEvents}.
+ * Power tiers a speculative pre-warm may open a station on, when the caller states none. Both, because
+ * the opt-in that turns pre-warm on at all is {@link EufyMegaOptions.prewarmEvents}: a caller who listed
+ * an event asked for its session, and silently skipping the only tier a pre-warm can actually open would
+ * make that opt-in do nothing. {@link EufyMegaOptions.prewarmTiers} narrows it.
  */
-const DEFAULT_PREWARM_EVENTS: readonly (keyof DeviceEventMap)[] = [
-  "doorbellPress",
-  "personDetected",
-  "petDetection",
-  "packageDelivered",
-];
+const DEFAULT_PREWARM_TIERS: readonly PowerTier[] = ["wired", "battery"];
 
 interface RealtimeGeneration {
   readonly epoch: number;
@@ -261,8 +256,10 @@ export class EufyMega extends EventEmitter {
   private readonly boundParamIds = new Map<string, ReadonlySet<number>>();
   /** Per-SKU DP catalog cache — keyed on model/T-code, fetched lazily via `get_product_data_point`. */
   private readonly dpCatalogCache = new Map<string, DpCatalog>();
-  /** Semantic event names that speculatively pre-warm P2P (resolved once from the options). */
+  /** Semantic event names that speculatively pre-warm P2P (resolved once from the options; empty = off). */
   private readonly prewarmEvents: ReadonlySet<string>;
+  /** Station power tiers a pre-warm may open (resolved once from the options). */
+  private readonly prewarmTiers: ReadonlySet<PowerTier>;
   /** Transport-side owner of the P2P sessions + all wire senders. */
   private readonly p2p: P2PCommandRouter;
   /** Transport-side owner of the secure-MQTT ff09 lock/garage command path (sibling of {@link p2p}). */
@@ -284,7 +281,8 @@ export class EufyMega extends EventEmitter {
   constructor(opts: EufyMegaOptions) {
     super();
     this.opts = opts;
-    this.prewarmEvents = new Set(opts.prewarmEvents ?? DEFAULT_PREWARM_EVENTS);
+    this.prewarmEvents = new Set(opts.prewarmEvents ?? []);
+    this.prewarmTiers = new Set(opts.prewarmTiers ?? DEFAULT_PREWARM_TIERS);
     this.mega = new MegaHttpClient(opts);
     if (opts.storedSnapshotCache !== false) {
       this.storedImages = new StoredImageCache(
@@ -1219,8 +1217,9 @@ export class EufyMega extends EventEmitter {
    * session after a successful login (unless `autoRealtime:false`). Starts the **always-on, battery-safe**
    * channels — FCM push (account-wide events) + secure MQTT (iff appliances present) — and eagerly warms
    * P2P **only for wired stations** (HomeBases / mains cameras, which don't drain). Battery cameras are
-   * left detached: their P2P opens on demand (command / stream / event pre-warm) and idle-detaches. All
-   * channels start concurrently; a single failure surfaces via `error` without aborting the rest.
+   * left detached: their P2P opens on demand (command / stream, or an opted-in event pre-warm) and
+   * idle-detaches. All channels start concurrently; a single failure surfaces via `error` without
+   * aborting the rest.
    */
   private ensureRealtime(): Promise<RealtimeReadiness> {
     return this.ensureRealtimeGeneration().promise;
@@ -1466,7 +1465,7 @@ export class EufyMega extends EventEmitter {
    * from the base's persistent session). Reads capabilities on the client side — no model type leaks to
    * transport (the router only ever sees the `"wired"|"battery"` string).
    */
-  private stationPower(parentSn: string): "wired" | "battery" {
+  private stationPower(parentSn: string): PowerTier {
     const d = this.registry.list().find((x) => x.sn === parentSn);
     if (!d) return "wired";
     if (d.deviceClass === "homebase") return "wired";
@@ -1478,6 +1477,35 @@ export class EufyMega extends EventEmitter {
       params: d.params ?? {},
     }).capabilities;
     return caps.includes("battery") ? "battery" : "wired";
+  }
+
+  /**
+   * Speculatively open the P2P session of the station behind `deviceSn`, if the caller opted this
+   * semantic event in — so a tap-to-view / talkback right after a doorbell ring or a detection starts
+   * warm instead of paying a cold open.
+   *
+   * Four gates. `autoRealtime: false` means the SDK opens nothing on its own initiative at all;
+   * {@link EufyMegaOptions.prewarmEvents} must name the event, and it names none by default, which is
+   * what makes pre-warm opt-in; the station must be one the account actually reports; and its power tier
+   * must be one {@link EufyMegaOptions.prewarmTiers} allows.
+   *
+   * The tier is resolved for the STATION whose session would open, which is why an attached camera is
+   * judged by its base — {@link P2PCommandRouter.stationKeyOf} is the single source of that mapping, and
+   * {@link stationPower} of the tier. A station with no record of its own is declined rather than
+   * pre-warmed: {@link stationPower} answers `"wired"` for one it cannot find, because the tier it feeds
+   * the session lifecycle must always be an answer — and taking that answer here is how a battery camera
+   * gets pre-warmed under a `"wired"`-only opt-in.
+   *
+   * Best-effort and unawaited: a pre-warm nobody uses must cost the caller nothing, so a failed open
+   * surfaces on `error` like any other background transport failure.
+   */
+  private prewarmForEvent(event: string, deviceSn: string): void {
+    if (this.opts.autoRealtime === false) return;
+    if (!this.prewarmEvents.has(event)) return;
+    const station = this.p2p.stationKeyOf(deviceSn);
+    if (!this.registry.list().some((device) => device.sn === station)) return;
+    if (!this.prewarmTiers.has(this.stationPower(station))) return;
+    void this.p2p.prewarm(station, this.opts.prewarmMs);
   }
 
   /**
@@ -1574,8 +1602,9 @@ export class EufyMega extends EventEmitter {
 
   /**
    * Stations with a live P2P session. P2P is auto-managed: wired stations are warmed at login, battery
-   * stations open on demand (command / stream / doorbell pre-warm) and idle-detach — so this map grows
-   * and shrinks over time. `p2pConnect(stationSn)` / `p2pClose(stationSn)` events track the changes.
+   * stations open on demand (command / stream, or an opted-in event pre-warm) and idle-detach — so this
+   * map grows and shrinks over time. `p2pConnect(stationSn)` / `p2pClose(stationSn)` events track the
+   * changes.
    */
   getP2pSessions(): Map<string, P2PSession> {
     return this.p2p.getSessions();
@@ -1841,10 +1870,10 @@ export class EufyMega extends EventEmitter {
    *   - `pushRaw(raw)` — the raw `RawPushMessage`
    *   - `pushConnect` / `pushDisconnect`
    *
-   * Started automatically by {@link ensureRealtime} after login. A high-intent semantic event
-   * (default `doorbellPress`, per {@link EufyMegaOptions.prewarmEvents}) also speculatively pre-warms
-   * that camera's P2P session (`p2p.prewarm`) so a tap-to-view / talkback starts instantly; the facade
-   * maps the event → station, the router stays event-agnostic.
+   * Started automatically by {@link ensureRealtime} after login. A semantic event the caller opted into
+   * via {@link EufyMegaOptions.prewarmEvents} — none by default — also speculatively pre-warms that
+   * camera's P2P session, so a tap-to-view / talkback starts instantly; {@link prewarmForEvent} owns that
+   * decision, and the router stays event-agnostic.
    *
    * Returns the connected client rather than installing it. Registration can outlive a `disconnect()`,
    * and {@link ensureRealtime} owns the decision of whether a finished bring-up is still the current
@@ -1892,10 +1921,8 @@ export class EufyMega extends EventEmitter {
       };
       for (const out of decodeCapabilityEvent(signal, this.capsForEvent(ev.deviceSn))) {
         this.emitSemantic(out.event, out.payload, { edge: true, refresh: out.refresh });
-        if (this.opts.autoRealtime !== false && this.prewarmEvents.has(out.event)) {
-          const dsn = (out.payload.deviceSn as string | undefined) ?? ev.deviceSn;
-          if (dsn) void this.p2p.prewarm(this.p2p.stationKeyOf(dsn), this.opts.prewarmMs);
-        }
+        const dsn = (out.payload.deviceSn as string | undefined) ?? ev.deviceSn;
+        if (dsn) this.prewarmForEvent(out.event, dsn);
       }
       store.save({ creds: persistedCreds, persistentIds: client.getPersistentIds() });
     });

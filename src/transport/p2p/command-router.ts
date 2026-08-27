@@ -219,9 +219,10 @@ export class P2PCommandRouter {
   /**
    * Speculatively open + briefly hold a station's session (e.g. after a doorbell ring) so a
    * tap-to-view / talkback attaches to a warm session. Transport-neutral: the facade maps the semantic
-   * event → station and calls this; the router never learns event semantics. A user hold is taken
-   * before the open so a slow connect can't idle-close mid-flight, and released `ms` later so the
-   * session detaches if nothing attaches. Best-effort — a failed open surfaces via `onError`.
+   * event → station and decides whether this station may be pre-warmed at all; the router never learns
+   * event semantics. A user hold is taken before the open so a slow connect can't idle-close mid-flight,
+   * and released `ms` later — which arms the station's idle window rather than closing the session, per
+   * {@link PREWARM_MS}. Best-effort — a failed open surfaces via `onError`.
    */
   async prewarm(parentSn: string, ms: number = PREWARM_MS): Promise<void> {
     this.manager.addUser(parentSn);

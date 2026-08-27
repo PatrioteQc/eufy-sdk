@@ -37,7 +37,7 @@ await dev.camera?.()?.snapshotLive(); // explicit fresh capture; opens P2P on de
 Stored snapshots follow a separate path: qualifying push thumbnails are acquired eagerly, and
 `snapshotStored()` later reads only retained memory without opening P2P or making a network request.
 
-How the lifecycle, battery savings, doorbell pre-warm and the read cache work — and the knobs to tune
-them — is the subject of the next page.
+How the lifecycle, battery savings, the opt-in event pre-warm and the read cache work — and the knobs
+to tune them — is the subject of the next page.
 
 Next: [Connectivity & battery](/connectivity) · [Live media](/live-media).
