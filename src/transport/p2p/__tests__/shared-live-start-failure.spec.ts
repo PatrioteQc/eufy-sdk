@@ -72,6 +72,62 @@ describe("SharedLiveSource — reporting a failed start", () => {
     expect(source.state).toBe("stopped");
   });
 
+  /**
+   * A camera that is switched off keeps its session, takes the media start, and streams audio for the
+   * whole window without ever sending a video frame — measured on a mains-powered own-session camera
+   * whose reported enablement was off, and which streamed 217 video access units once it was on. That
+   * outcome is indistinguishable from a dead transport under one `awaiting-first-frame` stage, so the two
+   * are staged apart: `audio-only` says the source answered and has no picture to give.
+   */
+  it("stages a start that carried audio but never a video frame apart from a silent one", () => {
+    const { source, streams } = mk();
+    const errors: Error[] = [];
+    source.attach().on("error", (error) => errors.push(error));
+
+    streams[0].audio();
+    streams[0].audio();
+    vi.advanceTimersByTime(6000);
+
+    expect(errors[0]).toMatchObject({ reason: "warm-timeout", stage: "audio-only" });
+  });
+
+  it("stages a source that delivered nothing at all as awaiting-first-frame, not audio-only", () => {
+    const { source } = mk();
+    const errors: Error[] = [];
+    source.attach().on("error", (error) => errors.push(error));
+
+    vi.advanceTimersByTime(6000);
+
+    expect(errors[0]).toMatchObject({ stage: "awaiting-first-frame" });
+  });
+
+  /** Video is the stage that matters once it arrives: audio alongside it never downgrades the answer. */
+  it("prefers the video stage over audio-only when both arrived", () => {
+    const { source, streams } = mk();
+    const errors: Error[] = [];
+    source.attach().on("error", (error) => errors.push(error));
+
+    streams[0].audio();
+    streams[0].video(videoFrame(unit(H264.delta), { keyframe: false }));
+    vi.advanceTimersByTime(6000);
+
+    expect(errors[0]).toMatchObject({ stage: "awaiting-keyframe" });
+  });
+
+  /** Each warm generation is staged on its own evidence — the previous stream's audio is not carried in. */
+  it("does not carry a previous generation's audio into the next start's stage", () => {
+    const { source, streams } = mk();
+    source.attach().on("error", () => {});
+    streams[0].audio();
+    vi.advanceTimersByTime(6000);
+
+    const errors: Error[] = [];
+    source.attach().on("error", (error) => errors.push(error));
+    vi.advanceTimersByTime(6000);
+
+    expect(errors[0]).toMatchObject({ stage: "awaiting-first-frame" });
+  });
+
   it("counts one attempt per media start actually issued", () => {
     const { source, streams } = mk({ warmRetryMs: 2000, warmTimeoutMs: 5000 });
     const errors: Error[] = [];

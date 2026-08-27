@@ -1,4 +1,12 @@
-import { CAMERA, CAMERA_CMD, Watermark, NightVision, VideoQuality, resolveVideoQuality } from "../camera.js";
+import {
+  CAMERA,
+  CAMERA_CMD,
+  CAMERA_MEMBERS,
+  Watermark,
+  NightVision,
+  VideoQuality,
+  resolveVideoQuality,
+} from "../camera.js";
 import type { VideoQualityName } from "../camera.js";
 import { buildCommand } from "../index.js";
 import { actionSpecOf } from "../access.js";
@@ -269,23 +277,26 @@ describe("camera capability module", () => {
       expect(buildCommand("on", true, ctx(0, { deviceType: 9, model: "T8114" }))).toMatchObject({ value: 0 });
     });
 
-    it("mini / S350 / outdoor-PT power → the 6250 privacy burst, INVERTED (V6 HUB wire, not 1035)", () => {
-      // These families ride COMMAND_APP_PRIVACY (6250) inverted, per the V6 CameraOnOffParser:
-      // power-on = privacy-off. DeviceType.INDOOR_COST_DOWN_CAMERA (mini), INDOOR_PT_CAMERA_S350,
-      // OUTDOOR_PT_CAMERA. The privacy burst is level-2, so a standalone one throws downstream (no key).
-      expect(buildCommand("on", true, ctx(2, { deviceType: DeviceType.INDOOR_COST_DOWN_CAMERA }))).toEqual({
-        kind: "p2p-privacy-burst",
-        enabled: false, // power-on ⇒ privacy-off (inverted)
-        channel: 2,
-      });
-      expect(buildCommand("on", true, ctx(0, { deviceType: DeviceType.INDOOR_PT_CAMERA_S350 }))).toMatchObject({
-        kind: "p2p-privacy-burst",
-        enabled: false,
-      });
-      expect(buildCommand("off", false, ctx(0, { deviceType: DeviceType.OUTDOOR_PT_CAMERA }))).toMatchObject({
-        kind: "p2p-privacy-burst",
-        enabled: true, // power-off ⇒ privacy-on
-      });
+    /**
+     * Every family writes the on/off param, the privacy envelope (6250) none of them.
+     *
+     * Confirmed against the current app's own frames: across six cameras of four device types and both
+     * topologies every on/off it sent was `1035`, and the capture carries no `6250` frame. The envelope also
+     * has no level-1 form, so it is unsendable on a session that never negotiates a key.
+     */
+    it("every family writes the on/off param, none the privacy envelope", () => {
+      for (const deviceType of [
+        DeviceType.INDOOR_COST_DOWN_CAMERA,
+        DeviceType.INDOOR_PT_CAMERA_S350,
+        DeviceType.OUTDOOR_PT_CAMERA,
+      ]) {
+        expect(buildCommand("on", true, ctx(2, { deviceType }))).toMatchObject({
+          kind: "set-param",
+          param: CAMERA_CMD.CAMERA_ENABLE,
+          form: "auto",
+          channel: 2,
+        });
+      }
     });
   });
 
@@ -605,3 +616,76 @@ export const _surfaceAssertions = [
   _recordArg,
   _talkbackNotFalse,
 ];
+
+/**
+ * Confirming an enablement write through bounded readback.
+ *
+ * Enablement is the one camera value a caller has to be able to trust and cannot poll for itself: it arrives
+ * only by cloud param and no id pushes it, so before this the reported value simply froze — measured on a
+ * bound object, `setEnabled(true)` succeeded, the camera streamed, and the reading stayed false at 0s, 2s, 7s
+ * and 22s. A caller that publishes "this camera is off" was publishing a value that could never come back.
+ *
+ * The write and the read are on DIFFERENT wires here, which is what the observation has to resolve: every
+ * family is written on the enablement param, while the standalone indoor/outdoor cameras report their state
+ * under the `2001` alias and never the param that was written. Polling the written param there would never
+ * converge. Measured on one account: 5 cameras report `1035` and never `2001`, 3 report `2001` and never
+ * `1035`, and none reported both.
+ */
+describe("camera enablement — observed write", () => {
+  const observationFor = (deviceType: number, reported: number[], value: boolean) => {
+    const member = CAMERA_MEMBERS.enabled;
+    const ctx = { channel: 0, codec: "camera" as const, deviceType, paramIds: new Set(reported) };
+    return member.observation.reflects(value, ctx as never);
+  };
+
+  const CAMERA_ENABLE = CAMERA_CMD.CAMERA_ENABLE;
+  const OPEN_DEVICE = 2001;
+
+  it("observes the param the device actually reports, not the one that was written", () => {
+    // Standalone indoor/outdoor: written on the enablement param, reported under the 2001 alias.
+    expect(observationFor(DeviceType.INDOOR_PT_CAMERA, [OPEN_DEVICE], true)).toEqual({
+      param: OPEN_DEVICE,
+      expected: true,
+      observed: true,
+    });
+    expect(observationFor(DeviceType.INDOOR_PT_CAMERA, [OPEN_DEVICE], false)).toEqual({
+      param: OPEN_DEVICE,
+      expected: false,
+      observed: false,
+    });
+  });
+
+  /**
+   * The raw wire value and the decoded property value diverge here, and BOTH are stated: the param reports the
+   * disable bit while the property reads enablement, so a readback checked only against the raw expectation
+   * converges the value and never fires the transition event — measured, the 2001 family emitted its event and
+   * this one did not.
+   */
+  it("states the raw disable bit AND the decoded value it means", () => {
+    // Battery/solo (disable bit): ON ⇒ 0. Live: a T8114 reports 1035="0" while enabled.
+    expect(observationFor(9, [CAMERA_ENABLE], true)).toEqual({ param: CAMERA_ENABLE, expected: 0, observed: true });
+    expect(observationFor(9, [CAMERA_ENABLE], false)).toEqual({ param: CAMERA_ENABLE, expected: 1, observed: false });
+  });
+
+  /** A device reporting neither has nothing to read back, so the write is dispatched unobserved. */
+  it("declines to observe a device that reports no enablement param", () => {
+    expect(observationFor(DeviceType.INDOOR_PT_CAMERA, [], true)).toBeUndefined();
+  });
+
+  /**
+   * Every family observes the param it reports. The app was captured writing `1035` to cameras of each, so
+   * the wire written and the wire read agree everywhere and a readback can confirm any of them.
+   */
+  it("observes every family, including the outdoor-PT and S350 ones", () => {
+    expect(observationFor(DeviceType.INDOOR_PT_CAMERA_S350, [CAMERA_ENABLE], true)).toEqual({
+      param: CAMERA_ENABLE,
+      expected: 0,
+      observed: true,
+    });
+    expect(observationFor(DeviceType.OUTDOOR_PT_CAMERA, [CAMERA_ENABLE], true)).toEqual({
+      param: CAMERA_ENABLE,
+      expected: 0,
+      observed: true,
+    });
+  });
+});
