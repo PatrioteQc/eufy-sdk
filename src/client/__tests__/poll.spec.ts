@@ -37,6 +37,18 @@ const paramChange = (paramType: number, from: string, to: string): ParamChange =
 /** BATTERY_PARAM.BATTERY changing from a known level. */
 const batteryChange = (to: string): ParamChange => paramChange(1101, "88", to);
 
+/**
+ * A live entry sensor a caller is holding, resolved from a record that reports the contact param — so
+ * the `contact` capability is granted and `contact` is a schema property with a typed getter.
+ */
+function liveContactSensor(eufy: EufyMega, sn = "T8000P0000000000"): Device {
+  const record = { model: "T8900", category: "eufy_security", params: { 1550: "0" }, paramUpdatedAt: {} };
+  const dev = Device.fromRecord(sn, record);
+  vi.spyOn((eufy as any).registry, "record").mockResolvedValue(record);
+  (eufy as any).liveDevices.set(sn, new WeakRef(dev));
+  return dev;
+}
+
 describe("cloud-param poll loop", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -59,6 +71,73 @@ describe("cloud-param poll loop", () => {
 
     expect(seen).toHaveLength(1);
     expect(seen[0]).toMatchObject({ deviceSn: "T8000P0000000000", paramType: 1101, from: "88", to: "81" });
+  });
+
+  /**
+   * The poll's fresh values must reach the live `Device`, not only the registry's record.
+   *
+   * Nothing else on this path catches the device up: the read-through freshness policy fires on a READ
+   * of a stale value and hands that read the stale one, so a value nothing happened to read stayed
+   * behind for as long as nobody asked — measured at 11 minutes across poll boundaries.
+   */
+  it("lands the poll's fresh params on a Device a caller is holding", async () => {
+    const eufy = makeClient();
+    const dev = liveContactSensor(eufy);
+    vi.spyOn((eufy as any).registry, "pollChanges").mockResolvedValue({
+      params: [paramChange(1550, "0", "1")],
+      added: [],
+      removed: [],
+      reported: [],
+    });
+    expect(dev.getProperty("contact")?.value).toBe(false);
+
+    await (eufy as any).pollOnce();
+
+    expect(dev.getProperty("contact")?.value).toBe(true);
+  });
+
+  /**
+   * The disagreement the announcement exists to avoid: a host told "it changed" reads the getter and
+   * concludes nothing did. So the params land BEFORE any event derived from them is emitted.
+   */
+  it("a listener reading inside a poll event handler sees the post-poll value", async () => {
+    const eufy = makeClient();
+    const dev = liveContactSensor(eufy);
+    vi.spyOn((eufy as any).registry, "pollChanges").mockResolvedValue({
+      params: [paramChange(1550, "0", "1")],
+      added: [],
+      removed: [],
+      reported: [],
+    });
+    const readInHandler: unknown[] = [];
+    eufy.on("contactState", () => readInHandler.push(dev.getProperty("contact")?.value));
+
+    await (eufy as any).pollOnce();
+
+    expect(readInHandler).toEqual([true]);
+  });
+
+  /** One application per device, however many of its params the pass saw move. */
+  it("applies a device's params once for a pass that saw several of them move", async () => {
+    const eufy = makeClient();
+    const dev = liveContactSensor(eufy);
+    const applyParams = vi.spyOn(dev, "applyParams");
+    // `pollChanges` hands every change of one device the same post-change map — see `ParamChange.params`.
+    const params = { 1550: "1", 1141: "-64" };
+    vi.spyOn((eufy as any).registry, "pollChanges").mockResolvedValue({
+      params: [
+        { deviceSn: "T8000P0000000000", paramType: 1550, from: "0", to: "1", params },
+        { deviceSn: "T8000P0000000000", paramType: 1141, from: "-70", to: "-64", params },
+      ],
+      added: [],
+      removed: [],
+      reported: [],
+    });
+
+    await (eufy as any).pollOnce();
+
+    expect(applyParams).toHaveBeenCalledExactlyOnceWith(params);
+    expect(dev.getProperty("rssi")?.value).toBe(-64);
   });
 
   /**

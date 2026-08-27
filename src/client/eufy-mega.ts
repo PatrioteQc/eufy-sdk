@@ -67,7 +67,7 @@ import { type AvailabilityObservation, type EufyDevice, type RealtimeTransport }
 import { Timer } from "../core/util.js";
 import { Device, resolveDevice, detectionName, type Capability, type DeviceInspection } from "../model/index.js";
 import { isHomeBase } from "../model/device-family.js";
-import { DeviceRegistry } from "./device-registry.js";
+import { DeviceRegistry, type ParamChange } from "./device-registry.js";
 import type {
   EufyMegaOptions,
   EufyMegaEvent,
@@ -1402,8 +1402,8 @@ export class EufyMega extends EventEmitter {
   }
 
   /**
-   * One poll pass: re-read the device list and emit a semantic event for every param that changed
-   * value since the last pass.
+   * One poll pass: re-read the device list, land what moved on the live devices, and emit a semantic
+   * event for every param that changed value since the last pass.
    *
    * This is the producer behind the capabilities' `source:"poll"` event mappings — the channel for
    * state that has no push of its own (`battery.ts` maps the battery level here; `contact.ts` maps the
@@ -1424,6 +1424,7 @@ export class EufyMega extends EventEmitter {
       const diff = await this.registry.pollChanges();
       for (const dev of diff.added) this.emit("deviceAdded", dev);
       for (const dev of diff.removed) this.emit("deviceRemoved", dev);
+      this.applyPolledParams(diff.params);
       for (const change of diff.params)
         for (const out of decodeCapabilityEvent({ source: "poll", ...change }, this.capsForEvent(change.deviceSn)))
           this.emitSemantic(out.event, out.payload, { refresh: out.refresh });
@@ -1432,6 +1433,26 @@ export class EufyMega extends EventEmitter {
     } catch (e) {
       this.reportError(e);
     }
+  }
+
+  /**
+   * Land a poll pass's fresh params on every live {@link Device}, BEFORE anything derived from them is
+   * emitted.
+   *
+   * Without this the poll updated the registry's record and its own baseline and left live state — the
+   * map every capability getter reads — untouched. The only catch-up was the read-through freshness
+   * policy, which fires on a READ of a stale value and hands that read the stale one, so a value nothing
+   * happened to read stayed behind indefinitely and a listener reading a getter inside a poll event
+   * handler always saw pre-poll state.
+   *
+   * Applied once per device rather than once per change: {@link ParamChange} carries the whole
+   * post-change map, so every change of one device carries the same one and re-applying it would only
+   * repeat the work and report the second application as changing nothing.
+   */
+  private applyPolledParams(changes: readonly ParamChange[]): void {
+    const byDevice = new Map<string, Record<number, string>>();
+    for (const change of changes) byDevice.set(change.deviceSn, change.params);
+    for (const [sn, params] of byDevice) this.liveDevices.get(sn)?.deref()?.applyParams(params);
   }
 
   /**
