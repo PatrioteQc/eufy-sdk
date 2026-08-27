@@ -450,7 +450,6 @@ export class P2PSession extends EventEmitter {
     return outcome === "key";
   }
 
-  /** Record that the level-2 negotiation has finished, with or without a key, and wake every waiter. */
   /**
    * Ask the station for its gateway info a second time, re-opening a negotiation that concluded without a key.
    *
@@ -476,6 +475,7 @@ export class P2PSession extends EventEmitter {
     return true;
   }
 
+  /** Record that the level-2 negotiation has finished, with or without a key, and wake every waiter. */
   private settleLevel2(reason: "terminal" | "closed" = "terminal"): void {
     this.level2Pending = false;
     const outcome = this.level2Key ? "key" : reason;

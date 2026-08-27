@@ -142,16 +142,12 @@ export class LiveStreamStartError extends Error {
 }
 
 /**
- * Wire form for a scalar {@link Command} `"set-param"` intent. `"auto"` lets the transport choose the
- * right encoding for the device's session; `"int-string"` / `"direct-binary"` pin a specific encoding
- * when the firmware requires one.
- */
-/**
- * How a scalar param write is sealed on the wire. The BODY is the same struct in every case —
- * `[u32 channel][u32 value][account_id → 128B]` — so these choose only the encryption.
+ * Wire form for a scalar {@link Command} `"set-param"` intent — how the write is sealed. The BODY is the
+ * same struct in every case — `[u32 channel][u32 value][account_id → 128B]` — so these choose only the
+ * encryption.
  *
  * - `"int-string"` pins level-1 (AES-128-ECB), `"direct-binary"` pins level-2 (AES-256-GCM).
- * - `"auto"` lets the transport pick the level, which it resolves from the session — see the resolver.
+ * - `"auto"` lets the transport pick the level, which it resolves from the session it will send on.
  */
 export type ScalarForm = "auto" | "int-string" | "direct-binary";
 
