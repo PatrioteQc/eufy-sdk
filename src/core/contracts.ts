@@ -89,9 +89,113 @@ export class LiveSnapshotUnavailableError extends Error {
 }
 
 /**
- * Wire form for a scalar {@link Command} `"set-param"` intent. `"auto"` lets the transport choose the
- * right encoding for the device's session; `"int-string"` / `"direct-binary"` pin a specific encoding
- * when the firmware requires one.
+ * How a live stream ended before its first video keyframe: the warm-up deadline elapsed, the source
+ * reported an error, or the source ended on its own.
+ */
+export type LiveStreamStartFailureReason = "warm-timeout" | "source-error" | "source-ended";
+
+/**
+ * How far the media source got before it failed.
+ *
+ * `awaiting-first-frame` means the source delivered nothing at all; `audio-only` means it delivered audio
+ * and never a video frame; `awaiting-keyframe` means video units arrived but none of them was a keyframe, so
+ * nothing was decodable. The three need different answers — a source that is not answering, one that is
+ * answering with sound and no picture, and one producing media a decoder cannot start from — and this states
+ * which without a caller reading transport logs.
+ *
+ * Each names only what the source did, never why. `audio-only` in particular is an observation and not a
+ * diagnosis: a device that is streaming but has no picture to send and one whose video this build cannot read
+ * both reach it.
+ */
+export type LiveStreamStartStage = "awaiting-first-frame" | "audio-only" | "awaiting-keyframe";
+
+/** The bounded facts a live start failure reports. */
+export interface LiveStreamStartFailure {
+  reason: LiveStreamStartFailureReason;
+  stage: LiveStreamStartStage;
+  /** The warm-up deadline the source was bounded by, in milliseconds. */
+  timeoutMs: number;
+  /** The initial media start plus every warm-up retry issued before the deadline. */
+  attempts: number;
+  cause?: unknown;
+}
+
+/** Emitted by {@link LiveStreamHandle} when its bounded warm-up policy ends without a video keyframe. */
+export class LiveStreamStartError extends Error {
+  readonly reason: LiveStreamStartFailureReason;
+  readonly stage: LiveStreamStartStage;
+  readonly timeoutMs: number;
+  readonly attempts: number;
+
+  constructor(failure: LiveStreamStartFailure) {
+    super(
+      `live stream failed to start (${failure.reason} at ${failure.stage} after ${failure.attempts} attempts; ` +
+        `${failure.timeoutMs}ms deadline)`,
+      failure.cause === undefined ? undefined : { cause: failure.cause },
+    );
+    this.name = "LiveStreamStartError";
+    this.reason = failure.reason;
+    this.stage = failure.stage;
+    this.timeoutMs = failure.timeoutMs;
+    this.attempts = failure.attempts;
+  }
+}
+
+/**
+ * What the observation a write declared was still waiting for when its deadline passed, carried by
+ * {@link StateConvergenceError}.
+ */
+export interface StateConvergenceFailure {
+  sn: string;
+  /** The decoded property the observation names, which is what a caller reads. */
+  property: string;
+  param: number;
+  /** The RAW param value the write asked the device to report. */
+  expected?: boolean | number | string;
+  /** What the param actually read when the deadline passed, absent where the device reported none at all. */
+  observed?: boolean | number | string;
+  timeoutMs: number;
+}
+
+/**
+ * Thrown when a write's declared observation never converges, so the SDK cannot say the write landed.
+ *
+ * A command is acknowledged when the transport has carried it, which is delivery and not convergence, and
+ * the observation a member declares is what decides the second question. Where that observation times out
+ * the write was accepted by the wire and never applied by the device — measured on a battery camera whose
+ * power write is acknowledged and simply ignored — so this is a distinct outcome from a transport fault and
+ * carries the attribution a caller needs to name which member on which device is unconfirmed.
+ */
+export class StateConvergenceError extends Error {
+  readonly sn: string;
+  readonly property: string;
+  readonly param: number;
+  readonly expected?: boolean | number | string;
+  readonly observed?: boolean | number | string;
+  readonly timeoutMs: number;
+
+  constructor(failure: StateConvergenceFailure) {
+    super(
+      `device ${failure.sn} did not report ${failure.property} as ${String(failure.expected)} within ` +
+        `${failure.timeoutMs}ms (param ${failure.param} read ${String(failure.observed)})`,
+    );
+    this.name = "StateConvergenceError";
+    this.sn = failure.sn;
+    this.property = failure.property;
+    this.param = failure.param;
+    this.expected = failure.expected;
+    this.observed = failure.observed;
+    this.timeoutMs = failure.timeoutMs;
+  }
+}
+
+/**
+ * Wire form for a scalar {@link Command} `"set-param"` intent — how the write is sealed. The BODY is the
+ * same struct in every case — `[u32 channel][u32 value][account_id → 128B]` — so these choose only the
+ * encryption.
+ *
+ * - `"int-string"` pins level-1 (AES-128-ECB), `"direct-binary"` pins level-2 (AES-256-GCM).
+ * - `"auto"` lets the transport pick the level, which it resolves from the session it will send on.
  */
 export type ScalarForm = "auto" | "int-string" | "direct-binary";
 
@@ -113,7 +217,17 @@ export interface Ff09Identity {
 /** @internal */
 export interface CommandObservation {
   event: string;
+  /** The RAW param value the device must report before this write counts as landed. */
   expected: boolean | number | string;
+  /**
+   * The DECODED property value to expect once that raw value has been applied, where it differs from the raw
+   * one. Absent when the two coincide.
+   *
+   * They diverge whenever the property's decode is not the identity: a disable-bit param reports `0` for a
+   * property that reads `true`, so checking the decoded value against the raw expectation would reject a write
+   * that had in fact landed. Stating both is what lets each check compare like with like.
+   */
+  observed?: boolean | number | string;
   param: number;
   property: string;
   resetStandaloneSession?: boolean;

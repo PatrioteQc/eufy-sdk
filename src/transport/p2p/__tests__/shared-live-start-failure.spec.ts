@@ -1,4 +1,5 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import { LiveStreamStartError } from "../../../core/contracts.js";
 import { SharedLiveSource } from "../shared-live-source.js";
 import { H264, streamFactory, unit, videoFrame } from "./live-source-fixtures.js";
 
@@ -33,7 +34,7 @@ describe("SharedLiveSource — reporting a failed start", () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
 
-  it("reports a failed start once the warm window elapses with no frame", () => {
+  it("reports a failed start once the warm window elapses with no keyframe", () => {
     const { source, onStartFailed } = mk();
     const consumer = source.attach();
     const errors: Error[] = [];
@@ -42,8 +43,100 @@ describe("SharedLiveSource — reporting a failed start", () => {
     vi.advanceTimersByTime(6000);
 
     expect(errors).toHaveLength(1);
+    expect(errors[0]).toBeInstanceOf(LiveStreamStartError);
+    expect(errors[0]).toMatchObject({
+      reason: "warm-timeout",
+      stage: "awaiting-first-frame",
+      timeoutMs: 6000,
+      attempts: 3,
+    });
     expect(onStartFailed).toHaveBeenCalledTimes(1);
     expect(source.state).toBe("stopped");
+  });
+
+  it("keeps the warm-up bounded until a keyframe arrives", () => {
+    const { source, onStartFailed, streams } = mk();
+    const errors: Error[] = [];
+    source.attach().on("error", (error) => errors.push(error));
+
+    streams[0].video(videoFrame(unit(H264.delta), { keyframe: false }));
+    vi.advanceTimersByTime(6000);
+
+    expect(errors[0]).toMatchObject({
+      reason: "warm-timeout",
+      stage: "awaiting-keyframe",
+      timeoutMs: 6000,
+      attempts: 3,
+    });
+    expect(onStartFailed).toHaveBeenCalledTimes(1);
+    expect(source.state).toBe("stopped");
+  });
+
+  /**
+   * A camera that is switched off keeps its session, takes the media start, and streams audio for the
+   * whole window without ever sending a video frame — measured on a mains-powered own-session camera
+   * whose reported enablement was off, and which streamed 217 video access units once it was on. That
+   * outcome is indistinguishable from a dead transport under one `awaiting-first-frame` stage, so the two
+   * are staged apart: `audio-only` says the source answered and has no picture to give.
+   */
+  it("stages a start that carried audio but never a video frame apart from a silent one", () => {
+    const { source, streams } = mk();
+    const errors: Error[] = [];
+    source.attach().on("error", (error) => errors.push(error));
+
+    streams[0].audio();
+    streams[0].audio();
+    vi.advanceTimersByTime(6000);
+
+    expect(errors[0]).toMatchObject({ reason: "warm-timeout", stage: "audio-only" });
+  });
+
+  it("stages a source that delivered nothing at all as awaiting-first-frame, not audio-only", () => {
+    const { source } = mk();
+    const errors: Error[] = [];
+    source.attach().on("error", (error) => errors.push(error));
+
+    vi.advanceTimersByTime(6000);
+
+    expect(errors[0]).toMatchObject({ stage: "awaiting-first-frame" });
+  });
+
+  /** Video is the stage that matters once it arrives: audio alongside it never downgrades the answer. */
+  it("prefers the video stage over audio-only when both arrived", () => {
+    const { source, streams } = mk();
+    const errors: Error[] = [];
+    source.attach().on("error", (error) => errors.push(error));
+
+    streams[0].audio();
+    streams[0].video(videoFrame(unit(H264.delta), { keyframe: false }));
+    vi.advanceTimersByTime(6000);
+
+    expect(errors[0]).toMatchObject({ stage: "awaiting-keyframe" });
+  });
+
+  /** Each warm generation is staged on its own evidence — the previous stream's audio is not carried in. */
+  it("does not carry a previous generation's audio into the next start's stage", () => {
+    const { source, streams } = mk();
+    source.attach().on("error", () => {});
+    streams[0].audio();
+    vi.advanceTimersByTime(6000);
+
+    const errors: Error[] = [];
+    source.attach().on("error", (error) => errors.push(error));
+    vi.advanceTimersByTime(6000);
+
+    expect(errors[0]).toMatchObject({ stage: "awaiting-first-frame" });
+  });
+
+  it("counts one attempt per media start actually issued", () => {
+    const { source, streams } = mk({ warmRetryMs: 2000, warmTimeoutMs: 5000 });
+    const errors: Error[] = [];
+    source.attach().on("error", (error) => errors.push(error));
+
+    vi.advanceTimersByTime(5000);
+
+    expect(streams[0].nudged).toBe(2);
+    expect(errors[0]).toMatchObject({ attempts: 3 });
   });
 
   it("tells consumers before reporting it, so the report can dispose the source", () => {
@@ -67,22 +160,39 @@ describe("SharedLiveSource — reporting a failed start", () => {
     expect(onStartFailed).toHaveBeenCalledTimes(1);
   });
 
-  it("reports an upstream error that arrives before the first frame", () => {
+  it("reports an upstream error that arrives before the first keyframe", () => {
     const { source, onStartFailed, streams } = mk();
-    source.attach().on("error", () => {});
+    const errors: Error[] = [];
+    source.attach().on("error", (error) => errors.push(error));
+    const cause = new Error("upstream gone");
 
-    streams[0].emit("error", new Error("upstream gone"));
+    streams[0].emit("error", cause);
 
+    expect(errors[0]).toMatchObject({ reason: "source-error", cause });
     expect(onStartFailed).toHaveBeenCalledTimes(1);
   });
 
-  it("reports an upstream stop that arrives before the first frame", () => {
+  it("reports an upstream stop that arrives before the first keyframe", () => {
     const { source, onStartFailed, streams } = mk();
-    source.attach();
+    const errors: Error[] = [];
+    source.attach().on("error", (error) => errors.push(error));
 
     streams[0].emit("stop");
 
+    expect(errors[0]).toMatchObject({ reason: "source-ended", stage: "awaiting-first-frame" });
     expect(onStartFailed).toHaveBeenCalledTimes(1);
+  });
+
+  it("explains an upstream stop before the first keyframe, then closes the consumer", () => {
+    const { source, streams } = mk();
+    const signals: string[] = [];
+    const consumer = source.attach();
+    consumer.on("error", (error) => signals.push(`error:${(error as LiveStreamStartError).reason}`));
+    consumer.on("stop", () => signals.push("stop"));
+
+    streams[0].emit("stop");
+
+    expect(signals).toEqual(["error:source-ended", "stop"]);
   });
 
   it("reports it exactly once, though stopping the stream re-enters teardown", () => {
@@ -150,6 +260,36 @@ describe("SharedLiveSource — reporting a failed start", () => {
     source.dispose();
 
     expect(onStartFailed).not.toHaveBeenCalled();
+  });
+
+  it("closes a consumer that never listened for errors, and every consumer behind it", () => {
+    const { source, streams, onStartFailed } = mk();
+    const silent = source.attach();
+    const watching = source.attach();
+    const signals: string[] = [];
+    silent.on("stop", () => signals.push("silent:stop"));
+    watching.on("error", () => signals.push("watching:error"));
+    watching.on("stop", () => signals.push("watching:stop"));
+
+    streams[0].emit("stop");
+
+    expect(signals).toEqual(["watching:error", "silent:stop", "watching:stop"]);
+    expect(source.state).toBe("stopped");
+    expect(streams[0].stopped).toBe(1);
+    expect(onStartFailed).toHaveBeenCalledTimes(1);
+  });
+
+  it("tears the stream down even when a consumer's listener throws", () => {
+    const { source, streams, onStartFailed } = mk();
+    source.attach().on("error", () => {
+      throw new Error("consumer listener");
+    });
+
+    expect(() => streams[0].emit("error", new Error("upstream gone"))).toThrow("consumer listener");
+
+    expect(source.state).toBe("stopped");
+    expect(streams[0].stopped).toBe(1);
+    expect(onStartFailed).toHaveBeenCalledTimes(1);
   });
 
   it("releases the session user when disposed while consumers are still attached", () => {

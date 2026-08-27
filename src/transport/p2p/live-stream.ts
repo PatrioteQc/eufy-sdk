@@ -19,6 +19,7 @@ import type { P2PSession, P2PFrame } from "./p2p-session.js";
 import { AccessUnitAssembler, VideoFrameDecoder } from "./video.js";
 import { sniffAnnexbCodec } from "./annexb.js";
 import { noopLogger, type Logger } from "../../core/logger.js";
+import { traceLiveStart } from "./live-trace.js";
 import type { AudioCodec, LiveAudioFrame, LiveVideoFrame, VideoCodec } from "../../core/contracts.js";
 
 const CMD_VIDEO_FRAME = 1300;
@@ -48,6 +49,12 @@ const AUDIO_CODECS: Readonly<Record<number, AudioCodec>> = { 0: "aac-lc", 2: "g7
  * costs a caller a brief gap rather than a stream that never delivers.
  */
 const FOREIGN_FRAME_TOLERANCE = 30;
+
+/**
+ * Undecodable video payloads traced per stream. Every frame of a stream whose cipher this build cannot read
+ * decodes to nothing, so the first few say everything the rest would repeat once per frame.
+ */
+const MAX_TRACED_DECODE_FAILURES = 3;
 
 /**
  * How often the media start is re-issued to hold a stream open, when a caller expresses no preference.
@@ -112,6 +119,11 @@ export class LiveStream extends EventEmitter {
   private mediaChannel?: number;
   private ownFrames = 0;
   private foreignFrames = 0;
+  private tracedFirstVideoCommand = false;
+  private tracedFirstVideoUnit = false;
+  private tracedFirstKeyframe = false;
+  private tracedDecodeFailures = 0;
+  private tracedFirstForeignFrame = false;
   private readonly handler = (f: P2PFrame) => this.onFrame(f);
   private readonly logger: Logger;
 
@@ -186,10 +198,23 @@ export class LiveStream extends EventEmitter {
   }
 
   private onFrame(f: P2PFrame): void {
-    if (!this.acceptsMedia(f)) return;
+    const accepted = this.acceptsMedia(f);
+    if (f.commandId === CMD_VIDEO_FRAME && !this.tracedFirstVideoCommand) {
+      this.tracedFirstVideoCommand = true;
+      traceLiveStart(this.logger, { phase: "first-video-command", signCode: f.signCode, accepted });
+    }
+    if (!accepted) return;
     try {
       if (f.commandId === CMD_VIDEO_FRAME) {
         for (const unit of this.units.push(f.data, (payload) => this.annexbOf(payload, f.signCode))) {
+          if (!this.tracedFirstVideoUnit) {
+            this.tracedFirstVideoUnit = true;
+            traceLiveStart(this.logger, { phase: "first-video-unit", keyframe: unit.keyframe });
+          }
+          if (unit.keyframe && !this.tracedFirstKeyframe) {
+            this.tracedFirstKeyframe = true;
+            traceLiveStart(this.logger, { phase: "first-keyframe" });
+          }
           // Sniff the codec only on a keyframe (it carries the parameter sets); delta frames have no
           // config NAL, so they inherit the last-known codec.
           if (unit.keyframe) this.lastCodec = sniffAnnexbCodec(unit.data) ?? this.lastCodec;
@@ -244,6 +269,13 @@ export class LiveStream extends EventEmitter {
       this.ownFrames++;
       return true;
     }
+    if (!this.tracedFirstForeignFrame) {
+      this.tracedFirstForeignFrame = true;
+      traceLiveStart(this.logger, {
+        phase: "first-foreign-media-command",
+        media: frame.commandId === CMD_VIDEO_FRAME ? "video" : "audio",
+      });
+    }
     if (this.ownFrames > 0) return false;
     if (++this.foreignFrames < FOREIGN_FRAME_TOLERANCE) return false;
     this.logger.warn(
@@ -262,7 +294,11 @@ export class LiveStream extends EventEmitter {
   private annexbOf(payload: Buffer, signCode: number): Buffer | undefined {
     const annexb = this.session.decodeVideoFrame?.(payload, signCode) ?? this.plaintextAnnexB(payload);
     if (annexb) return annexb;
-    return this.decoder?.decodeFrame(payload)?.h264;
+    const decoded = this.decoder?.decodeFrame(payload)?.h264;
+    if (!decoded && this.tracedDecodeFailures++ < MAX_TRACED_DECODE_FAILURES) {
+      traceLiveStart(this.logger, { phase: "video-decode-empty", signCode });
+    }
+    return decoded;
   }
 
   /**

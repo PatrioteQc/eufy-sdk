@@ -195,6 +195,109 @@ describe("catch-all event tag", () => {
     expect(reset).toHaveBeenCalledExactlyOnceWith("T8000P0000000000");
   });
 
+  it("reports an acknowledged write whose observation never converges, naming what it waited for", async () => {
+    vi.useFakeTimers();
+    const eufy = client();
+    const device = {
+      getProperty: () => ({ value: 1 }),
+      applyParams: () => undefined,
+    };
+    (eufy as any).liveDevices.set("T8000P0000000000", new WeakRef(device));
+    /** A device that acknowledges the write on the wire and never reports the value it asked for. */
+    vi.spyOn((eufy as any).registry, "require").mockReturnValue({ params: { 1224: "1" } });
+    vi.spyOn((eufy as any).registry, "getDevices").mockResolvedValue([]);
+    vi.spyOn(eufy as any, "routeCommand").mockResolvedValue(undefined);
+    const faults: unknown[] = [];
+    const unconfirmed: unknown[] = [];
+    eufy.on("error", (error) => faults.push(error));
+    eufy.on("commandUnconfirmed", (info) => unconfirmed.push(info));
+    const command = observeCommand(
+      { kind: "set-param", param: 1224, value: 63, form: "auto", channel: 0 },
+      { event: "armingModeChanged", expected: 63, param: 1224, property: "armingMode", timeoutMs: 20_000 },
+    );
+
+    await (eufy as any).commandSinkFor("T8000P0000000000").dispatch(command);
+    await vi.advanceTimersByTimeAsync(21_000);
+
+    expect(unconfirmed).toEqual([
+      {
+        sn: "T8000P0000000000",
+        property: "armingMode",
+        param: 1224,
+        expected: 63,
+        observed: "1",
+        timeoutMs: 20_000,
+      },
+    ]);
+    expect(faults, "an outcome dispatch never waited for is not a fault of this client").toEqual([]);
+    vi.useRealTimers();
+  });
+
+  it("names the unconfirmed member even when the last poll outlives the window", async () => {
+    vi.useFakeTimers();
+    const eufy = client();
+    (eufy as any).liveDevices.set(
+      "T8000P0000000000",
+      new WeakRef({ getProperty: () => ({ value: 1 }), applyParams: () => undefined }),
+    );
+    vi.spyOn((eufy as any).registry, "require").mockReturnValue({ params: { 1224: "1" } });
+    /**
+     * The device list never answers, which is what happens live: the window closes on the poll rather than
+     * on the loop, and that rejection used to escape unattributed as "semantic event refresh timed out".
+     */
+    vi.spyOn((eufy as any).registry, "getDevices").mockImplementation(() => new Promise(() => undefined));
+    vi.spyOn(eufy as any, "routeCommand").mockResolvedValue(undefined);
+    const faults: Error[] = [];
+    const unconfirmed: unknown[] = [];
+    eufy.on("error", (error) => faults.push(error));
+    eufy.on("commandUnconfirmed", (info) => unconfirmed.push(info));
+    const command = observeCommand(
+      { kind: "set-param", param: 1224, value: 63, form: "auto", channel: 0 },
+      { event: "armingModeChanged", expected: 63, param: 1224, property: "armingMode", timeoutMs: 20_000 },
+    );
+
+    await (eufy as any).commandSinkFor("T8000P0000000000").dispatch(command);
+    await vi.advanceTimersByTimeAsync(21_000);
+
+    expect(unconfirmed).toEqual([
+      {
+        sn: "T8000P0000000000",
+        property: "armingMode",
+        param: 1224,
+        expected: 63,
+        observed: "1",
+        timeoutMs: 20_000,
+      },
+    ]);
+    expect(faults.map((error) => error.message)).toEqual([]);
+    vi.useRealTimers();
+  });
+
+  it("keeps a genuine fault after the acknowledgement on the error bus", async () => {
+    const eufy = client();
+    (eufy as any).liveDevices.set(
+      "T8000P0000000000",
+      new WeakRef({ getProperty: () => undefined, applyParams: () => undefined }),
+    );
+    vi.spyOn((eufy as any).registry, "require").mockImplementation(() => {
+      throw new Error("synthetic registry fault");
+    });
+    vi.spyOn(eufy as any, "routeCommand").mockResolvedValue(undefined);
+    const faults: Error[] = [];
+    const unconfirmed: unknown[] = [];
+    eufy.on("error", (error) => faults.push(error));
+    eufy.on("commandUnconfirmed", (info) => unconfirmed.push(info));
+    const command = observeCommand(
+      { kind: "set-param", param: 1224, value: 63, form: "auto", channel: 0 },
+      { event: "armingModeChanged", expected: 63, param: 1224, property: "armingMode", timeoutMs: 20_000 },
+    );
+
+    await (eufy as any).commandSinkFor("T8000P0000000000").dispatch(command);
+
+    await vi.waitFor(() => expect(faults.map((error) => error.message)).toEqual(["synthetic registry fault"]));
+    expect(unconfirmed).toEqual([]);
+  });
+
   it("completes convergence and standalone reset before dispatching the next observed command", async () => {
     const eufy = client();
     let mode = 1;
@@ -290,6 +393,8 @@ describe("catch-all event tag", () => {
     vi.spyOn((eufy as any).registry, "getDevices").mockResolvedValue([]);
     vi.spyOn(eufy as any, "routeCommand").mockResolvedValue(undefined);
     const reportError = vi.spyOn(eufy as any, "reportError").mockImplementation(() => undefined);
+    const unconfirmed: unknown[] = [];
+    eufy.on("commandUnconfirmed", (info) => unconfirmed.push(info));
     const command = observeCommand(
       { kind: "set-param", param: 1224, value: 63, form: "auto", channel: 0 },
       { event: "armingModeChanged", expected: 63, param: 1224, property: "armingMode", timeoutMs: 20_000 },
@@ -298,7 +403,8 @@ describe("catch-all event tag", () => {
     await expect((eufy as any).commandSinkFor("T8000P0000000000").dispatch(command)).resolves.toBeUndefined();
     await vi.advanceTimersByTimeAsync(20_000);
 
-    expect(reportError).toHaveBeenCalledOnce();
+    expect(unconfirmed, "the caller is answered on its own channel and never failed").toHaveLength(1);
+    expect(reportError, "a write the device ignored is an outcome, not a fault of this client").not.toHaveBeenCalled();
     vi.useRealTimers();
   });
 

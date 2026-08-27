@@ -219,9 +219,10 @@ export class P2PCommandRouter {
   /**
    * Speculatively open + briefly hold a station's session (e.g. after a doorbell ring) so a
    * tap-to-view / talkback attaches to a warm session. Transport-neutral: the facade maps the semantic
-   * event → station and calls this; the router never learns event semantics. A user hold is taken
-   * before the open so a slow connect can't idle-close mid-flight, and released `ms` later so the
-   * session detaches if nothing attaches. Best-effort — a failed open surfaces via `onError`.
+   * event → station and decides whether this station may be pre-warmed at all; the router never learns
+   * event semantics. A user hold is taken before the open so a slow connect can't idle-close mid-flight,
+   * and released `ms` later — which arms the station's idle window rather than closing the session, per
+   * {@link PREWARM_MS}. Best-effort — a failed open surfaces via `onError`.
    */
   async prewarm(parentSn: string, ms: number = PREWARM_MS): Promise<void> {
     this.manager.addUser(parentSn);
@@ -708,7 +709,7 @@ export class P2PCommandRouter {
   }
 
   /**
-   * A live start produced no frames. Drop the source, and recycle the device's P2P session when doing so
+   * A live start produced no keyframe. Drop the source, and recycle the device's P2P session when doing so
    * is safe.
    *
    * Rebuilding the stream alone is not enough when it is the session, or the per-device state carried on
@@ -827,7 +828,7 @@ export class P2PCommandRouter {
     opts: { timeoutMs?: number } = {},
   ): Promise<Record<string, unknown>> {
     // Resolve the session up front so the reply listener attaches to the exact session the send will
-    // use; sendByTopology re-reads topology for the send itself.
+    // use; sendBySessionLevel re-reads the session for the send itself.
     const { session } = await this.resolveSession(sn, { waitLevel2: false });
     const timeoutMs = opts.timeoutMs ?? 15000;
     return await new Promise<Record<string, unknown>>((resolve, reject) => {
@@ -848,9 +849,9 @@ export class P2PCommandRouter {
       };
       session.on("data", onData);
       // CONTROL_PAYLOAD(1700) {commandType:param, data}: L1 ECB for a standalone device, L2 GCM for a
-      // HomeBase-attached one. sendByTopology re-reads topology; the reply lands on the same session.
+      // HomeBase-attached one. sendBySessionLevel re-reads the session; the reply lands on the same session.
       const json = JSON.stringify({ commandType: param, data });
-      this.sendByTopology(sn, {
+      this.sendBySessionLevel(sn, {
         l1: ({ session: s, channel: ch }) => {
           s.sendStringPayloadCommand(P2P_ENVELOPE.CONTROL_PAYLOAD, json, ch);
           return Promise.resolve();
@@ -871,8 +872,8 @@ export class P2PCommandRouter {
   /**
    * Resolve a scalar `"set-param"` intent to a concrete P2P frame — the ONE place that maps a
    * capability's *what* (param + value + {@link ScalarForm}) to the *how* (encryption level + wire):
-   * `"auto"` lets topology decide (standalone L1 int+string / HomeBase L2 direct-binary),
-   * `"int-string"` pins L1, `"direct-binary"` pins L2.
+   * `"auto"` defers the level to {@link sendBySessionLevel} — the ONE decision point — while
+   * `"int-string"` pins L1 and `"direct-binary"` pins L2.
    */
   private async resolveScalarParam(sn: string, param: number, value: number, form: ScalarForm): Promise<void> {
     if (form === "int-string") {
@@ -883,26 +884,32 @@ export class P2PCommandRouter {
       await this.sendDirectBinary(sn, param, value);
       return;
     }
-    // "auto": topology decides the level (the ONE decision point — see sendByTopology).
-    await this.sendByTopology(sn, {
+    await this.sendBySessionLevel(sn, {
       l1: () => this.sendIntStringCommand(sn, param, value),
       l2: () => this.sendDirectBinary(sn, param, value),
     });
   }
 
   /**
-   * The single point that turns runtime **topology** into an encryption **level**. `homeBaseAttached`
-   * is read fresh from the device record, then the level-1 sender runs for a standalone device or the
-   * level-2 sender for a HomeBase-attached one. Both the `"auto"` scalar path and the JSON control
-   * path route through here, so the L1/L2 rule is defined exactly once. The `l2` sender is responsible
-   * for waiting on the level-2 key (a standalone device never negotiates one).
+   * The single point that turns a session into an encryption **level**: level-2 when the session HOLDS a
+   * level-2 key, level-1 otherwise. Both the `"auto"` scalar path and the JSON control path route
+   * through here, so the rule is defined exactly once.
+   *
+   * The discriminator is the key, NOT topology, because that is what the app does. Captured across five
+   * peers of four device families and both topologies, every peer used ONE seal for every command family
+   * it sent — level-2 for each keyed session including two own-session cameras, level-1 only for the two
+   * whose negotiation never completes. Reading attachment instead mispredicts those two own-session
+   * cameras, and a level-2-only wire chosen for a session that holds no key cannot be sent at all.
+   *
+   * The key is waited for softly: a session that will not have one falls through to level-1, which is a
+   * working wire here rather than a degraded guess, instead of spending a per-call grace to learn that.
    */
-  private async sendByTopology(
+  private async sendBySessionLevel(
     sn: string,
     send: { l1: (r: ResolvedSession) => Promise<void>; l2: (r: ResolvedSession) => Promise<void> },
   ): Promise<void> {
-    const resolved = await this.resolveSession(sn, { waitLevel2: false });
-    await (resolved.homeBaseAttached ? send.l2(resolved) : send.l1(resolved));
+    const resolved = await this.resolveSession(sn, { waitLevel2: "soft" });
+    await (resolved.session.hasLevel2Key ? send.l2(resolved) : send.l1(resolved));
   }
 
   /**
@@ -912,6 +919,10 @@ export class P2PCommandRouter {
    * (a command keepalive, so a burst of commands / a follow-up read reuses it instead of paying a fresh
    * handshake — a no-op for a wired/persistent station). `waitLevel2`: `true` = require the level-2 key
    * (throw if not ready); `"soft"` = best-effort short wait, don't throw; `false`/absent = no wait.
+   *
+   * A caller that REQUIRES the key and is refused asks the station once more before giving up — see
+   * {@link P2PSession.repromptLevel2Key}, which explains why one settled negotiation is not the last word. A
+   * soft caller has a level-1 path and never re-prompts.
    */
   private async resolveSession(sn: string, opts: { waitLevel2?: boolean | "soft" } = {}): Promise<ResolvedSession> {
     const dev = await this.deviceFor(sn);
@@ -934,10 +945,13 @@ export class P2PCommandRouter {
     if (!session.isConnected) throw new Error(`P2P session for ${parentSn} did not connect`);
     if (opts.waitLevel2) {
       const soft = opts.waitLevel2 === "soft";
-      const ready = await session.awaitLevel2Key(
+      let ready = await session.awaitLevel2Key(
         soft ? LEVEL2_SOFT_GRACE_MS : LEVEL2_GRACE_MS,
         soft ? "session" : "call",
       );
+      if (!ready && !soft && session.repromptLevel2Key()) {
+        ready = await session.awaitLevel2Key(LEVEL2_GRACE_MS, "call");
+      }
       if (!ready && !soft) throw new Error(`level-2 key not ready for ${parentSn}`);
     }
     return { session, parentSn, channel, accountId, homeBaseAttached };
@@ -1048,12 +1062,12 @@ export class P2PCommandRouter {
     form?: ScalarForm,
   ): Promise<void> {
     if (form === "auto") {
-      await this.sendByTopology(sn, {
+      await this.sendBySessionLevel(sn, {
         l1: ({ session, accountId }) => {
           session.sendSetPayload(cmd, payload, { accountId, channel });
           return Promise.resolve();
         },
-        // NB: do NOT forward sendByTopology's resolved session here — it was resolved with
+        // NB: do NOT forward sendBySessionLevel's resolved session here — it was resolved with
         // waitLevel2:false (enough to read topology), so on a HomeBase-attached device the level-2
         // key may not be ready yet. Let replayLevel2Send re-resolve with waitLevel2:true and wait for
         // it, exactly as the non-`form` path below does; otherwise the send throws "never sent".
@@ -1353,9 +1367,9 @@ export class P2PCommandRouter {
     inner: { commandType: number; data: unknown },
   ): Promise<void> {
     // HomeBase-attached → level-2 GCM (wait for the key); standalone → level-1 ECB. The L1/L2 choice
-    // itself lives in sendByTopology; here we only supply the two JSON senders.
+    // itself lives in sendBySessionLevel; here we only supply the two JSON senders.
     const json = JSON.stringify(inner);
-    await this.sendByTopology(sn, {
+    await this.sendBySessionLevel(sn, {
       l1: ({ session, channel }) => {
         session.sendStringPayloadCommand(outerCmd, json, channel);
         return Promise.resolve();

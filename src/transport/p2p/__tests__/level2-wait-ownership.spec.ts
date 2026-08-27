@@ -84,3 +84,39 @@ describe("resolving a session defers the level-2 wait to the session", () => {
     expect(session.awaitLevel2Key).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * A command that cannot be framed without the key gets ONE more ask before being refused.
+ *
+ * The negotiation is one-shot per connection, so a gateway reply that never landed otherwise refuses every
+ * later such command on that connection, although a fresh session over the same device negotiates a key
+ * normally: measured, a settled session refused every level-2-only operation until it was rebuilt, at which
+ * point the station answered with a cipher id straight away.
+ */
+describe("a required level-2 key is asked for twice before refusing", () => {
+  it("proceeds when the station answers the second ask", async () => {
+    const { router, session } = setup(false);
+    session.keyArrivesOnReprompt = true;
+
+    await expect(router.p2pQuery(DEVICE_SN, 6237, { timeoutMs: 5 })).rejects.not.toThrow(/level-2 key not ready/);
+
+    expect(session.repromptLevel2Key).toHaveBeenCalledTimes(1);
+    expect(session.awaitLevel2Key).toHaveBeenCalledTimes(2);
+  });
+
+  it("still refuses when there is no second ask to be had", async () => {
+    const { router, session } = setup(false);
+
+    await expect(router.p2pQuery(DEVICE_SN, 6237, { timeoutMs: 5 })).rejects.toThrow(/level-2 key not ready/);
+
+    expect(session.repromptLevel2Key).toHaveBeenCalledTimes(1);
+  });
+
+  it("never re-prompts a session that already holds a key", async () => {
+    const { router, session } = setup(true);
+
+    await router.p2pQuery(DEVICE_SN, 6237, { timeoutMs: 5 }).catch(() => {});
+
+    expect(session.repromptLevel2Key).not.toHaveBeenCalled();
+  });
+});

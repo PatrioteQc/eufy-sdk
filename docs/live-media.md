@@ -322,9 +322,35 @@ session idle-detaches so a battery device sleeps — see [Connectivity & battery
 
 ## Reliability
 
-- **No silent hang.** `live()` re-issues the media-start (`nudge`) until the first frame arrives; if
-  none arrives within the warm-up window the stream emits an `error` (a start stall) rather than
-  hanging forever. Handle `error`.
+- **UDP retransmissions.** Each data type is sequenced independently. Duplicate and stale datagrams are
+  acknowledged and ignored without discarding a different frame being assembled, and the numbering may wrap
+  without a false gap. A missing datagram still drops that incomplete frame so corrupt media is never
+  delivered. An unacknowledged own-session `START_LIVE` is repeated with identical bytes until the camera
+  acknowledges it, and abandoned after 3s — at which point that channel is no longer treated as started, so
+  the next keepalive tick issues a real start instead of nudging a stream that never began. A new connection
+  starts the numbering over, so its first datagrams are never read as stale — and so does a camera that
+  begins a fresh stream on a connection already up, which sequencing follows onto the restarted numbering
+  rather than waiting for it to climb back.
+- **No silent hang.** `live()` re-issues the media-start (`nudge`) until the first keyframe arrives; if
+  none arrives within the warm-up window the stream emits a `LiveStreamStartError` rather than hanging
+  forever. It carries everything needed to tell the failures apart without transport logs: `reason`
+  (deadline elapsed / source error / source ended), `stage` (`awaiting-first-frame` when the source
+  delivered nothing at all, `audio-only` when it was streaming audio and never sent a video frame,
+  `awaiting-keyframe` when video units arrived but none was decodable), `timeoutMs`, and `attempts` —
+  the media starts actually issued. Handle `error`.
+- **A camera that is switched off looks like a broken transport.** It keeps its session, accepts the media
+  start, and then sends audio and never a video frame — measured: 234 audio frames, no video, no
+  stream-status report and no lost datagrams across a 20s window, then 217 video access units with nothing
+  changed but its own on/off state. The signature is `stage: "audio-only"` together with
+  `cam.enabled === false`, and `snapshotStored()` will also report `not-observed` on such a camera, because a
+  camera that has been off recorded no events and so banked no thumbnail.
+- **Read `cam.enabled` before opening an egress, and trust it.** Nothing pushes enablement, so a write used
+  to leave the reported value frozen — `setEnabled(true)` succeeded, the camera streamed, and the reading
+  stayed `false` indefinitely. An enablement write is now confirmed by bounded readback on whichever param
+  the device actually reports: the value converges on its own (measured 2–6s on both wire families) and
+  `cameraEnabledChanged` fires once when it lands. The SDK does not refuse an egress on that reading —
+  skipping an off camera, or publishing it as unavailable so nothing asks in the first place, is a caller's
+  policy. The value it needs for that is now one it can rely on.
 - **Reconnect.** On a session close the source stops and consumers get `stop`/`error`; re-attach
   (`cam.live()` again) to rebuild the pull.
 

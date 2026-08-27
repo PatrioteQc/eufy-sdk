@@ -223,15 +223,11 @@ export type CameraActions = Surface<typeof CAMERA_MEMBERS> & {
  * capability, not in the shared family classifier: it is composed from the classifier's *pure*
  * predicates (`isIndoorCamera` etc.) but the 1035 polarity meaning belongs to `camera`.
  *
- * NOTE: this is polarity only (which value = ON). The WIRE LEVEL (L1 vs L2) is NOT decided here nor
- * by family — it is a runtime *topology* trait resolved at send time (standalone ⇒ L1, HomeBase ⇒
- * L2). A device can be either, so power is emitted `"auto"` and the transport picks.
+ * NOTE: this is polarity only (which value = ON). The WIRE LEVEL is NOT decided here nor by family — it
+ * is resolved at send time from the session, so power is emitted `"auto"` and the transport picks.
  *
- * Indoor cams flip — but NOT the mini or the S350 family, which use the separate 6250 envelope and so
- * never reach this 1035 polarity decision at all (see {@link usesSeparatePowerEnvelope}).
- *
- * TODO(verify): polarity per family must be confirmed against the V6 app itself or a confirmed
- * TCP capture (NOT a pre-v6 third-party catalogue). Current split is provisional until a live capture confirms it.
+ * ✅ Polarity confirmed against the current app's own frames: it wrote `1` to turn a camera on and `0` to
+ * turn it off, on cameras of two device types whose enable-bit convention this returns.
  */
 function isEnableBitPolarity(ctx: CommandContext): boolean {
   const t = ctx.deviceType;
@@ -250,40 +246,25 @@ const ENABLE_BIT_FLOODLIGHT_TYPES: ReadonlySet<number> = new Set<number>([
   DeviceType.FLOODLIGHT_CAMERA_8424,
 ]);
 
-/**
- * True for the camera families whose power on/off does NOT ride `CMD_DEVS_SWITCH` (1035) at all —
- * indoor-cam mini, the S350 indoor pan/tilt family, and outdoor pan/tilt. In the V6 app these ride
- * the privacy (`COMMAND_APP_PRIVACY` 6250) envelope instead, INVERTED (privacy-on = camera-off), so
- * `powerCommand` maps their power to the privacy burst rather than a 1035 frame the firmware drops.
- * Grounded in the decompiled V6 parsers (`CameraOnOffParser`, `extracted_js/`): the HomeBase branch
- * of camera on/off is `COMMAND_APP_PRIVACY` inverted.
- *
- * NOTE: the privacy burst is a level-2 (HomeBase) wire; a STANDALONE device in one of these families
- * never negotiates a level-2 key, so power there throws (no L2 key) — honest, since the V6 standalone
- * wire for these families is not yet captured. Battery/solo + the 1035 families are unaffected.
- */
-function usesSeparatePowerEnvelope(ctx: CommandContext): boolean {
-  return isIndoorCamMini(ctx) || isIndoorPanTiltS350(ctx) || isOutdoorPanTilt(ctx);
-}
-
 /** Raw 1035 value for a desired power state, honouring the family polarity. */
 function powerValue(on: boolean, ctx: CommandContext): number {
   return isEnableBitPolarity(ctx) ? (on ? 1 : 0) : on ? 0 : 1;
 }
 
 /**
- * Camera power on/off. Two wires, family-selected — mirroring the V6 app's `CameraOnOffParser`:
- *  - **1035 `CMD_DEVS_SWITCH`** (battery/solo, indoor-non-mini, floodlight 8422/24). The capability
- *    supplies param + polarity-resolved value; `"auto"` lets the transport pick the encryption level
- *    by session — standalone cams (e.g. T8410) get level-1 int-string (no level-2 key), HomeBase cams
- *    get level-2 direct-binary. Live-verified: T8410 standalone = L1, T8114 HomeBase = L2.
- *  - **6250 privacy envelope, INVERTED** (mini / S350 / outdoor-PT — see {@link usesSeparatePowerEnvelope}).
- *    Power-on = privacy-off. Reuses the live-verified {@link privacyCommand} burst (T8419). Level-2
- *    only, so a standalone device in these families throws downstream (no L2 key) — the honest state
- *    until their standalone wire is captured.
+ * Camera power on/off: ONE wire for every family — `CMD_DEVS_SWITCH` (1035), the capability supplying the
+ * param and the polarity-resolved value while `"auto"` lets the transport seal it per session.
+ *
+ * ✅ Confirmed against the current app's own frames. Across six cameras of four device types and both
+ * topologies, every on/off the app sent was `1035` carrying the same body — `[u32 channel][u32 value]
+ * [account_id]`, the channel selecting an attached camera — sealed at level-2 or level-1 exactly as the
+ * session's key allowed. The capture contains no `6250` frame at all.
+ *
+ * No family is routed to the privacy envelope (6250). Beyond the app not using it, that envelope has no
+ * level-1 form, so it cannot be sent at all on a session whose key negotiation concluded without a key —
+ * and it is not the param this member reads, so a write there cannot be confirmed by a readback.
  */
 function powerCommand(on: boolean, ctx: CommandContext): Command {
-  if (usesSeparatePowerEnvelope(ctx)) return privacyCommand(!on, ctx.channel);
   return setScalar(CAMERA_CMD.CAMERA_ENABLE, powerValue(on, ctx), ctx, "auto");
 }
 
@@ -332,6 +313,33 @@ function enablementReads(): { paramType: number; invert: boolean }[] {
 }
 
 /**
+ * The param an enablement write will be reflected under on THIS device, and the raw value to expect there.
+ *
+ * Written wire and reported wire are not the same one. Every family is written on
+ * {@link CAMERA_CMD.CAMERA_ENABLE}, but the standalone indoor/outdoor cameras report their state under the
+ * `2001` read alias and never the param that was written — measured on one account, 5 cameras report the
+ * enablement param and never `2001`, 3 report `2001` and never the enablement param, and none reported both.
+ * So the readback follows the reported param, chosen from the evidence the device gave, and each carries its
+ * own convention: `2001` is direct, the enablement param takes the family polarity its write uses.
+ *
+ * `undefined` where no readback can confirm the write: a device that reported neither param has nothing to
+ * read, and on the families whose power rides the privacy envelope the write lands on a wire the read never
+ * observes — the disagreement that puts `enabled` in `unreflectedMembers`. Claiming observability there would
+ * time out on every write instead of dispatching it.
+ */
+function enablementReflection(
+  on: boolean,
+  ctx: CommandContext,
+): { param: number; expected: boolean | number; observed: boolean } | undefined {
+  const alias = CAMERA_MEMBERS.enabled.readAliases[0].paramType;
+  if (ctx.paramIds.has(alias)) return { param: alias, expected: on, observed: on };
+  if (ctx.paramIds.has(CAMERA_CMD.CAMERA_ENABLE)) {
+    return { param: CAMERA_CMD.CAMERA_ENABLE, expected: powerValue(on, ctx), observed: on };
+  }
+  return undefined;
+}
+
+/**
  * Every `camera` feature, declared once. The property schema, the typed getters, the derived setters,
  * the intent routes, the media methods and the descriptions all come out of this table.
  *
@@ -349,21 +357,17 @@ function enablementReads(): { paramType: number; invert: boolean }[] {
 export const CAMERA_MEMBERS = {
   /**
    * The READ is the *disable*-bit convention (1035 "0" ⇒ ON, 2001 direct); the WRITE polarity is
-   * family-dependent — see `powerValue` / `isEnableBitPolarity`. Battery/solo cams report
-   * the state under 1035, standalone indoor/outdoor cams (T8400/T8410/T8442) under 2001 OPEN_DEVICE
-   * with direct polarity, so 2001 is a read-alias. Both verified live (T8114 1035=0 → ON; T8410
-   * 2001=false → OFF). The S350/outdoor-PT privacy form (6250) is a separate wire and is not aliased
-   * here until its polarity is captured.
+   * family-dependent — see `powerValue` / `isEnableBitPolarity`. Battery/solo cams report the state under
+   * 1035, standalone indoor/outdoor cams under 2001 OPEN_DEVICE with direct polarity, so 2001 is a
+   * read-alias. Both verified live, and the write polarity is confirmed against the app's own frames.
    *
-   * On the families {@link usesSeparatePowerEnvelope} covers, the WRITE goes to the privacy envelope while
-   * this read still observes 1035/2001 — so `setEnabled(false)` succeeds without moving this value, and the
-   * value reads as ON for a camera that is off. `readReflectsWrite` declares that, which puts those devices
-   * in `unreflectedMembers(dev.camera())` so a caller can decline to act on the value instead of acting on a
-   * wrong one.
+   * The read and the setter observe the SAME wire on every family — see {@link powerCommand} — which is what
+   * makes this value track what it is told, and what lets {@link enablementReflection} confirm a write.
    *
-   * Aliasing 6250 here would fix it properly, and it IS reported on those families (T8170 and T8171 each
-   * returned 6250="0" alongside 1035="0" while streaming). That is one polarity seen once; the privacy-on
-   * reading is not captured, so the mapping stays unverified rather than guessed.
+   * The privacy param (6250) is reported by the outdoor-PT family and by no other camera measured, and both
+   * of its polarities are observed. It is deliberately NOT aliased here: it moved in the same step as 1035, so
+   * the reading cannot say whether power and privacy are one state or two, and the app drives 1035 — so
+   * aliasing a second param could only fold two possible states into one getter for no gain.
    */
   enabled: {
     param: CAMERA_CMD.CAMERA_ENABLE,
@@ -372,11 +376,15 @@ export const CAMERA_MEMBERS = {
     provenance: "verified",
     invert: true,
     readAliases: [{ paramType: 2001, invert: false }],
-    readReflectsWrite: (ctx) => !usesSeparatePowerEnvelope(ctx),
     description:
       "Camera enabled. Family-dependent wire param: 1035 CMD_DEVS_SWITCH (disable bit, battery/" +
       "solo cams) or 2001 OPEN_DEVICE (standalone indoor/outdoor). Reliable on/off status source " +
       "(a live-stream probe is not).",
+    observation: {
+      event: "cameraEnabledChanged",
+      reflects: (value, ctx) => enablementReflection(asBool(value), ctx),
+      timeoutMs: 20_000,
+    },
     write: (v, ctx) => powerCommand(asBool(v), ctx),
     aliases: { on: true, off: false },
   },
@@ -521,6 +529,15 @@ export const CAMERA_MEMBERS = {
    * Media is not a property: it returns DATA rather than moving state, its options are richer than a
    * value, and it exists only on a device bound to a provider. Each is declared once, with its
    * signature taken FROM {@link MediaProvider} — so a change there is a compile error here, not a drift.
+   *
+   * None of these is withheld from a camera whose {@link CAMERA_MEMBERS.enabled} reads false, though such a
+   * camera answers a live start with audio and never a video frame — measured on a mains-powered own-session
+   * `INDOOR_PT_CAMERA`: 234 audio frames and no video across 20s, no stream-status report, and zero datagram
+   * gaps, which then delivered 217 video access units with nothing changed but its own on/off state.
+   *
+   * Deciding not to ask an off camera is the caller's, and it is made on the `enabled` getter — which that
+   * member's own observation now keeps convergent, so it is a value worth deciding on. What the SDK owes is
+   * the evidence: the reading, and the media source's own `audio-only` start stage.
    */
   snapshotStored: provided(
     "media",

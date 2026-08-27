@@ -11,6 +11,7 @@ import type { FfmpegLevel } from "../transport/ffmpeg.js";
 import type { DeviceEventMap } from "../model/capabilities/index.js";
 import type { Capability } from "../model/index.js";
 import type { P2PFrame } from "../transport/p2p/p2p-session.js";
+import type { PowerTier } from "../transport/p2p/session-manager.js";
 import type { BizMapFrame } from "../transport/mqtt/biz-stream.js";
 import type { PushEvent, RawPushMessage } from "../transport/push/types.js";
 import type { AvailabilityObservation, EufyDevice, RealtimeMessage } from "../core/types.js";
@@ -68,9 +69,10 @@ export interface EufyMegaOptions extends MegaClientConfig {
    * Auto-manage connectivity (default `true`). When on, a successful {@link EufyMega.login} brings up
    * the always-on event channels itself — FCM push + secure MQTT (if the account has appliances) — and
    * eagerly warms P2P only for **wired** stations (HomeBases / mains cameras). Battery cameras stay
-   * detached until a command / stream / event pre-warm needs them, and idle-detach afterwards. The host
-   * calls no `connect*` — connectivity is transport-agnostic. Set `false` to manage nothing
-   * automatically (advanced/testing).
+   * detached until a command / stream — or a pre-warm the caller opted into via {@link
+   * EufyMegaOptions.prewarmEvents} — needs them, and idle-detach afterwards. The host calls no
+   * `connect*` — connectivity is transport-agnostic. Set `false` to manage nothing automatically
+   * (advanced/testing).
    */
   autoRealtime?: boolean;
   /**
@@ -96,9 +98,12 @@ export interface EufyMegaOptions extends MegaClientConfig {
    */
   p2pIdleMs?: number;
   /**
-   * Speculative pre-warm window in ms after a high-intent event (default 28000). On a doorbell ring the
-   * SDK opens the camera's P2P session so a tap-to-view / talkback starts instantly; if nothing attaches
-   * within the window the session idle-detaches.
+   * How long a speculative pre-warm holds the session it opened, in ms (default 28000). Applies only to
+   * the events {@link EufyMegaOptions.prewarmEvents} opts into; pre-warm is off until then.
+   *
+   * When the window expires with nothing attached, the session does not close — the hold is released and
+   * the station's own idle window takes over, which for a battery station is {@link
+   * EufyMegaOptions.p2pIdleMs} (5 min by default). Budget an unattended pre-warm at the sum of the two.
    */
   prewarmMs?: number;
   /**
@@ -115,14 +120,39 @@ export interface EufyMegaOptions extends MegaClientConfig {
    */
   pollMs?: number;
   /**
-   * Which semantic events pre-warm P2P — typed to the semantic event names ({@link DeviceEventMap}
-   * keys), so the list autocompletes and a typo won't compile. Default: `["doorbellPress",
-   * "personDetected", "petDetection", "packageDelivered"]` — a doorbell ring plus the high-intent AI
-   * detections (human / animal / object), all rare + likely to prompt a look. Raw `motion` is
-   * deliberately NOT a default (a battery camera sees it constantly, which would defeat the
-   * idle-detach); add it only for a wired camera. Set your own list to override.
+   * Which semantic events speculatively pre-warm a camera's P2P session — **opt-in, default `[]`**, an
+   * empty list being what disables it. Naming an event buys a tap-to-view / talkback right after it
+   * starting warm rather than paying a cold open, and costs what the three paragraphs below describe.
+   *
+   * Any name in {@link DeviceEventMap} is accepted, so the list autocompletes and a typo won't compile.
+   * A pre-warm rides the push channel, so only an event push carries can trigger one — a poll-carried
+   * event is inert however it is listed, and each capability module declares which source carries its own
+   * events. An event from a device that is not a camera pre-warms the station behind it, which for an
+   * attached sensor is its HomeBase.
+   *
+   * **One camera pays for it.** Wired stations are warmed at login and never idle-detach, and an attached
+   * camera's session lives on its wired base — so the only station a pre-warm genuinely opens is a
+   * standalone battery camera, the device class the on-demand session lifecycle exists to let sleep.
+   * {@link EufyMegaOptions.prewarmTiers} is how that class is spared while keeping the opt-in.
+   *
+   * **An unwatched pre-warm costs more than its window**, per {@link EufyMegaOptions.prewarmMs}: the hold
+   * expiring arms the station's idle window instead of closing the session, and a second qualifying event
+   * inside that tail restarts it.
+   *
+   * **Frequency is a property of the installation, not of the event name.** A camera set to report human
+   * detection only fires `personDetected` as often as a busier one fires raw `motion`, so pick the events
+   * a user actually looks at within the window and read the rate off the fleet in front of you.
    */
   prewarmEvents?: (keyof DeviceEventMap)[];
+  /**
+   * Which station power tiers {@link EufyMegaOptions.prewarmEvents} may pre-warm (default: both). The
+   * tier is the one of the **station whose session would open** — a camera attached to a HomeBase is
+   * pre-warmed as `wired`, because that base's session is the one being held.
+   *
+   * `["wired"]` keeps the opt-in and spends no battery: it is close to a no-op, since wired stations are
+   * already warmed at login and never idle-detach, so it only bites after a session drops.
+   */
+  prewarmTiers?: PowerTier[];
   /**
    * ffmpeg's own `-loglevel` for the media paths that shell out to it (live snapshot / record / WebRTC
    * container). Default `"error"` (quiet). Raise it (e.g. `"trace"`) to diagnose a failing decode/mux;
@@ -283,6 +313,29 @@ export type EufyMegaEventMap = {
    * report broker publication (`acked: true`) without an `instanceIp`; that is not device convergence.
    */
   commandAck: [info: { sn: string; kind: string; acked: boolean; instanceIp?: string; getAcked?: boolean }];
+  /**
+   * A write was acknowledged and its declared observation then never converged, so the device never
+   * reported the state the write asked for.
+   *
+   * This is the answer to the question `dispatch` deliberately does not wait for. A command resolves once the
+   * transport has carried it, and the observation a member declares decides separately whether the device
+   * applied it; where that observation times out, the wire accepted the write and the device ignored it — seen
+   * on a battery camera whose power write is acknowledged and never acted on. It is reported here rather than
+   * on `error` because it is an outcome and not a fault, for the same reason `commandAck` has its own channel:
+   * a host wanting convergence visibility should not pattern-match `error`, and the dispatch contract must not
+   * change shape to give it. `observed` is what the param read when the deadline passed, absent where the
+   * device reported none at all.
+   */
+  commandUnconfirmed: [
+    info: {
+      sn: string;
+      property: string;
+      param: number;
+      expected?: boolean | number | string;
+      observed?: boolean | number | string;
+      timeoutMs: number;
+    },
+  ];
   /**
    * The cloud session was kicked or invalidated — another client logged into the same account, or the
    * token expired. The SDK has already cleared the persisted session; a host should re-drive `login()`
