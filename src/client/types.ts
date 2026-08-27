@@ -12,6 +12,7 @@ import type { DeviceEventMap } from "../model/capabilities/index.js";
 import type { Capability } from "../model/index.js";
 import type { P2PFrame } from "../transport/p2p/p2p-session.js";
 import type { PowerTier } from "../transport/p2p/session-manager.js";
+import type { BizMapFrame } from "../transport/mqtt/biz-stream.js";
 import type { PushEvent, RawPushMessage } from "../transport/push/types.js";
 import type { AvailabilityObservation, EufyDevice, RealtimeMessage } from "../core/types.js";
 
@@ -267,6 +268,16 @@ export type EufyMegaEventMap = {
   connect: [];
   disconnect: [reason?: unknown];
   message: [msg: RealtimeMessage];
+  /**
+   * One frame off a clean-line device's map stream — the `biz/…/res` leg, which carries pixel planes,
+   * room outlines and names, virtual walls and the live pose.
+   *
+   * The frame is unwrapped as far as its bytes and no further: `frame.payload` is a Raw-DP frame in
+   * the base64 a codec reads, and `frame.channelId` says which `stream.proto` message it holds. That
+   * split is deliberate while the decoders are being built — a host can already see what its robot
+   * sends, and the meaning of a channel is settled in one place rather than in this event's shape.
+   */
+  mapFrame: [info: { deviceSn: string; frame: BizMapFrame }];
   /**
    * A device reported to the cloud since the last poll — its {@link DeviceState.lastSeenMs} advanced.
    * Carries {@link DeviceState}; the host applies its own staleness threshold.

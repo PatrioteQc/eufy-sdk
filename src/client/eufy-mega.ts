@@ -19,6 +19,7 @@ import { SecureMqtt, type SecureMqttCredentials } from "../transport/mqtt/secure
 import { mqttAppName, mqttScopeFor, type MqttScope } from "../transport/mqtt/topics.js";
 import { parseStateInfoSignal } from "../transport/mqtt/availability.js";
 import { parseDpMessage, parseAiotDpReport } from "../transport/mqtt/dp-codec.js";
+import { parseBizMapFrame } from "../transport/mqtt/biz-stream.js";
 import { type P2PSession, type P2PFrame } from "../transport/p2p/p2p-session.js";
 import { P2PCommandRouter } from "../transport/p2p/command-router.js";
 import type { PowerTier } from "../transport/p2p/session-manager.js";
@@ -1538,6 +1539,15 @@ export class EufyMega extends EventEmitter {
             this.tuyaDpRouter.deliver(m.deviceSn, dps);
             return;
           }
+        }
+      }
+      if (m.deviceSn) {
+        // The map stream. A protocol-41 message is nothing else, so it stops here rather than being
+        // walked by DP parsers that would each correctly decline it.
+        const frame = parseBizMapFrame(m.raw);
+        if (frame) {
+          this.emit("mapFrame", { deviceSn: m.deviceSn, frame });
+          return;
         }
       }
       if (m.topic) this.processAvailabilityMessage(m.topic, m.raw);
