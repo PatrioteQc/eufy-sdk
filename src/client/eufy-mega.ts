@@ -388,23 +388,6 @@ export class EufyMega extends EventEmitter {
   }
 
   /**
-   * Surface a background failure without being able to kill the host.
-   *
-   * `error` on an `EventEmitter` THROWS when nothing is listening, and most of these failures reach us
-   * from a fire-and-forget path (a transport callback, an un-awaited re-bind) where that throw would
-   * land as an unhandled rejection and abort the process. A host that listens gets the event exactly as
-   * before; one that does not gets a log line instead of a crash, which is the correct trade for a
-   * failure it never asked to be told about.
-   */
-  /**
-   * Route an internal error to the host. A {@link SessionExpiredError} — a kicked/expired token, the
-   * transport having already cleared the session — is emitted as the dedicated `sessionExpired` event so
-   * a host can react to auth loss without pattern-matching the generic `error` bus; it is NOT also sent
-   * to `error`. Every other error goes to `error`, falling back to a logged warning when nothing listens
-   * (an unhandled `error` on an EventEmitter throws). Only reported-error paths reach here — an error
-   * thrown straight out of a direct call is the caller's to handle.
-   */
-  /**
    * Reports what became of a command already acknowledged to its caller.
    *
    * A write whose declared observation never converged is not a fault of this client, so it does not reach
@@ -428,6 +411,24 @@ export class EufyMega extends EventEmitter {
     this.reportError(e);
   }
 
+  /**
+   * Route an internal error to the host, without being able to kill it.
+   *
+   * A {@link SessionExpiredError} — a kicked/expired token, the transport having already cleared the
+   * session — is emitted as the dedicated `sessionExpired` event so a host can react to auth loss without
+   * pattern-matching the generic `error` bus; it is NOT also sent to `error`. Every other error goes to
+   * `error`.
+   *
+   * Either way it falls back to a logged warning when nothing listens, because `error` on an
+   * `EventEmitter` THROWS when it has no listener, and most of these failures reach us from a
+   * fire-and-forget path (a transport callback, an un-awaited re-bind) where that throw would land as an
+   * unhandled rejection and abort the process. A host that listens gets the event exactly as before; one
+   * that does not gets a log line instead of a crash, which is the correct trade for a failure it never
+   * asked to be told about.
+   *
+   * Only reported-error paths reach here — an error thrown straight out of a direct call is the caller's
+   * to handle.
+   */
   private reportError(e: unknown): void {
     const err = e instanceof Error ? e : new Error(String(e));
     if (err instanceof SessionExpiredError) {
