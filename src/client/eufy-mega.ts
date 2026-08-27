@@ -44,6 +44,7 @@ import { type DpCatalog, EMPTY_DP_CATALOG, parseDpCatalog } from "../model/capab
 import { type CleanRecordPage, EMPTY_CLEAN_RECORD_PAGE, parseCleanRecords } from "../model/clean-records.js";
 import {
   commandObservation,
+  StateConvergenceError,
   type Command,
   type CommandObservation,
   type CommandSink,
@@ -146,6 +147,15 @@ interface RealtimeGeneration {
 }
 
 class RealtimeStartupSupersededError extends Error {}
+
+/**
+ * The convergence window closed while waiting on a dependency, rather than the dependency failing.
+ *
+ * Distinguishing the two is what lets {@link EufyMega.refreshEventState} answer a write that was never applied
+ * with the member it was waiting for: without it the last poll's own deadline escapes first, and the caller is
+ * told only that something timed out somewhere.
+ */
+class RefreshWindowClosedError extends Error {}
 
 interface MutableRealtimePlaneReadiness {
   required: number;
@@ -378,21 +388,46 @@ export class EufyMega extends EventEmitter {
   }
 
   /**
-   * Surface a background failure without being able to kill the host.
+   * Reports what became of a command already acknowledged to its caller.
    *
-   * `error` on an `EventEmitter` THROWS when nothing is listening, and most of these failures reach us
-   * from a fire-and-forget path (a transport callback, an un-awaited re-bind) where that throw would
-   * land as an unhandled rejection and abort the process. A host that listens gets the event exactly as
-   * before; one that does not gets a log line instead of a crash, which is the correct trade for a
-   * failure it never asked to be told about.
+   * A write whose declared observation never converged is not a fault of this client, so it does not reach
+   * the generic error bus: it is the answer to a question `dispatch` deliberately does not wait for, and it
+   * gets its own channel for exactly the reason `commandAck` has one — a caller that wants convergence
+   * visibility should not have to pattern-match `error`, and the dispatch contract must not change shape to
+   * give it. Anything else that goes wrong after the acknowledgement is a genuine fault and is reported as one.
    */
+  private reportUnacknowledged(e: unknown): void {
+    if (e instanceof StateConvergenceError) {
+      this.emit("commandUnconfirmed", {
+        sn: e.sn,
+        property: e.property,
+        param: e.param,
+        expected: e.expected,
+        observed: e.observed,
+        timeoutMs: e.timeoutMs,
+      });
+      return;
+    }
+    this.reportError(e);
+  }
+
   /**
-   * Route an internal error to the host. A {@link SessionExpiredError} — a kicked/expired token, the
-   * transport having already cleared the session — is emitted as the dedicated `sessionExpired` event so
-   * a host can react to auth loss without pattern-matching the generic `error` bus; it is NOT also sent
-   * to `error`. Every other error goes to `error`, falling back to a logged warning when nothing listens
-   * (an unhandled `error` on an EventEmitter throws). Only reported-error paths reach here — an error
-   * thrown straight out of a direct call is the caller's to handle.
+   * Route an internal error to the host, without being able to kill it.
+   *
+   * A {@link SessionExpiredError} — a kicked/expired token, the transport having already cleared the
+   * session — is emitted as the dedicated `sessionExpired` event so a host can react to auth loss without
+   * pattern-matching the generic `error` bus; it is NOT also sent to `error`. Every other error goes to
+   * `error`.
+   *
+   * Either way it falls back to a logged warning when nothing listens, because `error` on an
+   * `EventEmitter` THROWS when it has no listener, and most of these failures reach us from a
+   * fire-and-forget path (a transport callback, an un-awaited re-bind) where that throw would land as an
+   * unhandled rejection and abort the process. A host that listens gets the event exactly as before; one
+   * that does not gets a log line instead of a crash, which is the correct trade for a failure it never
+   * asked to be told about.
+   *
+   * Only reported-error paths reach here — an error thrown straight out of a direct call is the caller's
+   * to handle.
    */
   private reportError(e: unknown): void {
     const err = e instanceof Error ? e : new Error(String(e));
@@ -644,14 +679,26 @@ export class EufyMega extends EventEmitter {
       if (refresh.expected !== undefined && settled()) return true;
       while (Date.now() < deadline) {
         const remaining = deadline - Date.now();
-        await this.beforeDeadline(this.registry.getDevices(), remaining);
+        try {
+          await this.beforeDeadline(this.registry.getDevices(), remaining);
+        } catch (error) {
+          if (!(error instanceof RefreshWindowClosedError)) throw error;
+          break;
+        }
         if (epoch !== this.realtimeEpoch) return false;
         if (settled()) return true;
         const delay = Math.min(500, deadline - Date.now());
         if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
         if (refresh.expected !== undefined && settled()) return true;
       }
-      throw new Error("device state did not converge before semantic event deadline");
+      throw new StateConvergenceError({
+        sn,
+        property: refresh.property,
+        param: refresh.param,
+        expected: refresh.expected,
+        observed: this.registry.require(sn).params?.[refresh.param],
+        timeoutMs: refresh.timeoutMs,
+      });
     })();
   }
 
@@ -697,7 +744,10 @@ export class EufyMega extends EventEmitter {
   /** Limit waiting on an unabortable dependency operation to the remaining semantic-event refresh window. */
   private beforeDeadline<T>(operation: Promise<T>, timeoutMs: number): Promise<T> {
     return new Promise<T>((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error("semantic event refresh timed out")), Math.max(0, timeoutMs));
+      const timeout = setTimeout(
+        () => reject(new RefreshWindowClosedError("refresh window closed")),
+        Math.max(0, timeoutMs),
+      );
       operation.then(
         (value) => {
           clearTimeout(timeout);
@@ -917,14 +967,14 @@ export class EufyMega extends EventEmitter {
             if (observation.resetStandaloneSession) await this.p2p.resetStandaloneSession(sn);
           } catch (error) {
             if (!acknowledged) reject(error);
-            else this.reportError(error);
+            else this.reportUnacknowledged(error);
           } finally {
             release();
           }
         });
         void transaction.catch((error) => {
           if (!acknowledged) reject(error);
-          else this.reportError(error);
+          else this.reportUnacknowledged(error);
           release();
         });
         return acknowledgement;
