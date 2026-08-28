@@ -44,8 +44,8 @@ an ESM load smoke test → `typecheck:examples` → `test`. A green `npm test` a
 `.github/workflows/ci.yml` invokes the same script, so green `verify` means green CI.
 
 Individual pieces if you need them: `npm run guard:decorrelation`, `npm run guard:lines`,
-`npm run guard:docrefs`, `npm run guard:consumer-agnostic`, `npm run guard:seal` (build first),
-`npm run check:esm`, and `npm run format` to auto-fix formatting.
+`npm run guard:docrefs`, `npm run guard:consumer-agnostic`, `npm run guard:capability-ownership`,
+`npm run guard:seal` (build first), `npm run check:esm`, and `npm run format` to auto-fix formatting.
 
 **One gate lives outside `verify`:** `guard:docs`, the publication guard over the generated API
 reference. It needs the docs toolchain, which `verify` deliberately does not require. Reproduce it
