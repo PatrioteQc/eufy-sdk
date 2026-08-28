@@ -47,9 +47,11 @@ report, a Tuya data point, or a cloud poll. A property arrives on the paths its 
 readable properties have only the poll.
 
 **Announcement** — telling a host that a property's value moved, as `propertyChanged`, identified by
-property name and carrying the value the getter now answers. Generic: derived from the members table for
-every schema property, so a member needs no declaration to be announced. A member opts OUT with
-`unannounced: true`, for a value that moves on essentially every report and therefore carries no news.
+property name and carrying the value `getProperty` now serves, narrowed the way the capability getter
+narrows it. Generic: derived from the members table for every schema property, so a member needs no
+declaration to be announced. A member opts OUT with `unannounced: true`, for a value that moves on
+essentially every report and therefore carries no news. Announced against a `Device` the caller holds,
+because that is where live state is.
 
 **Semantic event** — a NAMED device event (`motion`, `contactState`, `batteryAlert`, `lockState`). The
 rule:

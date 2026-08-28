@@ -31,9 +31,12 @@ async function main(): Promise<void> {
   // events to a host's event bus without registering a listener per name.
   eufy.on("event", (e) => console.log("· any:", e.eventName, e.deviceSn ?? e.stationSn ?? ""));
 
-  // A property change is announced against a device's own live state, so hold the devices you want
-  // announcements for. Everything above this line arrives without it.
-  for (const d of await eufy.getDevices()) await eufy.getDevice(d.sn);
+  // A property change is announced against a device's own live state, and the SDK holds those devices
+  // WEAKLY — so keep your own reference for every serial you want announcements for. Everything above
+  // this line arrives without it.
+  const held = new Map<string, Awaited<ReturnType<typeof eufy.getDevice>>>();
+  for (const d of await eufy.getDevices()) held.set(d.sn, await eufy.getDevice(d.sn));
+  console.log(`holding ${held.size} devices for property announcements`);
 
   console.log("listening 60s — trigger something on a device…");
   await new Promise((r) => setTimeout(r, 60_000));

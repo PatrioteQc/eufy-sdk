@@ -65,7 +65,14 @@ import { StoredImageCache } from "../transport/stored-image-cache.js";
 import type { PushEvent, RawPushMessage } from "../transport/push/types.js";
 import { type AvailabilityObservation, type EufyDevice, type RealtimeTransport } from "../core/types.js";
 import { Timer } from "../core/util.js";
-import { Device, resolveDevice, detectionName, type Capability, type DeviceInspection } from "../model/index.js";
+import {
+  Device,
+  resolveDevice,
+  detectionName,
+  type Capability,
+  type DeviceInspection,
+  type RawParams,
+} from "../model/index.js";
 import { isHomeBase } from "../model/device-family.js";
 import { DeviceRegistry, type ParamChange } from "./device-registry.js";
 import type {
@@ -592,7 +599,7 @@ export class EufyMega extends EventEmitter {
     if (widens && known) this.boundParamIds.set(sn, new Set([...known, ...reported]));
     this.registry.applyRealtimeParams(sn, params);
     const device = this.liveDevices.get(sn)?.deref();
-    if (device) this.announceChanges(sn, device, device.applyParams(params));
+    if (device) this.applyAndAnnounce(device, params);
     this.emit("deviceState", this.deviceState(sn));
     if (widens) void this.rebindReads(sn);
   }
@@ -1208,6 +1215,17 @@ export class EufyMega extends EventEmitter {
    * {@link Device.setFreshnessPolicy}), so a host that reuses it (e.g. a periodic polling loop) serves
    * repeat reads from cache instead of re-fetching, and realtime updates keep values fresh.
    *
+   * That refresh ANNOUNCES what it lands, like the other two inbound paths. Its timing carries nothing
+   * about the device — it fires when a caller happened to read — but leaving it silent would not defer
+   * the announcement, it would lose it: for a host that reads often this path is where most fresh cloud
+   * values actually arrive, and once one has landed the poll's own edge sees nothing left to report. It
+   * applies what the device volunteered over realtime on top of the cloud half, which the registry keeps
+   * apart, so it can neither revert nor announce a revert of a report that already landed.
+   *
+   * The `Device` returned is held WEAKLY: it is what the inbound paths announce against, so a caller that
+   * wants property changes for a serial keeps its own reference. Dropping it stops the announcements, not
+   * the device.
+   *
    * @example
    * ```ts
    * const dev = await eufy.getDevice(sn);
@@ -1234,7 +1252,8 @@ export class EufyMega extends EventEmitter {
       dev.setFreshnessPolicy({
         staleAfterMs: this.opts.cacheTtlMs ?? 15_000,
         refresh: async () => {
-          dev.applyParams((await this.registry.record(sn)).params);
+          const fresh = await this.registry.record(sn);
+          this.applyAndAnnounce(dev, { ...fresh.params, ...fresh.dpParams });
         },
       });
     }
@@ -1446,7 +1465,7 @@ export class EufyMega extends EventEmitter {
   }
 
   /**
-   * Land a poll pass's fresh params on every live {@link Device} and announce what moved, BEFORE anything
+   * Land a poll pass's CHANGES on every live {@link Device} and announce what moved, BEFORE anything
    * else derived from them is emitted.
    *
    * Without this the poll updated the registry's record and its own baseline and left live state — the
@@ -1455,38 +1474,49 @@ export class EufyMega extends EventEmitter {
    * happened to read stayed behind indefinitely and a listener reading a getter inside a poll event
    * handler always saw pre-poll state.
    *
-   * Applied once per device rather than once per change: {@link ParamChange} carries the whole
-   * post-change map, so every change of one device carries the same one and re-applying it would only
-   * repeat the work and report the second application as changing nothing.
+   * The CHANGES, not the whole post-change map {@link ParamChange} also carries. That map is there so an
+   * event decode can read sibling params; applying it would additionally revert every id a realtime report
+   * made fresher, because {@link DeviceRegistry.applyRealtimeParams} keeps a report apart from the cloud
+   * record's params — so the cloud list still carries the pre-report value long after the device
+   * volunteered the new one, and an open door would read as closed on the next pass that saw anything move.
    */
   private applyPolledParams(changes: readonly ParamChange[]): void {
-    const byDevice = new Map<string, Record<number, string>>();
-    for (const change of changes) byDevice.set(change.deviceSn, change.params);
+    const byDevice = new Map<string, RawParams>();
+    for (const change of changes) {
+      const params = byDevice.get(change.deviceSn) ?? {};
+      params[change.paramType] = change.to;
+      byDevice.set(change.deviceSn, params);
+    }
     for (const [sn, params] of byDevice) {
       const device = this.liveDevices.get(sn)?.deref();
-      if (device) this.announceChanges(sn, device, device.applyParams(params));
+      if (device) this.applyAndAnnounce(device, params);
     }
   }
 
   /**
-   * Announce the properties a param application moved, one `propertyChanged` each.
+   * Apply a param map to one live {@link Device} and announce every property it moved, one
+   * `propertyChanged` each. The one place the two halves are joined, shared by all three inbound paths
+   * that reach live state.
    *
    * The device decides which of the changed names it will stand behind and what value each carries
    * ({@link Device.announcements}), so this stays a fan-out: no capability name, no member id, and no
    * second conversion of a wire value that could disagree with the getter beside it.
    *
    * Only a device a caller is HOLDING is announced for, because the announced value is read out of that
-   * device's own live state and a serial nobody asked for has none. Such a device's liveness still
-   * reaches a host as `deviceState`.
+   * device's own live state and a serial nobody asked for has none. Resolving one on demand could not
+   * help: a device built from the already-updated record has nothing to diff against, so the pass that
+   * created it could never be the pass it announces. Such a device's liveness still reaches a host as
+   * `deviceState`.
    *
-   * Echoes of the SDK's own writes are announced rather than suppressed. A poll pass cannot tell a change
-   * it caused from one an external actor caused, and suppressing on that guess is unsound, not merely
-   * conservative: if a user also changes the value in the vendor app inside the window, the real external
-   * change is the one lost — a wrong state held indefinitely, against one redundant idempotent re-read.
+   * Echoes of the SDK's own writes are announced rather than suppressed. An inbound path cannot tell a
+   * change it caused from one an external actor caused, and suppressing on that guess is unsound, not
+   * merely conservative: if a user also changes the value in the vendor app inside the window, the real
+   * external change is the one lost — a wrong state held indefinitely, against one redundant idempotent
+   * re-read.
    */
-  private announceChanges(sn: string, device: Device, changed: readonly string[]): void {
-    for (const change of device.announcements(changed))
-      this.emitSemantic("propertyChanged", { deviceSn: sn, ...change });
+  private applyAndAnnounce(device: Device, params: RawParams): void {
+    for (const change of device.announcements(device.applyParams(params)))
+      this.emitSemantic("propertyChanged", { deviceSn: device.sn, ...change });
   }
 
   /**

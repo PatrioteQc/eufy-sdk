@@ -42,22 +42,26 @@ eufy.on("propertyChanged", ({ deviceSn, property, value }) => {
 - **`property`** is the name [`dev.getProperty(name)`](/devices) takes and the one the capability getter
   answers. To reach the fluent accessor behind it, join once against
   [`dev.describe()`](/capability-manifest), which publishes the `{ accessor, property }` pair.
-- **`value`** is what the getter now answers, read from the same live state the getter reads — never a
-  second conversion of the wire value, so the two cannot disagree. It is **absent** where the getter
-  itself would not give a scalar: a property whose stored form is a config payload (`videoQuality`,
-  `snoozeTime`), or one whose stored value does not match its declared type. Absent means "this moved,
-  re-read it".
+- **`value`** is what `getProperty` now serves, narrowed the way the capability getter narrows it — read
+  from the same live state, never a second conversion of the wire value, so the two cannot disagree. It is
+  **absent** where no scalar can honestly be given: a property whose stored form is a config payload
+  (`videoQuality`, `snoozeTime`), or one whose stored value does not match its declared type. Absent
+  means "this moved, re-read it". A handful of properties are in the schema with no typed getter at all,
+  because their value space is not evidenced yet — those announce the stored value, which is exactly what
+  `getProperty` already serves for them and no more.
 - **No wire id travels with it.** Several ids resolve to one property — a camera's enablement rides 1035
   on one family and 2001 on another, with opposite polarity — and that resolution is the point. The ids
   stay available through `inspectDevice()` and `dev.describe()`.
-- **Announced for a device you are holding.** The value comes out of that device's own live state, so
-  call `getDevice(sn)` for the serials you want announcements for. Their liveness reaches you as
-  `deviceState` either way.
+- **Keep a reference to the devices you want announcements for.** The value comes out of a device's own
+  live state, and the SDK holds the `Device` objects it hands out **weakly** — so `getDevice(sn)` and then
+  discarding the result stops the announcements for that serial as soon as it is collected. Their liveness
+  reaches you as `deviceState` either way.
 - **Echoes are announced too.** The SDK cannot tell a change it caused from one made in the app, and
   guessing would lose a real external change in exchange for one redundant re-read.
-- **Latency is the transport's.** Seconds for a property a device reports over its realtime wire, one
-  poll interval for one that only ever arrives as a cloud param — which is most of them. The interval is
-  yours: `pollMs` at construction, or `setPollInterval(ms)` at runtime (default 10 minutes).
+- **Latency is the transport's.** Seconds for a property a device reports over its realtime wire. For one
+  that only ever arrives as a cloud param — which is most of them — it is whichever comes first of the
+  poll (`pollMs` at construction, or `setPollInterval(ms)` at runtime; default 10 minutes) and the
+  read-through cache's own background re-read, which fires when you read a value older than `cacheTtlMs`.
 
 A few properties opt out, because their value moves on essentially every report and so carries no news:
 a sensor's own check-in timestamp (that is `deviceState`'s job) and a robot's monotonic lifetime

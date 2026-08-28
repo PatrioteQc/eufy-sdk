@@ -284,13 +284,18 @@ export interface PropertyChange {
   /** The property whose value moved — a key of this device's own schema. */
   property: string;
   /**
-   * The value the capability's getter now answers, narrowed to the property's declared type.
+   * What {@link Device.getProperty} now serves for this property, narrowed to its declared type the same
+   * way a capability getter narrows it.
    *
    * Read out of live state, never re-converted from the wire, so it cannot disagree with the getter
-   * beside it. Absent for a property whose stored value is a PAYLOAD rather than the value (see
-   * {@link PropertySpec.raw}), and for one whose stored value does not match its declared type — in
-   * both cases the honest answer is "this moved, re-read it" rather than a value the getter would not
-   * give.
+   * beside it. Said as "what `getProperty` serves" rather than "what the getter answers" because a
+   * schema property does not always HAVE a typed getter: an `unexposed` member is reported and readable
+   * but has no confirmed meaning for its value, so promising the getter here would be a claim this SDK
+   * has not made anywhere else.
+   *
+   * Absent where no scalar can honestly be given: a property whose stored value is a PAYLOAD rather than
+   * the value (see {@link PropertySpec.raw}), and one whose stored value does not match its declared
+   * type. In both cases the honest answer is "this moved, re-read it".
    */
   value?: boolean | number | string;
 }

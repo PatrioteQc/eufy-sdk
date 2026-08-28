@@ -7,10 +7,10 @@ import type { ParamChange } from "../device-registry.js";
  * The cloud-param poll loop — the producer behind the capabilities' `source:"poll"` event mappings.
  *
  * Driven through the facade end-to-end, because the decode half is covered separately
- * (`capabilities/__tests__/decode-event.spec.ts` asserts param 1101 → `batteryLevel`) and both halves
- * passing in isolation says nothing about a signal actually reaching a listener. A changed param must
- * come out as a semantic event. Also pins the loop's lifecycle: self-rescheduling, surviving a failed
- * pass, and stopping on disconnect.
+ * (`capabilities/__tests__/decode-event.spec.ts` asserts param 1550 → `contactState`, and that 1101 maps
+ * to nothing now that the battery level is announced generically) and both halves passing in isolation
+ * says nothing about a signal actually reaching a listener. A changed param must come out as an event.
+ * Also pins the loop's lifecycle: self-rescheduling, surviving a failed pass, and stopping on disconnect.
  */
 function makeClient(opts: Record<string, unknown> = {}) {
   const eufy = new EufyMega({ email: "t@example.com", password: "x", ...opts });
@@ -156,6 +156,38 @@ describe("cloud-param poll loop", () => {
 
     expect(applyParams).toHaveBeenCalledExactlyOnceWith(params);
     expect(dev.getProperty("rssi")?.value).toBe(-64);
+  });
+
+  /**
+   * The poll applies the CHANGES it saw, never the whole cloud snapshot.
+   *
+   * A realtime report lands in the registry's `dpParams`, which is deliberately kept apart from the
+   * cloud record's `params` — so the cloud list still carries the pre-report value for that id long
+   * after the device volunteered the new one. Applying the whole snapshot would revert live state to it
+   * and announce the revert as a change, which is how an open door comes to read as closed.
+   */
+  it("does not revert a value a realtime report made fresher", async () => {
+    const eufy = makeClient();
+    const dev = liveContactSensor(eufy);
+    vi.spyOn((eufy as any).registry, "applyRealtimeParams").mockImplementation(() => {});
+    (eufy as any).applyRealtimeState("T8000P0000000000", { 1550: "1" });
+    expect(dev.getProperty("contact")?.value).toBe(true);
+    const seen: any[] = [];
+    eufy.on("propertyChanged", (e) => seen.push(e));
+    // The cloud list still says closed, and an unrelated param on the same device moved.
+    vi.spyOn((eufy as any).registry, "pollChanges").mockResolvedValue({
+      params: [
+        { deviceSn: "T8000P0000000000", paramType: 1141, from: "-70", to: "-64", params: { 1550: "0", 1141: "-64" } },
+      ],
+      added: [],
+      removed: [],
+      reported: [],
+    });
+
+    await (eufy as any).pollOnce();
+
+    expect(dev.getProperty("contact")?.value).toBe(true);
+    expect(seen).toEqual([{ deviceSn: "T8000P0000000000", property: "rssi", value: -64 }]);
   });
 
   /**

@@ -35,6 +35,7 @@ function withLiveDevice(sn: string, record: Parameters<typeof Device.fromRecord>
 }
 
 const SENSOR = "T8000P0000000000";
+const ROBOT = "T8000P0000000001";
 
 describe("propertyChanged from a realtime report", () => {
   beforeEach(() => vi.restoreAllMocks());
@@ -105,7 +106,7 @@ describe("propertyChanged from a realtime report", () => {
    * `contact.lastSeen` makes for the same reason.
    */
   it("announces a robot's activity and not its lifetime counters", () => {
-    const { seen, report } = withLiveDevice("T2351VAC", {
+    const { seen, report } = withLiveDevice(ROBOT, {
       model: "T2351",
       params: { [VACUUM_DP.WORK_STATUS]: "AAAA", [VACUUM_DP.CLEAN_STATS]: "AAAA" },
     });
@@ -113,6 +114,6 @@ describe("propertyChanged from a realtime report", () => {
     report({ [VACUUM_DP.WORK_STATUS]: "BBBB", [VACUUM_DP.CLEAN_STATS]: "BBBB" });
 
     // `activity` stores a protobuf payload, so it is named with no value — "this moved, re-read it".
-    expect(seen).toEqual([{ deviceSn: "T2351VAC", property: "activity" }]);
+    expect(seen).toEqual([{ deviceSn: ROBOT, property: "activity" }]);
   });
 });

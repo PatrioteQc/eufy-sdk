@@ -666,29 +666,34 @@ export interface DeviceEventMap {
    * `members` table the getters are, for every readable property of every capability.
    *
    * `property` is the name `Device.getProperty` takes and the one a capability getter answers, so a
-   * caller can re-read immediately; `Device.describe()` publishes the `{ accessor, property }` pair
-   * for a caller that wants the fluent accessor behind the name. `value` is what the getter now answers,
-   * read from live state rather than re-converted from the wire, and absent where the getter itself
-   * would not give a value — a property whose stored form is a payload, or one whose stored value does
-   * not match its declared type. No wire id travels with it: several ids resolve to one property, which
-   * is the point.
+   * caller can re-read immediately; `Device.describe()` publishes the `{ accessor, property }` pair for a
+   * caller that wants the fluent accessor behind the name. `value` is what `getProperty` now serves,
+   * narrowed the way the capability getter narrows it and read from the same live state rather than
+   * re-converted from the wire. It is absent where no scalar can honestly be given — a property whose
+   * stored form is a payload, or one whose stored value does not match its declared type — which means
+   * "this moved, re-read it". No wire id travels with it: several ids resolve to one property, which is
+   * the point.
    *
-   * Announced from the cloud poll and from a realtime report, for a change with any cause — the SDK
-   * cannot tell its own write's echo from a change made in the vendor app, and suppressing on a guess
-   * would lose a real external change in exchange for one redundant re-read. Not announced on first
-   * sight of a device (that is discovery, not a transition), nor on the read-through freshness refresh
-   * (whose timing says only when a caller happened to read), nor inside a write's own confirmation
-   * (already reported through that command's outcome).
+   * Announced from the cloud poll, from a realtime report, and from the read-through cache's own
+   * background re-read, for a change with any cause — the SDK cannot tell its own write's echo from a
+   * change made in the vendor app, and suppressing on a guess would lose a real external change in
+   * exchange for one redundant re-read. Not announced on first sight of a device (that is discovery, not
+   * a transition), nor inside a write's own confirmation (already reported through that command's
+   * outcome).
+   *
+   * Announced against a `Device` the caller is holding, since the value is read out of that device's own
+   * live state and the SDK holds the devices it hands out weakly.
    *
    * A member may opt out of announcing for itself where its value moves on essentially every report
    * (`ValueMember.unannounced`); a sensor's own check-in timestamp is one, since that is the liveness
    * job the `deviceState` event already does.
    *
-   * Latency is the inbound path's: seconds for a property a device reports over realtime, one poll
-   * interval for one that only ever arrives as a cloud param — which is most of them, and the interval
-   * is the caller's to choose (`EufyMegaOptions.pollMs`, `EufyMega.setPollInterval`).
+   * Latency is the inbound path's: seconds for a property a device reports over realtime. For one that
+   * only ever arrives as a cloud param — which is most of them — it is whichever comes first of the poll
+   * (`EufyMegaOptions.pollMs`, `EufyMega.setPollInterval`) and the cache's re-read
+   * (`EufyMegaOptions.cacheTtlMs`), both the caller's to choose.
    */
-  propertyChanged: SemanticEventBase & PropertyChange;
+  propertyChanged: SemanticEventBase & PropertyChange & { deviceSn: string };
   /** Battery alert — `state` discriminates low / hot / full. */
   batteryAlert: PushSemanticEvent & { state?: "low" | "hot" | "full" };
   /** Pan/tilt status streamed while the camera moves. */

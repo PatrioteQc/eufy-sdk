@@ -37,9 +37,8 @@ import {
   type CapabilityAccessors,
   type DeviceManifest,
 } from "./capabilities/index.js";
-// `narrow` is the members table's own read narrowing, imported by direct path because it is internal to
-// `capabilities/` and must not join the barrel's published surface. Sharing it is the point: an
-// announcement carries the value the getter answers, resolved by the one function that decides that.
+// By direct path, not the barrel: `narrow` is internal to `capabilities/` and must not join the
+// barrel's published surface. Its own JSDoc states why it is shared.
 import { narrow } from "./capabilities/members.js";
 import { paramDef, namespaceForCodec, type ParamNamespace } from "./param-namespace.js";
 
@@ -442,9 +441,9 @@ export class Device {
   }
 
   /**
-   * Which of these changed property names are worth ANNOUNCING, each with the value its getter now
-   * answers — the second half of an {@link applyParams} call, and the input a facade turns into a
-   * property-change event.
+   * Which of these changed property names are worth ANNOUNCING, each with the value
+   * {@link getProperty} now serves for it — the second half of an {@link applyParams} call, and the input
+   * a facade turns into a property-change event.
    *
    * Only a name in this device's own schema survives. The schema is what the SDK published and
    * {@link getProperty} serves every entry of, so announcing one is honest; a dictionary-named param and
@@ -454,10 +453,12 @@ export class Device {
    * essentially every report and so carries no news.
    *
    * The value comes out of live state — written microseconds earlier by the same call that produced
-   * `changed` — through the same `narrow` the capability getters use. Not from the raw wire value:
-   * that is a second conversion and a second answer, which is exactly how a payload comes to disagree
-   * with the getter beside it. And not by invoking the installed getter, which has read side effects
-   * (a scheduled background refresh, a codec call) an announcement must not trigger.
+   * `changed` — through the same `narrow` the capability getters use, which is what makes an announcement
+   * and the getter beside it one answer rather than two. Not from the raw wire value: that is a second
+   * conversion and a second answer, which is exactly how a payload comes to disagree with its getter. And
+   * not by invoking the installed getter, which has read side effects (a scheduled background refresh, a
+   * codec call) an announcement must not trigger — and which an `unexposed` schema property does not have
+   * at all.
    *
    * Kept beside the state and the schema rather than in a caller, because both are here; a caller doing
    * the join would be re-deriving what this object already holds. Says nothing about the previous value:
