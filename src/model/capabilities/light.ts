@@ -297,14 +297,12 @@ export const LIGHT_MEMBERS = {
    * where `isOn` is the momentary switch. `writeAs` names the setter `setEnabled` rather than the
    * `setSpotlightEnabled` the key would derive, since the capability is already the spotlight.
    *
-   * Reported, so it is a read as well as a write. Measured on a T8170: the cloud device list carries 1403
-   * and its value tracks the vendor app's spotlight setting in both directions — `1` to `0` when the
-   * setting is switched off, `0` to `1` when it is switched back on. The poll only reports a param whose
-   * PREVIOUS value differed, so the id was already in the snapshot rather than newly appearing, and the
-   * param dictionary agrees: 1403 is `floodlightTotalSwitch` (`app:FLOODLIGHT_TOTAL_SWITCH`), with the
-   * T8170 among its models. It was declared `writeOnly` — "accepted but never reported back" — which cost
-   * it its schema entry, its getter, and any announcement that it moved, and published the disproved claim
-   * through `unobservableMembers`.
+   * Reported, so it is a read as well as a write. ✅ Verified live on a T8170: the cloud device list
+   * carries 1403, and its value tracks the vendor app's spotlight setting in both directions — `1` to `0`
+   * when the setting is switched off, `0` to `1` when it is switched back on, so the polarity is direct
+   * and 1 means enabled. The poll reports a param only when its PREVIOUS value differed, so the id is in
+   * the record rather than newly appearing. The param dictionary names it `floodlightTotalSwitch`
+   * (`app:FLOODLIGHT_TOTAL_SWITCH`) and lists the T8170 among its models.
    *
    * This is the switch a user changes and expects to STAY changed, which is why it is the one a host has to
    * be told about. {@link isOn} is a different fact: the lamp being lit right now, driven by whichever

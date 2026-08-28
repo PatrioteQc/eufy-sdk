@@ -1215,12 +1215,12 @@ export class EufyMega extends EventEmitter {
    * {@link Device.setFreshnessPolicy}), so a host that reuses it (e.g. a periodic polling loop) serves
    * repeat reads from cache instead of re-fetching, and realtime updates keep values fresh.
    *
-   * That refresh ANNOUNCES what it lands, like the other two inbound paths. Its timing carries nothing
-   * about the device — it fires when a caller happened to read — but leaving it silent would not defer
-   * the announcement, it would lose it: for a host that reads often this path is where most fresh cloud
-   * values actually arrive, and once one has landed the poll's own edge sees nothing left to report. It
-   * applies what the device volunteered over realtime on top of the cloud half, which the registry keeps
-   * apart, so it can neither revert nor announce a revert of a report that already landed.
+   * That refresh ANNOUNCES what it lands, like the other two inbound paths. For a host that reads often it
+   * fires every `cacheTtlMs` where the poll fires every ten minutes, so it is where most fresh cloud values
+   * arrive — and each announcing path is edge-triggered on the same live state, so whichever sees a change
+   * first announces it and the others stay silent. Its timing says only when a caller happened to read; the
+   * value is the news. It applies what the device volunteered over realtime on top of the cloud half, which
+   * the registry keeps apart, so it can neither revert nor announce a revert of a report already landed.
    *
    * The `Device` returned is held WEAKLY: it is what the inbound paths announce against, so a caller that
    * wants property changes for a serial keeps its own reference. Dropping it stops the announcements, not
@@ -1468,17 +1468,16 @@ export class EufyMega extends EventEmitter {
    * Land a poll pass's CHANGES on every live {@link Device} and announce what moved, BEFORE anything
    * else derived from them is emitted.
    *
-   * Without this the poll updated the registry's record and its own baseline and left live state — the
-   * map every capability getter reads — untouched. The only catch-up was the read-through freshness
-   * policy, which fires on a READ of a stale value and hands that read the stale one, so a value nothing
-   * happened to read stayed behind indefinitely and a listener reading a getter inside a poll event
-   * handler always saw pre-poll state.
+   * Ordered that way because live state is the map every capability getter reads: a listener reading a
+   * getter inside a poll event handler has to see the value that event is about. The read-through
+   * freshness policy cannot stand in for this — it fires on a READ of a stale value and hands that read
+   * the stale one, so a value nothing happens to read is never refreshed by it.
    *
    * The CHANGES, not the whole post-change map {@link ParamChange} also carries. That map is there so an
-   * event decode can read sibling params; applying it would additionally revert every id a realtime report
-   * made fresher, because {@link DeviceRegistry.applyRealtimeParams} keeps a report apart from the cloud
-   * record's params — so the cloud list still carries the pre-report value long after the device
-   * volunteered the new one, and an open door would read as closed on the next pass that saw anything move.
+   * event decode can read sibling params; applying it would revert every id a realtime report made
+   * fresher, because {@link DeviceRegistry.applyRealtimeParams} keeps a report apart from the cloud
+   * record's params — the cloud list carries the pre-report value long after the device volunteered the
+   * new one, so an open door reads as closed on the next pass that sees anything on that device move.
    */
   private applyPolledParams(changes: readonly ParamChange[]): void {
     const byDevice = new Map<string, RawParams>();
@@ -1497,18 +1496,17 @@ export class EufyMega extends EventEmitter {
    * The live {@link Device} for a serial, for a path that is about to ANNOUNCE against it — reporting
    * once when one the caller asked for has since been collected.
    *
-   * {@link liveDevices} is weak on purpose, and that was harmless while nothing was announced against it:
-   * a collected device meant nobody was told anything, and the caller who let it go plainly did not care.
-   * A property announcement carries the value read out of that device's own live state, so the weakness
-   * became load-bearing — and the resulting failure has the worst shape there is. It is non-deterministic
-   * (it depends on when the collector runs, so it passes in development and stops under memory pressure),
-   * silent (no error, the events simply cease), and non-local (the obligation is on {@link getDevice}, the
-   * symptom shows on `propertyChanged`).
+   * An announcement carries the value read out of that device's own live state, so a collected device
+   * cannot be announced for, and the caller is the only thing keeping one alive — {@link liveDevices} is
+   * weak by contract. Losing announcements that way fails in the three worst ways at once: it is
+   * non-deterministic (it turns on when the collector runs, so it holds in development and stops under
+   * memory pressure), silent (no error, the events simply cease), and non-local (the obligation is on
+   * {@link getDevice}, the symptom shows on `propertyChanged`).
    *
-   * It cannot be designed away. Re-deriving the value outside live state is two answers for one reading,
-   * which is the disagreement the announcement exists to remove; keeping every device alive here reverses
-   * this map's own documented invariant. So it is made LOUD instead — a host learns why its events stopped
-   * rather than investigating a silence.
+   * Neither alternative is available: re-deriving the value outside live state is two answers for one
+   * reading, which is the disagreement the announcement exists to remove, and keeping every device alive
+   * here reverses this map's own invariant. So it is LOUD — a host learns why its events stopped rather
+   * than investigating a silence.
    *
    * Reported only for a serial the caller DID ask for, since one never fetched has no object by definition
    * and was never owed an announcement — reporting those would name most of the account on every pass. The

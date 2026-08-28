@@ -451,11 +451,11 @@ export class Device {
    * about, and announcing either would promise a value it never agreed to serve. Diagnostics reach those
    * through `inspectParams`.
    *
-   * Nothing is filtered for being uninteresting — not by `kind` here, and not by a per-member opt-out in
-   * the capability tables. Which of a device's truths a host acts on is the host's call: a value this
-   * floor judged too chatty to mention (a sensor's own check-in, a robot's session counter ticking
-   * through a clean) is exactly the value some caller is building a progress display out of, and it
-   * cannot get it back, where a caller that does not want it spends one comparison on the name.
+   * Nothing is withheld for being uninteresting, here or in a capability's own table. Which of a device's
+   * truths a host acts on is the host's call: a value judged too chatty to mention — a sensor's own
+   * check-in, a robot's session counter ticking through a clean — is exactly the one some caller is
+   * building a progress display out of, and a withheld value cannot be recovered, where an unwanted one
+   * costs a caller one comparison on the name.
    *
    * The value comes out of live state — written microseconds earlier by the same call that produced
    * `changed` — through the same `narrow` the capability getters use, which is what makes an announcement
