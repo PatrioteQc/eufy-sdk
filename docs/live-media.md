@@ -364,3 +364,18 @@ session idle-detaches so a battery device sleeps — see [Connectivity & battery
 | A single still                      | `cam.snapshotLive()` (fresh) or `cam.snapshotStored()` (retained push JPEG) |
 | Fixed-length clip buffer            | `cam.record(seconds)`                                                       |
 | Send audio TO the camera            | `cam.talkback()`                                                            |
+
+## Where the SDK stops
+
+The SDK owns verified device media truth and reusable media mechanics: typed inbound audio metadata,
+audio-aware container muxing, rolling prebuffer drainage, recording-budget extension, and correct
+readable-stream behaviour.
+
+Host-specific representation stays outside it — output codec negotiation, transcoding targets, bitrate
+and profile policy, packetization, and session keep-alives are the caller's. That boundary is what lets
+every host consume the same truthful primitives without coupling the SDK to one presentation protocol.
+
+So the APIs here do not claim negotiation or timing guarantees the device source cannot provide: a
+fragment duration is a keyframe-bounded **minimum**, prebuffer is available only from an already-warm
+retained source, and fragmented recordings are caller-owned evented async iterables — which is how a
+caller extends a shared battery budget without control notices mixing into media output.
