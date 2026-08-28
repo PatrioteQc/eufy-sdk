@@ -454,10 +454,10 @@ export class Device {
    * essentially every report and so carries no news.
    *
    * The value comes out of live state — written microseconds earlier by the same call that produced
-   * `changed` — through the same {@link narrow} the capability getters use. Not from the raw wire value:
+   * `changed` — through the same `narrow` the capability getters use. Not from the raw wire value:
    * that is a second conversion and a second answer, which is exactly how a payload comes to disagree
    * with the getter beside it. And not by invoking the installed getter, which has read side effects
-   * ({@link scheduleRefresh}, a codec call) an announcement must not trigger.
+   * (a scheduled background refresh, a codec call) an announcement must not trigger.
    *
    * Kept beside the state and the schema rather than in a caller, because both are here; a caller doing
    * the join would be re-deriving what this object already holds. Says nothing about the previous value:

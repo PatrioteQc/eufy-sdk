@@ -271,14 +271,14 @@ export interface PropertyValue {
  * One property whose value moved, as a host is told about it.
  *
  * Identified by property NAME and nothing else. The name is unique per device, is what `applyParams`
- * already answers with, and is the key {@link Device.getProperty} takes — so a caller can re-read
+ * already answers with, and is the key `Device.getProperty` takes — so a caller can re-read
  * immediately. No wire id travels with it: resolving several ids to one property is the whole job the
  * param → spec map does, and handing the id back out undoes it and gives a caller a second identifier
  * to key on, which then breaks on the family where that property's read alias is promoted. The ids stay
- * available through `inspectDevice` and {@link Device.describe}.
+ * available through `inspectDevice` and `Device.describe()`.
  *
  * A caller that wants the capability accessor behind the name already has that mapping:
- * {@link Device.describe} publishes the `{ accessor, property }` pair, joined once at setup.
+ * `Device.describe()` publishes the `{ accessor, property }` pair, joined once at setup.
  */
 export interface PropertyChange {
   /** The property whose value moved — a key of this device's own schema. */

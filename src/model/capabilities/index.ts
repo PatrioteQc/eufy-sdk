@@ -665,8 +665,8 @@ export interface DeviceEventMap {
    * A property this device reports changed value — the generic announcement, derived from the same
    * `members` table the getters are, for every readable property of every capability.
    *
-   * `property` is the name {@link Device.getProperty} takes and the one a capability getter answers, so a
-   * caller can re-read immediately; {@link Device.describe} publishes the `{ accessor, property }` pair
+   * `property` is the name `Device.getProperty` takes and the one a capability getter answers, so a
+   * caller can re-read immediately; `Device.describe()` publishes the `{ accessor, property }` pair
    * for a caller that wants the fluent accessor behind the name. `value` is what the getter now answers,
    * read from live state rather than re-converted from the wire, and absent where the getter itself
    * would not give a value — a property whose stored form is a payload, or one whose stored value does
@@ -682,7 +682,7 @@ export interface DeviceEventMap {
    *
    * A member may opt out of announcing for itself where its value moves on essentially every report
    * (`ValueMember.unannounced`); a sensor's own check-in timestamp is one, since that is the liveness
-   * job {@link EufyMega.deviceState} already does.
+   * job the `deviceState` event already does.
    *
    * Latency is the inbound path's: seconds for a property a device reports over realtime, one poll
    * interval for one that only ever arrives as a cloud param — which is most of them, and the interval
