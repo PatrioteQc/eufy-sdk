@@ -238,12 +238,6 @@ export interface PropertySpec {
    * in the capability spec, not in per-device branches.
    */
   readAliases?: ReadonlyArray<{ paramType: number; invert?: boolean }>;
-  /**
-   * This value moving is not news, so it is applied and readable but never announced as a property
-   * change. Declared on the member that owns the semantics (`ValueMember.unannounced`) and carried here
-   * so the announcement needs no join back to the capability's table.
-   */
-  unannounced?: true;
   /** Short description for docs / discovery. */
   description?: string;
 }

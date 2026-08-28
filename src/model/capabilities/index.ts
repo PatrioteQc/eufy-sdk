@@ -684,9 +684,10 @@ export interface DeviceEventMap {
    * Announced against a `Device` the caller is holding, since the value is read out of that device's own
    * live state and the SDK holds the devices it hands out weakly.
    *
-   * A member may opt out of announcing for itself where its value moves on essentially every report
-   * (`ValueMember.unannounced`); a sensor's own check-in timestamp is one, since that is the liveness
-   * job the `deviceState` event already does.
+   * Every readable property of every capability, with nothing filtered for being uninteresting: which of
+   * a device's truths a host acts on is the host's call. So a sensor's own check-in timestamp is
+   * announced too, even though the `deviceState` event already carries that fact — read `deviceState`
+   * for liveness and ignore the name, rather than have this floor decide nobody wanted it.
    *
    * Latency is the inbound path's: seconds for a property a device reports over realtime. For one that
    * only ever arrives as a cloud param — which is most of them — it is whichever comes first of the poll

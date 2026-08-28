@@ -86,8 +86,9 @@ describe("propertyChanged from a realtime report", () => {
     expect(seen).toHaveLength(1);
   });
 
-  /** The opt-out is the member's own, so it holds on this path exactly as it does on the poll. */
-  it("respects a member that opted out of announcing", () => {
+  /** A sensor's own check-in is a change like any other; `deviceState` carrying it too is not a reason
+   * for this path to withhold it. */
+  it("announces a liveness timestamp the same way", () => {
     const { seen, dev, report } = withLiveDevice(SENSOR, {
       model: "T8900",
       category: "eufy_security",
@@ -96,16 +97,17 @@ describe("propertyChanged from a realtime report", () => {
 
     report({ 1551: "2000" });
 
-    expect(seen).toEqual([]);
-    expect(dev.getProperty("lastSeen")?.value).toBe(2000); // still applied and still readable
+    expect(seen).toEqual([{ deviceSn: SENSOR, property: "lastSeen", value: 2000 }]);
+    expect(dev.getProperty("lastSeen")?.value).toBe(2000);
   });
 
   /**
-   * The clean line reaches its state only this way, and its monotonic counters advance for the whole
-   * duration of a run — so they are applied and readable but never announced, the same call
-   * `contact.lastSeen` makes for the same reason.
+   * The clean line reaches its state ONLY this way — a robot's cloud record carries no data points at
+   * all — so this path is the whole of what a host can be told about a running clean. Its session and
+   * lifetime counters are announced with it: they advance throughout a run, and a host showing clean
+   * progress is exactly the caller that wants to hear it.
    */
-  it("announces a robot's activity and not its lifetime counters", () => {
+  it("announces a robot's activity and its clean counters", () => {
     const { seen, report } = withLiveDevice(ROBOT, {
       model: "T2351",
       params: { [VACUUM_DP.WORK_STATUS]: "AAAA", [VACUUM_DP.CLEAN_STATS]: "AAAA" },
@@ -113,7 +115,10 @@ describe("propertyChanged from a realtime report", () => {
 
     report({ [VACUUM_DP.WORK_STATUS]: "BBBB", [VACUUM_DP.CLEAN_STATS]: "BBBB" });
 
-    // `activity` stores a protobuf payload, so it is named with no value — "this moved, re-read it".
-    expect(seen).toEqual([{ deviceSn: ROBOT, property: "activity" }]);
+    // Both store a protobuf payload, so each is named with no value — "this moved, re-read it".
+    expect(seen).toEqual([
+      { deviceSn: ROBOT, property: "activity" },
+      { deviceSn: ROBOT, property: "clearTime" },
+    ]);
   });
 });

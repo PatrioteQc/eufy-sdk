@@ -71,7 +71,8 @@ A **named** event is for a state that carries something a bare property change c
 the property path does not reach, a threshold crossing, or a dedupe across transports. Every other
 readable member is announced generically as `propertyChanged` — derived from the `members` table, so a
 member needs no `events` row to be announced, and one that only restates "this param moved" does not earn
-a name. A member whose value moves on essentially every report opts out with `unannounced: true`.
+a name. There is no opt-out and no filter on `kind`: which of a device's truths a host acts on is the
+host's call, so a member declares nothing to be announced and nothing to be silent.
 
 The common case is the **declarative `events` table** (data, no code):
 

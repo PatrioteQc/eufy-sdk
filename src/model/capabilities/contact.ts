@@ -117,16 +117,12 @@ export const CONTACT_MEMBERS = {
    * Unix seconds at which the sensor last checked in — the liveness read beside the contact state, and
    * the way to tell a genuinely closed door from a sensor that stopped reporting. A `timestamp` kind
    * takes no `unit`: it is an instant, not a duration.
-   *
-   * Not announced as a property change: it moves whenever the sensor reports, so every entry sensor
-   * would announce it on essentially every pass — and liveness is already `deviceState`'s job.
    */
   lastSeen: {
     param: 1551,
     type: "number",
     kind: "timestamp",
     provenance: "verified",
-    unannounced: true,
     description: "Last-seen unix timestamp, seconds (verified: param 1551).",
   },
   /**

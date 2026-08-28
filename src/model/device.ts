@@ -445,12 +445,17 @@ export class Device {
    * {@link getProperty} now serves for it — the second half of an {@link applyParams} call, and the input
    * a facade turns into a property-change event.
    *
-   * Only a name in this device's own schema survives. The schema is what the SDK published and
-   * {@link getProperty} serves every entry of, so announcing one is honest; a dictionary-named param and
-   * an `unknown_<paramType>` passthrough are things the SDK makes no claim about, and announcing either
-   * would promise a value it never agreed to serve. Diagnostics reach those through `inspectParams`.
-   * A member may also opt out for itself (`PropertySpec.unannounced`), for a value that moves on
-   * essentially every report and so carries no news.
+   * Only a name in this device's own schema survives, and EVERY name in it does. The schema is what the
+   * SDK published and {@link getProperty} serves every entry of, so announcing one is honest; a
+   * dictionary-named param and an `unknown_<paramType>` passthrough are things the SDK makes no claim
+   * about, and announcing either would promise a value it never agreed to serve. Diagnostics reach those
+   * through `inspectParams`.
+   *
+   * Nothing is filtered for being uninteresting — not by `kind` here, and not by a per-member opt-out in
+   * the capability tables. Which of a device's truths a host acts on is the host's call: a value this
+   * floor judged too chatty to mention (a sensor's own check-in, a robot's session counter ticking
+   * through a clean) is exactly the value some caller is building a progress display out of, and it
+   * cannot get it back, where a caller that does not want it spends one comparison on the name.
    *
    * The value comes out of live state — written microseconds earlier by the same call that produced
    * `changed` — through the same `narrow` the capability getters use, which is what makes an announcement
@@ -468,7 +473,7 @@ export class Device {
     const out: PropertyChange[] = [];
     for (const name of changed) {
       const spec = this.specByName.get(name);
-      if (!spec || spec.unannounced) continue;
+      if (!spec) continue;
       const value = spec.raw ? undefined : narrow(spec.type, (n) => this.state.get(n), name);
       out.push(value === undefined ? { property: name } : { property: name, value });
     }

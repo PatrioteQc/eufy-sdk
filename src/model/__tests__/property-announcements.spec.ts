@@ -99,19 +99,25 @@ describe("Device.announcements", () => {
   });
 
   /**
-   * A member opts out in its own table, and the default is to announce. An entry sensor's `lastSeen`
-   * moves whenever the sensor checks in, so every contact and alarm sensor would announce it on
-   * essentially every pass — noise that duplicates `deviceState`'s liveness job exactly.
+   * EVERY schema property, with no per-member opt-out and no central filter on `kind`.
+   *
+   * An entry sensor's `lastSeen` moves whenever the sensor checks in, which duplicates what
+   * `deviceState` already carries — so a caller that wants liveness reads that instead. Which of a
+   * device's truths a host acts on is the host's call, not a judgement this SDK makes on its behalf:
+   * suppressing a value here means a caller that DOES want it (a robot's live clean progress is the
+   * clear case) cannot get it at all, and the alternative costs that caller one `if` on the name.
    */
-  it("declines a member its own table opted out of", () => {
+  it("announces every changed schema property, liveness included", () => {
     const dev = Device.fromRecord("sn", {
       model: "T8900",
       category: "eufy_security",
       params: { 1550: "0", 1551: "1" },
     });
 
-    expect(announce(dev, { 1550: "1", 1551: "2" })).toEqual([{ property: "contact", value: true }]);
-    expect(dev.getProperty("lastSeen")?.value).toBe(2); // still applied and still readable
+    expect(announce(dev, { 1550: "1", 1551: "2" })).toEqual([
+      { property: "contact", value: true },
+      { property: "lastSeen", value: 2 },
+    ]);
   });
 
   /** A name the device does not hold at all is declined rather than announced with no value. */

@@ -48,9 +48,10 @@ readable properties have only the poll.
 
 **Announcement** — telling a host that a property's value moved, as `propertyChanged`, identified by
 property name and carrying the value `getProperty` now serves, narrowed the way the capability getter
-narrows it. Generic: derived from the members table for every schema property, so a member needs no
-declaration to be announced. A member opts OUT with `unannounced: true`, for a value that moves on
-essentially every report and therefore carries no news. Announced against a `Device` the caller holds,
+narrows it. Generic: derived from the members table for every schema property, so a member declares
+nothing to be announced — and nothing to be silent either. Which of a device's truths a host acts on is
+the host's call, so nothing is withheld for being uninteresting; a value this SDK judged too chatty is
+exactly the one some caller is building a display out of. Announced against a `Device` the caller holds,
 because that is where live state is.
 
 **Semantic event** — a NAMED device event (`motion`, `contactState`, `batteryAlert`, `lockState`). The
@@ -66,8 +67,8 @@ transports, deduped, and its push carries no param at all). See
 
 **Liveness** — that a device is still reporting, published as `deviceState` and read off `lastSeenMs`.
 Deliberately not an `online` verdict: the healthy silence of a mains camera and of a battery sensor are
-nothing alike, so the threshold is the caller's. A property whose only content is liveness (a sensor's
-own check-in timestamp) is `unannounced`, because this already says it.
+nothing alike, so the threshold is the caller's. Read this for liveness rather than a sensor's own
+check-in timestamp, which carries the same fact as a property and is announced beside it.
 
 **Observation** — confirming that a write the SDK issued actually landed, by bounded readback of the
 param the device reports it under. A different fact from an announcement: an announcement says a value

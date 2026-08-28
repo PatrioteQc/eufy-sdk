@@ -41,21 +41,45 @@ announced by name alone: "this moved, re-read it" beats shipping a config blob a
 No previous value travels either — a caller that needs the delta already holds it, because it was told
 last time.
 
-**Eligibility is the device's resolved schema, minus members that opt out.** The schema is what the SDK
-published and `getProperty` serves every entry of; a dictionary-named param and an `unknown_<pt>`
-passthrough are things the SDK makes no claim about, and announcing either would promise a value it
-never agreed to serve. Writability is not consulted — a caller equally cannot learn today that
-`battery.temperature` or `storage.free` moved. A member opts out in its own table
-(`ValueMember.unannounced`), and the default is to announce. Rejected: filtering centrally by `kind` in
-`device.ts` or the client, which is the real ownership violation — the model floor or the facade
-deciding which capability values matter, by a rule no capability wrote.
+**Eligibility is the device's resolved schema, and all of it.** The schema is what the SDK published and
+`getProperty` serves every entry of; a dictionary-named param and an `unknown_<pt>` passthrough are things
+the SDK makes no claim about, and announcing either would promise a value it never agreed to serve.
+Writability is not consulted — a caller equally cannot learn today that `battery.temperature` or
+`storage.free` moved.
 
-**Announced from the cloud poll and from a realtime report, and from nowhere else.** Not on first sight
-of a device (discovery, not a transition), not on the read-through freshness refresh (whose timing says
-only when a caller happened to read, which was the original complaint), and not inside a write's own
-confirmation (already reported through that command's outcome). Echoes of the SDK's own writes are
-announced rather than suppressed, because a poll pass cannot tell them from an external change and
-suppressing on that guess loses a real one.
+**Nothing is withheld for being uninteresting.** Rejected: filtering centrally by `kind` in `device.ts` or
+the client, which is the real ownership violation — the model floor or the facade deciding which capability
+values matter, by a rule no capability wrote. Also rejected, after first being built: a per-member opt-out
+flag in the capability's own table. It fixed the ownership objection and still had two problems the
+noise argument does not survive.
+
+The first is that it is presentation policy wearing a semantics hat. "This value moves on every report, so
+a caller will not care" is a judgement about a host's UI, and this SDK's own hard rule reserves those to the
+caller. A robot's session counter is the case that settles it: it advances throughout a clean, nothing else
+reports it, and a host drawing clean progress is precisely the caller that wants each tick. Silenced here,
+that caller cannot get it back; announced, a caller who does not want it spends one comparison on the name.
+The strongest candidate for the flag — a sensor's own check-in timestamp, which genuinely duplicates
+`deviceState` — is by the same token the one whose announcement costs a caller nothing to ignore.
+
+The second is that the flag's cost is fixed rather than per-use: a field on `ValueMember`, a second on the
+PUBLISHED `PropertySpec` that every consumer of the manifest then has to interpret, a branch on the
+announcement path, and a judgement every future member's author has to make. Seven declarations did not
+pay for that. Three of them also interacted non-locally — silencing the member that owns the
+`CleanStatistics` payload silenced the two that read fields out of it — which is the join-by-name coupling
+the members table exists to prevent, reappearing inside the mechanism meant to respect it.
+
+So a member declares nothing to be announced, and nothing to be silent. The half of the original decision
+that survives is the one that mattered: the default is to announce, so no member has to opt in.
+
+**Announced from the cloud poll, from a realtime report, and from the read-through cache's own background
+re-read.** Not on first sight of a device (discovery, not a transition), and not inside a write's own
+confirmation (already reported through that command's outcome). The freshness refresh was originally
+excluded too, on the grounds that it fires when a caller happened to read so its timing says nothing about
+the device. The timing argument holds; the conclusion does not, because that path applies its fetch into the
+same live state the announcement's edge is computed from — so for a host that reads often it is where most
+fresh cloud values arrive, and silence there loses the announcement rather than deferring it. Echoes of the
+SDK's own writes are announced rather than suppressed, because an inbound path cannot tell them from an
+external change and suppressing on that guess loses a real one.
 
 **Announced for a device a caller is holding**, because the value comes out of that device's own live
 state. Resolving one on demand cannot help: a device created from the already-updated record has nothing

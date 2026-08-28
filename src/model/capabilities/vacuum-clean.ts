@@ -1914,10 +1914,6 @@ export const VACUUM_CLEAN_MEMBERS = {
   /**
    * Session cleaning duration in seconds (DP 109, Value). Live-confirmed 4200 (= 70 min) at rest.
    * Read-only — no write is expected for a session counter.
-   *
-   * Not announced as a property change: a counter advances for the whole duration of a run, so it would
-   * announce on essentially every report the robot sends. On the AIoT line this member owns the
-   * `CleanStatistics` payload the lifetime figures are read out of, so silencing it silences all of them.
    */
   clearTime: {
     param: VACUUM_DP.CLEAN_STATS,
@@ -1925,7 +1921,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     unit: "s",
     kind: "seconds",
     provenance: "mega",
-    unannounced: true,
     readAliases: [{ paramType: TUYA_VACUUM_DP.CLEAR_TIME, available: isTuyaVacuum }],
     decode: (raw, codec) =>
       decodeCleanStat(raw as ParamValue | undefined, codec, CLEAN_STATS_FIELD.SINGLE, CLEAN_STATS_FIELD.DURATION),
@@ -1965,8 +1960,7 @@ export const VACUUM_CLEAN_MEMBERS = {
   /**
    * Lifetime total cleaning time in seconds (DP 119, Value). Counts across all sessions.
    * Confirmed from `thing.m.device.ref.info.list` v5.4 schemaInfo.schema (X8 Pro,
-   * product `wahqax6ifjgs1c4n`). Read-only accumulator — no write expected, and not announced as a
-   * property change: an accumulator advances for the whole duration of a run.
+   * product `wahqax6ifjgs1c4n`). Read-only accumulator — no write expected.
    */
   lifetimeCleanTime: {
     param: TUYA_VACUUM_DP.CLEAR_TOTAL_TIME,
@@ -1975,7 +1969,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     unit: "s",
     kind: "seconds",
     provenance: "mega",
-    unannounced: true,
     decode: (raw, codec) =>
       decodeCleanStat(raw as ParamValue | undefined, codec, CLEAN_STATS_FIELD.USER_TOTAL, CLEAN_STATS_FIELD.DURATION),
     decodedKind: "seconds",
@@ -1986,8 +1979,7 @@ export const VACUUM_CLEAN_MEMBERS = {
   /**
    * Lifetime total cleaned area in m² (DP 120, Value). Counts across all sessions.
    * Confirmed from `thing.m.device.ref.info.list` v5.4 schemaInfo.schema (X8 Pro,
-   * product `wahqax6ifjgs1c4n`). Read-only accumulator — no write expected, and not announced as a
-   * property change: an accumulator advances for the whole duration of a run.
+   * product `wahqax6ifjgs1c4n`). Read-only accumulator — no write expected.
    */
   lifetimeCleanArea: {
     param: TUYA_VACUUM_DP.CLEAR_TOTAL_AREA,
@@ -1995,7 +1987,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     type: "number",
     kind: "scalar",
     provenance: "mega",
-    unannounced: true,
     decode: (raw, codec) =>
       decodeCleanStat(raw as ParamValue | undefined, codec, CLEAN_STATS_FIELD.USER_TOTAL, CLEAN_STATS_FIELD.AREA),
     decodedKind: "scalar",

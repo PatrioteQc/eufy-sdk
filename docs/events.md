@@ -63,9 +63,12 @@ eufy.on("propertyChanged", ({ deviceSn, property, value }) => {
   poll (`pollMs` at construction, or `setPollInterval(ms)` at runtime; default 10 minutes) and the
   read-through cache's own background re-read, which fires when you read a value older than `cacheTtlMs`.
 
-A few properties opt out, because their value moves on essentially every report and so carries no news:
-a sensor's own check-in timestamp (that is `deviceState`'s job) and a robot's monotonic lifetime
-counters. They are still applied and still readable.
+**Nothing is filtered out for being uninteresting.** Which of a device's truths you act on is yours to
+decide, so every schema property that moves is announced — including the chatty ones. A sensor's own
+`lastSeen` fires on every check-in, and a robot's session and lifetime counters tick throughout a clean.
+If you want liveness, read `deviceState`, which carries the same fact; if you want clean progress, those
+counters are the only place it comes from. Either way it costs you one comparison on `property` to ignore
+a name, and the SDK never decides on your behalf that you did not want a reading.
 
 **When a property change is not enough, the event has its own name.** A named event carries something a
 bare property change cannot — an inbound source the property path does not reach, a threshold crossing,
