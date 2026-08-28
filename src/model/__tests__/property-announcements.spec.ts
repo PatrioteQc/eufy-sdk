@@ -10,7 +10,8 @@
  * the schema is what the SDK published and `getProperty` serves every entry — a dictionary-named or
  * `unknown_<pt>` param is a thing the SDK makes no claim about. The value comes out of live state
  * through the SAME narrowing the getter uses, never a second conversion of the wire value, so the
- * payload cannot disagree with the getter beside it. And a member may opt OUT in its own table.
+ * payload cannot disagree with the getter beside it. And EVERY schema property is announced: there is no
+ * per-member opt-out and no central filter on `kind`.
  */
 import { describe, it, expect } from "vitest";
 import { Device, UNKNOWN_PARAM_PREFIX } from "../index.js";

@@ -39,8 +39,8 @@ const unknownCtx = (channel = 0): CommandContext => ({
 describe("light capability module", () => {
   it("declares the capability + schema", () => {
     expect(LIGHT.capability).toBe("light");
-    // `spotlightEnabled` joined the schema when its wrong `writeOnly` came off — see the master-switch
-    // describe below. `colorTemp` is still absent: it is write-only with no read measured.
+    // `colorTemp` is absent: write-only, with no read measured. The master switch's own read evidence is
+    // in the describe below.
     expect(LIGHT.properties.map((p) => p.name)).toEqual(["light", "brightness", "spotlightEnabled"]);
   });
 
@@ -200,13 +200,12 @@ describe("light capability module", () => {
 /**
  * The spotlight MASTER switch is reported, so it is a read as well as a write.
  *
- * It was declared `writeOnly` — "accepted but never reported back" — which cost it its schema entry, its
- * getter, and any announcement that its value moved. Measured on a T8170: the cloud device list carries
- * param 1403 and its value tracks the vendor app's "spotlight" setting in both directions, `1 -> 0` when
- * the setting is switched off and `0 -> 1` when it is switched back on. `pollChanges` only reports a param
- * whose PREVIOUS value differed, so the id was already in the snapshot rather than newly appearing. The
- * SDK's own param dictionary agrees, naming 1403 `floodlightTotalSwitch` (`app:FLOODLIGHT_TOTAL_SWITCH`)
- * and listing the T8170 among its models.
+ * The read is what earns it a schema entry, a getter, and an announcement when its value moves. Measured
+ * on a T8170: the cloud device list carries param 1403 and its value tracks the vendor app's "spotlight"
+ * setting in both directions, `1 -> 0` when the setting is switched off and `0 -> 1` when it is switched
+ * back on. `pollChanges` only reports a param whose PREVIOUS value differed, so the id was already in the
+ * snapshot rather than newly appearing. The SDK's own param dictionary agrees, naming 1403
+ * `floodlightTotalSwitch` (`app:FLOODLIGHT_TOTAL_SWITCH`) and listing the T8170 among its models.
  *
  * Distinct from `isOn` (1400), which is the momentary lighting and is bound to whichever client is
  * streaming — the vendor app lights the lamp for a live view and drops it on quitting. The master switch

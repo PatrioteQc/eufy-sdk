@@ -232,11 +232,6 @@ function switchFrame(on: boolean, ctx: CommandContext): Command {
  */
 export const LIGHT_MEMBERS = {
   /**
-   * The switch refuses for a reason a value check cannot give — this model's frame SHAPE is unconfirmed —
-   * so `switchFrame` throws that reason and `bindMembers` turns it into the rejection, rather than
-   * letting the generated "not a valid value" blame a boolean that was never the problem.
-   */
-  /**
    * Whether the lamp is lit RIGHT NOW — the momentary switch, not a setting. Measured on a T8170: 1400
    * goes to `1` when a client lights the spotlight and back to `0` when that client stops, so the value
    * tracks whoever is streaming rather than a preference anyone set. The vendor app lights the lamp for a
@@ -244,6 +239,10 @@ export const LIGHT_MEMBERS = {
    *
    * A caller offering this as a switch should know that: it will read on whenever any client is watching.
    * The setting a user changes and expects to persist is {@link spotlightEnabled}.
+   *
+   * The switch refuses for a reason a value check cannot give — this model's frame SHAPE is unconfirmed —
+   * so `switchFrame` throws that reason and `bindMembers` turns it into the rejection, rather than
+   * letting the generated "not a valid value" blame a boolean that was never the problem.
    */
   isOn: {
     param: LIGHT_CMD.FLOODLIGHT_SWITCH,
