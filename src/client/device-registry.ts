@@ -512,6 +512,9 @@ export class DeviceRegistry {
    * Merged rather than replaced because a report can be partial — a status frame that omits a field is
    * silent about it, not asserting it went away. Marks the device seen and drops its capability cache,
    * since a newly-reported id can widen the evidence-gated read surface.
+   *
+   * What lands here outranks the cloud half in {@link record}, and stays there until
+   * {@link retireRealtimeParams} says the cloud has moved that id itself.
    */
   applyRealtimeParams(sn: string, params: Record<number, string>): void {
     if (!Object.keys(params).length) return;
@@ -524,6 +527,33 @@ export class DeviceRegistry {
       this.stateWaiters.delete(sn);
       for (const resolve of waiters) resolve();
     }
+  }
+
+  /**
+   * Drop this device's reported value for these param ids, because the CLOUD has since been observed to
+   * move them — {@link EufyMega} calls this with the ids of a poll diff.
+   *
+   * {@link record} joins the two halves by letting the report win, which is right only while the report
+   * is the fresher of the two: the cloud list carries a pre-report value long after the device
+   * volunteered the new one, so without that precedence an open door reads as closed. A poll diff on the
+   * same id is the cloud stating a transition it observed, which ends the lag the report was standing in
+   * for. Leaving the report in place would make it outrank the cloud permanently, and every later join
+   * would revert that id to a value the cloud has already superseded.
+   *
+   * Ids alone, never a value: this says the report is out of date, not what replaced it. The replacement
+   * is already in the cloud half, and writing it in here would put one value in two maps for the next
+   * change to disagree about.
+   *
+   * The capability cache is deliberately NOT dropped: an id stops being remembered here, but the device
+   * did report it, and evidence-gated reads are granted on having reported — retracting that would take
+   * a getter away from a `Device` that legitimately earned it. The map itself stays for the same reason
+   * even once emptied, since its presence is what {@link hasRealtimeState} answers "this device has
+   * reported" from, and a device does not become one that never reported.
+   */
+  retireRealtimeParams(sn: string, paramTypes: readonly number[]): void {
+    const reported = this.dpParams.get(sn);
+    if (!reported) return;
+    for (const paramType of paramTypes) delete reported[paramType];
   }
 
   /** Whether this device has reported any realtime state yet. */

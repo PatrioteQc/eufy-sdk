@@ -1478,6 +1478,13 @@ export class EufyMega extends EventEmitter {
    * fresher, because {@link DeviceRegistry.applyRealtimeParams} keeps a report apart from the cloud
    * record's params — the cloud list carries the pre-report value long after the device volunteered the
    * new one, so an open door reads as closed on the next pass that sees anything on that device move.
+   *
+   * That precedence is the reason a moved id is also RETIRED from the report map
+   * ({@link DeviceRegistry.retireRealtimeParams}). The report outranks the cloud only while it is the
+   * fresher half, and a diff on that id is the cloud stating a transition of its own — so left in place
+   * the report would outrank it forever, and the next join of the two halves would revert this pass's
+   * value and announce the revert. Retired for EVERY device the diff touched, not only a live one: the
+   * join also feeds the `Device` a later {@link getDevice} builds, which no live entry exists for yet.
    */
   private applyPolledParams(changes: readonly ParamChange[]): void {
     const byDevice = new Map<string, RawParams>();
@@ -1487,6 +1494,7 @@ export class EufyMega extends EventEmitter {
       byDevice.set(change.deviceSn, params);
     }
     for (const [sn, params] of byDevice) {
+      this.registry.retireRealtimeParams(sn, Object.keys(params).map(Number));
       const device = this.liveDeviceToAnnounce(sn);
       if (device) this.applyAndAnnounce(device, params);
     }

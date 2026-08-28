@@ -28,15 +28,32 @@ function withFreshnessPolicy() {
     params: { 1550: "0", 1141: "-70" },
     paramUpdatedAt: {},
   };
-  vi.spyOn((eufy as any).registry, "record").mockImplementation(async () => record);
+  const registry = (eufy as any).registry;
+  vi.spyOn(registry, "record").mockImplementation(async () => record);
   vi.spyOn(eufy as any, "commandContext").mockResolvedValue({ channel: 0, codec: "sensor", paramIds: new Set([1550]) });
   vi.spyOn(eufy as any, "commandSinkFor").mockReturnValue({ dispatch: async () => undefined });
   vi.spyOn(eufy as any, "mediaProviderFor").mockReturnValue(undefined);
   vi.spyOn(eufy as any, "awaitFirstRealtimeState").mockResolvedValue(undefined);
-  vi.spyOn((eufy as any).registry, "applyRealtimeParams").mockImplementation(() => {});
+  vi.spyOn(registry, "applyRealtimeParams").mockImplementation(() => {});
   const seen: any[] = [];
   eufy.on("propertyChanged", (e) => seen.push(e));
   return { eufy, record, seen };
+}
+
+/**
+ * The same client, but with the registry's own report map live — `record` still serves a hand-written
+ * cloud half, and answers with whatever {@link DeviceRegistry.applyRealtimeParams} has actually
+ * accumulated beside it. That join is the thing under test here, so neither half of it can be faked.
+ */
+function withLiveReportMap() {
+  const built = withFreshnessPolicy();
+  const registry = (built.eufy as any).registry;
+  vi.mocked(registry.applyRealtimeParams).mockRestore();
+  vi.spyOn(registry, "record").mockImplementation(async () => ({
+    ...built.record,
+    dpParams: registry.dpParams.get("T8000P0000000000"),
+  }));
+  return built;
 }
 
 /** Age every stored value past the staleness window without waiting for it. */
@@ -91,5 +108,37 @@ describe("the read-through freshness refresh announces what it lands", () => {
 
     expect(dev.getProperty("contact")?.value).toBe(true);
     expect(seen).toHaveLength(1); // the realtime announcement, and no revert after it
+  });
+
+  /**
+   * The mirror ordering: the CLOUD is the fresher half, for an id the report map also holds.
+   *
+   * A report's value stands in for the cloud's lag on that id, so it takes precedence while the cloud
+   * has said nothing new. A poll diff on the same id is the cloud saying something new — it observed
+   * that param transition — which ends the lag the report was covering. So the poll retires the report
+   * for the ids it moved, and the refresh's join has nothing stale left to overlay.
+   *
+   * Without that, the report outranks the cloud forever: the poll lands `1` in live state and announces
+   * it, then the next stale read joins `1` under a report still holding `0`, reverts live state, and
+   * announces the revert — the exact failure the join was written to prevent, one ordering over.
+   */
+  it("does not revert or announce a revert of what the poll landed, once the cloud moved that id", async () => {
+    const { eufy, record, seen } = withLiveReportMap();
+    const dev = await eufy.getDevice("T8000P0000000000");
+    (eufy as any).applyRealtimeState("T8000P0000000000", { 1550: "0" });
+    expect(dev.getProperty("contact")?.value).toBe(false);
+
+    record.params = { ...record.params, 1550: "1" };
+    (eufy as any).applyPolledParams([
+      { deviceSn: "T8000P0000000000", paramType: 1550, from: "0", to: "1", params: record.params },
+    ]);
+    expect(seen).toEqual([{ deviceSn: "T8000P0000000000", property: "contact", value: true }]);
+
+    makeStale(dev);
+    dev.getProperty("contact");
+    await settle();
+
+    expect(dev.getProperty("contact")?.value).toBe(true);
+    expect(seen).toHaveLength(1); // the poll's announcement, and no revert after it
   });
 });
