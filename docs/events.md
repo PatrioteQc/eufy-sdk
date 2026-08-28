@@ -54,8 +54,9 @@ eufy.on("propertyChanged", ({ deviceSn, property, value }) => {
   stay available through `inspectDevice()` and `dev.describe()`.
 - **Keep a reference to the devices you want announcements for.** The value comes out of a device's own
   live state, and the SDK holds the `Device` objects it hands out **weakly** — so `getDevice(sn)` and then
-  discarding the result stops the announcements for that serial as soon as it is collected. Their liveness
-  reaches you as `deviceState` either way.
+  discarding the result stops the announcements for that serial once the collector takes it. The SDK
+  warns once on your `logger` when it notices, naming the serial, rather than leaving you a silence to
+  investigate; `getDevice(sn)` resumes them. Liveness reaches you as `deviceState` either way.
 - **Echoes are announced too.** The SDK cannot tell a change it caused from one made in the app, and
   guessing would lose a real external change in exchange for one redundant re-read.
 - **Latency is the transport's.** Seconds for a property a device reports over its realtime wire. For one
