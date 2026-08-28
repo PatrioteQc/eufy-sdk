@@ -236,13 +236,24 @@ export const LIGHT_MEMBERS = {
    * so `switchFrame` throws that reason and `bindMembers` turns it into the rejection, rather than
    * letting the generated "not a valid value" blame a boolean that was never the problem.
    */
+  /**
+   * Whether the lamp is lit RIGHT NOW — the momentary switch, not a setting. Measured on a T8170: 1400
+   * goes to `1` when a client lights the spotlight and back to `0` when that client stops, so the value
+   * tracks whoever is streaming rather than a preference anyone set. The vendor app lights the lamp for a
+   * live view and drops it on quitting.
+   *
+   * A caller offering this as a switch should know that: it will read on whenever any client is watching.
+   * The setting a user changes and expects to persist is {@link spotlightEnabled}.
+   */
   isOn: {
     param: LIGHT_CMD.FLOODLIGHT_SWITCH,
     property: "light",
     type: "bool",
     kind: "boolean",
     provenance: "verified",
-    description: "Light on/off (1400). Verified via P2P state readback (3/3).",
+    description:
+      "Light on/off (1400) — lit right now, not a setting: it follows whichever client is streaming. " +
+      "Verified via P2P state readback (3/3); session-scoped behaviour measured live on a T8170.",
     write: (v, ctx) => switchFrame(asBool(v), ctx),
     writeAs: "set",
     aliases: { on: true, off: false },
@@ -282,18 +293,31 @@ export const LIGHT_MEMBERS = {
     write: (v, ctx) => directBinary(LIGHT_CMD.SPOTLIGHT_COLOR_TEMP, Number(v), ctx),
   },
   /**
-   * The master enable, one level above `isOn`: this decides whether the spotlight may light at all,
-   * where `isOn` is the momentary switch. `writeOnly` — accepted but never reported back — so the
-   * setter exists and no getter does, and `writeAs` names it `setEnabled` rather than the
+   * The master enable, one level above {@link isOn}: this decides whether the spotlight may light at all,
+   * where `isOn` is the momentary switch. `writeAs` names the setter `setEnabled` rather than the
    * `setSpotlightEnabled` the key would derive, since the capability is already the spotlight.
+   *
+   * Reported, so it is a read as well as a write. Measured on a T8170: the cloud device list carries 1403
+   * and its value tracks the vendor app's spotlight setting in both directions — `1` to `0` when the
+   * setting is switched off, `0` to `1` when it is switched back on. The poll only reports a param whose
+   * PREVIOUS value differed, so the id was already in the snapshot rather than newly appearing, and the
+   * param dictionary agrees: 1403 is `floodlightTotalSwitch` (`app:FLOODLIGHT_TOTAL_SWITCH`), with the
+   * T8170 among its models. It was declared `writeOnly` — "accepted but never reported back" — which cost
+   * it its schema entry, its getter, and any announcement that it moved, and published the disproved claim
+   * through `unobservableMembers`.
+   *
+   * This is the switch a user changes and expects to STAY changed, which is why it is the one a host has to
+   * be told about. {@link isOn} is a different fact: the lamp being lit right now, driven by whichever
+   * client is streaming — the vendor app lights it for a live view and drops it on quitting.
    */
   spotlightEnabled: {
     param: LIGHT_CMD.SPOTLIGHT_ENABLE,
     type: "bool",
     kind: "boolean",
     provenance: "verified",
-    writeOnly: true,
-    description: "The spotlight master switch, distinct from the on/off above. Not reported back.",
+    description:
+      "The spotlight master switch, distinct from the on/off above — whether the spotlight may light at " +
+      "all. Read verified live on a T8170 (param 1403, direct polarity: 1 = enabled).",
     write: (v, ctx) => directBinary(LIGHT_CMD.SPOTLIGHT_ENABLE, asBool(v) ? 1 : 0, ctx),
     writeAs: "setEnabled",
   },
