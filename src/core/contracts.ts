@@ -486,6 +486,25 @@ export interface LiveStreamHandle {
   on(event: "budget", listener: (notice: StreamBudgetNotice) => void): this;
 }
 
+/**
+ * One consumer's view of a live stream, carrying the flow control a sink needs to apply backpressure.
+ *
+ * A sink that cannot keep up calls {@link pause}, and the frames it would have received queue against a
+ * bound instead of accumulating behind the sink. Crossing that bound drops the backlog and resynchronises
+ * at the next IDR, so a sink that stays slow resumes on decodable media rather than replaying stale media.
+ * {@link resume} stops the moment the sink pauses again, so the bound keeps applying to whatever is left.
+ *
+ * This is per consumer: pausing never stalls the shared source or any peer consumer.
+ */
+export interface LiveStreamConsumer extends LiveStreamHandle {
+  /** True while this consumer is dropping frames after crossing its bound, waiting for the next IDR. */
+  readonly awaitingKeyframe: boolean;
+  /** Hold delivery — frames queue against the bound until {@link resume}. */
+  pause(): void;
+  /** Release delivery and hand over the queued backlog, stopping if the sink pauses again mid-drain. */
+  resume(): void;
+}
+
 /** An SDP session description crossing the WebRTC signaling boundary (JSEP shape). */
 export interface WebRTCSessionDescription {
   type: "offer" | "answer";
@@ -607,8 +626,11 @@ export interface MediaProvider {
    * stream.on("video", (frame) => write(frame.data)); // Annex-B
    * stream.stop(); // detach this consumer
    * ```
+   *
+   * A caller writing into a sink of its own paces the stream through {@link LiveStreamConsumer.pause} and
+   * {@link LiveStreamConsumer.resume} rather than buffering what the sink will not take.
    */
-  live(opts?: SharedSourceHints & Record<string, unknown>): Promise<LiveStreamHandle>;
+  live(opts?: SharedSourceHints & Record<string, unknown>): Promise<LiveStreamConsumer>;
   /**
    * Record `seconds` of video → an mp4/h264 buffer.
    *

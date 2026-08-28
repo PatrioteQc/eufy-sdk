@@ -75,6 +75,24 @@ stream.stop(); // detach this consumer
 `stream.stop()` detaches **this** consumer only. The shared pull stops when the _last_ consumer
 detaches (after the linger window).
 
+A caller writing frames into a sink of its own paces the stream rather than buffering what the sink will
+not take:
+
+```ts
+stream.on("video", (frame) => {
+  if (!sink.write(frame.data)) {
+    stream.pause(); // frames now queue against a bound instead of piling up behind the sink
+    sink.once("drain", () => stream.resume());
+  }
+});
+```
+
+While paused, frames queue per consumer against a bound; crossing it drops the backlog and resynchronises
+at the next IDR, so a sink that stays slow resumes on decodable media rather than replaying stale media.
+`resume()` stops handing over the backlog the moment the sink pauses again, so the bound keeps applying to
+whatever is left. `stream.awaitingKeyframe` is true while such a resynchronisation is in progress. None of
+this touches the shared pull or any peer consumer.
+
 The two codecs reach you differently. **Video** `codec` is sniffed off the parameter sets on a keyframe
 and carried on the delta frames that follow, so every frame carries one even though only keyframes have
 config to sniff. **Audio** `codec` is declared by the station in each frame's header, so it is read
@@ -104,8 +122,9 @@ r.pipe(fs.createWriteStream("out.h264"));
 r.destroy(); // releases this consumer (and the pull if it was the last)
 ```
 
-Backpressure is handled per-consumer: a slow reader drops to the next keyframe rather than stalling
-the shared pull or any peer consumer. Destroying the Readable releases the consumer.
+Backpressure is handled per-consumer, on the same policy `live()` exposes: a slow reader drops to the next
+keyframe rather than stalling the shared pull or any peer consumer. The Readable pauses and resumes its
+consumer for you. Destroying the Readable releases the consumer.
 
 ## 3. fMP4 / CMAF fragments (for HLS / MSE)
 
@@ -129,6 +148,11 @@ Both H.264 (`avc1`/`avcC`) and H.265 (`hvc1`/`hvcC`) are handled; Annex-B start 
 AVCC length-prefixed NALs in the `mdat`. AAC-LC and AAC-ELD sources add an `mp4a`/`esds` audio track,
 with ADTS framing removed from each media sample. G.711 A-law remains available through `live()` and
 is not mislabeled as MPEG-4 AAC in the container.
+
+The loop paces itself: a fragment is a complete ordered unit, so a caller that falls far enough behind holds
+the recording's consumer rather than having fragments accumulate. The bound then applies to the frame queue
+behind it, which drops to the next IDR — so a sink that cannot keep up costs a gap in the recording, never
+unbounded memory. Nothing is required of the caller beyond consuming the iterator.
 
 `preBufferSeconds` drains retained audio/video before live frames, beginning at a video keyframe and
 preserving transport-arrival timing across the handoff. A drain opens on the newest keyframe at or before

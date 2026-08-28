@@ -29,7 +29,13 @@ import { LiveStreamStartError, type LiveStreamStartFailureReason } from "../../c
 import { noopLogger, type Logger } from "../../core/logger.js";
 import { Timer } from "../../core/util.js";
 import { updatedParamSets, type ParamSets } from "./annexb.js";
-import type { LiveAudioFrame, LiveStreamHandle, LiveVideoFrame, StreamBudgetNotice } from "../../core/contracts.js";
+import type {
+  LiveAudioFrame,
+  LiveStreamConsumer,
+  LiveStreamHandle,
+  LiveVideoFrame,
+  StreamBudgetNotice,
+} from "../../core/contracts.js";
 
 /** A finite positive duration in seconds as milliseconds; absent, non-finite and non-positive mean off. */
 function durationMs(seconds: number | undefined): number {
@@ -109,10 +115,10 @@ export interface SharedLiveSourceOptions {
 }
 
 /**
- * A single consumer of a {@link SharedLiveSource}. Structurally a {@link LiveStreamHandle} (so
- * `live()` can hand it back directly), plus backpressure controls used by the readable egress.
+ * A single consumer of a {@link SharedLiveSource}. A {@link LiveStreamConsumer} (so `live()` can hand it
+ * back directly), plus the listener removal and arrival-timed feed the recording and readable egresses use.
  */
-export interface Consumer extends LiveStreamHandle {
+export interface Consumer extends LiveStreamConsumer {
   /** Detach a previously registered listener (mirrors {@link LiveStreamHandle.on}). */
   off(event: "video", listener: (frame: LiveVideoFrame) => void): this;
   off(event: "audio", listener: (frame: LiveAudioFrame) => void): this;
@@ -122,12 +128,6 @@ export interface Consumer extends LiveStreamHandle {
   onMedia(listener: (item: TimedMediaFrame) => void): this;
   /** True once the source has replayed a cached keyframe to this consumer (no GOP wait on join). */
   readonly primed: boolean;
-  /** True while this consumer is dropping frames after an overflow, waiting for the next IDR. */
-  readonly awaitingKeyframe: boolean;
-  /** Hold delivery — frames queue (bounded) until {@link resume}; overflow drops to the next IDR. */
-  pause(): void;
-  /** Resume delivery and drain the queued backlog. */
-  resume(): void;
   /** Leave the source (refcount--). Idempotent. `stop()` is an alias (LiveStreamHandle). */
   detach(): void;
 }
@@ -196,12 +196,27 @@ class ConsumerImpl extends EventEmitter implements Consumer {
     this.paused = true;
   }
 
+  /**
+   * Release delivery and hand over the queued backlog, stopping the moment the sink re-pauses.
+   *
+   * A sink applies backpressure by pausing from inside its own delivery handler, so draining the whole
+   * backlog regardless would push a bound's worth of frames past a sink that already said it was full —
+   * relocating this queue into whatever unbounded buffer sits behind it and defeating the drop-to-keyframe
+   * policy the bound exists to arm. Whatever is left instead stays queued and keeps counting against the
+   * bound, so a sink that never keeps up resynchronises at an IDR rather than replaying stale media.
+   */
   resume(): void {
     if (this.detached) return;
     this.paused = false;
     const q = this.queue;
     this.queue = [];
-    for (const it of q) this.flush(it);
+    for (let i = 0; i < q.length; i++) {
+      if (this.paused) {
+        this.retainUndelivered(q.slice(i));
+        return;
+      }
+      this.flush(q[i]!);
+    }
   }
 
   /** Source → consumer video. Honors resync-to-keyframe and the bounded queue. */
@@ -226,9 +241,21 @@ class ConsumerImpl extends EventEmitter implements Consumer {
       return;
     }
     this.queue.push(item);
+    this.dropBacklogPastBound();
+  }
+
+  /** Restore an undelivered backlog ahead of anything a mid-drain handler queued behind it. */
+  private retainUndelivered(undelivered: TimedMediaFrame[]): void {
+    this.queue = this.queue.length > 0 ? undelivered.concat(this.queue) : undelivered;
+    this.dropBacklogPastBound();
+  }
+
+  /**
+   * Overflow: this consumer can't keep up — drop the backlog and resync at the next IDR. The source and
+   * every other consumer are untouched.
+   */
+  private dropBacklogPastBound(): void {
     if (this.queue.length > this.maxQueue) {
-      // Overflow: this consumer can't keep up — drop the backlog and resync at the next IDR. The
-      // source and every other consumer are untouched.
       this.queue = [];
       this.awaitingKeyframe = true;
     }
