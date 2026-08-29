@@ -427,6 +427,12 @@ export interface LiveVideoFrame {
  * frames, but only one of them is the size a decoder produces: 1080 is not a multiple of the 16-sample
  * macroblock, so a 1080p H.264 stream codes 1088 rows and crops 8 away, and the frame header is a report
  * about that rather than the definition of it.
+ *
+ * Where the parameter sets state no readable geometry — before a stream's first keyframe has carried any,
+ * or from a set that cannot be parsed — the frame header's report is carried instead, so a caller always
+ * has a configuration to act on rather than being left to diff frames for itself in the one case that
+ * matters. The fMP4 muxer resolves the same question the same way, so a recording's declared geometry and
+ * a live consumer's cannot disagree.
  */
 export interface LiveVideoConfig {
   codec: VideoCodec;
@@ -537,8 +543,9 @@ export interface LiveStreamConsumer extends LiveStreamHandle {
    *
    * A camera reconfigures its source repeatedly within one session, and an encoder opened for one geometry
    * cannot accept a frame of another — so a consumer adapting this source to a fixed output has to rebuild
-   * on every change. Fires once per change rather than per frame, and never before the parameter sets that
-   * state it have arrived, so a consumer that has been told nothing yet has been given nothing to decode.
+   * on every change. Fires once per change rather than per frame, beginning with the first frame this
+   * consumer receives, so a consumer holding media it has not been told the configuration of is not a state
+   * it can reach.
    *
    * Per consumer, against what THIS consumer was last given: a consumer that joins mid-session is primed
    * with a cached keyframe it did not witness arriving, and one that crosses its bound resynchronises onto

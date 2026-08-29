@@ -99,12 +99,13 @@ stream.on("video-config", (config) => {
 stream.on("video", (frame) => encoder?.write(frame.data));
 ```
 
-It fires once per change, immediately before the first frame carrying the new configuration, and never
-before parameter sets that state one have arrived. `width` and `height` are the **coded** geometry — read
-out of the sequence parameter set and cropped by the offsets it declares, which is the size a decoder
-produces. A frame's own `width`/`height` are what the station's frame header reported; they agreed with
-the parameter sets in all but 28 of some 6000 measured frames, but only one of the two is a definition
-rather than a report.
+It fires once per change, immediately before the first frame carrying the new configuration, beginning
+with the first frame the consumer receives. `width` and `height` are the **coded** geometry — read out of
+the sequence parameter set and cropped by the offsets it declares, which is the size a decoder produces.
+A frame's own `width`/`height` are what the station's frame header reported; they agreed with the
+parameter sets in all but 28 of some 6000 measured frames, but only one of the two is a definition rather
+than a report. Where the parameter sets state no readable geometry — before the first keyframe has carried
+any — the header's report is carried instead, so there is always a configuration to act on.
 
 The announcement is per consumer, against what **that** consumer was last given. A consumer joining
 mid-session is primed with a cached keyframe it did not witness arriving, and one that crosses its queue

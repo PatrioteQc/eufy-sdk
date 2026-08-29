@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { SharedLiveSource } from "../shared-live-source.js";
-import { H264, h264Sps, streamFactory, unit, videoFrame } from "./live-source-fixtures.js";
+import { H264, H265, h264Sps, h265Sps, streamFactory, unit, videoFrame } from "./live-source-fixtures.js";
 import type { LiveVideoConfig, LiveVideoFrame } from "../../../core/contracts.js";
 
 /**
@@ -91,22 +91,37 @@ describe("live video configuration announcement", () => {
     consumer.detach();
   });
 
-  it("says nothing while no parameter sets have been announced", () => {
+  it("announces the frame header's report while no parameter sets state a geometry", () => {
     const { source, video } = sourceWithStream();
     const watcher = watch(source);
-    video(delta());
-    video(delta());
-    expect(watcher.announced).toEqual([]);
+    video(videoFrame(unit(DELTA), { keyframe: false, width: 1600, height: 1200 }));
+    video(videoFrame(unit(DELTA), { keyframe: false, width: 1600, height: 1200 }));
+    expect(watcher.announced).toEqual([{ codec: "h264", width: 1600, height: 1200 }]);
     expect(watcher.frames).toHaveLength(2);
     watcher.consumer.detach();
   });
 
-  it("re-announces the same geometry under a changed codec", () => {
+  it("announces the parameter sets' geometry over the header once they state one", () => {
     const { source, video } = sourceWithStream();
     const watcher = watch(source);
-    video(keyframe(SPS_720));
-    video(videoFrame(unit([0x40, 0x01, 0x0c], [0x42, 0x01, 0x01], [0x26, 0x01, 0xaf]), { keyframe: true }));
-    expect(watcher.announced.map(({ codec }) => codec)).toEqual(["h264"]);
+    video(videoFrame(unit(DELTA), { keyframe: false, width: 640, height: 360 }));
+    video(videoFrame(unit(SPS_1080, PPS, IDR), { keyframe: true, width: 640, height: 360 }));
+    expect(watcher.announced).toEqual([
+      { codec: "h264", width: 640, height: 360 },
+      { codec: "h264", width: 1920, height: 1080 },
+    ]);
+    watcher.consumer.detach();
+  });
+
+  it("announces a codec change at an unchanged geometry", () => {
+    const { source, video } = sourceWithStream();
+    const watcher = watch(source);
+    video(keyframe(SPS_1080));
+    video(videoFrame(unit(H265.vps, h265Sps({ widthLuma: 1920, heightLuma: 1080 }), H265.pps, H265.idr)));
+    expect(watcher.announced).toEqual([
+      { codec: "h264", width: 1920, height: 1080 },
+      { codec: "h265", width: 1920, height: 1080 },
+    ]);
     watcher.consumer.detach();
   });
 

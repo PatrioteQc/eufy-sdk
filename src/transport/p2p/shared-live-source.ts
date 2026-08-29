@@ -44,9 +44,14 @@ function durationMs(seconds: number | undefined): number {
   return Number.isFinite(milliseconds) && milliseconds > 0 ? milliseconds : 0;
 }
 
-/** Whether two coded configurations describe the same decoder — the test an announcement is gated on. */
-function sameConfig(a: LiveVideoConfig | undefined, b: LiveVideoConfig | undefined): boolean {
-  return a !== undefined && b !== undefined && a.codec === b.codec && a.width === b.width && a.height === b.height;
+/**
+ * Whether two coded configurations describe the same decoder — the test an announcement is gated on.
+ *
+ * Compared by value rather than by identity, because the configuration is resolved per frame: an unchanged
+ * stream produces an equal object every time, and identity would announce on every one of them.
+ */
+function sameConfig(a: LiveVideoConfig, b: LiveVideoConfig | undefined): boolean {
+  return b !== undefined && a.codec === b.codec && a.width === b.width && a.height === b.height;
 }
 
 /** Lifecycle state of a {@link SharedLiveSource}. */
@@ -143,11 +148,10 @@ export interface Consumer extends LiveStreamConsumer {
  *
  * A video frame carries the coded configuration in force when it arrived, so an egress reading this feed
  * rather than the `video` event — a recording, which muxes into a container that declares the geometry —
- * has the same answer without re-parsing the parameter sets itself. Absent until a stream has announced
- * parameter sets a geometry could be read from.
+ * has the same answer without re-parsing the parameter sets itself.
  */
 export type TimedMediaFrame =
-  | { kind: "video"; frame: LiveVideoFrame; timestampMs: number; config?: LiveVideoConfig }
+  | { kind: "video"; frame: LiveVideoFrame; timestampMs: number; config: LiveVideoConfig }
   | { kind: "audio"; frame: LiveAudioFrame; timestampMs: number };
 
 /** Internal per-consumer state + delivery. Exposed to callers only through the {@link Consumer} view. */
@@ -235,7 +239,7 @@ class ConsumerImpl extends EventEmitter implements Consumer {
   }
 
   /** Source → consumer video. Honors resync-to-keyframe and the bounded queue. */
-  deliverVideo(frame: LiveVideoFrame, timestampMs: number, config: LiveVideoConfig | undefined): void {
+  deliverVideo(frame: LiveVideoFrame, timestampMs: number, config: LiveVideoConfig): void {
     this.deliverVideoItem({ kind: "video", frame, timestampMs, config });
   }
 
@@ -298,7 +302,7 @@ class ConsumerImpl extends EventEmitter implements Consumer {
    */
   private flush(item: TimedMediaFrame): void {
     if (item.kind === "video") {
-      if (item.config && !sameConfig(item.config, this.config)) {
+      if (!sameConfig(item.config, this.config)) {
         this.config = item.config;
         this.emit("video-config", item.config);
       }
@@ -352,13 +356,13 @@ export class SharedLiveSource {
   /** Last parameter sets the stream announced — see {@link parameterSets}. */
   private lastParamSets?: ParamSets;
   /**
-   * The coded configuration in force, and the sets it was read from.
+   * The geometry the parameter sets in force state, and the sets it was read from.
    *
    * Holding the sets it came from is what keeps the read to one per announcement: `updatedParamSets`
-   * returns the SAME object when a frame announces nothing, so identity says the configuration cannot
-   * have moved without comparing any bytes.
+   * returns the SAME object when a frame announces nothing, so identity says the geometry cannot have
+   * moved without comparing any bytes.
    */
-  private config?: LiveVideoConfig;
+  private declared?: { width: number; height: number };
   private configuredFrom?: ParamSets;
   /** Rolling prebuffer, keyframe-alignable on drain. */
   private ring: TimedMediaFrame[] = [];
@@ -570,8 +574,7 @@ export class SharedLiveSource {
   private onVideo(frame: LiveVideoFrame): void {
     this.delivered.video = true;
     this.lastParamSets = updatedParamSets(frame.data, this.lastParamSets);
-    this.refreshConfig();
-    const item = { kind: "video", frame, timestampMs: Date.now(), config: this.config } as const;
+    const item = { kind: "video", frame, timestampMs: Date.now(), config: this.configOf(frame) } as const;
     if (frame.keyframe) {
       this.lastKeyframe = item;
       const wasWarming = this.warmRetryTimer !== undefined || this.warmDeadlineTimer.pending;
@@ -580,7 +583,7 @@ export class SharedLiveSource {
       if (wasWarming) {
         this.clearWarmWatch();
         this.logger.debug(
-          `${this.tag} first keyframe — live (${frame.width}x${frame.height} ${frame.codec}, powered=${this.powered})`,
+          `${this.tag} first keyframe — live (${item.config.width}x${item.config.height} ${item.config.codec}, powered=${this.powered})`,
         );
         if (this.powered === "battery") this.armBudget(); // battery drain starts now
       }
@@ -590,18 +593,28 @@ export class SharedLiveSource {
   }
 
   /**
-   * Re-read the coded configuration from the parameter sets in force, keeping the previous answer when
-   * nothing announced new ones.
+   * The coded configuration this frame belongs to: what the parameter sets state, or the frame header's own
+   * report where they state nothing readable.
    *
-   * Only a keyframe carries parameter sets, so this is a parse per keyframe rather than per frame, and an
-   * ordinary delta frame costs the identity comparison alone. Sets that carry no readable geometry leave
-   * the configuration unknown rather than replacing a known one with a guess.
+   * The parameter sets are preferred because they define the size a decoder produces while the header only
+   * reports it, and the fMP4 muxer resolves the same question the same way — one rule, so the geometry a
+   * recording declares and the one a live consumer is told cannot disagree.
+   *
+   * Falling back rather than staying silent is what lets a consumer act on the announcement alone. A set
+   * whose geometry cannot be read would otherwise leave it with nothing to rebuild on, which is worse than
+   * the header it would have had to diff for itself.
+   *
+   * Only a keyframe carries parameter sets, so the read costs one parse per announcement: `updatedParamSets`
+   * answers with the same object when a frame announces none, and identity settles it from there.
    */
-  private refreshConfig(): void {
-    if (!this.lastParamSets || this.lastParamSets === this.configuredFrom) return;
-    this.configuredFrom = this.lastParamSets;
-    const geometry = codedGeometry(this.lastParamSets);
-    if (geometry) this.config = { codec: this.lastParamSets.codec, ...geometry };
+  private configOf(frame: LiveVideoFrame): LiveVideoConfig {
+    if (this.lastParamSets !== this.configuredFrom) {
+      this.configuredFrom = this.lastParamSets;
+      this.declared = this.lastParamSets ? codedGeometry(this.lastParamSets) : undefined;
+    }
+    return this.declared
+      ? { codec: this.lastParamSets!.codec, ...this.declared }
+      : { codec: frame.codec, width: frame.width, height: frame.height };
   }
 
   private onAudio(frame: LiveAudioFrame): void {
@@ -719,7 +732,7 @@ export class SharedLiveSource {
     }
     this.lastKeyframe = undefined;
     this.lastParamSets = undefined;
-    this.config = undefined;
+    this.declared = undefined;
     this.configuredFrom = undefined;
     this.ring = [];
     this._state = state;
