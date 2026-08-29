@@ -395,6 +395,18 @@ export type VideoCodec = "h264" | "h265" | "av1";
 export interface LiveVideoFrame {
   /** True on an IDR — a unit a consumer may begin decoding at, never a continuation of an earlier one. */
   keyframe: boolean;
+  /**
+   * Frame geometry as the station's own frame header states it.
+   *
+   * A camera reconfigures its live source WITHIN one session, so these change between frames of one
+   * stream — measured on five models and on both codecs, 2 to 9 changes per 25-60 s, oscillating up and
+   * down a ladder rather than only climbing it. Every observed change began on a keyframe carrying fresh
+   * parameter sets.
+   *
+   * This is what the station REPORTED. The size a decoder will actually produce is stated by the
+   * parameter sets, and a consumer is told it through {@link LiveStreamConsumer} rather than having to
+   * retain these and diff every frame against them.
+   */
   width: number;
   height: number;
   /**
@@ -404,6 +416,22 @@ export interface LiveVideoFrame {
   codec: VideoCodec;
   /** Annex-B bytes (one or more NAL units, start-code prefixed). */
   data: Buffer;
+}
+
+/**
+ * The coded video configuration a live source is producing — the codec, and the picture size a decoder
+ * will produce from the parameter sets in force.
+ *
+ * The geometry is the CODED one, read out of the sequence parameter set and cropped by the offsets it
+ * declares, not the geometry a frame header reports. Those agreed on all but 28 of some 6000 measured
+ * frames, but only one of them is the size a decoder produces: 1080 is not a multiple of the 16-sample
+ * macroblock, so a 1080p H.264 stream codes 1088 rows and crops 8 away, and the frame header is a report
+ * about that rather than the definition of it.
+ */
+export interface LiveVideoConfig {
+  codec: VideoCodec;
+  width: number;
+  height: number;
 }
 
 /**
@@ -503,6 +531,31 @@ export interface LiveStreamConsumer extends LiveStreamHandle {
   pause(): void;
   /** Release delivery and hand over the queued backlog, stopping if the sink pauses again mid-drain. */
   resume(): void;
+  /**
+   * The coded configuration of the video that follows, announced immediately before the first frame
+   * carrying it and again whenever it changes.
+   *
+   * A camera reconfigures its source repeatedly within one session, and an encoder opened for one geometry
+   * cannot accept a frame of another — so a consumer adapting this source to a fixed output has to rebuild
+   * on every change. Fires once per change rather than per frame, and never before the parameter sets that
+   * state it have arrived, so a consumer that has been told nothing yet has been given nothing to decode.
+   *
+   * Per consumer, against what THIS consumer was last given: a consumer that joins mid-session is primed
+   * with a cached keyframe it did not witness arriving, and one that crosses its bound resynchronises onto
+   * a later IDR having skipped the frame the source saw the change on. Announcing what the source saw
+   * would leave both holding an encoder built for media they never received.
+   *
+   * Only a consumer announces this, never a bare {@link LiveStreamHandle}: it is read from the parameter
+   * sets a shared source watches every frame for, which the raw pull underneath it does not do. That is
+   * also why the inherited events are restated here — a subtype may add an overload only by declaring the
+   * whole set.
+   */
+  on(event: "video-config", listener: (config: LiveVideoConfig) => void): this;
+  on(event: "video", listener: (frame: LiveVideoFrame) => void): this;
+  on(event: "audio", listener: (frame: LiveAudioFrame) => void): this;
+  on(event: "start" | "stop", listener: () => void): this;
+  on(event: "error", listener: (err: Error) => void): this;
+  on(event: "budget", listener: (notice: StreamBudgetNotice) => void): this;
 }
 
 /** An SDP session description crossing the WebRTC signaling boundary (JSEP shape). */

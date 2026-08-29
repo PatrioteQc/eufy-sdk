@@ -28,11 +28,12 @@ import { EventEmitter } from "node:events";
 import { LiveStreamStartError, type LiveStreamStartFailureReason } from "../../core/contracts.js";
 import { noopLogger, type Logger } from "../../core/logger.js";
 import { Timer } from "../../core/util.js";
-import { updatedParamSets, type ParamSets } from "./annexb.js";
+import { codedGeometry, updatedParamSets, type ParamSets } from "./annexb.js";
 import type {
   LiveAudioFrame,
   LiveStreamConsumer,
   LiveStreamHandle,
+  LiveVideoConfig,
   LiveVideoFrame,
   StreamBudgetNotice,
 } from "../../core/contracts.js";
@@ -41,6 +42,11 @@ import type {
 function durationMs(seconds: number | undefined): number {
   const milliseconds = (seconds ?? 0) * 1000;
   return Number.isFinite(milliseconds) && milliseconds > 0 ? milliseconds : 0;
+}
+
+/** Whether two coded configurations describe the same decoder — the test an announcement is gated on. */
+function sameConfig(a: LiveVideoConfig | undefined, b: LiveVideoConfig | undefined): boolean {
+  return a !== undefined && b !== undefined && a.codec === b.codec && a.width === b.width && a.height === b.height;
 }
 
 /** Lifecycle state of a {@link SharedLiveSource}. */
@@ -132,9 +138,16 @@ export interface Consumer extends LiveStreamConsumer {
   detach(): void;
 }
 
-/** One media frame retained with its transport-arrival time for prebuffer continuity. */
+/**
+ * One media frame retained with its transport-arrival time for prebuffer continuity.
+ *
+ * A video frame carries the coded configuration in force when it arrived, so an egress reading this feed
+ * rather than the `video` event — a recording, which muxes into a container that declares the geometry —
+ * has the same answer without re-parsing the parameter sets itself. Absent until a stream has announced
+ * parameter sets a geometry could be read from.
+ */
 export type TimedMediaFrame =
-  | { kind: "video"; frame: LiveVideoFrame; timestampMs: number }
+  | { kind: "video"; frame: LiveVideoFrame; timestampMs: number; config?: LiveVideoConfig }
   | { kind: "audio"; frame: LiveAudioFrame; timestampMs: number };
 
 /** Internal per-consumer state + delivery. Exposed to callers only through the {@link Consumer} view. */
@@ -144,6 +157,8 @@ class ConsumerImpl extends EventEmitter implements Consumer {
   private detached = false;
   primed = false;
   awaitingKeyframe = false;
+  /** The last coded configuration announced to THIS consumer — see {@link flush}. */
+  private config?: LiveVideoConfig;
   /** Cached keyframe to replay, held until a "video" listener actually subscribes (see below). */
   private pendingPrime?: Extract<TimedMediaFrame, { kind: "video" }>;
 
@@ -161,7 +176,7 @@ class ConsumerImpl extends EventEmitter implements Consumer {
       const kf = this.pendingPrime;
       if (!kf) return;
       this.pendingPrime = undefined;
-      queueMicrotask(() => this.deliverVideo(kf.frame, kf.timestampMs));
+      queueMicrotask(() => this.deliverVideoItem(kf));
     });
   }
 
@@ -220,13 +235,24 @@ class ConsumerImpl extends EventEmitter implements Consumer {
   }
 
   /** Source → consumer video. Honors resync-to-keyframe and the bounded queue. */
-  deliverVideo(frame: LiveVideoFrame, timestampMs: number): void {
+  deliverVideo(frame: LiveVideoFrame, timestampMs: number, config: LiveVideoConfig | undefined): void {
+    this.deliverVideoItem({ kind: "video", frame, timestampMs, config });
+  }
+
+  /**
+   * Deliver one retained video item, which is what a keyframe-prime replays.
+   *
+   * The resync check belongs here rather than beside the live call site: a primed keyframe is exactly the
+   * IDR a consumer waiting for one is waiting for, so replaying it has to clear that wait the same way a
+   * live keyframe does.
+   */
+  private deliverVideoItem(item: Extract<TimedMediaFrame, { kind: "video" }>): void {
     if (this.detached) return;
     if (this.awaitingKeyframe) {
-      if (!frame.keyframe) return; // still hunting the resync point
+      if (!item.frame.keyframe) return; // still hunting the resync point
       this.awaitingKeyframe = false;
     }
-    this.accept({ kind: "video", frame, timestampMs });
+    this.accept(item);
   }
 
   /** Source → consumer audio. Dropped entirely while resyncing (audio has no keyframes). */
@@ -261,9 +287,23 @@ class ConsumerImpl extends EventEmitter implements Consumer {
     }
   }
 
+  /**
+   * Hand one item to this consumer's listeners, announcing a coded configuration it has not been told
+   * about ahead of the frame that carries it.
+   *
+   * The single delivery point is where the announcement belongs, because every way media reaches a
+   * consumer passes through here: a live frame, a replayed keyframe-prime, and a backlog drained by
+   * {@link resume}. Comparing against what this consumer was last given rather than what the source last
+   * saw is what makes a primed join and a post-overflow resynchronisation correct.
+   */
   private flush(item: TimedMediaFrame): void {
-    if (item.kind === "video") this.emit("video", item.frame);
-    else this.emit("audio", item.frame);
+    if (item.kind === "video") {
+      if (item.config && !sameConfig(item.config, this.config)) {
+        this.config = item.config;
+        this.emit("video-config", item.config);
+      }
+      this.emit("video", item.frame);
+    } else this.emit("audio", item.frame);
     this.emit("media", item);
   }
 
@@ -311,6 +351,15 @@ export class SharedLiveSource {
   private lastKeyframe?: Extract<TimedMediaFrame, { kind: "video" }>;
   /** Last parameter sets the stream announced — see {@link parameterSets}. */
   private lastParamSets?: ParamSets;
+  /**
+   * The coded configuration in force, and the sets it was read from.
+   *
+   * Holding the sets it came from is what keeps the read to one per announcement: `updatedParamSets`
+   * returns the SAME object when a frame announces nothing, so identity says the configuration cannot
+   * have moved without comparing any bytes.
+   */
+  private config?: LiveVideoConfig;
+  private configuredFrom?: ParamSets;
   /** Rolling prebuffer, keyframe-alignable on drain. */
   private ring: TimedMediaFrame[] = [];
 
@@ -519,9 +568,10 @@ export class SharedLiveSource {
   }
 
   private onVideo(frame: LiveVideoFrame): void {
-    const item = { kind: "video", frame, timestampMs: Date.now() } as const;
     this.delivered.video = true;
     this.lastParamSets = updatedParamSets(frame.data, this.lastParamSets);
+    this.refreshConfig();
+    const item = { kind: "video", frame, timestampMs: Date.now(), config: this.config } as const;
     if (frame.keyframe) {
       this.lastKeyframe = item;
       const wasWarming = this.warmRetryTimer !== undefined || this.warmDeadlineTimer.pending;
@@ -536,7 +586,22 @@ export class SharedLiveSource {
       }
     }
     this.pushRing(item);
-    for (const c of this.consumers) c.deliverVideo(frame, item.timestampMs);
+    for (const c of this.consumers) c.deliverVideo(frame, item.timestampMs, item.config);
+  }
+
+  /**
+   * Re-read the coded configuration from the parameter sets in force, keeping the previous answer when
+   * nothing announced new ones.
+   *
+   * Only a keyframe carries parameter sets, so this is a parse per keyframe rather than per frame, and an
+   * ordinary delta frame costs the identity comparison alone. Sets that carry no readable geometry leave
+   * the configuration unknown rather than replacing a known one with a guess.
+   */
+  private refreshConfig(): void {
+    if (!this.lastParamSets || this.lastParamSets === this.configuredFrom) return;
+    this.configuredFrom = this.lastParamSets;
+    const geometry = codedGeometry(this.lastParamSets);
+    if (geometry) this.config = { codec: this.lastParamSets.codec, ...geometry };
   }
 
   private onAudio(frame: LiveAudioFrame): void {
@@ -654,6 +719,8 @@ export class SharedLiveSource {
     }
     this.lastKeyframe = undefined;
     this.lastParamSets = undefined;
+    this.config = undefined;
+    this.configuredFrom = undefined;
     this.ring = [];
     this._state = state;
     if (startFailed && report) this.opts.onStartFailed?.();

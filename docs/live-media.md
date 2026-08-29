@@ -58,11 +58,15 @@ const stream = await cam.live();
 stream.on("video", (frame) => {
   // frame.data    Annex-B bytes (ONE whole access unit, start-code-prefixed NAL units)
   // frame.codec   "h264" | "h265" | "av1"
-  // frame.width, frame.height
+  // frame.width, frame.height  what the station's frame header reported (see below — these change
+  //                            within a session; `video-config` is the authority)
   // frame.keyframe  true on an IDR (a valid resync/segment boundary)
 });
 stream.on("audio", (frame) => {
   consumeAudio(frame.codec, frame.data);
+});
+stream.on("video-config", (config) => {
+  // config.codec, config.width, config.height — the coded configuration of the video that follows
 });
 stream.on("start", () => {});
 stream.on("stop", () => {}); // upstream ended, or you called stop()
@@ -74,6 +78,42 @@ stream.stop(); // detach this consumer
 
 `stream.stop()` detaches **this** consumer only. The shared pull stops when the _last_ consumer
 detaches (after the linger window).
+
+### The source reconfigures mid-session
+
+A camera changes the coded geometry of its live stream **within one session**, repeatedly. Measured on
+five models and on both codecs: 2 to 9 changes per 25-60 s, oscillating up and down a ladder
+(`640x360`, `960x540`, `1280x720`, `1920x1080`, `2304x1296`, `2560x1440`) rather than only climbing it.
+The ladder is not fixed per model, and there is no way to pin it — the camera's video-quality setting is
+a persistent recording tier, not a per-session cap.
+
+An encoder cannot change input geometry mid-stream, so a caller adapting this source to a fixed output
+has to tear down and rebuild on every change. `video-config` is how it learns:
+
+```ts
+let encoder: Encoder | undefined;
+stream.on("video-config", (config) => {
+  encoder?.close(); // the frames that follow cannot go into the encoder opened for the last config
+  encoder = openEncoder(config);
+});
+stream.on("video", (frame) => encoder?.write(frame.data));
+```
+
+It fires once per change, immediately before the first frame carrying the new configuration, and never
+before parameter sets that state one have arrived. `width` and `height` are the **coded** geometry — read
+out of the sequence parameter set and cropped by the offsets it declares, which is the size a decoder
+produces. A frame's own `width`/`height` are what the station's frame header reported; they agreed with
+the parameter sets in all but 28 of some 6000 measured frames, but only one of the two is a definition
+rather than a report.
+
+The announcement is per consumer, against what **that** consumer was last given. A consumer joining
+mid-session is primed with a cached keyframe it did not witness arriving, and one that crosses its queue
+bound resynchronises onto a later IDR having skipped the frame the change arrived on — so both are told,
+even though the shared source saw the change once.
+
+Every observed change began on a keyframe carrying fresh parameter sets. A recording made through
+`recordFragments()` needs nothing here: one init segment describes the whole recording and the samples
+carry their own parameter sets, which is how a decoder follows the change.
 
 A caller writing frames into a sink of its own paces the stream rather than buffering what the sink will
 not take:
