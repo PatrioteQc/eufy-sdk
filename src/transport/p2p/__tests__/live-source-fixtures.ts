@@ -84,6 +84,150 @@ export function unit(...nals: readonly (readonly number[])[]): Buffer {
   return Buffer.concat(nals.flatMap((nal) => [START_CODE, Buffer.from(nal)]));
 }
 
+/**
+ * A big-endian bit writer with the two syntax-element encodings an H.26x parameter set is written in.
+ *
+ * The geometry specs need parameter sets that are REALLY encoded — a hand-written byte array cannot
+ * state "1920 wide with a bottom crop of 4" in a form a reader could disagree with, so it would pin
+ * nothing. This writes the same exp-Golomb the standard specifies, and `rbsp()` applies the
+ * emulation-prevention escaping a device's own bitstream carries.
+ */
+class BitWriter {
+  private readonly bits: number[] = [];
+
+  /** Write the low `count` bits of `value`, most significant first. */
+  u(count: number, value: number): this {
+    for (let i = count - 1; i >= 0; i--) this.bits.push((value >>> i) & 1);
+    return this;
+  }
+
+  /** Unsigned exp-Golomb: `n` leading zeros, a 1, then `n` bits of `value + 1`. */
+  ue(value: number): this {
+    const coded = value + 1;
+    const width = 32 - Math.clz32(coded);
+    return this.u(width - 1, 0).u(width, coded);
+  }
+
+  /** Signed exp-Golomb, in the standard's mapping of positives to odd code numbers. */
+  se(value: number): this {
+    return this.ue(value <= 0 ? -2 * value : 2 * value - 1);
+  }
+
+  /**
+   * The NAL body: `header`, then this bitstream closed by an rbsp_trailing_bits and byte-aligned, with
+   * emulation-prevention bytes inserted so the result is a real NAL rather than one a start-code scan
+   * could cut in half.
+   */
+  rbsp(header: readonly number[]): number[] {
+    const bits = [...this.bits, 1];
+    while (bits.length % 8 !== 0) bits.push(0);
+    const body: number[] = [];
+    for (let i = 0; i < bits.length; i += 8) {
+      let byte = 0;
+      for (let b = 0; b < 8; b++) byte = (byte << 1) | bits[i + b];
+      if (body.length >= 2 && body[body.length - 2] === 0 && body[body.length - 1] === 0 && byte <= 3) {
+        body.push(3);
+      }
+      body.push(byte);
+    }
+    return [...header, ...body];
+  }
+}
+
+/** How an H.264 sequence parameter set states the geometry a decoder will produce. */
+export interface H264SpsShape {
+  widthMbs: number;
+  heightMapUnits: number;
+  crop?: { left?: number; right?: number; top?: number; bottom?: number };
+  /** 100 (High) takes the chroma/bit-depth/scaling-matrix branch; the default 66 (Baseline) does not. */
+  profileIdc?: number;
+  /** 4:2:0 by default; only read on the High-profile branch, and it scales the crop offsets. */
+  chromaFormatIdc?: number;
+  /** Cleared for an interlaced set, which doubles the coded height and the vertical crop unit. */
+  frameMbsOnly?: boolean;
+  /** Present-and-signalled scaling lists, the variable-length branch a reader must skip exactly. */
+  scalingMatrix?: boolean;
+}
+
+/** An H.264 SPS NAL body (type 7) encoding `shape` — the input to a coded-geometry read. */
+export function h264Sps(shape: H264SpsShape): number[] {
+  const profileIdc = shape.profileIdc ?? 66;
+  const chromaFormatIdc = shape.chromaFormatIdc ?? 1;
+  const frameMbsOnly = shape.frameMbsOnly ?? true;
+  const crop = shape.crop;
+  const w = new BitWriter();
+  w.u(8, profileIdc).u(8, 0).u(8, 40).ue(0);
+  if ([100, 110, 122, 244, 44, 83, 86, 118, 128, 138, 139, 134, 135].includes(profileIdc)) {
+    w.ue(chromaFormatIdc);
+    if (chromaFormatIdc === 3) w.u(1, 0);
+    w.ue(0)
+      .ue(0)
+      .u(1, 0)
+      .u(1, shape.scalingMatrix ? 1 : 0);
+    if (shape.scalingMatrix) {
+      for (let i = 0; i < (chromaFormatIdc !== 3 ? 8 : 12); i++) {
+        w.u(1, 1);
+        // One signalled list per index, each a run of delta_scale values the reader must consume.
+        for (let c = 0; c < (i < 6 ? 16 : 64); c++) w.se(c === 0 ? 1 : 0);
+      }
+    }
+  }
+  w.ue(0).ue(0).ue(0).ue(1).u(1, 0);
+  w.ue(shape.widthMbs - 1)
+    .ue(shape.heightMapUnits - 1)
+    .u(1, frameMbsOnly ? 1 : 0);
+  if (!frameMbsOnly) w.u(1, 0);
+  w.u(1, 1).u(1, crop ? 1 : 0);
+  if (crop)
+    w.ue(crop.left ?? 0)
+      .ue(crop.right ?? 0)
+      .ue(crop.top ?? 0)
+      .ue(crop.bottom ?? 0);
+  w.u(1, 0);
+  return w.rbsp([0x67]);
+}
+
+/** How an H.265 sequence parameter set states the geometry a decoder will produce. */
+export interface H265SpsShape {
+  widthLuma: number;
+  heightLuma: number;
+  window?: { left?: number; right?: number; top?: number; bottom?: number };
+  /** 4:2:0 by default; it scales the conformance-window offsets. */
+  chromaFormatIdc?: number;
+  /** Sub-layers beyond the base one, which add the per-layer profile/level records to skip. */
+  maxSubLayersMinus1?: number;
+}
+
+/** An H.265 SPS NAL body (type 33) encoding `shape` — the input to a coded-geometry read. */
+export function h265Sps(shape: H265SpsShape): number[] {
+  const chromaFormatIdc = shape.chromaFormatIdc ?? 1;
+  const layers = shape.maxSubLayersMinus1 ?? 0;
+  const w = new BitWriter();
+  w.u(4, 0).u(3, layers).u(1, 1);
+  // profile_tier_level: the base layer's fixed 96 bits, then whatever the sub-layers signal.
+  w.u(2, 0).u(1, 0).u(5, 1).u(32, 0x60000000).u(1, 1).u(1, 0).u(1, 0).u(1, 1);
+  w.u(22, 0).u(22, 0).u(8, 120);
+  for (let i = 0; i < layers; i++) w.u(1, 1).u(1, 1);
+  if (layers > 0) for (let i = layers; i < 8; i++) w.u(2, 0);
+  for (let i = 0; i < layers; i++) {
+    w.u(2, 0).u(1, 0).u(5, 1).u(32, 0x60000000).u(1, 1).u(1, 0).u(1, 0).u(1, 1).u(22, 0).u(22, 0);
+    w.u(8, 120);
+  }
+  w.ue(0).ue(chromaFormatIdc);
+  if (chromaFormatIdc === 3) w.u(1, 0);
+  w.ue(shape.widthLuma)
+    .ue(shape.heightLuma)
+    .u(1, shape.window ? 1 : 0);
+  const win = shape.window;
+  if (win)
+    w.ue(win.left ?? 0)
+      .ue(win.right ?? 0)
+      .ue(win.top ?? 0)
+      .ue(win.bottom ?? 0);
+  w.ue(0).ue(0);
+  return w.rbsp([0x42, 0x01]);
+}
+
 /** A video frame carrying `data`. Defaults to a 1920x1080 H.264 keyframe. */
 export function videoFrame(data: Buffer, over: Partial<LiveVideoFrame> = {}): LiveVideoFrame {
   return { keyframe: true, width: 1920, height: 1080, codec: "h264", data, ...over };

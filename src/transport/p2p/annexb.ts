@@ -165,3 +165,237 @@ export function hasIdr(buf: Buffer, codec: VideoCodec): boolean {
   }
   return false;
 }
+
+/**
+ * Beyond the widest picture any defined H.264 or H.265 level permits.
+ *
+ * An exp-Golomb field decodes to an arbitrarily large number from bytes that are not the syntax the
+ * reader thinks it is reading, so a dimension past this is evidence the parse went wrong rather than a
+ * picture size — and a caller acting on it would size a decoder for a stream that does not exist.
+ */
+const MAX_CODED_DIMENSION = 32768;
+
+/** Profiles whose SPS carries the chroma, bit-depth and scaling-matrix fields (H.264 Annex A). */
+const H264_CHROMA_PROFILES = new Set([100, 110, 122, 244, 44, 83, 86, 118, 128, 138, 139, 134, 135]);
+
+/** Chroma subsampling per `chroma_format_idc`, which is what scales a crop offset into samples. */
+const CHROMA_SUBSAMPLING: Record<number, { width: number; height: number }> = {
+  0: { width: 1, height: 1 },
+  1: { width: 2, height: 2 },
+  2: { width: 2, height: 1 },
+  3: { width: 1, height: 1 },
+};
+
+/**
+ * A bit reader over one parameter set's RBSP, with the exp-Golomb encodings H.26x syntax is written in.
+ *
+ * Reading past the end sets {@link failed} and answers zero rather than throwing, so a parse walks to its
+ * end and the caller discards the whole read at once — a mid-parse throw and a partially-consumed reader
+ * both invite answering with the fields that happened to land before the bytes ran out.
+ *
+ * Emulation-prevention bytes are removed up front: a device inserts `0x03` after any `0x00 0x00` so its
+ * payload cannot be mistaken for a start code, and every syntax element after one is shifted by 8 bits
+ * until it is taken back out.
+ */
+class RbspReader {
+  private readonly bytes: number[] = [];
+  private bit = 0;
+  failed = false;
+
+  constructor(nal: Buffer, headerBytes: number) {
+    for (let i = headerBytes; i < nal.length; i++) {
+      const byte = nal[i]!;
+      const escape =
+        byte === 3 &&
+        this.bytes.length >= 2 &&
+        this.bytes[this.bytes.length - 1] === 0 &&
+        this.bytes[this.bytes.length - 2] === 0;
+      if (!escape) this.bytes.push(byte);
+    }
+  }
+
+  /** The next `count` bits as an unsigned integer, most significant first. */
+  u(count: number): number {
+    let value = 0;
+    for (let i = 0; i < count; i++) {
+      const index = this.bit >> 3;
+      if (index >= this.bytes.length) {
+        this.failed = true;
+        return 0;
+      }
+      value = value * 2 + ((this.bytes[index]! >> (7 - (this.bit & 7))) & 1);
+      this.bit++;
+    }
+    return value;
+  }
+
+  /**
+   * Unsigned exp-Golomb: the leading-zero run gives the width of the value that follows.
+   *
+   * The run is bounded at the widest a real field uses, because corrupt bytes can present an
+   * arbitrarily long one and a reader that followed it to the end of the set would spend the whole
+   * buffer proving what the bound establishes at once.
+   */
+  ue(): number {
+    let zeros = 0;
+    while (this.u(1) === 0) {
+      if (this.failed || ++zeros > 32) {
+        this.failed = true;
+        return 0;
+      }
+    }
+    return zeros === 0 ? 0 : (1 << zeros) - 1 + this.u(zeros);
+  }
+
+  /** Signed exp-Golomb, in the standard's mapping of positives onto odd code numbers. */
+  se(): number {
+    const coded = this.ue();
+    return coded % 2 === 0 ? -(coded / 2) : (coded + 1) / 2;
+  }
+
+  /** Consume one scaling list, whose length is a run of deltas rather than a declared size. */
+  scalingList(coefficients: number): void {
+    let next = 8;
+    for (let i = 0; i < coefficients && next !== 0; i++) {
+      next = (next + this.se() + 256) % 256;
+      if (this.failed) return;
+    }
+  }
+}
+
+/**
+ * The picture geometry a decoder will produce from the parameter sets in force, or `undefined` when no
+ * SPS could be read.
+ *
+ * This is the authority on a live stream's geometry. A frame header states the geometry at capture start,
+ * and a source that reconfigures mid-session leaves it contradicting the bytes it is sending — so a
+ * consumer that rebuilt a decoder from the header would size it for a picture the stream is not carrying.
+ * The SPS is what the picture actually is.
+ *
+ * The crop and conformance offsets are part of the answer rather than a refinement of it: 1080 is not a
+ * multiple of the 16-sample macroblock, so a 1080p H.264 stream codes 1088 rows and crops 8 away. A read
+ * that stopped at the coded size would be wrong by exactly that on the commonest geometry there is.
+ *
+ * Answers from the LAST SPS of the set, which is the one in force. AV1 is not parsed — the SDK decodes no
+ * AV1 sequence header, and a size from another codec's syntax would be a fabrication.
+ */
+export function codedGeometry(sets: ParamSets): { width: number; height: number } | undefined {
+  const sps = sets.sps[sets.sps.length - 1];
+  if (!sps) return undefined;
+  const geometry = sets.codec === "h264" ? h264Geometry(sps) : sets.codec === "h265" ? h265Geometry(sps) : undefined;
+  if (!geometry) return undefined;
+  const { width, height } = geometry;
+  const plausible =
+    Number.isInteger(width) &&
+    Number.isInteger(height) &&
+    width > 0 &&
+    height > 0 &&
+    width <= MAX_CODED_DIMENSION &&
+    height <= MAX_CODED_DIMENSION;
+  return plausible ? { width, height } : undefined;
+}
+
+/**
+ * Read an H.264 SPS (ITU-T H.264 §7.3.2.1.1) up to its frame-cropping offsets.
+ *
+ * Everything between the profile and the geometry is skipped rather than interpreted, but it has to be
+ * skipped EXACTLY: the scaling matrices and the picture-order-count fields are variable-length, so a
+ * reader that guessed their size would land mid-element and answer a plausible wrong number.
+ */
+function h264Geometry(sps: Buffer): { width: number; height: number } | undefined {
+  const r = new RbspReader(sps, 1);
+  const profileIdc = r.u(8);
+  r.u(8);
+  r.u(8);
+  r.ue();
+  let chromaFormatIdc = 1;
+  let separateColourPlane = false;
+  if (H264_CHROMA_PROFILES.has(profileIdc)) {
+    chromaFormatIdc = r.ue();
+    if (chromaFormatIdc === 3) separateColourPlane = r.u(1) === 1;
+    r.ue();
+    r.ue();
+    r.u(1);
+    if (r.u(1) === 1) {
+      for (let i = 0; i < (chromaFormatIdc !== 3 ? 8 : 12); i++) {
+        if (r.u(1) === 1) r.scalingList(i < 6 ? 16 : 64);
+      }
+    }
+  }
+  r.ue();
+  const pictureOrderCountType = r.ue();
+  if (pictureOrderCountType === 0) r.ue();
+  else if (pictureOrderCountType === 1) {
+    r.u(1);
+    r.se();
+    r.se();
+    const cycle = r.ue();
+    for (let i = 0; i < cycle && !r.failed; i++) r.se();
+  }
+  r.ue();
+  r.u(1);
+  const widthMbs = r.ue() + 1;
+  const heightMapUnits = r.ue() + 1;
+  const frameMbsOnly = r.u(1) === 1;
+  if (!frameMbsOnly) r.u(1);
+  r.u(1);
+  let crop = { left: 0, right: 0, top: 0, bottom: 0 };
+  if (r.u(1) === 1) crop = { left: r.ue(), right: r.ue(), top: r.ue(), bottom: r.ue() };
+  if (r.failed) return undefined;
+  const chromaArrayType = separateColourPlane ? 0 : chromaFormatIdc;
+  const subsampling = CHROMA_SUBSAMPLING[chromaArrayType];
+  if (!subsampling) return undefined;
+  const fieldFactor = frameMbsOnly ? 1 : 2;
+  return {
+    width: widthMbs * 16 - subsampling.width * (crop.left + crop.right),
+    height: fieldFactor * heightMapUnits * 16 - subsampling.height * fieldFactor * (crop.top + crop.bottom),
+  };
+}
+
+/**
+ * Read an H.265 SPS (ITU-T H.265 §7.3.2.2.1) up to its conformance window.
+ *
+ * The luma dimensions are stated directly, so the work is reaching them: `profile_tier_level` carries a
+ * fixed 88-bit base-layer record plus its level byte, followed by a per-sub-layer one of the same shape
+ * whose two halves are separately signalled. Its length is the only thing standing between the reader and
+ * the geometry.
+ */
+function h265Geometry(sps: Buffer): { width: number; height: number } | undefined {
+  const r = new RbspReader(sps, 2);
+  r.u(4);
+  const maxSubLayersMinus1 = r.u(3);
+  r.u(1);
+  r.u(32);
+  r.u(32);
+  r.u(24);
+  r.u(8);
+  const profilePresent: boolean[] = [];
+  const levelPresent: boolean[] = [];
+  for (let i = 0; i < maxSubLayersMinus1; i++) {
+    profilePresent.push(r.u(1) === 1);
+    levelPresent.push(r.u(1) === 1);
+  }
+  if (maxSubLayersMinus1 > 0) for (let i = maxSubLayersMinus1; i < 8; i++) r.u(2);
+  for (let i = 0; i < maxSubLayersMinus1; i++) {
+    if (profilePresent[i]) {
+      r.u(32);
+      r.u(32);
+      r.u(24);
+    }
+    if (levelPresent[i]) r.u(8);
+  }
+  r.ue();
+  const chromaFormatIdc = r.ue();
+  if (chromaFormatIdc === 3) r.u(1);
+  const width = r.ue();
+  const height = r.ue();
+  let window = { left: 0, right: 0, top: 0, bottom: 0 };
+  if (r.u(1) === 1) window = { left: r.ue(), right: r.ue(), top: r.ue(), bottom: r.ue() };
+  if (r.failed) return undefined;
+  const subsampling = CHROMA_SUBSAMPLING[chromaFormatIdc];
+  if (!subsampling) return undefined;
+  return {
+    width: width - subsampling.width * (window.left + window.right),
+    height: height - subsampling.height * (window.top + window.bottom),
+  };
+}
