@@ -10,12 +10,16 @@
  * rewritten to AVCC length prefixes and AAC's ADTS transport headers are removed from `mdat` samples.
  *
  * H.265 note: the `hvcC` NAL arrays (VPS/SPS/PPS) are exact; the profile/tier/level header fields use
- * safe Main-profile defaults (decoders re-read the SPS from the arrays), and picture size comes from
- * {@link LiveVideoFrame}.
+ * safe Main-profile defaults (decoders re-read the SPS from the arrays).
+ *
+ * The declared picture size comes from the parameter sets rather than from a {@link LiveVideoFrame}
+ * header, because it is the size a decoder will produce. One init segment describes the whole recording,
+ * so a source that reconfigures mid-session keeps the geometry it opened with in `tkhd` and the sample
+ * entry; the samples carry their own parameter sets, which is how a decoder follows the change.
  *
  * @module p2p/fmp4
  */
-import { extractParamSets, splitAnnexbNals, type ParamSets } from "./annexb.js";
+import { codedGeometry, extractParamSets, splitAnnexbNals, type ParamSets } from "./annexb.js";
 import { AAC_SAMPLE_RATE, AAC_SAMPLES_PER_FRAME, parseAdtsHeader } from "./adts.js";
 import type { AudioCodec, LiveAudioFrame, LiveVideoFrame, MediaFragment, VideoCodec } from "../../core/contracts.js";
 
@@ -93,8 +97,9 @@ export class Fmp4Muxer {
       if (!ps || ps.codec === "av1") return undefined;
       this.params = ps;
       this.codec = ps.codec;
-      this.width = frame.width || pictureWidthFallback(ps);
-      this.height = frame.height || 0;
+      const declared = codedGeometry(ps);
+      this.width = declared?.width ?? frame.width;
+      this.height = declared?.height ?? frame.height;
       this.firstVideoTimestampMs = timestampMs;
     }
 
@@ -533,7 +538,15 @@ function writeMatrix(b: Buffer, o: number): void {
   b.writeUInt32BE(0x40000000, o + 32); // w
 }
 
-/** Rewrite Annex-B start codes to AVCC 4-byte length prefixes, dropping parameter-set NALs. */
+/**
+ * Rewrite Annex-B start codes to AVCC 4-byte length prefixes, RETAINING every NAL including the
+ * parameter sets.
+ *
+ * Keeping them is what makes a recording survive a reconfiguration the init segment cannot describe: a
+ * camera changes coded geometry within one session, the init segment and its out-of-band `avcC` are
+ * written once, and every later keyframe re-states its own sets inside the sample. Stripping them to the
+ * declared config alone would leave every sample after the first change undecodable.
+ */
 function annexbToAvcc(annexb: Buffer): Buffer {
   const out: Buffer[] = [];
   for (const nal of splitAnnexbNals(annexb)) {
@@ -573,8 +586,4 @@ function childBoxes(buf: Buffer, parentStart: number): { type: string; start: nu
 function descriptor(tag: number, payload: Buffer): Buffer {
   if (payload.length >= 128) throw new Error("fMP4 muxer: MPEG-4 descriptor is too large");
   return Buffer.concat([Buffer.from([tag, payload.length]), payload]);
-}
-
-function pictureWidthFallback(_ps: ParamSets): number {
-  return 0; // width comes from LiveVideoFrame; SPS dimension parse is intentionally out of scope
 }
