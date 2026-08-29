@@ -82,11 +82,16 @@ detaches (after the linger window).
 ### The source reconfigures mid-session
 
 A camera changes the coded geometry of its live stream **within one session**, repeatedly. Measured on
-five models and on both codecs: 2 to 9 changes per 25-60 s, oscillating up and down a ladder
-(`640x360`, `960x540`, `1280x720`, `1600x1200`, `1920x1080`, `2304x1296`, `2560x1440`) rather than only
-climbing it. The ladder is not fixed per model, and the number of consumers is not what drives it — a
-single-consumer session produced 9 changes in 50 s, more than a two-consumer one did. There is no way to pin
-it either: the camera's video-quality setting is a persistent recording tier, not a per-session cap.
+eight cameras and both codecs: four of them changed, 2 to 9 times per 25-60 s, oscillating up and down a
+ladder (`640x360`, `960x540`, `1280x720`, `1600x1200`, `1920x1080`, `2304x1296`, `2560x1440`, `2880x1616`)
+rather than only climbing it; the other four held one geometry throughout. The ladder is not fixed per
+model.
+
+Two things this does NOT establish. Whether the number of consumers influences it: a single-consumer
+session produced more changes than a two-consumer one, but on a different camera, so nothing here is a
+controlled comparison. And whether it can be pinned: no capability the SDK models sets a per-session cap —
+the camera's video-quality member is a persistent recording tier — but that is read off the modelled
+surface rather than measured against a device.
 
 An encoder cannot change input geometry mid-stream, so a caller adapting this source to a fixed output
 has to tear down and rebuild on every change. `video-config` is how it learns:
@@ -115,7 +120,9 @@ mid-session is primed with a cached keyframe it did not witness arriving, and on
 bound resynchronises onto a later IDR having skipped the frame the change arrived on — so both are told,
 even though the shared source saw the change once.
 
-Every observed change began on a keyframe carrying fresh parameter sets. A recording made through
+A change arriving on a keyframe carrying fresh parameter sets is what every run but one showed, and that
+run is not accounted for — so nothing here depends on it, and a change on a delta frame would simply be
+announced when it arrived. A recording made through
 `recordFragments()` needs nothing here: one init segment describes the whole recording and the samples
 carry their own parameter sets, which is how a decoder follows the change.
 

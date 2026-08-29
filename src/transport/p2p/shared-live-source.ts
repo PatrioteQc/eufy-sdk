@@ -28,7 +28,7 @@ import { EventEmitter } from "node:events";
 import { LiveStreamStartError, type LiveStreamStartFailureReason } from "../../core/contracts.js";
 import { noopLogger, type Logger } from "../../core/logger.js";
 import { Timer } from "../../core/util.js";
-import { codedGeometry, updatedParamSets, type ParamSets } from "./annexb.js";
+import { codedGeometry, updatedParamSets, type CodedGeometry, type ParamSets } from "./annexb.js";
 import type {
   LiveAudioFrame,
   LiveStreamConsumer,
@@ -150,9 +150,10 @@ export interface Consumer extends LiveStreamConsumer {
 /**
  * One media frame retained with its transport-arrival time for prebuffer continuity.
  *
- * A video frame carries the coded configuration in force when it arrived, so an egress reading this feed
- * rather than the `video` event — a recording, which muxes into a container that declares the geometry —
- * has the same answer without re-parsing the parameter sets itself.
+ * A video frame carries the coded configuration in force when it ARRIVED, because the item outlives that
+ * moment: it is the unit a keyframe-prime replays to a consumer that joined later and the unit a prebuffer
+ * drain hands over, and both have to announce the configuration their media was coded under rather than
+ * whichever one is current by the time they are delivered.
  */
 export type TimedMediaFrame =
   | { kind: "video"; frame: LiveVideoFrame; timestampMs: number; config: LiveVideoConfig }
@@ -184,7 +185,7 @@ class ConsumerImpl extends EventEmitter implements Consumer {
       const kf = this.pendingPrime;
       if (!kf) return;
       this.pendingPrime = undefined;
-      queueMicrotask(() => this.deliverVideoItem(kf));
+      queueMicrotask(() => this.deliverVideo(kf));
     });
   }
 
@@ -242,22 +243,18 @@ class ConsumerImpl extends EventEmitter implements Consumer {
     }
   }
 
-  /** Source → consumer video. Honors resync-to-keyframe and the bounded queue. */
-  deliverVideo(frame: LiveVideoFrame, timestampMs: number, config: LiveVideoConfig): void {
-    this.deliverVideoItem({ kind: "video", frame, timestampMs, config });
-  }
-
   /**
-   * Deliver one retained video item, which is what a keyframe-prime replays.
+   * Source → consumer video, honouring resync-to-keyframe and the bounded queue.
    *
-   * The resync check belongs here rather than beside the live call site: a primed keyframe is exactly the
-   * IDR a consumer waiting for one is waiting for, so replaying it has to clear that wait the same way a
-   * live keyframe does.
+   * Takes the whole item rather than a frame, because a keyframe-prime replays a RETAINED one and has to
+   * arrive by the same route: a primed keyframe is exactly the IDR a resynchronising consumer is waiting
+   * for, so it must clear that wait as a live keyframe does, and it carries the configuration its own media
+   * was coded under. While that wait is unsatisfied a delta frame is dropped — nothing can begin at it.
    */
-  private deliverVideoItem(item: Extract<TimedMediaFrame, { kind: "video" }>): void {
+  deliverVideo(item: Extract<TimedMediaFrame, { kind: "video" }>): void {
     if (this.detached) return;
     if (this.awaitingKeyframe) {
-      if (!item.frame.keyframe) return; // still hunting the resync point
+      if (!item.frame.keyframe) return;
       this.awaitingKeyframe = false;
     }
     this.accept(item);
@@ -366,7 +363,7 @@ export class SharedLiveSource {
    * returns the SAME object when a frame announces nothing, so identity says the geometry cannot have
    * moved without comparing any bytes.
    */
-  private declared?: { width: number; height: number };
+  private declaredGeometry?: CodedGeometry;
   private configuredFrom?: ParamSets;
   /** Rolling prebuffer, keyframe-alignable on drain. */
   private ring: TimedMediaFrame[] = [];
@@ -593,7 +590,7 @@ export class SharedLiveSource {
       }
     }
     this.pushRing(item);
-    for (const c of this.consumers) c.deliverVideo(frame, item.timestampMs, item.config);
+    for (const c of this.consumers) c.deliverVideo(item);
   }
 
   /**
@@ -615,10 +612,10 @@ export class SharedLiveSource {
   private configOf(frame: LiveVideoFrame): LiveVideoConfig {
     if (this.lastParamSets !== this.configuredFrom) {
       this.configuredFrom = this.lastParamSets;
-      this.declared = this.lastParamSets ? codedGeometry(this.lastParamSets) : undefined;
+      this.declaredGeometry = this.lastParamSets ? codedGeometry(this.lastParamSets) : undefined;
     }
-    return this.declared
-      ? { codec: this.lastParamSets!.codec, ...this.declared }
+    return this.declaredGeometry
+      ? { codec: this.lastParamSets!.codec, ...this.declaredGeometry }
       : { codec: frame.codec, width: frame.width, height: frame.height };
   }
 
@@ -737,7 +734,7 @@ export class SharedLiveSource {
     }
     this.lastKeyframe = undefined;
     this.lastParamSets = undefined;
-    this.declared = undefined;
+    this.declaredGeometry = undefined;
     this.configuredFrom = undefined;
     this.ring = [];
     this._state = state;

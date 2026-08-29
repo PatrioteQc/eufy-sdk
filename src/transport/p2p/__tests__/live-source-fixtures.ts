@@ -140,6 +140,15 @@ class BitWriter {
   }
 }
 
+/**
+ * Profiles whose SPS carries the chroma / bit-depth / scaling-matrix branch, as a writer must emit it.
+ *
+ * Stated here as well as in the reader because a fixture is only evidence when it can express the case: a
+ * profile the writer omits cannot produce a set that exercises the reader's branch for it, and the two
+ * lists silently diverging is how `144` came to be handled by nothing.
+ */
+export const CHROMA_BRANCH_PROFILES = [100, 110, 122, 244, 44, 83, 86, 118, 128, 138, 139, 134, 135, 144];
+
 /** How an H.264 sequence parameter set states the geometry a decoder will produce. */
 export interface H264SpsShape {
   widthMbs: number;
@@ -168,7 +177,7 @@ export function h264Sps(shape: H264SpsShape): number[] {
   const crop = shape.crop;
   const w = new BitWriter();
   w.u(8, profileIdc).u(8, 0).u(8, 40).ue(0);
-  if ([100, 110, 122, 244, 44, 83, 86, 118, 128, 138, 139, 134, 135].includes(profileIdc)) {
+  if (CHROMA_BRANCH_PROFILES.includes(profileIdc)) {
     w.ue(chromaFormatIdc);
     if (chromaFormatIdc === 3) w.u(1, 0);
     w.ue(0)

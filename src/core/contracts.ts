@@ -396,18 +396,20 @@ export interface LiveVideoFrame {
   /** True on an IDR — a unit a consumer may begin decoding at, never a continuation of an earlier one. */
   keyframe: boolean;
   /**
-   * Frame geometry as the station's own frame header states it.
+   * Frame geometry as the station's own frame header states it — {@link height} is the same field.
    *
    * A camera reconfigures its live source WITHIN one session, so these change between frames of one
-   * stream — measured on five models and on both codecs, 2 to 9 changes per 25-60 s, oscillating up and
-   * down a ladder rather than only climbing it. Every observed change began on a keyframe carrying fresh
-   * parameter sets.
+   * stream. Measured on eight cameras and both codecs: four of them changed, 2 to 9 times per 25-60 s,
+   * oscillating up and down a ladder rather than only climbing it; the other four held one geometry
+   * throughout. A change arriving on a keyframe carrying fresh parameter sets is what every run but one
+   * showed, and that run is not accounted for, so it is not a property to rely on.
    *
    * This is what the station REPORTED. The size a decoder will actually produce is stated by the
    * parameter sets, and a consumer is told it through {@link LiveStreamConsumer} rather than having to
    * retain these and diff every frame against them.
    */
   width: number;
+  /** See {@link width} — the same field, and it moves with it. */
   height: number;
   /**
    * Codec of the elementary stream this access unit belongs to. Sniffed off the parameter sets on a

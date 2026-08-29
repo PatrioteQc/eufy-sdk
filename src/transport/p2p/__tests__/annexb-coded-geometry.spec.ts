@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { codedGeometry, extractParamSets, type ParamSets } from "../annexb.js";
-import { H264, H265, h264Sps, h265Sps, unit } from "./live-source-fixtures.js";
+import { CHROMA_BRANCH_PROFILES, H264, H265, h264Sps, h265Sps, unit } from "./live-source-fixtures.js";
 
 /**
  * The coded geometry is what the SPS says, not what a frame header says.
@@ -68,6 +68,18 @@ describe("codedGeometry — H.264", () => {
       crop: { bottom: 4 },
     });
     expect(codedGeometry(setsOf(sps, H264.pps))).toEqual({ width: 1920, height: 1080 });
+  });
+
+  /**
+   * Every profile that takes the chroma branch has to be recognised as taking it. A profile read without it
+   * lands mid-element and answers a plausible geometry rather than nothing, which is the one failure the
+   * range check cannot catch — so this walks the whole list rather than the two profiles in common use.
+   */
+  it("reaches the geometry behind the chroma branch for every profile that carries one", () => {
+    const read = CHROMA_BRANCH_PROFILES.map((profileIdc) =>
+      codedGeometry(setsOf(h264Sps({ widthMbs: 80, heightMapUnits: 45, profileIdc }), H264.pps)),
+    );
+    expect(read).toEqual(CHROMA_BRANCH_PROFILES.map(() => ({ width: 1280, height: 720 })));
   });
 });
 

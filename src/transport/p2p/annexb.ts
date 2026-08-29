@@ -166,6 +166,12 @@ export function hasIdr(buf: Buffer, codec: VideoCodec): boolean {
   return false;
 }
 
+/** The picture size a decoder produces, after the crop or conformance offsets its parameter set declares. */
+export interface CodedGeometry {
+  width: number;
+  height: number;
+}
+
 /**
  * Beyond the widest picture any defined H.264 or H.265 level permits.
  *
@@ -185,7 +191,7 @@ const MAX_CODED_DIMENSION = 32768;
 const H264_CHROMA_PROFILES = new Set([100, 110, 122, 244, 44, 83, 86, 118, 128, 138, 139, 134, 135, 144]);
 
 /** Chroma subsampling per `chroma_format_idc`, which is what scales a crop offset into samples. */
-const CHROMA_SUBSAMPLING: Record<number, { width: number; height: number }> = {
+const CHROMA_SUBSAMPLING: Record<number, CodedGeometry> = {
   0: { width: 1, height: 1 },
   1: { width: 2, height: 2 },
   2: { width: 2, height: 1 },
@@ -289,7 +295,7 @@ class RbspReader {
  * Answers from the LAST SPS of the set, which is the one in force. AV1 is not parsed — the SDK decodes no
  * AV1 sequence header, and a size from another codec's syntax would be a fabrication.
  */
-export function codedGeometry(sets: ParamSets): { width: number; height: number } | undefined {
+export function codedGeometry(sets: ParamSets): CodedGeometry | undefined {
   const sps = sets.sps[sets.sps.length - 1];
   if (!sps) return undefined;
   const geometry = sets.codec === "h264" ? h264Geometry(sps) : sets.codec === "h265" ? h265Geometry(sps) : undefined;
@@ -312,7 +318,7 @@ export function codedGeometry(sets: ParamSets): { width: number; height: number 
  * skipped EXACTLY: the scaling matrices and the picture-order-count fields are variable-length, so a
  * reader that guessed their size would land mid-element and answer a plausible wrong number.
  */
-function h264Geometry(sps: Buffer): { width: number; height: number } | undefined {
+function h264Geometry(sps: Buffer): CodedGeometry | undefined {
   const r = new RbspReader(sps, 1);
   const profileIdc = r.u(8);
   r.u(8);
@@ -370,7 +376,7 @@ function h264Geometry(sps: Buffer): { width: number; height: number } | undefine
  * whose two halves are separately signalled. Its length is the only thing standing between the reader and
  * the geometry.
  */
-function h265Geometry(sps: Buffer): { width: number; height: number } | undefined {
+function h265Geometry(sps: Buffer): CodedGeometry | undefined {
   const r = new RbspReader(sps, 2);
   r.u(4);
   const maxSubLayersMinus1 = r.u(3);
