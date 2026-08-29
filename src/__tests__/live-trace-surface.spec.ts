@@ -36,6 +36,8 @@ describe("live-trace vocabulary at the package entry point", () => {
       "datagram-gap": true,
       "sequence-restart": true,
     } satisfies Record<LiveTrace["phase"], true>;
-    expect(Object.keys(handled)).toHaveLength(11);
+    // The `satisfies` is the assertion; `tsc` covers the specs, so a phase added or removed fails there. This
+    // names the phase whose omission from a consumer's hand-copied list is what #99 was filed over.
+    expect(Object.keys(handled)).toContain("sequence-restart");
   });
 });

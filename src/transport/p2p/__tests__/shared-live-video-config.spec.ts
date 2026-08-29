@@ -25,11 +25,15 @@ const SPS_540 = h264Sps({ widthMbs: 60, heightMapUnits: 34, crop: { bottom: 2 } 
 const keyframe = (sps: readonly number[]) => videoFrame(unit(sps, PPS, IDR), { keyframe: true });
 const delta = () => videoFrame(unit(DELTA), { keyframe: false });
 
+/**
+ * A source and a way to push frames into whatever stream it currently holds.
+ *
+ * The push is resolved per call, because the source builds its stream on the FIRST attach and rebuilds it
+ * after a teardown — so there is no one stream a spec could hold on to.
+ */
 function sourceWithStream(over: { maxQueue?: number; lingerMs?: number } = {}) {
   const { makeStream, streams } = streamFactory();
   const source = new SharedLiveSource({ makeStream, ...over });
-  // Resolved per call, because the source builds its stream on the FIRST attach and rebuilds it after a
-  // teardown — so there is no one stream a spec could hold on to.
   const video = (frame: LiveVideoFrame) => streams[streams.length - 1]!.video(frame);
   return { source, video };
 }

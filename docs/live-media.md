@@ -83,9 +83,10 @@ detaches (after the linger window).
 
 A camera changes the coded geometry of its live stream **within one session**, repeatedly. Measured on
 five models and on both codecs: 2 to 9 changes per 25-60 s, oscillating up and down a ladder
-(`640x360`, `960x540`, `1280x720`, `1920x1080`, `2304x1296`, `2560x1440`) rather than only climbing it.
-The ladder is not fixed per model, and there is no way to pin it — the camera's video-quality setting is
-a persistent recording tier, not a per-session cap.
+(`640x360`, `960x540`, `1280x720`, `1600x1200`, `1920x1080`, `2304x1296`, `2560x1440`) rather than only
+climbing it. The ladder is not fixed per model, and the number of consumers is not what drives it — a
+single-consumer session produced 9 changes in 50 s, more than a two-consumer one did. There is no way to pin
+it either: the camera's video-quality setting is a persistent recording tier, not a per-session cap.
 
 An encoder cannot change input geometry mid-stream, so a caller adapting this source to a fixed output
 has to tear down and rebuild on every change. `video-config` is how it learns:
@@ -105,7 +106,9 @@ the sequence parameter set and cropped by the offsets it declares, which is the 
 A frame's own `width`/`height` are what the station's frame header reported; they agreed with the
 parameter sets in all but 28 of some 6000 measured frames, but only one of the two is a definition rather
 than a report. Where the parameter sets state no readable geometry — before the first keyframe has carried
-any — the header's report is carried instead, so there is always a configuration to act on.
+any — the header's report is carried instead, so there is always a configuration to act on. That means the
+first announcements of a session can move from the header's answer to the parameter sets' without the camera
+having reconfigured; a caller that rebuilds on a difference rebuilds once there.
 
 The announcement is per consumer, against what **that** consumer was last given. A consumer joining
 mid-session is primed with a cached keyframe it did not witness arriving, and one that crosses its queue

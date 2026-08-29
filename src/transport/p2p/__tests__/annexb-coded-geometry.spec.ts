@@ -118,10 +118,27 @@ describe("codedGeometry — what it refuses to answer", () => {
     expect(codedGeometry(setsOf(sps, H264.pps))).toBeUndefined();
   });
 
+  /**
+   * A wide exp-Golomb field must decode to the number it encodes, or be refused.
+   *
+   * The leading-zero run gives the value's bit width, and a 33-bit code word overflows a signed 32-bit
+   * shift: `1 << 32` is `1` in JavaScript, not `4294967296`. Getting that wrong turns a runaway field into a
+   * small plausible number instead of a rejection, which is the one outcome the range check cannot catch —
+   * `48x64` looks like a picture. Measured before the fix at exactly that.
+   */
+  it.each([2 ** 20, 2 ** 30, 2 ** 31, 2 ** 32])(
+    "refuses rather than wraps a width field of %i macroblocks",
+    (widthMbs) => {
+      expect(codedGeometry(setsOf(h264Sps({ widthMbs, heightMapUnits: 68 }), H264.pps))).toBeUndefined();
+    },
+  );
+
+  /**
+   * An H.265 `profile_tier_level` puts a run of zero bytes ahead of the geometry, so a device escapes it with
+   * the `0x03` a start-code scan must not mistake for payload. Leaving the escape in shifts every syntax
+   * element after it, which makes the read wrong rather than absent.
+   */
   it("reads through emulation-prevention bytes rather than over them", () => {
-    // An H.265 profile_tier_level puts a run of zero bytes ahead of the geometry, so a device escapes it
-    // with the 0x03 a start-code scan must not mistake for payload. Leaving the escape in shifts every
-    // syntax element after it, which makes the read wrong rather than absent.
     const escaped = Buffer.from(h265Sps({ widthLuma: 1920, heightLuma: 1088, window: { bottom: 4 } }));
     expect(escaped.includes(Buffer.from([0x00, 0x00, 0x03]))).toBe(true);
     expect(codedGeometry({ codec: "h265", sps: [escaped], pps: [], vps: [] })).toEqual({

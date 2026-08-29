@@ -49,6 +49,10 @@ function durationMs(seconds: number | undefined): number {
  *
  * Compared by value rather than by identity, because the configuration is resolved per frame: an unchanged
  * stream produces an equal object every time, and identity would announce on every one of them.
+ *
+ * Not `core/util`'s `structuralEqual`, which owns change detection over decoded parameter VALUES: this
+ * compares three declared primitives on the delivery path of every frame of every consumer, where a keyed
+ * recursive walk would be the wrong cost for a fixed shape that cannot nest.
  */
 function sameConfig(a: LiveVideoConfig, b: LiveVideoConfig | undefined): boolean {
   return b !== undefined && a.codec === b.codec && a.width === b.width && a.height === b.height;
@@ -597,8 +601,9 @@ export class SharedLiveSource {
    * report where they state nothing readable.
    *
    * The parameter sets are preferred because they define the size a decoder produces while the header only
-   * reports it, and the fMP4 muxer resolves the same question the same way — one rule, so the geometry a
-   * recording declares and the one a live consumer is told cannot disagree.
+   * reports it. The fMP4 muxer prefers them for the same reason, though it answers from the sets ONE unit
+   * carried rather than from the sets in force, so the two can differ on a keyframe that re-states only a
+   * PPS — a muxer is handed frames, not this source's fold.
    *
    * Falling back rather than staying silent is what lets a consumer act on the announcement alone. A set
    * whose geometry cannot be read would otherwise leave it with nothing to rebuild on, which is worse than

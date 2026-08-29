@@ -175,8 +175,14 @@ export function hasIdr(buf: Buffer, codec: VideoCodec): boolean {
  */
 const MAX_CODED_DIMENSION = 32768;
 
-/** Profiles whose SPS carries the chroma, bit-depth and scaling-matrix fields (H.264 Annex A). */
-const H264_CHROMA_PROFILES = new Set([100, 110, 122, 244, 44, 83, 86, 118, 128, 138, 139, 134, 135]);
+/**
+ * Profiles whose SPS carries the chroma, bit-depth and scaling-matrix fields (H.264 Annex A).
+ *
+ * `144` is the 2005-edition High 4:4:4 that `244` replaced. It is absent from the current standard's list but
+ * present in streams, and a set read without its branch lands mid-element — so it is carried here rather
+ * than left to misparse into a plausible geometry.
+ */
+const H264_CHROMA_PROFILES = new Set([100, 110, 122, 244, 44, 83, 86, 118, 128, 138, 139, 134, 135, 144]);
 
 /** Chroma subsampling per `chroma_format_idc`, which is what scales a crop offset into samples. */
 const CHROMA_SUBSAMPLING: Record<number, { width: number; height: number }> = {
@@ -235,6 +241,10 @@ class RbspReader {
    * The run is bounded at the widest a real field uses, because corrupt bytes can present an
    * arbitrarily long one and a reader that followed it to the end of the set would spend the whole
    * buffer proving what the bound establishes at once.
+   *
+   * The offset is computed with exponentiation rather than a shift: `1 << 32` is `1` in JavaScript, so a
+   * 33-bit code word would decode to a small plausible number instead of the runaway value it encodes —
+   * which the geometry's range check cannot catch, because a small number looks like a picture.
    */
   ue(): number {
     let zeros = 0;
@@ -244,7 +254,7 @@ class RbspReader {
         return 0;
       }
     }
-    return zeros === 0 ? 0 : (1 << zeros) - 1 + this.u(zeros);
+    return zeros === 0 ? 0 : 2 ** zeros - 1 + this.u(zeros);
   }
 
   /** Signed exp-Golomb, in the standard's mapping of positives onto odd code numbers. */

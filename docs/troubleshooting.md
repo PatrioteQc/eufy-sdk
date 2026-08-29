@@ -75,6 +75,22 @@ eufy.on("sessionExpired", async () => {
 - **Trace the lifecycle.** With a logger attached (§1), `[live …]` lines trace a stream warming, going
   live, a warm-up timeout, an upstream drop, and the linger-before-teardown — the detail you want when
   a live view won't start or drops unexpectedly.
+- **Match startup traces on the published vocabulary, not on strings.** Every startup trace is logged
+  under `LIVE_TRACE_MESSAGE` with a `LiveTrace` payload, and **both are exported from the package root**:
+
+  ```ts
+  import { LIVE_TRACE_MESSAGE, type LiveTrace } from "@mega-yfue/eufy-sdk";
+  ```
+
+  A host that bounds or redacts what it retains should key its phase allowlist off the union, so a phase
+  added here fails to compile rather than being discarded:
+
+  ```ts
+  } satisfies Record<LiveTrace["phase"], true>;
+  ```
+
+  Copying the message literal or the phase names by hand is the one thing that cannot survive a new phase
+  being added — the SDK widens that union without needing any coordination from you.
 
 ## 5. Media (snapshot / record / ffmpeg)
 

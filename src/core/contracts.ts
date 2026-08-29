@@ -431,8 +431,13 @@ export interface LiveVideoFrame {
  * Where the parameter sets state no readable geometry — before a stream's first keyframe has carried any,
  * or from a set that cannot be parsed — the frame header's report is carried instead, so a caller always
  * has a configuration to act on rather than being left to diff frames for itself in the one case that
- * matters. The fMP4 muxer resolves the same question the same way, so a recording's declared geometry and
- * a live consumer's cannot disagree.
+ * matters. The two are not distinguished in the payload: a caller acts on a configuration by comparing it
+ * with the one it is already adapting, and that comparison answers the same whichever half stated it.
+ *
+ * A consequence worth knowing: the first announcements of a session can move from a header-derived
+ * configuration to a parameter-set-derived one without the camera having reconfigured, because the sets
+ * arrive with the first keyframe and the frames before it have only their headers. A caller that rebuilds on
+ * a difference rebuilds once there, which is the same cost as a real first configuration.
  */
 export interface LiveVideoConfig {
   codec: VideoCodec;
@@ -558,10 +563,14 @@ export interface LiveStreamConsumer extends LiveStreamHandle {
    * whole set.
    */
   on(event: "video-config", listener: (config: LiveVideoConfig) => void): this;
+  /** One whole video access unit — see {@link LiveVideoFrame}. */
   on(event: "video", listener: (frame: LiveVideoFrame) => void): this;
+  /** One audio access unit, in the codec the station declared for it. */
   on(event: "audio", listener: (frame: LiveAudioFrame) => void): this;
   on(event: "start" | "stop", listener: () => void): this;
+  /** Why this consumer's stream is over, including a warm-up that never produced a keyframe. */
   on(event: "error", listener: (err: Error) => void): this;
+  /** Battery-budget elapsed — extend to keep streaming or let it auto-stop (battery cameras only). */
   on(event: "budget", listener: (notice: StreamBudgetNotice) => void): this;
 }
 

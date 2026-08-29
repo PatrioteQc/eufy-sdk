@@ -64,12 +64,14 @@ describe("fMP4 init-segment geometry", () => {
  * out-of-band config alone would leave every sample after the first change undecodable.
  */
 describe("fMP4 samples", () => {
+  /**
+   * A fragment closes BEFORE the sample that ends it is added, so the reconfigured keyframe leaves in the
+   * fragment after the boundary it opened — here, the flushed tail.
+   */
   it("retains the parameter sets a keyframe carried, so a reconfiguration is followed in-band", () => {
     const mux = new Fmp4Muxer({ fragmentSeconds: 0 });
     mux.push(videoFrame(unit(SPS_1080, H264.pps, H264.idr)), 0);
     const reconfigured = h264Sps({ widthMbs: 80, heightMapUnits: 45 });
-    // A fragment closes BEFORE the sample that ends it is added, so the reconfigured keyframe leaves in
-    // the fragment after the boundary it opened — here, the flushed tail.
     mux.push(videoFrame(unit(reconfigured, H264.pps, H264.idr)), 100);
     const tail = mux.flush();
     expect(tail?.data.includes(Buffer.from(reconfigured))).toBe(true);

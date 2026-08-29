@@ -101,11 +101,17 @@ class BitWriter {
     return this;
   }
 
-  /** Unsigned exp-Golomb: `n` leading zeros, a 1, then `n` bits of `value + 1`. */
+  /**
+   * Unsigned exp-Golomb: `n` leading zeros, a 1, then `n` bits of `value + 1`.
+   *
+   * Widened through `BigInt` so a field can be encoded past 32 bits. A 33-bit code word is the case a signed
+   * shift silently wraps on, so a writer that could not express one could not test for it either.
+   */
   ue(value: number): this {
-    const coded = value + 1;
-    const width = 32 - Math.clz32(coded);
-    return this.u(width - 1, 0).u(width, coded);
+    const coded = (BigInt(value) + 1n).toString(2);
+    for (let i = 0; i < coded.length - 1; i++) this.bits.push(0);
+    for (const bit of coded) this.bits.push(bit === "1" ? 1 : 0);
+    return this;
   }
 
   /** Signed exp-Golomb, in the standard's mapping of positives to odd code numbers. */
@@ -149,7 +155,12 @@ export interface H264SpsShape {
   scalingMatrix?: boolean;
 }
 
-/** An H.264 SPS NAL body (type 7) encoding `shape` — the input to a coded-geometry read. */
+/**
+ * An H.264 SPS NAL body (type 7) encoding `shape` — the input to a coded-geometry read.
+ *
+ * A signalled scaling matrix writes one list per index, each a run of `delta_scale` values whose length is
+ * not declared anywhere — which is what a reader has to consume exactly rather than skip by size.
+ */
 export function h264Sps(shape: H264SpsShape): number[] {
   const profileIdc = shape.profileIdc ?? 66;
   const chromaFormatIdc = shape.chromaFormatIdc ?? 1;
@@ -167,7 +178,6 @@ export function h264Sps(shape: H264SpsShape): number[] {
     if (shape.scalingMatrix) {
       for (let i = 0; i < (chromaFormatIdc !== 3 ? 8 : 12); i++) {
         w.u(1, 1);
-        // One signalled list per index, each a run of delta_scale values the reader must consume.
         for (let c = 0; c < (i < 6 ? 16 : 64); c++) w.se(c === 0 ? 1 : 0);
       }
     }
@@ -198,13 +208,17 @@ export interface H265SpsShape {
   maxSubLayersMinus1?: number;
 }
 
-/** An H.265 SPS NAL body (type 33) encoding `shape` — the input to a coded-geometry read. */
+/**
+ * An H.265 SPS NAL body (type 33) encoding `shape` — the input to a coded-geometry read.
+ *
+ * `profile_tier_level` is written as the base layer's fixed 96 bits followed by whatever the sub-layers
+ * signal, which is the length a reader has to skip exactly to reach the geometry behind it.
+ */
 export function h265Sps(shape: H265SpsShape): number[] {
   const chromaFormatIdc = shape.chromaFormatIdc ?? 1;
   const layers = shape.maxSubLayersMinus1 ?? 0;
   const w = new BitWriter();
   w.u(4, 0).u(3, layers).u(1, 1);
-  // profile_tier_level: the base layer's fixed 96 bits, then whatever the sub-layers signal.
   w.u(2, 0).u(1, 0).u(5, 1).u(32, 0x60000000).u(1, 1).u(1, 0).u(1, 0).u(1, 1);
   w.u(22, 0).u(22, 0).u(8, 120);
   for (let i = 0; i < layers; i++) w.u(1, 1).u(1, 1);
