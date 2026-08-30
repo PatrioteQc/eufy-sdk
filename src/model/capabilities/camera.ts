@@ -353,8 +353,8 @@ export const CAMERA_MEMBERS = {
    * 1035, standalone indoor/outdoor cams under 2001 OPEN_DEVICE with direct polarity, so 2001 is a
    * read-alias. Both verified live, and the write polarity is confirmed against the app's own frames.
    *
-   * The read and the setter observe the SAME wire on every family — see {@link powerCommand} — which is what
-   * makes this value track what it is told, and what lets {@link enablementReflection} confirm a write.
+   * The read and the setter observe the SAME wire on every family — see `powerCommand` — which is what
+   * makes this value track what it is told, and what lets `enablementReflection` confirm a write.
    *
    * The privacy param (6250) is reported by the outdoor-PT family and by no other camera measured, and both
    * of its polarities are observed. It is deliberately NOT aliased here: it moved in the same step as 1035, so
