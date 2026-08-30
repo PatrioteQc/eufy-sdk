@@ -133,6 +133,14 @@ function sameManifest(a: readonly PropertySpec[], b: readonly PropertySpec[]): b
 export class Device {
   /** Serial number (station/device SN). */
   readonly sn: string;
+  /**
+   * The station this device's traffic belongs to: its parent HomeBase, or its own {@link sn} when it has none.
+   *
+   * Set from the record's `parentSn`, which is present only for a device that hangs off a base. A record that
+   * states none leaves the last known value, as every other identity field here does, so it starts at this
+   * device's own serial and every device therefore has a station.
+   */
+  stationSn: string;
   /** Resolved command-codec family. */
   codec!: ResolvedDevice["codec"];
   /** Resolved capability set. Widens if the device later reports evidence for more. */
@@ -201,6 +209,7 @@ export class Device {
 
   constructor(sn: string, resolved: ResolvedDevice, logger: Logger = noopLogger) {
     this.sn = sn;
+    this.stationSn = sn;
     this.logger = logger;
     this.resolveInto(resolved);
   }
@@ -326,6 +335,7 @@ export class Device {
     this.model = rec.model ?? this.model;
     this.deviceName = rec.name ?? this.deviceName;
     this.name = this.deviceName ?? this.modelName;
+    this.stationSn = rec.parentSn ?? this.stationSn;
   }
 
   /** Does this device have the given capability? */
