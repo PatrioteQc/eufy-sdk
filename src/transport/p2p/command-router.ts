@@ -666,6 +666,7 @@ export class P2PCommandRouter {
   async sharedLiveSourceFor(sn: string, opts: SharedLiveOpts = {}): Promise<SharedLiveSource> {
     const { session, parentSn, channel, accountId, homeBaseAttached } = await this.resolveSession(sn, {
       waitLevel2: "soft",
+      requireLevel2ForAttached: true,
     });
     const key = `${parentSn}:${channel}`;
     let source = this.liveSources.get(key);
@@ -953,7 +954,10 @@ export class P2PCommandRouter {
    * {@link P2PSession.repromptLevel2Key}, which explains why one settled negotiation is not the last word. A
    * soft caller has a level-1 path and never re-prompts.
    */
-  private async resolveSession(sn: string, opts: { waitLevel2?: boolean | "soft" } = {}): Promise<ResolvedSession> {
+  private async resolveSession(
+    sn: string,
+    opts: { waitLevel2?: boolean | "soft"; requireLevel2ForAttached?: boolean } = {},
+  ): Promise<ResolvedSession> {
     const dev = await this.deviceFor(sn);
     const raw = (dev.raw ?? {}) as Record<string, any>;
     const homeBaseAttached = !!raw.parent_sn && raw.parent_sn !== sn;
@@ -973,7 +977,12 @@ export class P2PCommandRouter {
     while (!session.isConnected && Date.now() - t0 < CONNECT_WAIT_MS) await new Promise((r) => setTimeout(r, 200));
     if (!session.isConnected) throw new Error(`P2P session for ${parentSn} did not connect`);
     if (opts.waitLevel2) {
-      const soft = opts.waitLevel2 === "soft";
+      // An attached camera's media start has no level-1 form: `sendMediaPayloadLevel2` puts nothing on the wire
+      // without the key. Such a caller is a level-2 one however it asked, so a settled negotiation must be
+      // re-prompted and a missing key must fail here — resolving it soft left the warm-up re-issuing a command
+      // that was never sent, every interval, until it timed out. An own-session camera carries both levels and
+      // picks by the key it holds, so it stays soft.
+      const soft = opts.waitLevel2 === "soft" && !(opts.requireLevel2ForAttached && homeBaseAttached);
       let ready = await session.awaitLevel2Key(
         soft ? LEVEL2_SOFT_GRACE_MS : LEVEL2_GRACE_MS,
         soft ? "session" : "call",

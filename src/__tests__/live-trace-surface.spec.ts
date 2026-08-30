@@ -42,6 +42,7 @@ describe("live-trace vocabulary at the package entry point", () => {
       "level2-ready": true,
       "level2-absent": true,
       warming: true,
+      "media-command-unsent": true,
     } satisfies Record<LiveTrace["phase"], true>;
     expect(Object.keys(handled)).toContain("sequence-restart");
   });

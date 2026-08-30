@@ -16,7 +16,7 @@ interface FakeSession extends FakeP2PSession {
   sendIntStringCommand: ReturnType<typeof vi.fn>;
 }
 
-function setup(hasLevel2Key: boolean) {
+function setup(hasLevel2Key: boolean, attached = true) {
   const session = connectedSession(hasLevel2Key) as FakeSession;
   session.sendSetPayload = vi.fn();
   session.sendRawLevel2 = vi.fn(() => true);
@@ -27,8 +27,12 @@ function setup(hasLevel2Key: boolean) {
     listDevices: () => [
       {
         sn: DEVICE_SN,
-        stationSn: STATION_SN,
-        raw: { parent_sn: STATION_SN, device_channel: 1, member: { admin_user_id: ACCOUNT_ID } },
+        stationSn: attached ? STATION_SN : DEVICE_SN,
+        raw: {
+          ...(attached ? { parent_sn: STATION_SN } : {}),
+          device_channel: 1,
+          member: { admin_user_id: ACCOUNT_ID },
+        },
       } as never,
     ],
     ensureDevices: async () => {},
@@ -40,7 +44,7 @@ function setup(hasLevel2Key: boolean) {
   };
   const router = new P2PCommandRouter(deps);
   (router as unknown as { manager: { register(sn: string, value: unknown): void } }).manager.register(
-    STATION_SN,
+    attached ? STATION_SN : DEVICE_SN,
     session,
   );
   return { router, session };
@@ -53,16 +57,32 @@ function setup(hasLevel2Key: boolean) {
  */
 describe("resolving a session defers the level-2 wait to the session", () => {
   /**
-   * A media egress asks best-effort, because only the HomeBase-attached path needs the key and a camera on
-   * its own session legitimately never negotiates one. Best-effort has to mean "ask the session", or it
-   * means "stall every stream on a camera that will never answer".
+   * A camera on its own session asks best-effort, because it legitimately never negotiates a key and its start
+   * carries both levels. Best-effort has to mean "ask the session", or it means "stall every stream on a camera
+   * that will never answer".
    */
-  it("asks the session once, with the best-effort grace, and streams without a key", async () => {
-    const { router, session } = setup(false);
+  it("asks the session once, with the best-effort grace, for a camera on its own session", async () => {
+    const { router, session } = setup(false, false);
     const source = await router.sharedLiveSourceFor(DEVICE_SN);
     expect(source).toBeDefined();
     expect(session.awaitLevel2Key).toHaveBeenCalledTimes(1);
     expect(session.awaitLevel2Key).toHaveBeenCalledWith(SOFT_GRACE_MS, "session");
+  });
+
+  /**
+   * An attached camera's start has no level-1 form, so best-effort was the wrong ask for it: the send returns
+   * without putting anything on the wire, and the warm-up then re-issues that nothing every interval until it
+   * times out. Measured on a real account as 48 starts with no key, one keyframe between them, and a
+   * `source-error` at the end.
+   */
+  it("refuses an attached camera's source where the session reports no key", async () => {
+    const { router } = setup(false);
+    await expect(router.sharedLiveSourceFor(DEVICE_SN)).rejects.toThrow(/level-2 key not ready/);
+  });
+
+  it("hands over an attached camera's source once the key is held", async () => {
+    const { router } = setup(true);
+    await expect(router.sharedLiveSourceFor(DEVICE_SN)).resolves.toBeDefined();
   });
 
   it("asks with the full grace where the key is a requirement", async () => {

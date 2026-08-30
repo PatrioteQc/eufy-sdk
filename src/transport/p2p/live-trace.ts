@@ -49,7 +49,15 @@ export type LiveTrace =
   /** The level-2 key did not arrive in its grace, so the start proceeds at level 1 or not at all. */
   | { phase: "level2-absent"; waitedMs: number }
   /** A shared source began warming, with the interval it re-issues on and the deadline it fails at. */
-  | { phase: "warming"; retryMs: number; deadlineMs: number };
+  | { phase: "warming"; retryMs: number; deadlineMs: number }
+  /**
+   * A media command was never put on the wire, and what it was missing.
+   *
+   * The attached media start has no level-1 form, so without the station's level-2 key there is nothing to
+   * send. A command that was never sent is otherwise indistinguishable from one the station ignored, which is
+   * the difference between a key that never arrived and a station that is not answering.
+   */
+  | { phase: "media-command-unsent"; reason: "level2-key" | "address" };
 
 /** Record one startup observation at debug level. */
 export function traceLiveStart(logger: Logger, trace: LiveTrace): void {

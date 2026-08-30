@@ -1239,7 +1239,13 @@ export class P2PSession extends EventEmitter {
     accountId: string,
     payload: Record<string, unknown>,
   ): void {
-    if (!this.connectAddress || !this.level2Key) return;
+    if (!this.connectAddress || !this.level2Key) {
+      traceLiveStart(this.logger, {
+        phase: "media-command-unsent",
+        reason: this.connectAddress ? "level2-key" : "address",
+      });
+      return;
+    }
     const isStart = subCmd === CMD_START_REALTIME_MEDIA;
     // HomeBase-controlled camera path (the V6 app's media-start envelope): mChannel = device_channel,
     // an extra accountId inside payload, an RSA public modulus for the media-key handshake, and the
