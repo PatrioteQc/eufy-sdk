@@ -43,7 +43,7 @@ import { freshestLanIp } from "./lan-ip.js";
 import { captureSnapshotFromShared, recordClip } from "./media.js";
 import type { FfmpegLevel } from "../ffmpeg.js";
 import { LiveStream } from "./live-stream.js";
-import { SharedLiveSource } from "./shared-live-source.js";
+import { SharedLiveSource, type PullPurpose } from "./shared-live-source.js";
 import { SessionManager, PREWARM_MS, type PowerTier, type SessionManagerOpts } from "./session-manager.js";
 import { Fmp4Muxer } from "./fmp4.js";
 import { openReadableFromConsumer } from "./readable-egress.js";
@@ -520,7 +520,7 @@ export class P2PCommandRouter {
   mediaProviderFor(sn: string): MediaProvider {
     return {
       snapshotLive: async (opts) => {
-        const source = await this.sharedLiveSourceFor(sn, opts ?? {});
+        const source = await this.sharedLiveSourceFor(sn, opts ?? {}, "snapshot");
         return captureSnapshotFromShared(source, {
           ...opts,
           logger: this.deps.logger ?? noopLogger,
@@ -529,8 +529,8 @@ export class P2PCommandRouter {
         });
       },
       live: async (opts) => {
-        const source = await this.sharedLiveSourceFor(sn, opts as SharedLiveOpts);
-        return source.attach();
+        const source = await this.sharedLiveSourceFor(sn, opts as SharedLiveOpts, "live");
+        return source.attach("live");
       },
       openReadable: async (opts) => {
         const source = await this.sharedLiveSourceFor(sn, opts ?? {});
@@ -663,7 +663,11 @@ export class P2PCommandRouter {
    * media start against the one being asked for, so opening a new channel releases those first — see
    * {@link releaseLingeringSiblings}. A pull with consumers is never touched.
    */
-  async sharedLiveSourceFor(sn: string, opts: SharedLiveOpts = {}): Promise<SharedLiveSource> {
+  async sharedLiveSourceFor(
+    sn: string,
+    opts: SharedLiveOpts = {},
+    purpose: PullPurpose = "live",
+  ): Promise<SharedLiveSource> {
     const { session, parentSn, channel, accountId, homeBaseAttached } = await this.resolveSession(sn, {
       waitLevel2: "soft",
       requireLevel2ForAttached: true,
@@ -674,8 +678,9 @@ export class P2PCommandRouter {
       this.dropLiveSource(key);
       source = undefined;
     }
+    if (source) this.releaseLingeringSiblings(parentSn, channel, purpose);
     if (!source) {
-      this.releaseLingeringSiblings(parentSn, channel);
+      this.releaseLingeringSiblings(parentSn, channel, purpose);
       const logger = this.deps.logger ?? noopLogger;
       source = new SharedLiveSource({
         makeStream: () =>
@@ -714,16 +719,28 @@ export class P2PCommandRouter {
    * serves one camera at a time leaves the new stream receiving nothing but the old camera's frames for as
    * long as the linger lasts.
    *
-   * Only a source with no consumers is dropped, so several cameras genuinely streaming together are never
-   * disturbed — the linger exists to make re-opening the SAME camera cheap, and it keeps doing that. What it
-   * may not do is keep a camera nobody is watching competing with one somebody just asked for.
+   * Several cameras genuinely being WATCHED together are never disturbed — the linger exists to make
+   * re-opening the SAME camera cheap, and it keeps doing that. What it may not do is keep a camera nobody is
+   * looking at competing with one somebody just asked for.
+   *
+   * A snapshot tile is nobody looking. Opening a live view in the Home app takes that cell fullscreen, so the
+   * pulls refreshing the other cells are off screen, yet each goes on re-issuing its own media start every
+   * retry tick — measured as four pulls warming together off one HomeBase, a live request landing 1.4 s later,
+   * and the live consumer receiving nothing beyond the retained keyframe until its deadline fired. So a live
+   * request also takes the channel from a sibling held only by snapshots, while a snapshot request takes
+   * nothing from anyone: a home page must not fight itself, and a viewer outranks a thumbnail in one
+   * direction only.
    */
-  private releaseLingeringSiblings(parentSn: string, channel: number): void {
+  private releaseLingeringSiblings(parentSn: string, channel: number, purpose: PullPurpose): void {
     const own = `${parentSn}:${channel}`;
     for (const [key, source] of [...this.liveSources]) {
-      if (!key.startsWith(`${parentSn}:`) || key === own || source.consumerCount > 0) continue;
+      if (!key.startsWith(`${parentSn}:`) || key === own) continue;
+      const idle = source.consumerCount === 0;
+      const yieldsToLive = purpose === "live" && !source.watchedLive;
+      if (!idle && !yieldsToLive) continue;
       (this.deps.logger ?? noopLogger).debug(
-        `[live ${key}] releasing a lingering pull so ${own} can start — one station serves one camera at a time`,
+        `[live ${key}] releasing ${idle ? "a lingering pull" : "a snapshot-only pull"} so ${own} can start — ` +
+          `one station serves one camera at a time`,
       );
       this.dropLiveSource(key);
     }
