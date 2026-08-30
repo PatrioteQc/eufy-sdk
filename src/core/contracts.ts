@@ -89,6 +89,32 @@ export class LiveSnapshotUnavailableError extends Error {
 }
 
 /**
+ * A media pull was refused because the camera is switched off.
+ *
+ * A disabled camera does not fail a live start: Eufy answers one with AUDIO and never a video frame —
+ * measured as 234 audio frames and no video across 20 s, then 217 video access units with nothing changed but
+ * the camera's own on/off state. A caller that asks anyway therefore spends its whole warm-up window and
+ * reports a timeout whose stage is `audio-only`, which cannot be told apart from a camera that is broken.
+ *
+ * So the reading decides instead of the probe, and this is what it decides. It carries no `retryable` flag
+ * because retrying is not the question: the camera has to be turned on, and only its owner can do that.
+ */
+export class CameraDisabledError extends Error {
+  constructor(
+    /** How the camera identifies itself to a reader — its name where the record carries one. */
+    readonly camera: string | undefined,
+    options?: { cause?: unknown },
+  ) {
+    super(
+      `camera${camera ? ` ${camera}` : ""} is disabled — no live media can be served until it is switched ` +
+        `on (a disabled camera answers a start with audio and never a video frame)`,
+      options,
+    );
+    this.name = "CameraDisabledError";
+  }
+}
+
+/**
  * How a live stream ended before its first video keyframe: the warm-up deadline elapsed, the source
  * reported an error, or the source ended on its own.
  */

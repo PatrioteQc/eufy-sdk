@@ -5,7 +5,7 @@ import { setScalar, setPayload, hasCapability } from "./access.js";
 import { AUDIO_CMD } from "./audio.js";
 import { accepts, propertiesOf, provided, type Members, type Surface } from "./members.js";
 import type { CapabilityModule, CapabilityActions, CommandContext } from "./types.js";
-import type { Command, CommandSink, MediaProvider } from "../../core/contracts.js";
+import { CameraDisabledError, type Command, type CommandSink, type MediaProvider } from "../../core/contracts.js";
 
 /**
  * The P2P **feature-command ids** this camera capability drives (direct-binary switches + `1350`
@@ -337,6 +337,16 @@ function enablementReflection(
  * does not carry.
  * @internal
  */
+/**
+ * Refuse a media pull on a camera whose `enabled` reading is false.
+ *
+ * Consults the same reading a caller would, so an unreported state stays permissive: `undefined` is a camera
+ * that never said, not a camera that said no.
+ */
+function refuseWhenDisabled(ctx: CommandContext, read: (name: string) => { value: unknown } | undefined): void {
+  if (read("enabled")?.value === false) throw new CameraDisabledError(ctx.name ?? ctx.serial);
+}
+
 export const CAMERA_MEMBERS = {
   /**
    * The READ is the *disable*-bit convention (1035 "0" ⇒ ON, 2001 direct); the WRITE polarity is
@@ -513,14 +523,20 @@ export const CAMERA_MEMBERS = {
    * value, and it exists only on a device bound to a provider. Each is declared once, with its
    * signature taken FROM {@link MediaProvider} — so a change there is a compile error here, not a drift.
    *
-   * None of these is withheld from a camera whose {@link CAMERA_MEMBERS.enabled} reads false, though such a
-   * camera answers a live start with audio and never a video frame — measured on a mains-powered own-session
+   * A pull is withheld from a camera whose {@link CAMERA_MEMBERS.enabled} reads false, because such a camera
+   * answers a live start with audio and never a video frame — measured on a mains-powered own-session
    * `INDOOR_PT_CAMERA`: 234 audio frames and no video across 20s, no stream-status report, and zero datagram
    * gaps, which then delivered 217 video access units with nothing changed but its own on/off state.
    *
-   * Deciding not to ask an off camera is the caller's, and it is made on the `enabled` getter — which that
-   * member's own observation now keeps convergent, so it is a value worth deciding on. What the SDK owes is
-   * the evidence: the reading, and the media source's own `audio-only` start stage.
+   * That is why the decision cannot be left to each caller. Asking anyway does not fail fast: it spends the
+   * whole warm-up window and reports `warm-timeout at audio-only`, which reads exactly like a camera that is
+   * broken — it misled this SDK's own author, who reported a switched-off camera on a real fleet as a
+   * pre-existing video defect on that evidence. `enabled` is the reliable reading and its own description says
+   * a live probe is not one, so the refusal belongs where the reading is already held.
+   *
+   * {@link CAMERA_MEMBERS.snapshotStored} is exempt: a retained push thumbnail is not a pull. A reading of
+   * `undefined` refuses nothing either, since families that report neither wire param leave the state unknown,
+   * and unknown is not known-off.
    */
   snapshotStored: provided(
     "media",
@@ -530,16 +546,20 @@ export const CAMERA_MEMBERS = {
   ),
   snapshotLive: provided(
     "media",
-    (m, { ctx }) =>
-      (opts?: Parameters<MediaProvider["snapshotLive"]>[0]) =>
-        m.snapshotLive({ powered: poweredOf(ctx), ...opts }),
+    (m, { ctx, read }) =>
+      async (opts?: Parameters<MediaProvider["snapshotLive"]>[0]) => {
+        refuseWhenDisabled(ctx, read);
+        return m.snapshotLive({ powered: poweredOf(ctx), ...opts });
+      },
     "Fresh still decoded from a short live burst.",
   ),
   live: provided(
     "media",
-    (m, { ctx }) =>
-      (opts?: Parameters<MediaProvider["live"]>[0]) =>
-        m.live({ powered: poweredOf(ctx), ...opts }),
+    (m, { ctx, read }) =>
+      async (opts?: Parameters<MediaProvider["live"]>[0]) => {
+        refuseWhenDisabled(ctx, read);
+        return m.live({ powered: poweredOf(ctx), ...opts });
+      },
     "Open a managed live stream.",
   ),
   record: provided("media", (m) => m.record, "Record N seconds → an mp4/h264 buffer."),
