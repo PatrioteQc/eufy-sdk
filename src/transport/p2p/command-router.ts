@@ -655,8 +655,13 @@ export class P2PCommandRouter {
    * re-acquire through this method after a failure; `attach()` on the dropped source throws, because it
    * has been disposed.
    *
-   * Several cameras behind one station each get their own source and may be warm at the same time: the
-   * station tags every media frame with the camera it belongs to, and {@link LiveStream} takes only its own.
+   * Several cameras behind one station each get their own source: the station tags every media frame with the
+   * camera it belongs to, and {@link LiveStream} takes only its own.
+   *
+   * Whether they can be SERVED at the same time is the station's business, not this map's. Where it serves one
+   * camera at a time, a pull still lingering for a camera nobody is watching would go on re-issuing its own
+   * media start against the one being asked for, so opening a new channel releases those first — see
+   * {@link releaseLingeringSiblings}. A pull with consumers is never touched.
    */
   async sharedLiveSourceFor(sn: string, opts: SharedLiveOpts = {}): Promise<SharedLiveSource> {
     const { session, parentSn, channel, accountId, homeBaseAttached } = await this.resolveSession(sn, {
@@ -669,6 +674,7 @@ export class P2PCommandRouter {
       source = undefined;
     }
     if (!source) {
+      this.releaseLingeringSiblings(parentSn, channel);
       const logger = this.deps.logger ?? noopLogger;
       source = new SharedLiveSource({
         makeStream: () =>
@@ -697,6 +703,29 @@ export class P2PCommandRouter {
     }
     this.warnIgnoredLiveOpts(key, opts);
     return source;
+  }
+
+  /**
+   * Tear down any pull on this station that is lingering for ANOTHER camera, before starting this one.
+   *
+   * A lingering pull has no consumers but is still held open, and on an attached camera holding it open means
+   * re-sending the full media start every keepalive tick. Two channels doing that at once on a station that
+   * serves one camera at a time leaves the new stream receiving nothing but the old camera's frames for as
+   * long as the linger lasts.
+   *
+   * Only a source with no consumers is dropped, so several cameras genuinely streaming together are never
+   * disturbed — the linger exists to make re-opening the SAME camera cheap, and it keeps doing that. What it
+   * may not do is keep a camera nobody is watching competing with one somebody just asked for.
+   */
+  private releaseLingeringSiblings(parentSn: string, channel: number): void {
+    const own = `${parentSn}:${channel}`;
+    for (const [key, source] of [...this.liveSources]) {
+      if (!key.startsWith(`${parentSn}:`) || key === own || source.consumerCount > 0) continue;
+      (this.deps.logger ?? noopLogger).debug(
+        `[live ${key}] releasing a lingering pull so ${own} can start — one station serves one camera at a time`,
+      );
+      this.dropLiveSource(key);
+    }
   }
 
   /** Dispose one cached live source and forget it, so the next acquisition builds a fresh one. */

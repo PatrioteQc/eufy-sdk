@@ -85,7 +85,8 @@ export interface LiveStreamOptions {
    *
    * On a HomeBase-attached camera it is ALSO what inbound media is matched against, so one camera's stream
    * never carries another camera's frames: a station fanning several cameras out over one session tags every
-   * media frame with the camera it belongs to.
+   * media frame with the camera it belongs to. A frame tagged for a channel a sibling started is never taken,
+   * however long the station keeps serving that sibling instead of this one.
    */
   channel?: number;
   /** Camera ECC private key (32B) for E2E/encrypted cameras; omit for plaintext cameras. */
@@ -261,6 +262,13 @@ export class LiveStream extends EventEmitter {
    * {@link FOREIGN_FRAME_TOLERANCE} frames with none of its own the stream stops filtering and says so.
    * Nothing about the fleet this was measured on needs that path; it exists because one account's firmware
    * is not every account's.
+   *
+   * That giving-up is reachable ONLY for a channel nobody on this station started. A station serving one
+   * camera at a time keeps serving the previous one for as long as its stream is held open, so a camera
+   * opened while a sibling is still lingering receives nothing but the sibling's frames to begin with — and
+   * giving up there adopted that sibling's video and audio for the rest of the session, which is the one
+   * outcome worse than a stream that never delivers. Media tagged for a channel a sibling started is
+   * contention, and contention resolves itself.
    */
   private acceptsMedia(frame: P2PFrame): boolean {
     if (this.mediaChannel === undefined || (frame.commandId !== CMD_VIDEO_FRAME && frame.commandId !== CMD_AUDIO_FRAME))
@@ -277,10 +285,11 @@ export class LiveStream extends EventEmitter {
       });
     }
     if (this.ownFrames > 0) return false;
+    if (this.session.startedLiveMedia?.(frame.channel)) return false;
     if (++this.foreignFrames < FOREIGN_FRAME_TOLERANCE) return false;
     this.logger.warn(
-      `[live] station tags media channel ${frame.channel}, not the started ${this.mediaChannel} — taking every ` +
-        `frame from here (another camera streaming on this station would interleave with this one)`,
+      `[live] station tags media channel ${frame.channel}, which nothing started, not the started ` +
+        `${this.mediaChannel} — taking every frame from here`,
     );
     this.mediaChannel = undefined;
     return true;

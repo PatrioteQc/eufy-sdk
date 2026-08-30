@@ -137,8 +137,8 @@ export async function captureSnapshotFromShared(
  * Recording starts at the first complete keyframe so the clip is seekable. Requires `ffmpeg`.
  *
  * Opens its OWN {@link LiveStream} over the session rather than joining the device's shared source, so it
- * costs a second pull on a camera already streaming and does not take part in the one-live-channel-per-station
- * constraint the shared path enforces. `recordFragments` is the shared-consumer path.
+ * costs a second pull on a camera already streaming, and the shared path's release of a sibling's lingering
+ * pull does not reach it. `recordFragments` is the shared-consumer path.
  *
  * The clip therefore starts at the SECOND keyframe, so parameter sets announced only with the first are
  * dropped along with it — every frame is watched for an announcement, including the skipped ones, and
