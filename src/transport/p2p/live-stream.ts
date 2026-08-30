@@ -274,17 +274,14 @@ export class LiveStream extends EventEmitter {
    * numbers its stream for itself: one was started on channel 0 and tagged its frames channel 1, so
    * matching there would drop the whole stream. Hence only an attached camera filters.
    *
-   * The match is UNCONDITIONAL. It used to give up after enough frames tagged for another camera with none of
-   * its own, on the theory that such a station tags differently and the stream would otherwise deliver
-   * nothing. That cannot be made safe on a station serving one camera at a time: a camera opened after another
-   * is routinely handed nothing but its sibling's frames to begin with, and a stream that gave up then adopted
-   * that sibling's video and audio for the rest of its life. Qualifying the rule by whether a sibling had a
-   * start outstanding left the same hole one step along, because releasing the sibling's pull deregisters its
-   * channel while its frames are still arriving.
+   * The match is UNCONDITIONAL, however long a station serves another camera instead of this one.
    *
-   * What giving up protected against is DETECTABLE without it: a stream that receives none of its own media
-   * hits the warm-up deadline and raises a typed start failure naming that. Serving another camera's picture
-   * is silent, and on a security camera it is far the worse of the two.
+   * A station serving one camera at a time hands a newly opened camera nothing but its sibling's frames until
+   * it switches, so "no media of my own yet, plenty for someone else" is what an ordinary handover looks like
+   * and does not distinguish a station that tags differently from one that is simply busy.
+   *
+   * A stream receiving none of its own media reaches the warm-up deadline and raises a typed start failure
+   * naming the stage it got to. Delivering another camera's picture raises nothing.
    */
   private acceptsMedia(frame: P2PFrame): boolean {
     if (this.mediaChannel === undefined || (frame.commandId !== CMD_VIDEO_FRAME && frame.commandId !== CMD_AUDIO_FRAME))
@@ -319,8 +316,8 @@ export class LiveStream extends EventEmitter {
    * Report an access unit the transport could not complete.
    *
    * Loud once per stream, then quiet: a station losing datagrams steadily would otherwise flood a host's
-   * log with one line per unit, and the first one already says everything the rest repeat. It was
-   * previously silent in both directions — no frame reached a consumer, and nothing said why.
+   * log with one line per unit, and the first one already says everything the rest repeat. A dropped unit is
+   * otherwise silent in both directions: no frame reaches a consumer, and nothing states why.
    */
   private reportDroppedUnit(drop: { carried: number; chunks: number; count: number }): void {
     const message = `[live] dropped an incomplete access unit (${drop.carried} bytes in ${drop.chunks} frame(s), tail never arrived, ${drop.count} so far)`;

@@ -1,15 +1,11 @@
 /**
  * The station a device's traffic belongs to, from its cloud record and its own serial.
  *
- * `parent_sn` is the field actually populated for a HomeBase-attached device; `station_sn` is frequently
- * absent — observed empty on every attached sensor of a T8010 — so keying on it alone silently resolves an
- * attached device to ITSELF, which is the answer that means "standalone" and is exactly wrong there. An empty
- * string is the cloud's way of saying "none" and is treated as absent, because taking it as a serial would
- * group every such device under one imaginary station.
+ * `parent_sn` carries the parent on a HomeBase-attached device. `station_sn` is frequently absent there —
+ * empty on every attached sensor of a T8010 — and serves only as a fallback. An empty string states no
+ * station.
  *
- * A device with no parent answers its OWN serial, which is what standing alone means and makes this total:
- * every device has a station, and grouping by it separates a base's cameras from a standalone one without a
- * caller having to know the topology.
+ * A device naming no parent answers its own serial, so every device has a station.
  */
 export function resolvedStationSn(raw: Record<string, unknown>, sn: string): string {
   const parent = typeof raw.parent_sn === "string" && raw.parent_sn ? raw.parent_sn : undefined;

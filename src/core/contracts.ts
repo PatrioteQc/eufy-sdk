@@ -431,10 +431,9 @@ export interface LiveVideoFrame {
  * about that rather than the definition of it.
  *
  * Where the parameter sets state no readable geometry — before a stream's first keyframe has carried any,
- * or from a set that cannot be parsed — the frame header's report is carried instead, so a caller always
- * has a configuration to act on rather than being left to diff frames for itself in the one case that
- * matters. The two are not distinguished in the payload: a caller acts on a configuration by comparing it
- * with the one it is already adapting, and that comparison answers the same whichever half stated it.
+ * or from a set that cannot be parsed — the frame header's report is carried instead, so a configuration is
+ * always present. The two are not distinguished in the payload: a configuration is acted on by comparing it
+ * with the one already in use, and that comparison answers the same whichever half stated it.
  *
  * A consequence worth knowing: the first announcements of a session can move from a header-derived
  * configuration to a parameter-set-derived one without the camera having reconfigured, because the sets

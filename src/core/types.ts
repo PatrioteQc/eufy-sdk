@@ -52,13 +52,10 @@ export interface EufyDevice {
   /** Which realtime transport carries its live state/commands. */
   realtime: RealtimeKind;
   /**
-   * The station this device's traffic belongs to — its parent HomeBase, or its OWN serial when it stands
-   * alone.
+   * The station this device's traffic belongs to: its parent HomeBase, or its own serial when it has none.
    *
-   * Resolved rather than copied from the record: `station_sn` is frequently absent on an attached device while
-   * `parent_sn` is the field that carries it. Grouping by this separates the cameras of one base, which the
-   * base serves one at a time over a single session, from a standalone camera that contends with nobody — so a
-   * caller can decide what may run at once without knowing the topology or opening any media.
+   * `parent_sn` carries the parent on an attached device. `station_sn` is frequently absent there — empty on
+   * every attached sensor of a T8010 — and serves only as a fallback for a device naming no parent.
    */
   stationSn?: string;
   /** Present (and non-empty) for P2P devices. */
