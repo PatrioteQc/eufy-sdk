@@ -338,10 +338,9 @@ function enablementReflection(
  * @internal
  */
 /**
- * Refuse a media pull on a camera whose `enabled` reading is false.
+ * Refuse a media pull where the `enabled` reading is false.
  *
- * Consults the same reading a caller would, so an unreported state stays permissive: `undefined` is a camera
- * that never said, not a camera that said no.
+ * `undefined` is permissive: a camera that never reported its state is not a camera known to be off.
  */
 function refuseWhenDisabled(ctx: CommandContext, read: (name: string) => { value: unknown } | undefined): void {
   if (read("enabled")?.value === false) throw new CameraDisabledError(ctx.name ?? ctx.serial);
@@ -523,20 +522,13 @@ export const CAMERA_MEMBERS = {
    * value, and it exists only on a device bound to a provider. Each is declared once, with its
    * signature taken FROM {@link MediaProvider} — so a change there is a compile error here, not a drift.
    *
-   * A pull is withheld from a camera whose {@link CAMERA_MEMBERS.enabled} reads false, because such a camera
-   * answers a live start with audio and never a video frame — measured on a mains-powered own-session
-   * `INDOOR_PT_CAMERA`: 234 audio frames and no video across 20s, no stream-status report, and zero datagram
-   * gaps, which then delivered 217 video access units with nothing changed but its own on/off state.
+   * A pull is refused where {@link CAMERA_MEMBERS.enabled} reads false, with {@link CameraDisabledError}. That
+   * reading is the on/off source; a live probe is not one, since a disabled camera answers a start with audio
+   * and never a video frame.
    *
-   * That is why the decision cannot be left to each caller. Asking anyway does not fail fast: it spends the
-   * whole warm-up window and reports `warm-timeout at audio-only`, which reads exactly like a camera that is
-   * broken — it misled this SDK's own author, who reported a switched-off camera on a real fleet as a
-   * pre-existing video defect on that evidence. `enabled` is the reliable reading and its own description says
-   * a live probe is not one, so the refusal belongs where the reading is already held.
-   *
-   * {@link CAMERA_MEMBERS.snapshotStored} is exempt: a retained push thumbnail is not a pull. A reading of
-   * `undefined` refuses nothing either, since families that report neither wire param leave the state unknown,
-   * and unknown is not known-off.
+   * {@link CAMERA_MEMBERS.snapshotStored} is exempt — a retained push thumbnail is not a pull. A reading of
+   * `undefined` refuses nothing: families reporting neither wire param leave the state unknown, and unknown is
+   * not known-off.
    */
   snapshotStored: provided(
     "media",

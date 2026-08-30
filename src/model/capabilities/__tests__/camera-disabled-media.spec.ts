@@ -5,21 +5,15 @@ import type { CommandContext } from "../types.js";
 import type { MediaProvider } from "../../../core/contracts.js";
 
 /**
- * A camera switched off in the app cannot serve media, and says so instead of being asked.
+ * A camera switched off in the app serves no media, and says so rather than being asked.
  *
- * Eufy's own behaviour on a disabled camera is to answer a live start with AUDIO and never a video frame —
- * measured as 234 audio frames and no video across 20 s, then 217 video access units with nothing changed but
- * its own on/off state. So a caller that asks anyway does not fail: it warms for the whole window and reports
- * a `warm-timeout at audio-only`, which is indistinguishable from a camera that is broken.
+ * A disabled camera answers a live start with audio and never a video frame, so a pull that is attempted
+ * spends its whole warm-up window and reports `warm-timeout at audio-only` — a stage this codebase documents
+ * as an observation and not a diagnosis. `enabled` is the on/off source and states outright that a live probe
+ * is not one, so the refusal sits where that reading is held.
  *
- * It misled this SDK's own author, who read that stage on a real fleet and reported a switched-off camera as a
- * pre-existing video defect. `enabled` is the reliable source and its own description says a live probe is not
- * one, so the refusal belongs where that reading is already held rather than in every caller that might
- * remember to check.
- *
- * A reading of `undefined` refuses nothing. Some families report neither wire param, and a camera whose state
- * is unknown is not a camera known to be off — withholding media there would break every device that simply
- * never says.
+ * A reading of `undefined` refuses nothing: families reporting neither wire param leave the state unknown, and
+ * unknown is not known-off.
  */
 const ctx = (extra: Partial<CommandContext> = {}): CommandContext => ({
   channel: 0,
@@ -43,15 +37,15 @@ const cameraWith = (enabled: boolean | undefined) =>
   }).acts;
 
 describe("a camera whose enabled reading is false", () => {
-  it("refuses a live stream, rather than warming for twenty seconds on audio it cannot use", async () => {
+  it("refuses a live stream", async () => {
     await expect(cameraWith(false).live!()).rejects.toThrow(/disabled/i);
   });
 
-  it("refuses a live snapshot burst, which is the same pull under another name", async () => {
+  it("refuses a live snapshot burst, that being the same pull under another name", async () => {
     await expect(cameraWith(false).snapshotLive!()).rejects.toThrow(/disabled/i);
   });
 
-  it("still hands over the retained push thumbnail, which needs no pull at all", async () => {
+  it("still hands over the retained push thumbnail, which is no pull", async () => {
     await expect(cameraWith(false).snapshotStored!()).resolves.toBeInstanceOf(Buffer);
   });
 });
@@ -61,7 +55,7 @@ describe("a camera whose enabled reading is true or unknown", () => {
     await expect(cameraWith(true).live!()).resolves.toBeDefined();
   });
 
-  it("streams when its state was never reported, an unknown camera not being a known-off one", async () => {
+  it("streams where the state was never reported, unknown not being known-off", async () => {
     await expect(cameraWith(undefined).live!()).resolves.toBeDefined();
   });
 });
