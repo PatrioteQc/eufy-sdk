@@ -1,4 +1,24 @@
 /**
+ * The station a device's traffic belongs to, from its cloud record and its own serial.
+ *
+ * `parent_sn` is the field actually populated for a HomeBase-attached device; `station_sn` is frequently
+ * absent — observed empty on every attached sensor of a T8010 — so keying on it alone silently resolves an
+ * attached device to ITSELF, which is the answer that means "standalone" and is exactly wrong there. An empty
+ * string is the cloud's way of saying "none" and is treated as absent, because taking it as a serial would
+ * group every such device under one imaginary station.
+ *
+ * A device with no parent answers its OWN serial, which is what standing alone means and makes this total:
+ * every device has a station, and grouping by it separates a base's cameras from a standalone one without a
+ * caller having to know the topology.
+ */
+export function resolvedStationSn(raw: Record<string, unknown>, sn: string): string {
+  const parent = typeof raw.parent_sn === "string" && raw.parent_sn ? raw.parent_sn : undefined;
+  if (parent && parent !== sn) return parent;
+  const station = typeof raw.station_sn === "string" && raw.station_sn ? raw.station_sn : undefined;
+  return station ?? sn;
+}
+
+/**
  * DeviceRegistry — the device list/record/capability-resolution collaborator behind {@link EufyMega}.
  *
  * The facade owns orchestration + event fan-out; this owns the resolution logic: fetching + merging
@@ -296,7 +316,7 @@ export class DeviceRegistry {
           sn: raw.device_sn,
           name: raw.device_name ?? raw.device_alias_name ?? raw.alias_name,
           model: raw.device_model,
-          stationSn: raw.station_sn,
+          stationSn: resolvedStationSn(raw, raw.device_sn),
           p2pDid: raw.p2p_did,
           params,
           paramUpdatedAt,
@@ -627,8 +647,7 @@ export class DeviceRegistry {
    * means, so this is also the topology signal `record()`/`capsOf` hand the resolver.
    */
   private stationOf(dev: EufyDevice): string {
-    const raw = (dev.raw ?? {}) as Record<string, any>;
-    return raw.parent_sn && raw.parent_sn !== dev.sn ? (raw.parent_sn as string) : (dev.stationSn ?? dev.sn);
+    return dev.stationSn ?? resolvedStationSn((dev.raw ?? {}) as Record<string, unknown>, dev.sn);
   }
 
   /**
