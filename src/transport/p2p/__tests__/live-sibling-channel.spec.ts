@@ -4,39 +4,33 @@ import { LiveStream } from "../live-stream.js";
 import type { P2PFrame, P2PSession } from "../p2p-session.js";
 
 /**
- * Two cameras on one station must never receive each other's media.
+ * A camera attached to a station receives its own media and nothing else, unconditionally.
  *
  * A station fans several cameras out over one session and tags every media frame with the camera it belongs
- * to, so each stream filters for its own. That filter has an escape hatch for a station which tags an
- * attached camera's frames with a channel other than the one that was started — without it such a camera
- * would get a stream that never delivers.
+ * to, so each stream matches its own channel. That match used to have an escape hatch: after enough frames
+ * tagged for another camera with none of its own, a stream concluded the station was tagging wrongly and took
+ * every frame from then on.
  *
- * The hatch's condition was "no frames of my own yet, and 30 for someone else", which is exactly what a
- * station serving one camera at a time produces while it is still serving the previous one. A stream that
- * fired it adopted its sibling's video AND audio permanently, because the tolerance is shared and clearing
- * the channel is not reversible. What separates the two cases is whether anybody STARTED the channel the
- * frames are tagged with: media for a channel a sibling started is contention, not mis-tagging.
+ * The hatch cannot be made safe here. A station serving one camera at a time keeps serving the previous one
+ * while a new start is in flight, so a camera opened after another is routinely handed nothing but its
+ * sibling's frames to begin with — and a stream that gave up then adopted that sibling's video and audio for
+ * the rest of its life. Every attempt to qualify the condition left a hole: keying it on whether a sibling had
+ * a start outstanding failed the moment the sibling's pull was released, because the frames already in flight
+ * then belonged to a channel nothing had started.
+ *
+ * What the hatch protected against was a station that tags an attached camera's frames with a channel other
+ * than the one started, which would leave the stream delivering nothing. That is DETECTABLE — the warm-up
+ * deadline raises a typed start failure naming it — while serving another camera's picture is silent, and for
+ * a security camera it is the worse of the two by a wide margin.
  */
 class FakeSession extends EventEmitter {
-  /** Channels a live start has been issued for on this station, as the real session records them. */
-  private readonly liveMediaChannels = new Set<number>();
-
-  startLiveMedia(channel?: number): void {
-    this.liveMediaChannels.add(channel ?? 0);
-  }
-
-  stopLiveMedia(channel?: number): void {
-    this.liveMediaChannels.delete(channel ?? 0);
-  }
-
-  startedLiveMedia(channel: number): boolean {
-    return this.liveMediaChannels.has(channel);
-  }
-
   decodeVideoFrame(data: Buffer, _signCode: number): Buffer | undefined {
     const declared = data.readUInt32LE(0);
     return data.subarray(22, 22 + declared);
   }
+
+  startLiveMedia(): void {}
+  stopLiveMedia(): void {}
 
   push(frame: Partial<P2PFrame>): void {
     this.emit("data", frame as P2PFrame);
@@ -63,8 +57,7 @@ function audioFrame(channel: number): Partial<P2PFrame> {
   return { commandId: 1301, channel, signCode: 0, data: Buffer.concat([header, payload]) };
 }
 
-/** A stream for `channel` on a station where `alsoStarted` channels have live starts outstanding. */
-function attachedStream(channel: number, alsoStarted: readonly number[] = []) {
+function attachedStream(channel: number) {
   const session = new FakeSession();
   const stream = new LiveStream(session as unknown as P2PSession, {
     channel,
@@ -77,61 +70,60 @@ function attachedStream(channel: number, alsoStarted: readonly number[] = []) {
   stream.on("video", () => video.push(1));
   stream.on("audio", () => audio.push(1));
   stream.start();
-  for (const other of alsoStarted) session.startLiveMedia(other);
   return { session, stream, video, audio };
 }
 
-/** More foreign frames than any tolerance, which is what a handover delivers before the sibling stops. */
-const PAST_TOLERANCE = 60;
+/** Far more than any tolerance a give-up rule could have used. */
+const RELENTLESS = 400;
 
-describe("a starting stream beside a sibling on the same station", () => {
-  it("delivers none of the sibling's video, however long the station keeps serving it", () => {
-    const { session, video } = attachedStream(1, [0]);
-    for (let i = 0; i < PAST_TOLERANCE; i++) session.push(videoFrame(0));
+describe("an attached camera's channel filter", () => {
+  it("never delivers another channel's video, however long the station serves it", () => {
+    const { session, video } = attachedStream(2);
+    for (let i = 0; i < RELENTLESS; i++) session.push(videoFrame(3));
     expect(video).toHaveLength(0);
   });
 
-  it("delivers none of the sibling's audio either", () => {
-    const { session, audio } = attachedStream(1, [0]);
-    for (let i = 0; i < PAST_TOLERANCE; i++) session.push(audioFrame(0));
+  it("never delivers another channel's audio", () => {
+    const { session, audio } = attachedStream(2);
+    for (let i = 0; i < RELENTLESS; i++) session.push(audioFrame(3));
     expect(audio).toHaveLength(0);
   });
 
-  it("still delivers its own media once the station switches to it", () => {
-    const { session, video } = attachedStream(1, [0]);
-    for (let i = 0; i < PAST_TOLERANCE; i++) session.push(videoFrame(0));
-    session.push(videoFrame(1));
+  it("delivers its own media the moment the station switches to it", () => {
+    const { session, video } = attachedStream(2);
+    for (let i = 0; i < RELENTLESS; i++) session.push(videoFrame(3));
+    session.push(videoFrame(2));
     expect(video).toHaveLength(1);
+  });
+
+  it("keeps filtering after its own media has flowed", () => {
+    const { session, video } = attachedStream(2);
+    session.push(videoFrame(2));
+    for (let i = 0; i < RELENTLESS; i++) session.push(videoFrame(3));
+    expect(video).toHaveLength(1);
+  });
+
+  it("delivers only its own out of media interleaved from several cameras", () => {
+    const { session, video } = attachedStream(2);
+    for (const channel of [0, 1, 2, 3, 0, 2, 3, 1, 2]) session.push(videoFrame(channel));
+    expect(video).toHaveLength(3);
   });
 
   /**
-   * A sibling that has stopped can still have frames in flight, and the channel it started is gone by then.
-   * Those must not reopen the hatch either: this stream has already had its own frames, which is the older
-   * of the two guards and the one that does not depend on what the station is doing now.
+   * A camera that owns its session numbers its stream for itself: one was started on channel 0 and tagged its
+   * frames channel 1, so matching there would drop the whole stream. Only an attached camera filters.
    */
-  it("keeps filtering after a sibling stops, once it has media of its own", () => {
-    const { session, video } = attachedStream(1, [0]);
-    session.push(videoFrame(1));
-    session.stopLiveMedia(0);
-    for (let i = 0; i < PAST_TOLERANCE; i++) session.push(videoFrame(0));
-    expect(video).toHaveLength(1);
-  });
-});
-
-/**
- * The hatch itself, which still has to work: a station tagging an attached camera's frames with a channel
- * NOBODY started is mis-tagging, and a stream that kept filtering there would never deliver anything.
- */
-describe("a station that tags media with a channel nobody started", () => {
-  it("takes the media rather than delivering nothing", () => {
-    const { session, video } = attachedStream(1);
-    for (let i = 0; i < PAST_TOLERANCE; i++) session.push(videoFrame(7));
-    expect(video.length).toBeGreaterThan(0);
-  });
-
-  it("tolerates a short burst before concluding it, so a late own frame still wins", () => {
-    const { session, video } = attachedStream(1);
-    session.push(videoFrame(7));
+  it("does not filter a camera that owns its session", () => {
+    const session = new FakeSession();
+    const stream = new LiveStream(session as unknown as P2PSession, {
+      channel: 0,
+      homeBaseAttached: false,
+      keepAliveMs: 0,
+      logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+    });
+    const video: number[] = [];
+    stream.on("video", () => video.push(1));
+    stream.start();
     session.push(videoFrame(1));
     expect(video).toHaveLength(1);
   });

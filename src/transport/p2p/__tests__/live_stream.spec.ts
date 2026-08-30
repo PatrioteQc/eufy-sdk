@@ -436,22 +436,25 @@ describe("LiveStream channel isolation on a HomeBase", () => {
   });
 
   /**
-   * A station that tags an attached camera's frames with something other than the started channel would
-   * otherwise get a stream that never delivers anything. After a bounded run of frames with none of its own
-   * it stops filtering and says so — one account's firmware is not every account's.
+   * The filter never gives up, however long a station serves another camera instead of this one.
+   *
+   * It used to, after a bounded run of foreign frames, on the theory that such a station tags differently and
+   * the stream would otherwise deliver nothing. On a station serving one camera at a time that run is what an
+   * ordinary handover produces, so the stream adopted its sibling's picture for the rest of its life. A stream
+   * receiving none of its own media instead hits the warm-up deadline and reports a typed start failure, which
+   * is the same information without ever showing the wrong camera.
    */
-  it("stops filtering, with a warning, if none of its own frames ever arrive", () => {
+  it("never stops filtering, however long only another channel's frames arrive", () => {
     const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
     const { session, frames } = attached(2, logger);
 
-    for (let i = 0; i < 40; i++) session.push(videoFrame({ nal: Buffer.from([0x41]), channel: 0 }));
+    for (let i = 0; i < 400; i++) session.push(videoFrame({ nal: Buffer.from([0x41]), channel: 0 }));
 
-    expect(frames.length).toBeGreaterThan(0);
-    expect(logger.warn).toHaveBeenCalledTimes(1);
-    expect(String(logger.warn.mock.calls[0][0])).toContain("station tags media channel 0");
+    expect(frames).toHaveLength(0);
+    expect(logger.warn).not.toHaveBeenCalled();
   });
 
-  /** Once its own tag has been seen, the fallback must never fire: the station has proven it discriminates. */
+  /** Its own tag still delivers, which is what makes the filter a filter rather than a mute. */
   it("keeps filtering once its own camera's tag has been seen", () => {
     const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
     const { session, frames } = attached(2, logger);

@@ -41,16 +41,6 @@ const SC3 = Buffer.from([0, 0, 1]);
 const AUDIO_CODECS: Readonly<Record<number, AudioCodec>> = { 0: "aac-lc", 2: "g711a", 7: "aac-eld" };
 
 /**
- * How many frames tagged for another camera this stream tolerates before concluding that the station does
- * NOT tag media per camera, and taking every frame instead.
- *
- * Two seconds of a 15fps stream. Enough that a station which tags as measured never reaches it (its very
- * first media frame carries the started channel), and short enough that a station which tags differently
- * costs a caller a brief gap rather than a stream that never delivers.
- */
-const FOREIGN_FRAME_TOLERANCE = 30;
-
-/**
  * Undecodable video payloads traced per stream. Every frame of a stream whose cipher this build cannot read
  * decodes to nothing, so the first few say everything the rest would repeat once per frame.
  */
@@ -118,8 +108,6 @@ export class LiveStream extends EventEmitter {
   private readonly units = new AccessUnitAssembler((drop) => this.reportDroppedUnit(drop));
   /** The channel inbound media must be tagged with, once {@link acceptsMedia} trusts the station's tag. */
   private mediaChannel?: number;
-  private ownFrames = 0;
-  private foreignFrames = 0;
   private tracedFirstVideoCommand = false;
   private tracedFirstVideoUnit = false;
   private tracedFirstKeyframe = false;
@@ -257,26 +245,22 @@ export class LiveStream extends EventEmitter {
    * numbers its stream for itself: one was started on channel 0 and tagged its frames channel 1, so
    * matching there would drop the whole stream. Hence only an attached camera filters.
    *
-   * A station that contradicts the measurement — tagging an attached camera's frames with something other
-   * than the channel that was started — would otherwise get a stream that never delivers, so after
-   * {@link FOREIGN_FRAME_TOLERANCE} frames with none of its own the stream stops filtering and says so.
-   * Nothing about the fleet this was measured on needs that path; it exists because one account's firmware
-   * is not every account's.
+   * The match is UNCONDITIONAL. It used to give up after enough frames tagged for another camera with none of
+   * its own, on the theory that such a station tags differently and the stream would otherwise deliver
+   * nothing. That cannot be made safe on a station serving one camera at a time: a camera opened after another
+   * is routinely handed nothing but its sibling's frames to begin with, and a stream that gave up then adopted
+   * that sibling's video and audio for the rest of its life. Qualifying the rule by whether a sibling had a
+   * start outstanding left the same hole one step along, because releasing the sibling's pull deregisters its
+   * channel while its frames are still arriving.
    *
-   * That giving-up is reachable ONLY for a channel nobody on this station started. A station serving one
-   * camera at a time keeps serving the previous one for as long as its stream is held open, so a camera
-   * opened while a sibling is still lingering receives nothing but the sibling's frames to begin with — and
-   * giving up there adopted that sibling's video and audio for the rest of the session, which is the one
-   * outcome worse than a stream that never delivers. Media tagged for a channel a sibling started is
-   * contention, and contention resolves itself.
+   * What giving up protected against is DETECTABLE without it: a stream that receives none of its own media
+   * hits the warm-up deadline and raises a typed start failure naming that. Serving another camera's picture
+   * is silent, and on a security camera it is far the worse of the two.
    */
   private acceptsMedia(frame: P2PFrame): boolean {
     if (this.mediaChannel === undefined || (frame.commandId !== CMD_VIDEO_FRAME && frame.commandId !== CMD_AUDIO_FRAME))
       return true;
-    if (frame.channel === this.mediaChannel) {
-      this.ownFrames++;
-      return true;
-    }
+    if (frame.channel === this.mediaChannel) return true;
     if (!this.tracedFirstForeignFrame) {
       this.tracedFirstForeignFrame = true;
       traceLiveStart(this.logger, {
@@ -284,15 +268,7 @@ export class LiveStream extends EventEmitter {
         media: frame.commandId === CMD_VIDEO_FRAME ? "video" : "audio",
       });
     }
-    if (this.ownFrames > 0) return false;
-    if (this.session.startedLiveMedia?.(frame.channel)) return false;
-    if (++this.foreignFrames < FOREIGN_FRAME_TOLERANCE) return false;
-    this.logger.warn(
-      `[live] station tags media channel ${frame.channel}, which nothing started, not the started ` +
-        `${this.mediaChannel} — taking every frame from here`,
-    );
-    this.mediaChannel = undefined;
-    return true;
+    return false;
   }
 
   /**

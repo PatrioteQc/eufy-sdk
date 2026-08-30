@@ -366,17 +366,6 @@ export class P2PSession extends EventEmitter {
    * change (the level-2 key arrived after an initial level-1 start), otherwise sends the 1139 nudge.
    */
   private readonly liveStartedChannels = new Map<number, "l1" | "l2">();
-  /**
-   * Channels a live start has been issued for and not yet stopped, on EITHER topology.
-   *
-   * Distinct from {@link liveStartedChannels}, which records the encryption level an own-session start was
-   * sent at so the next keepalive can tell a start from a ping — an attached camera has no such state and is
-   * absent from it. This one answers a different question, for {@link LiveStream}: is media tagged for this
-   * channel something somebody on this station asked for? A station serving one camera at a time keeps
-   * serving the previous one while a new start is in flight, and media tagged for a channel a sibling
-   * started is that, not a station tagging its frames wrongly.
-   */
-  private readonly liveMediaChannels = new Set<number>();
   private readonly unackedLiveStarts = new Map<number, RetainedDatagram & { channel: number }>();
   private liveStartRetransmitTimer?: ReturnType<typeof setInterval>;
 
@@ -813,11 +802,9 @@ export class P2PSession extends EventEmitter {
         action: "start",
         level2: !!this.level2Key,
       });
-      this.liveMediaChannels.add(channel);
       this.sendMediaPayloadLevel2(CMD_START_REALTIME_MEDIA, channel, accountId, {});
       return;
     }
-    this.liveMediaChannels.add(channel);
     const want: "l1" | "l2" = this.level2Key ? "l2" : "l1";
     if (this.liveStartedChannels.get(channel) === want) {
       traceLiveStart(this.logger, {
@@ -1046,21 +1033,9 @@ export class P2PSession extends EventEmitter {
     return true;
   }
 
-  /**
-   * Whether a live start is outstanding for `channel` on this session.
-   *
-   * Read by {@link LiveStream} to tell a station serving a sibling camera from a station tagging its media
-   * with a channel nobody selected. The first is contention and resolves itself; the second would leave a
-   * stream delivering nothing, and is the only case its channel filter may give up on.
-   */
-  startedLiveMedia(channel: number): boolean {
-    return this.liveMediaChannels.has(channel);
-  }
-
   /** Stop the realtime media stream (`CMD_STOP_REALTIME_MEDIA`, 1004) on a camera `channel`. */
   stopLiveMedia(channel: number = STATION_CHANNEL, accountId = ""): void {
     this.liveStartedChannels.delete(channel);
-    this.liveMediaChannels.delete(channel);
     for (const [sequence, pending] of this.unackedLiveStarts) {
       if (pending.channel === channel) this.unackedLiveStarts.delete(sequence);
     }
