@@ -323,6 +323,15 @@ function enablementReflection(
 }
 
 /**
+ * Refuse a media pull where the `enabled` reading is false.
+ *
+ * `undefined` is permissive: a camera that never reported its state is not a camera known to be off.
+ */
+function refuseWhenDisabled(ctx: CommandContext, read: (name: string) => { value: unknown } | undefined): void {
+  if (read("enabled")?.value === false) throw new CameraDisabledError(ctx.name ?? ctx.serial);
+}
+
+/**
  * Every `camera` feature, declared once. The property schema, the typed getters, the derived setters,
  * the intent routes, the media methods and the descriptions all come out of this table.
  *
@@ -337,15 +346,6 @@ function enablementReflection(
  * does not carry.
  * @internal
  */
-/**
- * Refuse a media pull where the `enabled` reading is false.
- *
- * `undefined` is permissive: a camera that never reported its state is not a camera known to be off.
- */
-function refuseWhenDisabled(ctx: CommandContext, read: (name: string) => { value: unknown } | undefined): void {
-  if (read("enabled")?.value === false) throw new CameraDisabledError(ctx.name ?? ctx.serial);
-}
-
 export const CAMERA_MEMBERS = {
   /**
    * The READ is the *disable*-bit convention (1035 "0" ⇒ ON, 2001 direct); the WRITE polarity is
