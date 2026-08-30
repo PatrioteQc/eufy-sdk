@@ -463,6 +463,7 @@ export class SharedLiveSource {
     }
 
     if (!this.stream) this.warm();
+    else this.watchReusedStream();
 
     // Keyframe-prime: stage the last IDR so a joining consumer decodes without a full GOP wait. The
     // consumer replays it the moment a "video" listener subscribes (live() is async — see prime()).
@@ -498,6 +499,27 @@ export class SharedLiveSource {
       this.warmAttempts++;
       current.nudge();
     }, this.warmRetryMs);
+  }
+
+  /**
+   * Watch a stream this consumer joined rather than warmed, so a dead one cannot pass for a live one.
+   *
+   * A reused stream hands a joining consumer the retained keyframe at once, which is evidence about the past:
+   * it says the stream WAS being served, not that it still is. A caller commits to media on that frame — a
+   * process, a negotiated session — so a stream the station has quietly stopped serving strands it with no
+   * deadline, because warming is what arms one and a reuse skips warming by definition.
+   *
+   * The deadline is the warm-up's own, and the first frame to arrive AFTER the join clears it, that being the
+   * only frame which says the stream is still being served. A stream still serving clears it long before it
+   * fires; one that is not fails its consumers exactly as a cold start that never delivered would.
+   *
+   * Nothing is armed while a watch is already pending, so several consumers joining one reused stream share the
+   * deadline the first of them started.
+   */
+  private watchReusedStream(): void {
+    if (this.warmDeadlineTimer.pending || this.warmRetryTimer !== undefined) return;
+    this.delivered = { keyframe: false, video: false, audio: false };
+    this.warmDeadlineTimer.arm(this.warmTimeoutMs, () => this.onWarmTimeout());
   }
 
   /** Arm the battery budget timer (battery/solar sources) — replaces any pending budget/grace. */
