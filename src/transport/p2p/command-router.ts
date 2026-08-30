@@ -70,14 +70,6 @@ const CONNECT_WAIT_MS = 20_000;
 const LEVEL2_GRACE_MS = 25_000;
 
 /**
- * The best-effort grace, used where the key is merely PREFERABLE: media egresses, which only need it on
- * the HomeBase-attached path, and whose failure a stream start reports precisely on its own. A camera on
- * its own session legitimately never negotiates a key, so this wait never refuses one. It is one grace
- * per session, measured from connect rather than restarted by every egress or a later negotiation start.
- */
-const LEVEL2_SOFT_GRACE_MS = 8_000;
-
-/**
  * Options accepted when warming a {@link SharedLiveSource} for a device (all optional).
  *
  * {@link SharedSourceHints} are the members any media egress may supply, because any of them may be the
@@ -997,17 +989,21 @@ export class P2PCommandRouter {
       // An attached camera's media start has no level-1 form: `sendMediaPayloadLevel2` puts nothing on the wire
       // without the key. Such a caller is a level-2 one however it asked, so a settled negotiation must be
       // re-prompted and a missing key must fail here — resolving it soft left the warm-up re-issuing a command
-      // that was never sent, every interval, until it timed out. An own-session camera carries both levels and
-      // picks by the key it holds, so it stays soft.
-      const soft = opts.waitLevel2 === "soft" && !(opts.requireLevel2ForAttached && homeBaseAttached);
-      let ready = await session.awaitLevel2Key(
-        soft ? LEVEL2_SOFT_GRACE_MS : LEVEL2_GRACE_MS,
-        soft ? "session" : "call",
-      );
-      if (!ready && !soft && session.repromptLevel2Key()) {
+      // that was never sent, every interval, until it timed out.
+      // Best effort means the caller can frame without the key, and `sendStartLiveOwnSession` proves it by
+      // reading `level2Key` when it sends: the framing is chosen per command, so a start issued with no key
+      // rides level 1 and the warm-up's own re-issue rides level 2 once the key has landed. Waiting first buys
+      // nothing re-issuing does not, and costs the whole grace on a camera that will never negotiate one —
+      // nothing bounds an unanswered `CMD_GATEWAYINFO`, so the caller's grace IS the bound, and it is charged
+      // from connect. Measured on three standalone cameras: 7.8 s of dead time each, then a keyframe within
+      // 400 ms of finally starting.
+      const required = opts.waitLevel2 !== "soft" || (opts.requireLevel2ForAttached === true && homeBaseAttached);
+      if (!required) return { session, parentSn, channel, accountId, homeBaseAttached };
+      let ready = await session.awaitLevel2Key(LEVEL2_GRACE_MS, "call");
+      if (!ready && session.repromptLevel2Key()) {
         ready = await session.awaitLevel2Key(LEVEL2_GRACE_MS, "call");
       }
-      if (!ready && !soft) throw new Error(`level-2 key not ready for ${parentSn}`);
+      if (!ready) throw new Error(`level-2 key not ready for ${parentSn}`);
     }
     return { session, parentSn, channel, accountId, homeBaseAttached };
   }

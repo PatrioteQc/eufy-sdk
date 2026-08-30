@@ -6,7 +6,6 @@ const DEVICE_SN = "T8000P0000000000";
 const STATION_SN = "T8000P0000000001";
 const ACCOUNT_ID = "0000000000000000000000000000000000000000";
 
-const SOFT_GRACE_MS = 8_000;
 const HARD_GRACE_MS = 25_000;
 
 interface FakeSession extends FakeP2PSession {
@@ -57,16 +56,20 @@ function setup(hasLevel2Key: boolean, attached = true) {
  */
 describe("resolving a session defers the level-2 wait to the session", () => {
   /**
-   * A camera on its own session asks best-effort, because it legitimately never negotiates a key and its start
-   * carries both levels. Best-effort has to mean "ask the session", or it means "stall every stream on a camera
-   * that will never answer".
+   * A camera on its own session does not wait for the key at all.
+   *
+   * `sendStartLiveOwnSession` reads `level2Key` when it sends, so the framing is chosen per command and not
+   * per session: a start issued with no key rides level 1, and the warm-up's own re-issue two seconds later
+   * rides level 2 if the key has landed by then. Blocking first buys nothing that re-issuing does not, and
+   * best-effort means the caller can proceed without the key by definition — measured on three standalone
+   * cameras, all three waited the full 8 s grace for a key that never arrives and then produced a keyframe
+   * within 400 ms of finally starting.
    */
-  it("asks the session once, with the best-effort grace, for a camera on its own session", async () => {
+  it("does not wait for a key its start does not need, for a camera on its own session", async () => {
     const { router, session } = setup(false, false);
     const source = await router.sharedLiveSourceFor(DEVICE_SN);
     expect(source).toBeDefined();
-    expect(session.awaitLevel2Key).toHaveBeenCalledTimes(1);
-    expect(session.awaitLevel2Key).toHaveBeenCalledWith(SOFT_GRACE_MS, "session");
+    expect(session.awaitLevel2Key).not.toHaveBeenCalled();
   });
 
   /**
