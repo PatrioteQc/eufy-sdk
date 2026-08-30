@@ -38,6 +38,10 @@ describe("live-trace vocabulary at the package entry point", () => {
       "video-decode-empty": true,
       "datagram-gap": true,
       "sequence-restart": true,
+      "level2-wait": true,
+      "level2-ready": true,
+      "level2-absent": true,
+      warming: true,
     } satisfies Record<LiveTrace["phase"], true>;
     expect(Object.keys(handled)).toContain("sequence-restart");
   });

@@ -420,9 +420,11 @@ export class P2PSession extends EventEmitter {
     const remaining = graceMs - (Date.now() - since);
     if (remaining <= 0) {
       this.logger.debug(`[p2p] ${this.cfg.stationSn} no level-2 key and its ${graceMs}ms grace has elapsed`);
+      traceLiveStart(this.logger, { phase: "level2-absent", waitedMs: graceMs });
       return false;
     }
     this.logger.debug(`[p2p] ${this.cfg.stationSn} waiting up to ${remaining}ms for the level-2 key`);
+    traceLiveStart(this.logger, { phase: "level2-wait", waitMs: remaining });
     const waiters = this.level2Waiters;
     const outcome = await new Promise<"key" | "terminal" | "closed" | "timeout">((resolve) => {
       let deadline: ReturnType<typeof setTimeout> | undefined;
@@ -513,6 +515,7 @@ export class P2PSession extends EventEmitter {
         }
         this.setLevel2Key(key);
         this.logger.debug(`[p2p] ${this.cfg.stationSn} level-2 key negotiated (cipher_id ${cipherId})`);
+        traceLiveStart(this.logger, { phase: "level2-ready", cipherId });
         this.emit("level2Ready", { cipherId });
       } catch (e) {
         if (this.closed || generation !== this.connectionGeneration) return;

@@ -29,6 +29,7 @@ import { LiveStreamStartError, type LiveStreamStartFailureReason } from "../../c
 import { noopLogger, type Logger } from "../../core/logger.js";
 import { Timer } from "../../core/util.js";
 import { codedGeometry, updatedParamSets, type CodedGeometry, type ParamSets } from "./annexb.js";
+import { traceLiveStart } from "./live-trace.js";
 import type {
   LiveAudioFrame,
   LiveStreamConsumer,
@@ -482,6 +483,7 @@ export class SharedLiveSource {
     this.delivered = { keyframe: false, video: false, audio: false };
     this.warmAttempts = 1;
     this.logger.debug(`${this.tag} warming (retry=${this.warmRetryMs}ms deadline=${this.warmTimeoutMs}ms)`);
+    traceLiveStart(this.logger, { phase: "warming", retryMs: this.warmRetryMs, deadlineMs: this.warmTimeoutMs });
     const stream = this.opts.makeStream();
     this.stream = stream;
     stream.on("video", (frame) => this.onVideo(frame));

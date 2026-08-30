@@ -35,7 +35,21 @@ export type LiveTrace =
   /** A datagram was missing on a data channel, discarding the logical frame being reassembled. */
   | { phase: "datagram-gap"; dataType: number }
   /** A data channel's numbering restarted mid-connection, so sequencing resynchronized onto it. */
-  | { phase: "sequence-restart"; dataType: number };
+  | { phase: "sequence-restart"; dataType: number }
+  /**
+   * A live start is holding for the station's level-2 key, with the milliseconds it will wait.
+   *
+   * The first of three phases that account for the wait before any media command is sent. A start that looks
+   * slow is either waiting here, waiting for the station to serve the channel it was asked for, or being
+   * re-issued — and only these separate them.
+   */
+  | { phase: "level2-wait"; waitMs: number }
+  /** The station's level-2 key was negotiated, under the cipher it selected. */
+  | { phase: "level2-ready"; cipherId: number }
+  /** The level-2 key did not arrive in its grace, so the start proceeds at level 1 or not at all. */
+  | { phase: "level2-absent"; waitedMs: number }
+  /** A shared source began warming, with the interval it re-issues on and the deadline it fails at. */
+  | { phase: "warming"; retryMs: number; deadlineMs: number };
 
 /** Record one startup observation at debug level. */
 export function traceLiveStart(logger: Logger, trace: LiveTrace): void {
