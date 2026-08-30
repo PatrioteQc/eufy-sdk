@@ -488,6 +488,77 @@ describe("LiveStream keepalive default", () => {
     }
   });
 
+  /**
+   * On an attached camera the nudge is not a ping — it re-sends the full media start, which on a station that
+   * serves one camera at a time re-asserts this camera's channel against whatever else is warm. Measured on a
+   * real base, two attached streams each restarted every 3 s and fought for the station continuously.
+   *
+   * Once the station has delivered a frame of this camera's own channel it has proven it is serving this one,
+   * so re-asserting buys nothing and costs the contention. The SDK's own measurement agrees the nudge is
+   * unnecessary there: both attached cameras held a 40 s stream with it disabled, while the own-session camera
+   * that needs it went quiet at 13.6 s without it.
+   */
+  it("stops re-issuing the start on an attached camera once its own media arrives", () => {
+    vi.useFakeTimers();
+    try {
+      const session = new FakeSession();
+      const stream = new LiveStream(session as unknown as P2PSession, {
+        channel: 2,
+        homeBaseAttached: true,
+      }).start();
+      vi.advanceTimersByTime(DEFAULT_KEEPALIVE_MS * 2 + 10);
+      const beforeMedia = session.started;
+      expect(beforeMedia).toBeGreaterThan(1);
+
+      session.push(videoFrame({ nal: Buffer.from([0x65, 1]), channel: 2 }));
+      vi.advanceTimersByTime(DEFAULT_KEEPALIVE_MS * 5);
+
+      expect(session.started).toBe(beforeMedia);
+      stream.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps re-issuing the start on an own-session camera, which goes quiet without it", () => {
+    vi.useFakeTimers();
+    try {
+      const session = new FakeSession();
+      const stream = new LiveStream(session as unknown as P2PSession, {
+        channel: 0,
+        homeBaseAttached: false,
+      }).start();
+      session.push(videoFrame({ nal: Buffer.from([0x65, 1]), channel: 0 }));
+      const afterMedia = session.started;
+      vi.advanceTimersByTime(DEFAULT_KEEPALIVE_MS * 3 + 10);
+
+      expect(session.started).toBeGreaterThan(afterMedia);
+      stream.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  /** A frame for another camera proves nothing about this one, so the nudge must survive it. */
+  it("keeps re-issuing while only another camera's media arrives", () => {
+    vi.useFakeTimers();
+    try {
+      const session = new FakeSession();
+      const stream = new LiveStream(session as unknown as P2PSession, {
+        channel: 2,
+        homeBaseAttached: true,
+      }).start();
+      session.push(videoFrame({ nal: Buffer.from([0x65, 1]), channel: 3 }));
+      const afterForeign = session.started;
+      vi.advanceTimersByTime(DEFAULT_KEEPALIVE_MS * 3 + 10);
+
+      expect(session.started).toBeGreaterThan(afterForeign);
+      stream.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("honours an explicit 0 as off", () => {
     vi.useFakeTimers();
     try {

@@ -62,9 +62,13 @@ const MAX_TRACED_DECODE_FAILURES = 3;
  * What the nudge costs differs by topology, and only one branch is a true keepalive: an own-session
  * camera's `startLiveMedia` tracks that the stream is already started and sends the small ping, while a
  * HomeBase-attached camera has no such state and re-sends the full media start — a genuine restart on
- * that path. Measured, that restart is not harmful at this interval: both attached cameras streamed a
- * 40 s window with and without it at the same frame rate (15.6–16.9 fps either way) and with no stall
- * either way.
+ * that path.
+ *
+ * That restart is harmless on a station serving ONE camera and harmful on a station serving several: it
+ * re-asserts this camera's channel every interval, so two attached streams contend continuously. Measured on
+ * a real base as a full start every 3 s from each. So an attached stream stops nudging as soon as the station
+ * delivers a frame of its own channel — see the private `settleKeepalive`. The measurement that justifies it
+ * is the one above: the attached cameras held their window with the nudge disabled outright.
  */
 export const DEFAULT_KEEPALIVE_MS = 3000;
 
@@ -142,6 +146,30 @@ export class LiveStream extends EventEmitter {
   }
 
   /**
+   * Stop re-issuing the media start once this camera's own media has arrived, on an attached camera.
+   *
+   * The nudge differs by topology and only one branch is a ping: an own-session camera sends a small
+   * keepalive, while an attached camera has no such state and re-sends the FULL media start. On a station that
+   * serves one camera at a time that restart re-asserts this channel against whatever else is warm, so two
+   * attached streams restart every interval and contend for the station continuously — measured on a real base
+   * as a full start every 3 s from each.
+   *
+   * A frame of this camera's own channel is the station stating it is serving THIS camera, which is the only
+   * thing the restart was trying to bring about. The SDK's own measurement agrees it is then unnecessary: both
+   * attached cameras held a 40 s stream with the nudge disabled, while the own-session camera that needs it
+   * went quiet at 13.6 s without it — so an own-session stream keeps its ping.
+   *
+   * The warm-up retry a shared source runs is untouched: it recovers a start that raced the level-2 key, and
+   * it stops at the first keyframe by its own rule.
+   */
+  private settleKeepalive(): void {
+    if (!this.opts.homeBaseAttached || !this.kaTimer) return;
+    clearInterval(this.kaTimer);
+    this.kaTimer = undefined;
+    this.logger.debug("[live] station is serving this camera — holding off the attached restart");
+  }
+
+  /**
    * Re-issue the start command (idempotent while listening) — the media-start / keepalive nudge. The
    * shared source calls this to retry a start that raced key negotiation, until frames flow. Safe to
    * call repeatedly: `startLiveMedia` self-selects start vs keepalive per the session state.
@@ -207,6 +235,7 @@ export class LiveStream extends EventEmitter {
           // Sniff the codec only on a keyframe (it carries the parameter sets); delta frames have no
           // config NAL, so they inherit the last-known codec.
           if (unit.keyframe) this.lastCodec = sniffAnnexbCodec(unit.data) ?? this.lastCodec;
+          this.settleKeepalive();
           this.emit("video", {
             keyframe: unit.keyframe,
             width: unit.width,
