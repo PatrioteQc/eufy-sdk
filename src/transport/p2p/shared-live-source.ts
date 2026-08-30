@@ -473,11 +473,6 @@ export class SharedLiveSource {
 
   /**
    * Build + start the underlying stream, wire its frames into the fan-out, and watch the warm-up.
-   *
-   * The deadline is armed before the retry ticker so that a retry falling on the same instant as the
-   * deadline is never issued, which keeps `attempts` on {@link LiveStreamStartError} equal to the number of
-   * media starts actually sent. A stream with no `nudge` cannot be retried, so its warm-up stays at one
-   * attempt however long the deadline is.
    */
   private warm(): void {
     this._state = "warming";
@@ -492,6 +487,18 @@ export class SharedLiveSource {
     stream.on("stop", () => this.onUpstreamEnd());
     stream.on("error", (err) => this.onUpstreamError(err));
     stream.start();
+    this.armWarmWatch();
+  }
+
+  /**
+   * Arm the deadline a stream must deliver within, and the ticker that re-issues its start until it does.
+   *
+   * The deadline is armed before the ticker so that a retry falling on the same instant as the deadline is
+   * never issued, which keeps `attempts` on {@link LiveStreamStartError} equal to the number of media starts
+   * actually sent. A stream with no `nudge` cannot be retried, so its watch stays at one attempt however long
+   * the deadline is.
+   */
+  private armWarmWatch(): void {
     this.warmDeadlineTimer.arm(this.warmTimeoutMs, () => this.onWarmTimeout());
     this.warmRetryTimer = setInterval(() => {
       const current = this.stream;
@@ -509,17 +516,28 @@ export class SharedLiveSource {
    * process, a negotiated session — so a stream the station has quietly stopped serving strands it with no
    * deadline, because warming is what arms one and a reuse skips warming by definition.
    *
-   * The deadline is the warm-up's own, and the first frame to arrive AFTER the join clears it, that being the
-   * only frame which says the stream is still being served. A stream still serving clears it long before it
-   * fires; one that is not fails its consumers exactly as a cold start that never delivered would.
+   * The watch is the warm-up's own, deadline and retry alike, and the first frame to arrive AFTER the join
+   * clears it, that being the only frame which says the stream is still being served. A stream still serving
+   * clears it long before the deadline fires; one that is not fails its consumers exactly as a cold start that
+   * never delivered would.
+   *
+   * The start is re-issued at once and then on the retry's cadence, because a station that stopped serving a
+   * channel when its last consumer left is the very case the retry recovers: waiting the whole window to
+   * report what one re-issued start can fix is a timeout where a stream was available.
    *
    * Nothing is armed while a watch is already pending, so several consumers joining one reused stream share the
-   * deadline the first of them started.
+   * watch the first of them started.
    */
   private watchReusedStream(): void {
     if (this.warmDeadlineTimer.pending || this.warmRetryTimer !== undefined) return;
     this.delivered = { keyframe: false, video: false, audio: false };
-    this.warmDeadlineTimer.arm(this.warmTimeoutMs, () => this.onWarmTimeout());
+    this.warmAttempts = 0;
+    this.armWarmWatch();
+    const current = this.stream;
+    if (current?.nudge) {
+      this.warmAttempts++;
+      current.nudge();
+    }
   }
 
   /** Arm the battery budget timer (battery/solar sources) — replaces any pending budget/grace. */
