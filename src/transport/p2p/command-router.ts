@@ -674,9 +674,13 @@ export class P2PCommandRouter {
     if (!source) {
       this.releaseLingeringSiblings(parentSn, channel, purpose);
       const logger = this.deps.logger ?? noopLogger;
+      // The session is held rather than captured, so a start nothing acknowledged can be answered with a
+      // replacement the SAME source warms on — see `onSessionUnreachable`. Capturing it would tie the source
+      // to one connection for its whole life, which is the state a client restart used to be needed to leave.
+      const held = { session };
       source = new SharedLiveSource({
         makeStream: () =>
-          new LiveStream(session, {
+          new LiveStream(held.session, {
             channel,
             accountId,
             homeBaseAttached,
@@ -694,6 +698,7 @@ export class P2PCommandRouter {
         onActive: () => this.manager.addUser(parentSn),
         onIdle: () => this.manager.releaseUser(parentSn),
         onStartFailed: () => this.onLiveStartFailed(sn, key),
+        onSessionUnreachable: () => this.replaceUnreachableSession(sn, key, held),
       });
       this.liveSources.set(key, source);
       this.liveSourceOpts.set(key, opts);
@@ -771,6 +776,40 @@ export class P2PCommandRouter {
    * {@link resetStandaloneSession} this does not wait for the station to fall idle: the failed source's own
    * session user is still counted, so a deferred reset would never fire.
    */
+  /**
+   * Replace the session under a warming source whose media start nothing acknowledged, and warm again on it.
+   *
+   * The abandonment says this connection is not being heard, so re-issuing on it spends the warm-up window to
+   * no effect — measured on a real camera as five starts, five abandonments and a `source-error` twenty seconds
+   * after a first abandonment at three that already carried the answer. Rebuilding and delivering a keyframe
+   * took 5.9 s on the attempt that followed, which fits inside the window the first one wasted.
+   *
+   * Only a STANDALONE device's session is replaced, for the reason {@link onLiveStartFailed} gives: an attached
+   * camera shares its HomeBase session with every other camera on it, and closing that to recover one would
+   * drop the rest. Such a source keeps the re-issue it always had.
+   *
+   * The source is left warming throughout, holding the deadline it started, so this either produces a stream
+   * within that window or fails exactly as it would have. A replacement that cannot be opened leaves the
+   * source to its deadline rather than failing it early — the window is the caller's contract, not this
+   * recovery's.
+   */
+  private replaceUnreachableSession(sn: string, key: string, held: { session: P2PSession }): void {
+    const station = this.stationKeyOf(sn);
+    if (station !== sn) return;
+    void (async () => {
+      try {
+        await this.manager.close(station);
+        const { session } = await this.resolveSession(sn);
+        if (this.liveSources.get(key) !== undefined) {
+          held.session = session;
+          this.liveSources.get(key)?.rewarm();
+        }
+      } catch (error) {
+        this.reportError(error instanceof Error ? error : new Error(String(error)));
+      }
+    })();
+  }
+
   private onLiveStartFailed(sn: string, key: string): void {
     const station = this.stationKeyOf(sn);
     if (station !== sn) {

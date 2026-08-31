@@ -926,6 +926,9 @@ export class P2PSession extends EventEmitter {
         onAbandoned: (_sequence, held) => {
           this.liveStartedChannels.delete(held.channel);
           traceLiveStart(this.logger, { phase: "media-command-unacknowledged", action: "start" });
+          // Stated as well as traced: a stream waiting on this start can only time out, and the channel is what
+          // tells a shared HomeBase session's other streams that it was not theirs.
+          this.emit("liveStartUnacknowledged", held.channel);
         },
       });
       if (!outstanding) this.clearLiveStartRetransmit();

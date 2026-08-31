@@ -128,6 +128,13 @@ export interface SharedLiveSourceOptions {
    * an owner does in response to this callback.
    */
   onStartFailed?: () => void;
+  /**
+   * A media start was abandoned unacknowledged before anything was delivered, so this session is not being
+   * heard. The owner is asked for a replacement and calls {@link SharedLiveSource.rewarm} once it has one.
+   *
+   * Asked at most once per warm-up: further abandonments are the same session saying the same thing.
+   */
+  onSessionUnreachable?: () => void;
 }
 
 /**
@@ -383,6 +390,8 @@ export class SharedLiveSource {
 
   /** Warm-up start-retry ticker (interval) + single-shot deadline; cleared once the first keyframe arrives. */
   private warmRetryTimer?: ReturnType<typeof setInterval>;
+  /** Whether this warm-up has already asked its owner to replace the session. */
+  private sessionReplacementAsked = false;
   private readonly warmDeadlineTimer = new Timer();
   private warmAttempts = 0;
   /** Battery budget timer + post-notice grace timer (battery/solar sources only). */
@@ -501,6 +510,7 @@ export class SharedLiveSource {
    */
   private warm(): void {
     this._state = "warming";
+    this.sessionReplacementAsked = false;
     this.delivered = { keyframe: false, video: false, audio: false };
     this.warmAttempts = 1;
     this.logger.debug(`${this.tag} warming (retry=${this.warmRetryMs}ms deadline=${this.warmTimeoutMs}ms)`);
@@ -511,8 +521,62 @@ export class SharedLiveSource {
     stream.on("audio", (frame) => this.onAudio(frame));
     stream.on("stop", () => this.onUpstreamEnd());
     stream.on("error", (err) => this.onUpstreamError(err));
+    stream.on("unacknowledged", () => this.onStartUnacknowledged());
     stream.start();
     this.armWarmWatch();
+  }
+
+  /**
+   * A start was abandoned unacknowledged. Ask for a replacement session where nothing has been delivered yet.
+   *
+   * The abandonment is roughly twenty byte-identical sends with no reply, against acknowledgement latencies of
+   * 4–37 ms awake and 238 ms waking, so it is the session that is not being heard rather than a slow device —
+   * `P2PSession` says as much: the camera was never told to stream, so this warm-up can only time out. Where
+   * media has already flowed the abandonment means something else and this does nothing.
+   *
+   * The retry ticker is stopped while a replacement is awaited, because every tick it issues goes to the same
+   * unheard session. The DEADLINE is left running: the window belongs to the attempt, not to the session it
+   * started on.
+   */
+  private onStartUnacknowledged(): void {
+    if (this.disposed || this.sessionReplacementAsked) return;
+    if (this.delivered.video || this.delivered.audio || this.delivered.keyframe) return;
+    if (!this.opts.onSessionUnreachable) return;
+    this.sessionReplacementAsked = true;
+    this.logger.debug(`${this.tag} start unacknowledged with nothing delivered — asking for a fresh session`);
+    if (this.warmRetryTimer) clearInterval(this.warmRetryTimer);
+    this.warmRetryTimer = undefined;
+    this.opts.onSessionUnreachable();
+  }
+
+  /**
+   * Warm again on a session the owner has replaced, inside the deadline the first attempt started.
+   *
+   * The previous stream is dropped rather than stopped through the state machine: it speaks to a session that
+   * is gone, and its `stop` would be read as an upstream end. Only a warm-up that asked for a replacement
+   * rewarms, so this is inert on a source that is streaming or has already failed.
+   */
+  rewarm(): void {
+    if (this.disposed || !this.sessionReplacementAsked || this._state !== "warming") return;
+    const previous = this.stream;
+    this.stream = undefined;
+    previous?.stop();
+    const stream = this.opts.makeStream();
+    this.stream = stream;
+    stream.on("video", (frame) => this.onVideo(frame));
+    stream.on("audio", (frame) => this.onAudio(frame));
+    stream.on("stop", () => this.onUpstreamEnd());
+    stream.on("error", (err) => this.onUpstreamError(err));
+    stream.on("unacknowledged", () => this.onStartUnacknowledged());
+    stream.start();
+    this.warmAttempts++;
+    this.logger.debug(`${this.tag} warming again on a replacement session (attempt ${this.warmAttempts})`);
+    this.warmRetryTimer = setInterval(() => {
+      const current = this.stream;
+      if (!current?.nudge) return;
+      this.warmAttempts++;
+      current.nudge();
+    }, this.warmRetryMs);
   }
 
   /**

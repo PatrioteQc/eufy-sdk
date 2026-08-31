@@ -540,6 +540,14 @@ export interface LiveStreamHandle {
   on(event: "error", listener: (err: Error) => void): this;
   /** Battery-budget elapsed — extend to keep streaming or let it auto-stop (battery cameras only). */
   on(event: "budget", listener: (notice: StreamBudgetNotice) => void): this;
+  /**
+   * A media start was repeated to its acknowledgement deadline and abandoned.
+   *
+   * The start is repeated byte-identically, so an abandonment is many sends with no reply — the device was
+   * never told to stream, and a warm-up waiting on it can only time out. Distinct from `error`: the transport
+   * is intact and the session is simply not being heard.
+   */
+  on(event: "unacknowledged", listener: () => void): this;
 }
 
 /**
@@ -589,6 +597,14 @@ export interface LiveStreamConsumer extends LiveStreamHandle {
   on(event: "error", listener: (err: Error) => void): this;
   /** Battery-budget elapsed — extend to keep streaming or let it auto-stop (battery cameras only). */
   on(event: "budget", listener: (notice: StreamBudgetNotice) => void): this;
+  /**
+   * A media start was repeated to its acknowledgement deadline and abandoned.
+   *
+   * The start is repeated byte-identically, so an abandonment is many sends with no reply — the device was
+   * never told to stream, and a warm-up waiting on it can only time out. Distinct from `error`: the transport
+   * is intact and the session is simply not being heard.
+   */
+  on(event: "unacknowledged", listener: () => void): this;
 }
 
 /** An SDP session description crossing the WebRTC signaling boundary (JSEP shape). */

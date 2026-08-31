@@ -118,6 +118,9 @@ export class LiveStream extends EventEmitter {
   private tracedDecodeFailures = 0;
   private tracedFirstForeignFrame = false;
   private readonly handler = (f: P2PFrame) => this.onFrame(f);
+  private readonly unackedHandler = (channel: number) => {
+    if (channel === (this.opts.channel ?? 0)) this.emit("unacknowledged");
+  };
   private readonly logger: Logger;
 
   constructor(
@@ -136,6 +139,9 @@ export class LiveStream extends EventEmitter {
     if (this.listening) return this;
     this.listening = true;
     this.session.on("data", this.handler);
+    // An abandonment on ANOTHER channel of a shared HomeBase session says nothing about this stream, so only
+    // this channel's own is forwarded. An own-session camera reports its single channel.
+    this.session.on("liveStartUnacknowledged", this.unackedHandler);
     this.sendStart();
     const keepAliveMs = this.opts.keepAliveMs ?? DEFAULT_KEEPALIVE_MS;
     if (keepAliveMs > 0) {
@@ -192,6 +198,7 @@ export class LiveStream extends EventEmitter {
     if (!this.listening) return;
     this.listening = false;
     this.session.off("data", this.handler);
+    this.session.off("liveStartUnacknowledged", this.unackedHandler);
     if (this.kaTimer) clearInterval(this.kaTimer);
     this.kaTimer = undefined;
     try {
@@ -334,8 +341,10 @@ export interface LiveStream {
   // Structural conformance to LiveStreamHandle; the upstream stream never emits "budget" itself
   // (the shared source raises it on the consumer side), but the type must be assignable.
   on(event: "budget", listener: (notice: import("../../core/contracts.js").StreamBudgetNotice) => void): this;
+  /** This channel's media start was abandoned unacknowledged — see {@link LiveStreamHandle}. */
+  on(event: "unacknowledged", listener: () => void): this;
   emit(event: "video", frame: LiveVideoFrame): boolean;
   emit(event: "audio", frame: LiveAudioFrame): boolean;
-  emit(event: "start" | "stop"): boolean;
+  emit(event: "start" | "stop" | "unacknowledged"): boolean;
   emit(event: "error", err: Error): boolean;
 }
