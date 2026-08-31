@@ -410,6 +410,19 @@ export class SharedLiveSource {
   private reuseWatch = false;
   /** This source's opaque handle for tracing — see {@link SharedLiveSource.trace}. */
   private readonly traceId: string;
+  /**
+   * How many re-issues this watch has spent with nothing arriving since it was armed.
+   *
+   * What a stream delivered BEFORE the current watch is no evidence about now — a reused stream's upstream may
+   * have served plenty and since been dropped by the station, and the retained keyframe replayed to a joining
+   * consumer says nothing either. Only a frame arriving after the watch was armed does, and {@link delivered}
+   * is reset to track exactly that.
+   *
+   * The first re-issue is therefore a keepalive: a reuse cannot yet know which case it is in, and a keepalive
+   * is right where the station is still serving and harmless where it is not. A second one due with nothing
+   * arrived is the answer — no bound of its own, the retry's own cadence.
+   */
+  private fruitlessReissues = 0;
   private readonly warmDeadlineTimer = new Timer();
   private warmAttempts = 0;
   /** Battery budget timer + post-notice grace timer (battery/solar sources only). */
@@ -541,6 +554,7 @@ export class SharedLiveSource {
     this._state = "warming";
     this.sessionReplacementAsked = false;
     this.reuseWatch = false;
+    this.fruitlessReissues = 0;
     this.delivered = { keyframe: false, video: false, audio: false };
     this.warmAttempts = 1;
     this.logger.debug(`${this.tag} warming (retry=${this.warmRetryMs}ms deadline=${this.warmTimeoutMs}ms)`);
@@ -591,6 +605,7 @@ export class SharedLiveSource {
     const previous = this.stream;
     this.stream = undefined;
     previous?.stop();
+    this.fruitlessReissues = 0;
     const stream = this.opts.makeStream();
     this.stream = stream;
     stream.on("video", (frame) => this.onVideo(frame));
@@ -622,15 +637,20 @@ export class SharedLiveSource {
    *
    * On an own-session camera a re-issue is a keepalive once the session believes the channel is started, and
    * that belief outlives a station which acknowledged a start and then served nothing: every later re-issue is
-   * then a keepalive holding a stream that was never started. Nothing delivered is this source's own evidence
-   * that the channel is not being served, so it says so. Once media arrives the keepalive is what is wanted,
-   * and an attached camera re-sends a full start either way.
+   * then a keepalive holding a stream that was never started. Nothing arriving since this watch was armed, across
+   * more than one re-issue, is this source's own evidence that the channel is not being served — see
+   * {@link fruitlessReissues} for why one is not enough and why what the stream delivered earlier is not
+   * evidence. Once media arrives the keepalive is what is wanted, and an attached camera re-sends a full start
+   * either way.
    */
   private reissueStart(): void {
     const current = this.stream;
     if (!current?.nudge) return;
     this.warmAttempts++;
-    current.nudge(!this.delivered.video && !this.delivered.audio);
+    const arrivedSinceWatch = this.delivered.video || this.delivered.audio;
+    if (arrivedSinceWatch) this.fruitlessReissues = 0;
+    else this.fruitlessReissues++;
+    current.nudge(!arrivedSinceWatch && this.fruitlessReissues > 1);
   }
 
   /**
@@ -656,6 +676,7 @@ export class SharedLiveSource {
   private watchReusedStream(): void {
     if (this.warmDeadlineTimer.pending || this.warmRetryTimer !== undefined) return;
     this.delivered = { keyframe: false, video: false, audio: false };
+    this.fruitlessReissues = 0;
     this.reuseWatch = true;
     this.warmAttempts = 0;
     this.armWarmWatch();
@@ -750,6 +771,7 @@ export class SharedLiveSource {
 
   private onVideo(frame: LiveVideoFrame): void {
     this.delivered.video = true;
+    this.fruitlessReissues = 0;
     this.settleReuseWatch();
     this.lastParamSets = updatedParamSets(frame.data, this.lastParamSets);
     const item = { kind: "video", frame, timestampMs: Date.now(), config: this.configOf(frame) } as const;
@@ -799,6 +821,7 @@ export class SharedLiveSource {
   private onAudio(frame: LiveAudioFrame): void {
     const item = { kind: "audio", frame, timestampMs: Date.now() } as const;
     this.delivered.audio = true;
+    this.fruitlessReissues = 0;
     this.settleReuseWatch();
     this.pushRing(item);
     for (const c of this.consumers) c.deliverAudio(frame, item.timestampMs);

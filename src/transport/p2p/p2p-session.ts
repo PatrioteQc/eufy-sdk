@@ -834,7 +834,15 @@ export class P2PSession extends EventEmitter {
     // the belief is set when a start is acknowledged and cleared only by a stop or an abandonment, so a station
     // that acknowledged a start and then served nothing leaves it standing — and every later re-issue is then a
     // keepalive, which holds a stream that was never started and cannot begin one.
-    if (opts?.force) this.liveStartedChannels.delete(channel);
+    //
+    // It yields to a start already awaiting acknowledgement. That start is being repeated byte-identically every
+    // 150 ms, which is the work forcing one wants done, and it is abandoned at its deadline — the signal a
+    // source recovers a dead session from. Replacing it under a new sequence resets that deadline, so a caller
+    // re-issuing faster than it never lets the abandonment fire at all.
+    if (opts?.force) {
+      for (const pending of this.unackedLiveStarts.values()) if (pending.channel === channel) return;
+      this.liveStartedChannels.delete(channel);
+    }
     if (this.liveStartedChannels.get(channel) === want) {
       this.trace({
         phase: "media-command",
