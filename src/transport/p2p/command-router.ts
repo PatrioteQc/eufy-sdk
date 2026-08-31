@@ -70,6 +70,16 @@ const CONNECT_WAIT_MS = 20_000;
 const LEVEL2_GRACE_MS = 25_000;
 
 /**
+ * The bound a caller waits for the level-2 negotiation to SETTLE, measured from connect.
+ *
+ * For a caller that picks its seal once from {@link P2PSession.hasLevel2Key} and has no second chance. A media
+ * start reads the key on every send and is re-issued by the warm-up, so it needs no wait; a property write
+ * framed level-1 to a family that only accepts level-2 is ignored, and nothing re-frames it. Session-scoped,
+ * so a station that offers no key does not charge this to every later command.
+ */
+const LEVEL2_SETTLE_MS = 8_000;
+
+/**
  * Options accepted when warming a {@link SharedLiveSource} for a device (all optional).
  *
  * {@link SharedSourceHints} are the members any media egress may supply, because any of them may be the
@@ -533,8 +543,11 @@ export class P2PCommandRouter {
       p2pQuery: (subCmd, opts) => this.p2pQuery(sn, subCmd, opts),
       p2pControlQuery: (param, data, opts) => this.p2pControlQuery(sn, param, data, opts),
       record: async (seconds, opts) => {
+        // Opens its own pull, so it reaches `sendMediaPayloadLevel2` exactly as a shared source does and needs
+        // the key on the same terms — an attached camera's start has no level-1 form to fall back to.
         const { session, channel, accountId, homeBaseAttached } = await this.resolveSession(sn, {
           waitLevel2: "soft",
+          requireLevel2ForAttached: true,
         });
         return recordClip(session, seconds, {
           channel,
@@ -670,9 +683,10 @@ export class P2PCommandRouter {
       this.dropLiveSource(key);
       source = undefined;
     }
-    if (source) this.releaseLingeringSiblings(parentSn, channel, purpose);
+    // Before the branch, because a reuse frees the station exactly as a cold start does: the measured failure
+    // was the OTHER channels re-tasking the station, not the pull already open on this one.
+    this.releaseLingeringSiblings(parentSn, channel, purpose);
     if (!source) {
-      this.releaseLingeringSiblings(parentSn, channel, purpose);
       const logger = this.deps.logger ?? noopLogger;
       // The session is held rather than captured, so a start nothing acknowledged can be answered with a
       // replacement the SAME source warms on — see `onSessionUnreachable`. Capturing it would tie the source
@@ -986,7 +1000,7 @@ export class P2PCommandRouter {
     sn: string,
     send: { l1: (r: ResolvedSession) => Promise<void>; l2: (r: ResolvedSession) => Promise<void> },
   ): Promise<void> {
-    const resolved = await this.resolveSession(sn, { waitLevel2: "soft" });
+    const resolved = await this.resolveSession(sn, { waitLevel2: "settle" });
     await (resolved.session.hasLevel2Key ? send.l2(resolved) : send.l1(resolved));
   }
 
@@ -995,16 +1009,25 @@ export class P2PCommandRouter {
    * attached camera or the device's own, its `device_channel`, and the admin account id. Opens the
    * station's P2P session on demand if needed and waits for it to connect, then holds it warm briefly
    * (a command keepalive, so a burst of commands / a follow-up read reuses it instead of paying a fresh
-   * handshake — a no-op for a wired/persistent station). `waitLevel2`: `true` = require the level-2 key
-   * (throw if not ready); `"soft"` = best-effort short wait, don't throw; `false`/absent = no wait.
+   * handshake — a no-op for a wired/persistent station).
    *
-   * A caller that REQUIRES the key and is refused asks the station once more before giving up — see
-   * {@link P2PSession.repromptLevel2Key}, which explains why one settled negotiation is not the last word. A
-   * soft caller has a level-1 path and never re-prompts.
+   * `waitLevel2` states what the caller does about the key:
+   *
+   *  - `true` — cannot frame without it. Waits the full grace, re-prompts once, and throws if refused.
+   *  - `"settle"` — picks its seal once from {@link P2PSession.hasLevel2Key}. Waits {@link LEVEL2_SETTLE_MS}
+   *    session-scoped for the negotiation to conclude either way, then proceeds. Never throws.
+   *  - `"soft"` — frames per send and is re-issued, so it does not wait at all.
+   *  - `false` / absent — no wait; enough to read topology.
+   *
+   * `requireLevel2ForAttached` promotes a `"soft"` caller to `true` on a HomeBase-attached camera, whose media
+   * start has no level-1 form at all.
+   *
+   * Only a caller that REQUIRES the key re-prompts — see {@link P2PSession.repromptLevel2Key}, which explains
+   * why one settled negotiation is not the last word.
    */
   private async resolveSession(
     sn: string,
-    opts: { waitLevel2?: boolean | "soft"; requireLevel2ForAttached?: boolean } = {},
+    opts: { waitLevel2?: boolean | "soft" | "settle"; requireLevel2ForAttached?: boolean } = {},
   ): Promise<ResolvedSession> {
     const dev = await this.deviceFor(sn);
     const raw = (dev.raw ?? {}) as Record<string, any>;
@@ -1036,6 +1059,10 @@ export class P2PCommandRouter {
       // nothing bounds an unanswered `CMD_GATEWAYINFO`, so the caller's grace IS the bound, and it is charged
       // from connect. Measured on three standalone cameras: 7.8 s of dead time each, then a keyframe within
       // 400 ms of finally starting.
+      if (opts.waitLevel2 === "settle") {
+        await session.awaitLevel2Key(LEVEL2_SETTLE_MS, "session");
+        return { session, parentSn, channel, accountId, homeBaseAttached };
+      }
       const required = opts.waitLevel2 !== "soft" || (opts.requireLevel2ForAttached === true && homeBaseAttached);
       if (!required) return { session, parentSn, channel, accountId, homeBaseAttached };
       let ready = await session.awaitLevel2Key(LEVEL2_GRACE_MS, "call");

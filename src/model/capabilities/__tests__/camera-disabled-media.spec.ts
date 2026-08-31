@@ -45,6 +45,10 @@ describe("a camera whose enabled reading is false", () => {
     await expect(cameraWith(false).snapshotLive!()).rejects.toThrow(/disabled/i);
   });
 
+  it("refuses a bounded clip, which opens its own pull", async () => {
+    await expect(cameraWith(false).record!(10)).rejects.toThrow(/disabled/i);
+  });
+
   it("still hands over the retained push thumbnail, which is no pull", async () => {
     await expect(cameraWith(false).snapshotStored!()).resolves.toBeInstanceOf(Buffer);
   });

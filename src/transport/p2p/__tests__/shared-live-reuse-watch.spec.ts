@@ -69,6 +69,33 @@ describe("a consumer joining a lingering source", () => {
   });
 
   /**
+   * Any frame after the join settles the watch, not a keyframe.
+   *
+   * The join already carries a decodable picture — the retained keyframe is replayed to it — so what the watch
+   * is missing is evidence the stream is STILL being served, and a delta frame is that evidence. Requiring a
+   * keyframe instead made the deadline outlive an actively delivering stream whenever its group of pictures
+   * was longer than the window, and `onWarmTimeout` fails EVERY consumer and tears the source down: a healthy
+   * viewer would lose its stream because a snapshot joined it.
+   */
+  it("settles on a delta frame, a stream still being served needing no fresh keyframe to prove it", async () => {
+    const { src, streams } = source({ warmTimeoutMs: 60 });
+    const first = src.attach();
+    streams[0]!.video(keyframe());
+    first.detach();
+
+    const rejoined = src.attach();
+    const failures: Error[] = [];
+    rejoined.on("error", (err) => failures.push(err));
+    rejoined.on("video", () => undefined);
+    await settle(10);
+    streams[0]!.video(videoFrame(unit(H264.delta), { keyframe: false }));
+    await settle(120);
+
+    expect(failures).toEqual([]);
+    rejoined.detach();
+  });
+
+  /**
    * A reused stream is also re-asserted, not merely watched.
    *
    * The retry exists to recover a start the station never acted on, and a station that stopped serving a

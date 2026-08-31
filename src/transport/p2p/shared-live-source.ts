@@ -255,6 +255,10 @@ class ConsumerImpl extends EventEmitter implements Consumer {
     const q = this.queue;
     this.queue = [];
     for (let i = 0; i < q.length; i++) {
+      // A sink may detach from inside a delivery handler, mid-drain. `deliverVideo` guards that; `flush` walks
+      // a local copy the detach cannot empty, so it is checked here or the rest of the backlog reaches a sink
+      // that has gone.
+      if (this.detached) return;
       if (this.paused) {
         this.retainUndelivered(q.slice(i));
         return;
@@ -392,6 +396,15 @@ export class SharedLiveSource {
   private warmRetryTimer?: ReturnType<typeof setInterval>;
   /** Whether this warm-up has already asked its owner to replace the session. */
   private sessionReplacementAsked = false;
+  /**
+   * Whether the pending watch is a REUSE watch, which any frame settles.
+   *
+   * A cold warm-up needs a keyframe: nothing can be decoded without one. A join already holds the retained
+   * keyframe, so what its watch is missing is evidence the stream is still being served — and a delta frame is
+   * that evidence. Requiring a keyframe there let the deadline outlive an actively delivering stream whose
+   * group of pictures is longer than the window, and the timeout fails EVERY consumer.
+   */
+  private reuseWatch = false;
   private readonly warmDeadlineTimer = new Timer();
   private warmAttempts = 0;
   /** Battery budget timer + post-notice grace timer (battery/solar sources only). */
@@ -511,6 +524,7 @@ export class SharedLiveSource {
   private warm(): void {
     this._state = "warming";
     this.sessionReplacementAsked = false;
+    this.reuseWatch = false;
     this.delivered = { keyframe: false, video: false, audio: false };
     this.warmAttempts = 1;
     this.logger.debug(`${this.tag} warming (retry=${this.warmRetryMs}ms deadline=${this.warmTimeoutMs}ms)`);
@@ -620,6 +634,7 @@ export class SharedLiveSource {
   private watchReusedStream(): void {
     if (this.warmDeadlineTimer.pending || this.warmRetryTimer !== undefined) return;
     this.delivered = { keyframe: false, video: false, audio: false };
+    this.reuseWatch = true;
     this.warmAttempts = 0;
     this.armWarmWatch();
     const current = this.stream;
@@ -667,6 +682,14 @@ export class SharedLiveSource {
   }
 
   /** Stop the warm-up retry + deadline (the stream is confirmed live). */
+  /** Settle a reuse watch on any frame — the join already holds a decodable picture. */
+  private settleReuseWatch(): void {
+    if (!this.reuseWatch) return;
+    this.reuseWatch = false;
+    if (this._state === "warming") this._state = "live";
+    this.clearWarmWatch();
+  }
+
   private clearWarmWatch(): void {
     if (this.warmRetryTimer) clearInterval(this.warmRetryTimer);
     this.warmRetryTimer = undefined;
@@ -705,6 +728,7 @@ export class SharedLiveSource {
 
   private onVideo(frame: LiveVideoFrame): void {
     this.delivered.video = true;
+    this.settleReuseWatch();
     this.lastParamSets = updatedParamSets(frame.data, this.lastParamSets);
     const item = { kind: "video", frame, timestampMs: Date.now(), config: this.configOf(frame) } as const;
     if (frame.keyframe) {
@@ -753,6 +777,7 @@ export class SharedLiveSource {
   private onAudio(frame: LiveAudioFrame): void {
     const item = { kind: "audio", frame, timestampMs: Date.now() } as const;
     this.delivered.audio = true;
+    this.settleReuseWatch();
     this.pushRing(item);
     for (const c of this.consumers) c.deliverAudio(frame, item.timestampMs);
   }

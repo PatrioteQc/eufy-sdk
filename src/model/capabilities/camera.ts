@@ -522,9 +522,10 @@ export const CAMERA_MEMBERS = {
    * value, and it exists only on a device bound to a provider. Each is declared once, with its
    * signature taken FROM {@link MediaProvider} — so a change there is a compile error here, not a drift.
    *
-   * A pull is refused where {@link CAMERA_MEMBERS.enabled} reads false, with {@link CameraDisabledError}. That
-   * reading is the on/off source; a live probe is not one, since a disabled camera answers a start with audio
-   * and never a video frame.
+   * Every pull is refused where {@link CAMERA_MEMBERS.enabled} reads false, with {@link CameraDisabledError} —
+   * `live`, `snapshotLive`, `record`, `openReadable` and `recordFragments` alike, since each opens media on a
+   * camera that serves none. That reading is the on/off source; a live probe is not one, since a disabled
+   * camera answers a start with audio and never a video frame.
    *
    * {@link CAMERA_MEMBERS.snapshotStored} is exempt — a retained push thumbnail is not a pull. A reading of
    * `undefined` refuses nothing: families reporting neither wire param leave the state unknown, and unknown is
@@ -554,21 +555,33 @@ export const CAMERA_MEMBERS = {
       },
     "Open a managed live stream.",
   ),
-  record: provided("media", (m) => m.record, "Record N seconds → an mp4/h264 buffer."),
+  record: provided(
+    "media",
+    (m, { ctx, read }) =>
+      async (...args: Parameters<MediaProvider["record"]>) => {
+        refuseWhenDisabled(ctx, read);
+        return m.record(...args);
+      },
+    "Record N seconds → an mp4/h264 buffer.",
+  ),
   openReadable: provided(
     "media",
-    (m, { ctx }) =>
+    (m, { ctx, read }) =>
       m.openReadable &&
-      ((opts?: Parameters<NonNullable<MediaProvider["openReadable"]>>[0]) =>
-        m.openReadable!({ powered: poweredOf(ctx), ...opts })),
+      ((opts?: Parameters<NonNullable<MediaProvider["openReadable"]>>[0]) => {
+        refuseWhenDisabled(ctx, read);
+        return m.openReadable!({ powered: poweredOf(ctx), ...opts });
+      }),
     "Open a node:stream Readable of the live feed.",
   ),
   recordFragments: provided(
     "media",
-    (m, { ctx }) =>
+    (m, { ctx, read }) =>
       m.recordFragments &&
-      ((opts?: Parameters<NonNullable<MediaProvider["recordFragments"]>>[0]) =>
-        m.recordFragments!({ powered: poweredOf(ctx), ...opts })),
+      ((opts?: Parameters<NonNullable<MediaProvider["recordFragments"]>>[0]) => {
+        refuseWhenDisabled(ctx, read);
+        return m.recordFragments!({ powered: poweredOf(ctx), ...opts });
+      }),
     "Continuous fragmented-MP4 (CMAF) recording.",
   ),
   /**

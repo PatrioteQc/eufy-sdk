@@ -112,14 +112,28 @@ export async function captureSnapshotFromShared(
         cleanup();
         reject(new LiveSnapshotUnavailableError("source-failed", err.message, { cause: err }));
       };
+      /**
+       * The source ended under this capture. A live request takes a station channel from a pull only snapshots
+       * are holding, and the pull it drops ends its consumers with `stop` rather than an error — so without
+       * this the capture would wait out its whole timeout and report a missing keyframe, naming the wrong
+       * cause for a burst that was deliberately given up.
+       */
+      const onStop = () => {
+        cleanup();
+        reject(
+          new LiveSnapshotUnavailableError("source-failed", `source ended before a keyframe (state: ${source.state})`),
+        );
+      };
       const cleanup = () => {
         clearTimeout(timer);
         if (settle) clearTimeout(settle);
         consumer.off("video", onVideo);
         consumer.off("error", onError);
+        consumer.off("stop", onStop);
       };
       consumer.on("video", onVideo);
       consumer.on("error", onError);
+      consumer.on("stop", onStop);
     });
     return await annexbToJpeg(primeForDecode(burst.h264, burst.sets, burst.codec), {
       logger: opts.logger ?? noopLogger,

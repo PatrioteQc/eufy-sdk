@@ -93,6 +93,15 @@ export interface LiveStreamOptions {
    */
   keepAliveMs?: number;
   /**
+   * How long an attached stream tolerates silence on its own channel before re-asserting again, in ms.
+   *
+   * The re-assert is settled by the first own-channel frame, because settling it is what stops two attached
+   * streams contending on a station that serves one camera at a time. Silence for this long says the station
+   * is no longer serving this camera, which is the only condition the re-assert was for. Defaults to twice
+   * the keepalive interval, so a stream whose media flows never reaches it.
+   */
+  stallMs?: number;
+  /**
    * Runtime topology fact (from the device record: `parent_sn && parent_sn !== sn`): true = the camera
    * rides a HomeBase's session (start via the level-2 `1003` payload), false = own-session camera
    * (start via the `1700`/`cmd 1000` path, level-2 or level-1 per the session key). NOT a family trait.
@@ -117,6 +126,7 @@ export class LiveStream extends EventEmitter {
   private tracedFirstKeyframe = false;
   private tracedDecodeFailures = 0;
   private tracedFirstForeignFrame = false;
+  private stallTimer?: ReturnType<typeof setTimeout>;
   private readonly handler = (f: P2PFrame) => this.onFrame(f);
   private readonly unackedHandler = (channel: number) => {
     if (channel === (this.opts.channel ?? 0)) this.emit("unacknowledged");
@@ -169,10 +179,38 @@ export class LiveStream extends EventEmitter {
    * it stops at the first keyframe by its own rule.
    */
   private settleKeepalive(): void {
-    if (!this.opts.homeBaseAttached || !this.kaTimer) return;
+    if (!this.opts.homeBaseAttached) return;
+    this.armStallWatch();
+    if (!this.kaTimer) return;
     clearInterval(this.kaTimer);
     this.kaTimer = undefined;
     this.logger.debug("[live] station is serving this camera — holding off the attached restart");
+  }
+
+  /**
+   * Re-arm the attached re-assert if this camera's own media goes silent.
+   *
+   * Holding the re-assert off is right while the station is serving this camera and wrong the moment it stops:
+   * a station that switches to a sibling leaves this stream with no frames, no error and no `stop`, and the
+   * warm-up watch that would have caught it was cleared by the first frame. Silence is therefore the condition
+   * the re-assert exists for, and the only one — re-arming while media flows is the contention this settle was
+   * introduced to remove.
+   *
+   * Replaced on every own-channel frame, so the window is measured from the last one.
+   */
+  private armStallWatch(): void {
+    if (this.stallTimer) clearTimeout(this.stallTimer);
+    const keepAliveMs = this.opts.keepAliveMs ?? DEFAULT_KEEPALIVE_MS;
+    if (keepAliveMs <= 0) return;
+    const stallMs = this.opts.stallMs ?? keepAliveMs * 2;
+    this.stallTimer = setTimeout(() => {
+      this.stallTimer = undefined;
+      if (!this.listening || this.kaTimer) return;
+      this.logger.debug(`[live] no own media for ${stallMs}ms — re-asserting this camera's channel`);
+      this.sendStart();
+      this.kaTimer = setInterval(() => this.sendStart(), keepAliveMs);
+    }, stallMs);
+    this.stallTimer.unref?.();
   }
 
   /**
@@ -201,6 +239,8 @@ export class LiveStream extends EventEmitter {
     this.session.off("liveStartUnacknowledged", this.unackedHandler);
     if (this.kaTimer) clearInterval(this.kaTimer);
     this.kaTimer = undefined;
+    if (this.stallTimer) clearTimeout(this.stallTimer);
+    this.stallTimer = undefined;
     try {
       this.session.stopLiveMedia(this.opts.channel, this.opts.accountId);
     } catch (e) {

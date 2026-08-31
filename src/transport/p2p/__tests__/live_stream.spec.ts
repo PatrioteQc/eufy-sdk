@@ -497,8 +497,11 @@ describe("LiveStream keepalive default", () => {
    * so re-asserting buys nothing and costs the contention. The SDK's own measurement agrees the nudge is
    * unnecessary there: both attached cameras held a 40 s stream with it disabled, while the own-session camera
    * that needs it went quiet at 13.6 s without it.
+   *
+   * It holds while that media KEEPS arriving. Silence says the station is serving something else, and the
+   * re-assert is what recovers it — see `attached-keepalive-stall.spec.ts`.
    */
-  it("stops re-issuing the start on an attached camera once its own media arrives", () => {
+  it("stops re-issuing the start on an attached camera while its own media keeps arriving", () => {
     vi.useFakeTimers();
     try {
       const session = new FakeSession();
@@ -510,8 +513,10 @@ describe("LiveStream keepalive default", () => {
       const beforeMedia = session.started;
       expect(beforeMedia).toBeGreaterThan(1);
 
-      session.push(videoFrame({ nal: Buffer.from([0x65, 1]), channel: 2 }));
-      vi.advanceTimersByTime(DEFAULT_KEEPALIVE_MS * 5);
+      for (let tick = 0; tick < 5; tick++) {
+        session.push(videoFrame({ nal: Buffer.from([0x65, 1]), channel: 2 }));
+        vi.advanceTimersByTime(DEFAULT_KEEPALIVE_MS);
+      }
 
       expect(session.started).toBe(beforeMedia);
       stream.stop();

@@ -7,6 +7,7 @@ const STATION_SN = "T8000P0000000001";
 const ACCOUNT_ID = "0000000000000000000000000000000000000000";
 
 const HARD_GRACE_MS = 25_000;
+const SETTLE_GRACE_MS = 8_000;
 
 interface FakeSession extends FakeP2PSession {
   sendSetPayload: ReturnType<typeof vi.fn>;
@@ -70,6 +71,22 @@ describe("resolving a session defers the level-2 wait to the session", () => {
     const source = await router.sharedLiveSourceFor(DEVICE_SN);
     expect(source).toBeDefined();
     expect(session.awaitLevel2Key).not.toHaveBeenCalled();
+  });
+
+  /**
+   * A caller that picks its seal ONCE waits for the negotiation to settle first.
+   *
+   * `sendBySessionLevel` reads `hasLevel2Key` and frames the command on that answer, with no second chance:
+   * unlike a media start, which reads the key on every send and is re-issued by the warm-up, a property write
+   * framed level-1 to a family that only accepts level-2 is simply ignored. So it waits, session-scoped and
+   * bounded, and proceeds with whatever the negotiation concluded.
+   */
+  it("waits for the negotiation to settle before choosing a seal, session-scoped", async () => {
+    const { router, session } = setup(false);
+    await router
+      .dispatchCommand(DEVICE_SN, { kind: "set-param", param: 6, value: 0, form: "auto", channel: 1 })
+      .catch(() => undefined);
+    expect(session.awaitLevel2Key).toHaveBeenCalledWith(SETTLE_GRACE_MS, "session");
   });
 
   /**
