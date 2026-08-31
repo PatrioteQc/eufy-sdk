@@ -530,6 +530,9 @@ export const CAMERA_MEMBERS = {
    * {@link CAMERA_MEMBERS.snapshotStored} is exempt — a retained push thumbnail is not a pull. A reading of
    * `undefined` refuses nothing: families reporting neither wire param leave the state unknown, and unknown is
    * not known-off.
+   *
+   * The refusal REJECTS on the four that answer with a promise, and THROWS on
+   * {@link CAMERA_MEMBERS.recordFragments}, which answers with a handle.
    */
   snapshotStored: provided(
     "media",
@@ -568,7 +571,7 @@ export const CAMERA_MEMBERS = {
     "media",
     (m, { ctx, read }) =>
       m.openReadable &&
-      ((opts?: Parameters<NonNullable<MediaProvider["openReadable"]>>[0]) => {
+      (async (opts?: Parameters<NonNullable<MediaProvider["openReadable"]>>[0]) => {
         refuseWhenDisabled(ctx, read);
         return m.openReadable!({ powered: poweredOf(ctx), ...opts });
       }),

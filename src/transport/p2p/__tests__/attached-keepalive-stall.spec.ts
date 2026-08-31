@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
-import { EventEmitter } from "node:events";
 import { LiveStream } from "../live-stream.js";
-import type { P2PFrame, P2PSession } from "../p2p-session.js";
+import type { P2PSession } from "../p2p-session.js";
+import { FakeP2PSession, p2pVideoFrame } from "./live-source-fixtures.js";
 
 /**
  * An attached stream the station stopped serving re-asserts its channel, once its media has actually stopped.
@@ -17,39 +17,12 @@ import type { P2PFrame, P2PSession } from "../p2p-session.js";
  * So the settle holds only while media keeps arriving. Silence for the stall window re-arms the re-assert, and
  * the next own-channel frame settles it again — the contention is avoided exactly while it would be harmful.
  */
-class FakeSession extends EventEmitter {
-  readonly starts: number[] = [];
-
-  decodeVideoFrame(data: Buffer, _signCode: number): Buffer | undefined {
-    const declared = data.readUInt32LE(0);
-    return data.subarray(22, 22 + declared);
-  }
-
-  startLiveMedia(channel: number): void {
-    this.starts.push(channel);
-  }
-
-  stopLiveMedia(): void {}
-
-  push(frame: Partial<P2PFrame>): void {
-    this.emit("data", frame as P2PFrame);
-  }
-}
-
-const SC4 = Buffer.from([0, 0, 0, 1]);
-
-function videoFrame(channel: number): Partial<P2PFrame> {
-  const header = Buffer.alloc(0x16);
-  header.writeUInt8(0x01, 0x04);
-  header.writeInt16LE(1920, 0x0a);
-  header.writeInt16LE(1080, 0x0c);
-  const body = Buffer.concat([SC4, Buffer.from([0x65, 0x11])]);
-  header.writeUInt32LE(body.length, 0x00);
-  return { commandId: 1300, channel, signCode: 0, data: Buffer.concat([header, body]) };
-}
+/** A keyframe tagged for `channel`, as the station sends it. */
+const ownFrame = (channel: number) =>
+  p2pVideoFrame({ nal: Buffer.from([0x65, 0x11]), keyframe: true, width: 1920, height: 1080, channel });
 
 function attached(stallMs: number) {
-  const session = new FakeSession();
+  const session = new FakeP2PSession();
   const stream = new LiveStream(session as unknown as P2PSession, {
     channel: 2,
     homeBaseAttached: true,
@@ -67,7 +40,7 @@ const settle = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 describe("an attached stream whose station stopped serving it", () => {
   it("stops re-asserting while its own media arrives", async () => {
     const { session, stream } = attached(200);
-    session.push(videoFrame(2));
+    session.push(ownFrame(2));
     const settled = session.starts.length;
     await settle(70);
 
@@ -77,7 +50,7 @@ describe("an attached stream whose station stopped serving it", () => {
 
   it("re-asserts again after its media has been silent for the stall window", async () => {
     const { session, stream } = attached(50);
-    session.push(videoFrame(2));
+    session.push(ownFrame(2));
     const settled = session.starts.length;
     await settle(140);
 
@@ -87,9 +60,9 @@ describe("an attached stream whose station stopped serving it", () => {
 
   it("settles again on the next frame, so recovery does not become the contention it replaced", async () => {
     const { session, stream } = attached(50);
-    session.push(videoFrame(2));
+    session.push(ownFrame(2));
     await settle(140);
-    session.push(videoFrame(2));
+    session.push(ownFrame(2));
     const resettled = session.starts.length;
     await settle(40);
 
@@ -99,7 +72,7 @@ describe("an attached stream whose station stopped serving it", () => {
 
   it("re-asserts nothing once stopped", async () => {
     const { session, stream } = attached(40);
-    session.push(videoFrame(2));
+    session.push(ownFrame(2));
     stream.stop();
     const atStop = session.starts.length;
     await settle(120);

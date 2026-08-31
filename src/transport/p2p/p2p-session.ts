@@ -63,7 +63,11 @@ const LOCAL_LOOKUP_PORT = 32108;
 const HEARTBEAT_MS = 5_000;
 const LOOKUP_RETRY_MS = 1_000;
 const CONNECT_TIMEOUT_MS = 15_000;
-const STATION_CHANNEL = 255;
+/**
+ * The channel a command addresses the station itself on, rather than one of its cameras, and the value a
+ * session's channel-taking methods resolve an omitted channel to.
+ */
+export const STATION_CHANNEL = 255;
 /** CMD_GATEWAYINFO — sent once on connect to prompt the station to start reporting. */
 const CMD_GATEWAYINFO = 1100;
 const CMD_START_REALTIME_MEDIA = 1003;
@@ -293,13 +297,13 @@ export interface P2PFrame extends P2PDataFrameHeader {
   params?: Record<number, string>;
 }
 
+/** Per-process counter behind {@link P2PSession.traceId} — see it for why this is not a serial. */
+let traceSequence = 0;
+
 /**
  * A live PPCS session. Internal transport; a host drives cameras through the capability surface.
  * @internal
  */
-/** Per-process counter behind {@link P2PSession.traceId} — see it for why this is not a serial. */
-let traceSequence = 0;
-
 export class P2PSession extends EventEmitter {
   private socket?: dgram.Socket;
   private connected = false;
@@ -811,6 +815,10 @@ export class P2PSession extends EventEmitter {
    * the device acknowledges one, bounded by `LIVE_START_ACK_DEADLINE_MS` rather than by a send count. Both are
    * internal to this module, so they are named as code: a public comment cannot link to what the reference does
    * not carry. Use the `LiveStream` helper for a managed feed with keepalive.
+   *
+   * `opts.force` sends a real start on a channel this session already counts as started, and yields to a
+   * start still awaiting acknowledgement — that one is already being repeated byte-identically and is
+   * abandoned at its own deadline.
    */
   startLiveMedia(
     channel: number = STATION_CHANNEL,
@@ -830,15 +838,6 @@ export class P2PSession extends EventEmitter {
       return;
     }
     const want: "l1" | "l2" = this.level2Key ? "l2" : "l1";
-    // `force` is the caller stating the channel is NOT being served, which outranks what this session believes:
-    // the belief is set when a start is acknowledged and cleared only by a stop or an abandonment, so a station
-    // that acknowledged a start and then served nothing leaves it standing — and every later re-issue is then a
-    // keepalive, which holds a stream that was never started and cannot begin one.
-    //
-    // It yields to a start already awaiting acknowledgement. That start is being repeated byte-identically every
-    // 150 ms, which is the work forcing one wants done, and it is abandoned at its deadline — the signal a
-    // source recovers a dead session from. Replacing it under a new sequence resets that deadline, so a caller
-    // re-issuing faster than it never lets the abandonment fire at all.
     if (opts?.force) {
       for (const pending of this.unackedLiveStarts.values()) if (pending.channel === channel) return;
       this.liveStartedChannels.delete(channel);
@@ -949,6 +948,9 @@ export class P2PSession extends EventEmitter {
    * got the start and stayed silent. Forgetting the state is what lets the next keepalive tick issue a real
    * start under a fresh sequence — while the channel still counts as started, every tick sends only the 1139
    * nudge, which holds a stream that was never started and cannot begin one.
+   *
+   * The abandonment emits `liveStartUnacknowledged` carrying the RESOLVED channel, so a listener matches it
+   * against {@link STATION_CHANNEL} where it started one without naming a channel.
    */
   private armLiveStartRetransmit(): void {
     if (this.liveStartRetransmitTimer) return;
@@ -960,8 +962,6 @@ export class P2PSession extends EventEmitter {
         onAbandoned: (_sequence, held) => {
           this.liveStartedChannels.delete(held.channel);
           this.trace({ phase: "media-command-unacknowledged", action: "start" });
-          // Stated as well as traced: a stream waiting on this start can only time out, and the channel is what
-          // tells a shared HomeBase session's other streams that it was not theirs.
           this.emit("liveStartUnacknowledged", held.channel);
         },
       });

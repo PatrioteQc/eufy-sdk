@@ -188,7 +188,7 @@ const MAX_CODED_DIMENSION = 32768;
  * present in streams, and a set read without its branch lands mid-element — so it is carried here rather
  * than left to misparse into a plausible geometry.
  */
-const H264_CHROMA_PROFILES = new Set([100, 110, 122, 244, 44, 83, 86, 118, 128, 138, 139, 134, 135, 144]);
+export const H264_CHROMA_PROFILES = new Set([100, 110, 122, 244, 44, 83, 86, 118, 128, 138, 139, 134, 135, 144]);
 
 /** Chroma subsampling per `chroma_format_idc`, which is what scales a crop offset into samples. */
 const CHROMA_SUBSAMPLING: Record<number, CodedGeometry> = {
@@ -312,6 +312,23 @@ export function codedGeometry(sets: ParamSets): CodedGeometry | undefined {
 }
 
 /**
+ * The crop window an H.264 SPS declares, or the conformance window an H.265 one does — the same four
+ * offsets, in chroma samples, which is why {@link CHROMA_SUBSAMPLING} scales them into luma.
+ */
+interface CropWindow {
+  left: number;
+  right: number;
+  top: number;
+  bottom: number;
+}
+
+/** Read the four offsets where the present flag is set, or all-zero where it is not. */
+function cropWindow(r: RbspReader): CropWindow {
+  if (r.u(1) !== 1) return { left: 0, right: 0, top: 0, bottom: 0 };
+  return { left: r.ue(), right: r.ue(), top: r.ue(), bottom: r.ue() };
+}
+
+/**
  * Read an H.264 SPS (ITU-T H.264 §7.3.2.1.1) up to its frame-cropping offsets.
  *
  * Everything between the profile and the geometry is skipped rather than interpreted, but it has to be
@@ -355,8 +372,7 @@ function h264Geometry(sps: Buffer): CodedGeometry | undefined {
   const frameMbsOnly = r.u(1) === 1;
   if (!frameMbsOnly) r.u(1);
   r.u(1);
-  let crop = { left: 0, right: 0, top: 0, bottom: 0 };
-  if (r.u(1) === 1) crop = { left: r.ue(), right: r.ue(), top: r.ue(), bottom: r.ue() };
+  const crop = cropWindow(r);
   if (r.failed) return undefined;
   const chromaArrayType = separateColourPlane ? 0 : chromaFormatIdc;
   const subsampling = CHROMA_SUBSAMPLING[chromaArrayType];
@@ -405,8 +421,7 @@ function h265Geometry(sps: Buffer): CodedGeometry | undefined {
   if (chromaFormatIdc === 3) r.u(1);
   const width = r.ue();
   const height = r.ue();
-  let window = { left: 0, right: 0, top: 0, bottom: 0 };
-  if (r.u(1) === 1) window = { left: r.ue(), right: r.ue(), top: r.ue(), bottom: r.ue() };
+  const window = cropWindow(r);
   if (r.failed) return undefined;
   const subsampling = CHROMA_SUBSAMPLING[chromaFormatIdc];
   if (!subsampling) return undefined;

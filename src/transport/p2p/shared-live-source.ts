@@ -75,8 +75,6 @@ export interface SharedLiveSourceOptions {
   maxQueue?: number;
   /** Rolling prebuffer window in seconds, 0 = off (default 0). */
   preBufferSeconds?: number;
-  /** Advisory HomeBase concurrent-stream cap, surfaced for observability only. */
-  concurrentCap?: number;
   /**
    * Warm-up start retry interval (default 2000ms). After warming, if no keyframe has arrived, the source
    * re-issues the start ({@link LiveStreamHandle.nudge}) every interval — self-healing a start that
@@ -248,6 +246,9 @@ class ConsumerImpl extends EventEmitter implements Consumer {
    * relocating this queue into whatever unbounded buffer sits behind it and defeating the drop-to-keyframe
    * policy the bound exists to arm. Whatever is left instead stays queued and keeps counting against the
    * bound, so a sink that never keeps up resynchronises at an IDR rather than replaying stale media.
+   *
+   * Detachment is re-checked each step: a sink may detach from inside a delivery handler, and this walks a
+   * local copy the detach cannot empty.
    */
   resume(): void {
     if (this.detached) return;
@@ -255,9 +256,6 @@ class ConsumerImpl extends EventEmitter implements Consumer {
     const q = this.queue;
     this.queue = [];
     for (let i = 0; i < q.length; i++) {
-      // A sink may detach from inside a delivery handler, mid-drain. `deliverVideo` guards that; `flush` walks
-      // a local copy the detach cannot empty, so it is checked here or the rest of the backlog reaches a sink
-      // that has gone.
       if (this.detached) return;
       if (this.paused) {
         this.retainUndelivered(q.slice(i));
@@ -462,10 +460,6 @@ export class SharedLiveSource {
     return this.consumers.size;
   }
 
-  get concurrentCap(): number | undefined {
-    return this.opts.concurrentCap;
-  }
-
   /**
    * The parameter sets (SPS/PPS, plus VPS for H.265) most recently announced on this stream, or
    * `undefined` before any have been seen.
@@ -548,6 +542,23 @@ export class SharedLiveSource {
   }
 
   /**
+   * Build the underlying stream, wire its frames into the fan-out, and start it.
+   *
+   * Every warm goes through here, so a source that is rebuilt on a replacement session listens on exactly
+   * the events the first attempt did.
+   */
+  private openStream(): void {
+    const stream = this.opts.makeStream();
+    this.stream = stream;
+    stream.on("video", (frame) => this.onVideo(frame));
+    stream.on("audio", (frame) => this.onAudio(frame));
+    stream.on("stop", () => this.onUpstreamEnd());
+    stream.on("error", (err) => this.onUpstreamError(err));
+    stream.on("unacknowledged", () => this.onStartUnacknowledged());
+    stream.start();
+  }
+
+  /**
    * Build + start the underlying stream, wire its frames into the fan-out, and watch the warm-up.
    */
   private warm(): void {
@@ -559,14 +570,7 @@ export class SharedLiveSource {
     this.warmAttempts = 1;
     this.logger.debug(`${this.tag} warming (retry=${this.warmRetryMs}ms deadline=${this.warmTimeoutMs}ms)`);
     this.trace({ phase: "warming", retryMs: this.warmRetryMs, deadlineMs: this.warmTimeoutMs });
-    const stream = this.opts.makeStream();
-    this.stream = stream;
-    stream.on("video", (frame) => this.onVideo(frame));
-    stream.on("audio", (frame) => this.onAudio(frame));
-    stream.on("stop", () => this.onUpstreamEnd());
-    stream.on("error", (err) => this.onUpstreamError(err));
-    stream.on("unacknowledged", () => this.onStartUnacknowledged());
-    stream.start();
+    this.openStream();
     this.armWarmWatch();
   }
 
@@ -606,14 +610,7 @@ export class SharedLiveSource {
     this.stream = undefined;
     previous?.stop();
     this.fruitlessReissues = 0;
-    const stream = this.opts.makeStream();
-    this.stream = stream;
-    stream.on("video", (frame) => this.onVideo(frame));
-    stream.on("audio", (frame) => this.onAudio(frame));
-    stream.on("stop", () => this.onUpstreamEnd());
-    stream.on("error", (err) => this.onUpstreamError(err));
-    stream.on("unacknowledged", () => this.onStartUnacknowledged());
-    stream.start();
+    this.openStream();
     this.warmAttempts++;
     this.logger.debug(`${this.tag} warming again on a replacement session (attempt ${this.warmAttempts})`);
     this.warmRetryTimer = setInterval(() => this.reissueStart(), this.warmRetryMs);
@@ -724,7 +721,6 @@ export class SharedLiveSource {
     this.budgetTimer.arm(ms ?? this.batteryBudgetMs, () => this.onBudgetExpire());
   }
 
-  /** Stop the warm-up retry + deadline (the stream is confirmed live). */
   /** Settle a reuse watch on any frame — the join already holds a decodable picture. */
   private settleReuseWatch(): void {
     if (!this.reuseWatch) return;
@@ -733,6 +729,7 @@ export class SharedLiveSource {
     this.clearWarmWatch();
   }
 
+  /** Stop the warm-up retry + deadline (the stream is confirmed live). */
   private clearWarmWatch(): void {
     if (this.warmRetryTimer) clearInterval(this.warmRetryTimer);
     this.warmRetryTimer = undefined;

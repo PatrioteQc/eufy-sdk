@@ -1,6 +1,7 @@
 import { EventEmitter } from "node:events";
 import { Writable } from "node:stream";
-import { splitAnnexbNals } from "../annexb.js";
+import { H264_CHROMA_PROFILES, splitAnnexbNals } from "../annexb.js";
+import type { P2PFrame } from "../p2p-session.js";
 import type { LiveAudioFrame, LiveStreamHandle, LiveVideoFrame } from "../../../core/contracts.js";
 
 /**
@@ -145,13 +146,12 @@ class BitWriter {
 }
 
 /**
- * Profiles whose SPS carries the chroma / bit-depth / scaling-matrix branch, as a writer must emit it.
+ * The reader's own list, re-exported so a spec can walk it.
  *
- * Stated here as well as in the reader because a fixture is only evidence when it can express the case: a
- * profile the writer omits cannot produce a set that exercises the reader's branch for it, and the two
- * lists silently diverging is how `144` came to be handled by nothing.
+ * Read from the reader rather than restated: a profile the writer omits cannot produce a set that exercises
+ * the reader's branch for it, so two lists are only ever evidence while they agree.
  */
-export const CHROMA_BRANCH_PROFILES = [100, 110, 122, 244, 44, 83, 86, 118, 128, 138, 139, 134, 135, 144];
+export const CHROMA_BRANCH_PROFILES = [...H264_CHROMA_PROFILES];
 
 /** How an H.264 sequence parameter set states the geometry a decoder will produce. */
 export interface H264SpsShape {
@@ -181,7 +181,7 @@ export function h264Sps(shape: H264SpsShape): number[] {
   const crop = shape.crop;
   const w = new BitWriter();
   w.u(8, profileIdc).u(8, 0).u(8, 40).ue(0);
-  if (CHROMA_BRANCH_PROFILES.includes(profileIdc)) {
+  if (H264_CHROMA_PROFILES.has(profileIdc)) {
     w.ue(chromaFormatIdc);
     if (chromaFormatIdc === 3) w.u(1, 0);
     w.ue(0)
@@ -258,6 +258,88 @@ export function h265Sps(shape: H265SpsShape): number[] {
 /** A video frame carrying `data`. Defaults to a 1920x1080 H.264 keyframe. */
 export function videoFrame(data: Buffer, over: Partial<LiveVideoFrame> = {}): LiveVideoFrame {
   return { keyframe: true, width: 1920, height: 1080, codec: "h264", data, ...over };
+}
+
+/** The 22-byte `CMD_VIDEO_FRAME` header a station puts before the Annex-B payload. */
+const VIDEO_HEADER_LEN = 0x16;
+/** The 16-byte `CMD_AUDIO_FRAME` header a station puts before the audio payload. */
+const AUDIO_HEADER_LEN = 0x10;
+
+/**
+ * A plaintext `CMD_VIDEO_FRAME` (1300) as it arrives off the wire: the 22-byte header — declared payload
+ * length at 0x00, keyframe flag bit0 at 0x04, geometry at 0x0a/0x0c — then one Annex-B access unit.
+ *
+ * Wire-level, unlike {@link videoFrame}, which is the decoded frame a consumer is handed.
+ */
+export function p2pVideoFrame(opts: {
+  nal: Buffer;
+  keyframe?: boolean;
+  width?: number;
+  height?: number;
+  channel?: number;
+}): Partial<P2PFrame> {
+  const header = Buffer.alloc(VIDEO_HEADER_LEN);
+  header.writeUInt8(opts.keyframe ? 0x01 : 0x00, 0x04);
+  header.writeInt16LE(opts.width ?? 960, 0x0a);
+  header.writeInt16LE(opts.height ?? 540, 0x0c);
+  const body = Buffer.concat([START_CODE, opts.nal]);
+  header.writeUInt32LE(body.length, 0x00);
+  return { commandId: 1300, channel: opts.channel ?? 0, signCode: 0, data: Buffer.concat([header, body]) };
+}
+
+/** A `CMD_AUDIO_FRAME` (1301): the 16-byte header carrying the codec id at 0x05, then the payload. */
+export function p2pAudioFrame(audioType: number, payload: Buffer, channel = 0): Partial<P2PFrame> {
+  const header = Buffer.alloc(AUDIO_HEADER_LEN);
+  header.writeUInt32LE(payload.length, 0x00);
+  header.writeUInt8(audioType, 0x05);
+  return { commandId: 1301, channel, signCode: 0, data: Buffer.concat([header, payload]) };
+}
+
+/**
+ * A fake {@link P2PSession} for the {@link LiveStream} specs: records the channel of every start and stop,
+ * and extracts a plaintext frame body exactly as the real session does.
+ */
+export class FakeP2PSession extends EventEmitter {
+  /** The channel each `startLiveMedia` named, in order. */
+  readonly starts: (number | undefined)[] = [];
+  /** The channel each `stopLiveMedia` named, in order. */
+  readonly stops: (number | undefined)[] = [];
+
+  get started(): number {
+    return this.starts.length;
+  }
+
+  get stopped(): number {
+    return this.stops.length;
+  }
+
+  /** The channel the most recent start named. */
+  get startChannel(): number | undefined {
+    return this.starts.at(-1);
+  }
+
+  /**
+   * Mirrors the real session's extraction: the body is the `payloadLength` the header declares, and an
+   * encrypted frame needs the RSA key this fake has no equivalent of, so it answers undefined there.
+   */
+  decodeVideoFrame(data: Buffer, signCode: number): Buffer | undefined {
+    if (data.length < VIDEO_HEADER_LEN) return undefined;
+    const declared = data.readUInt32LE(0);
+    if (signCode > 0 && declared >= 128) return undefined;
+    return data.subarray(VIDEO_HEADER_LEN, VIDEO_HEADER_LEN + declared);
+  }
+
+  startLiveMedia(channel?: number): void {
+    this.starts.push(channel);
+  }
+
+  stopLiveMedia(channel?: number): void {
+    this.stops.push(channel);
+  }
+
+  push(frame: Partial<P2PFrame>): void {
+    this.emit("data", frame as P2PFrame);
+  }
 }
 
 /**

@@ -28,6 +28,8 @@ const media = (): MediaProvider => ({
   snapshotLive: async () => ({ jpeg: Buffer.alloc(1), width: 1, height: 1 }),
   live: async () => ({}) as never,
   record: async () => Buffer.alloc(1),
+  openReadable: async () => ({}) as never,
+  recordFragments: () => ({}) as never,
 });
 
 const cameraWith = (enabled: boolean | undefined) =>
@@ -47,6 +49,20 @@ describe("a camera whose enabled reading is false", () => {
 
   it("refuses a bounded clip, which opens its own pull", async () => {
     await expect(cameraWith(false).record!(10)).rejects.toThrow(/disabled/i);
+  });
+
+  /**
+   * The refusal follows what the member answers with: the four promise-returning pulls REJECT, so a caller
+   * awaiting one is told the same way whatever it asked for. A `Readable` arrives inside a promise, so it
+   * rejects too.
+   */
+  it("refuses a Readable of the live feed by rejecting", async () => {
+    await expect(cameraWith(false).openReadable!()).rejects.toThrow(/disabled/i);
+  });
+
+  /** Fragment recording answers with a handle rather than a promise, so its refusal can only throw. */
+  it("refuses fragment recording by throwing, there being no promise to reject", () => {
+    expect(() => cameraWith(false).recordFragments!()).toThrow(/disabled/i);
   });
 
   it("still hands over the retained push thumbnail, which is no pull", async () => {

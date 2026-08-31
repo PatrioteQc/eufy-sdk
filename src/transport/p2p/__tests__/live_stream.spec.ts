@@ -1,64 +1,10 @@
-import { EventEmitter } from "node:events";
 import { LiveStream, DEFAULT_KEEPALIVE_MS } from "../live-stream.js";
-import type { P2PSession, P2PFrame } from "../p2p-session.js";
-
-/** Minimal fake P2PSession: records start/stop and lets tests push frames via emit("data"). */
-class FakeSession extends EventEmitter {
-  started = 0;
-  stopped = 0;
-  startChannel: number | undefined = undefined;
-  startLiveMedia(channel?: number) {
-    this.started++;
-    this.startChannel = channel;
-  }
-  stopLiveMedia() {
-    this.stopped++;
-  }
-  /**
-   * Mirrors the real session's extraction: the body is the `payloadLength` the header declares, and an
-   * encrypted frame needs the RSA key this fake has no equivalent of, so it answers undefined there.
-   */
-  decodeVideoFrame(data: Buffer, signCode: number): Buffer | undefined {
-    if (data.length < 22) return undefined;
-    const declared = data.readUInt32LE(0);
-    if (signCode > 0 && declared >= 128) return undefined;
-    return data.subarray(22, 22 + declared);
-  }
-  push(f: Partial<P2PFrame>) {
-    this.emit("data", f as P2PFrame);
-  }
-}
-
-const SC4 = Buffer.from([0, 0, 0, 1]);
-
-/** Build a plaintext CMD_VIDEO_FRAME: 22-byte header (flag bit0=keyframe, w/h) + Annex-B. */
-function videoFrame(opts: {
-  keyframe?: boolean;
-  width?: number;
-  height?: number;
-  nal: Buffer;
-  channel?: number;
-}): Partial<P2PFrame> {
-  const hdr = Buffer.alloc(0x16);
-  hdr.writeUInt8(opts.keyframe ? 0x01 : 0x00, 0x04);
-  hdr.writeInt16LE(opts.width ?? 960, 0x0a);
-  hdr.writeInt16LE(opts.height ?? 540, 0x0c);
-  const body = Buffer.concat([SC4, opts.nal]);
-  hdr.writeUInt32LE(body.length, 0x00); // every real frame declares the payload it carries
-  return { commandId: 1300, channel: opts.channel ?? 0, signCode: 0, data: Buffer.concat([hdr, body]) };
-}
-
-/** Build a CMD_AUDIO_FRAME: 16-byte header carrying the codec id at 0x05, then the payload. */
-function audioFrame(audioType: number, payload: Buffer): Partial<P2PFrame> {
-  const hdr = Buffer.alloc(0x10);
-  hdr.writeUInt32LE(payload.length, 0x00);
-  hdr.writeUInt8(audioType, 0x05);
-  return { commandId: 1301, channel: 0, signCode: 0, data: Buffer.concat([hdr, payload]) };
-}
+import { STATION_CHANNEL, type P2PSession, type P2PFrame } from "../p2p-session.js";
+import { FakeP2PSession, START_CODE, p2pAudioFrame, p2pVideoFrame } from "./live-source-fixtures.js";
 
 describe("LiveStream", () => {
   function mk(opts = {}) {
-    const session = new FakeSession();
+    const session = new FakeP2PSession();
     const live = new LiveStream(session as unknown as P2PSession, opts);
     return { session, live };
   }
@@ -76,13 +22,13 @@ describe("LiveStream", () => {
     const frames: any[] = [];
     live.on("video", (f) => frames.push(f));
     live.start();
-    session.push(videoFrame({ keyframe: true, width: 960, height: 540, nal: Buffer.from([0x67, 1, 2, 3]) }));
-    session.push(videoFrame({ keyframe: false, nal: Buffer.from([0x41, 9]) }));
+    session.push(p2pVideoFrame({ keyframe: true, width: 960, height: 540, nal: Buffer.from([0x67, 1, 2, 3]) }));
+    session.push(p2pVideoFrame({ keyframe: false, nal: Buffer.from([0x41, 9]) }));
     expect(frames).toHaveLength(2);
     expect(frames[0].keyframe).toBe(true);
     expect(frames[0].width).toBe(960);
     expect(frames[0].height).toBe(540);
-    expect(frames[0].data.subarray(0, 4).equals(SC4)).toBe(true); // header gone, starts at NAL start code
+    expect(frames[0].data.subarray(0, 4).equals(START_CODE)).toBe(true); // header gone, starts at NAL start code
     expect(frames[0].data[4]).toBe(0x67); // SPS NAL
     expect(frames[1].keyframe).toBe(false);
   });
@@ -92,7 +38,7 @@ describe("LiveStream", () => {
     const { session, live } = mk({ logger });
     live.start();
 
-    session.push(videoFrame({ keyframe: true, nal: Buffer.from([0x67, 1, 2, 3]) }));
+    session.push(p2pVideoFrame({ keyframe: true, nal: Buffer.from([0x67, 1, 2, 3]) }));
 
     expect(
       logger.debug.mock.calls.filter(([message]) => message === "[live] start trace").map(([, detail]) => detail),
@@ -109,8 +55,8 @@ describe("LiveStream", () => {
     live.on("video", (f) => frames.push(f));
     live.start();
     // keyframe leads with an h265 VPS (0x40 → type 32); the delta after it has no config to sniff
-    session.push(videoFrame({ keyframe: true, nal: Buffer.from([0x40, 0x01, 0x0c]) }));
-    session.push(videoFrame({ keyframe: false, nal: Buffer.from([0x02, 0x01]) }));
+    session.push(p2pVideoFrame({ keyframe: true, nal: Buffer.from([0x40, 0x01, 0x0c]) }));
+    session.push(p2pVideoFrame({ keyframe: false, nal: Buffer.from([0x02, 0x01]) }));
     expect(frames[0].codec).toBe("h265");
     expect(frames[1].codec).toBe("h265"); // delta inherits the last-known codec
   });
@@ -120,7 +66,7 @@ describe("LiveStream", () => {
     const frames: any[] = [];
     live.on("video", (f) => frames.push(f));
     live.start();
-    session.push(videoFrame({ keyframe: false, nal: Buffer.from([0x21, 0x9a]) }));
+    session.push(p2pVideoFrame({ keyframe: false, nal: Buffer.from([0x21, 0x9a]) }));
     expect(frames[0].codec).toBe("h264");
   });
 
@@ -130,7 +76,7 @@ describe("LiveStream", () => {
     live.on("audio", (f) => audio.push(f));
     live.start();
     const payload = Buffer.from([10, 11, 12, 13]);
-    session.push(audioFrame(0, payload) as any);
+    session.push(p2pAudioFrame(0, payload) as any);
     expect(audio).toHaveLength(1);
     expect(audio[0].codec).toBe("aac-lc");
     expect(audio[0].data.equals(payload)).toBe(true);
@@ -142,9 +88,9 @@ describe("LiveStream", () => {
     live.on("audio", (f) => audio.push(f));
     live.start();
     const p = Buffer.from([1]);
-    session.push(audioFrame(0, p) as any);
-    session.push(audioFrame(7, p) as any);
-    session.push(audioFrame(2, p) as any);
+    session.push(p2pAudioFrame(0, p) as any);
+    session.push(p2pAudioFrame(7, p) as any);
+    session.push(p2pAudioFrame(2, p) as any);
     expect(audio.map((f) => f.codec)).toEqual(["aac-lc", "aac-eld", "g711a"]);
   });
 
@@ -154,10 +100,10 @@ describe("LiveStream", () => {
     live.on("audio", (f) => audio.push(f));
     live.start();
     const p = Buffer.from([1]);
-    session.push(audioFrame(9, p) as any);
+    session.push(p2pAudioFrame(9, p) as any);
     expect(audio).toHaveLength(0);
-    session.push(audioFrame(7, p) as any);
-    session.push(audioFrame(9, p) as any);
+    session.push(p2pAudioFrame(7, p) as any);
+    session.push(p2pAudioFrame(9, p) as any);
     expect(audio.map((f) => f.codec)).toEqual(["aac-eld"]);
   });
 
@@ -178,7 +124,7 @@ describe("LiveStream", () => {
     live.on("video", (f) => frames.push(f));
     live.start();
 
-    session.push(videoFrame({ nal: Buffer.from([0x41]), channel: 1 }));
+    session.push(p2pVideoFrame({ nal: Buffer.from([0x41]), channel: 1 }));
 
     expect(frames).toHaveLength(1);
   });
@@ -238,15 +184,15 @@ describe("LiveStream access-unit reassembly", () => {
   }
 
   /** A frame filled to exactly the split threshold: parameter sets, then the start of an IDR. */
-  const idrHead = Buffer.concat([SC4, Buffer.from([0x67, 0x42, 0x00]), SC4, Buffer.from([0x65, 0x88])]);
+  const idrHead = Buffer.concat([START_CODE, Buffer.from([0x67, 0x42, 0x00]), START_CODE, Buffer.from([0x65, 0x88])]);
   const filled = Buffer.concat([idrHead, Buffer.alloc(CHUNK - idrHead.length, 0x11)]);
   /** The rest of that IDR — mid-NAL, so no start code of its own, and short so it ends the unit. */
   const tail = Buffer.from([0x22, 0x33, 0x44, 0x55, 0x66]);
   /** An ordinary small unit, complete in one frame. */
-  const small = Buffer.concat([SC4, Buffer.from([0x41, 0x9a, 0x02])]);
+  const small = Buffer.concat([START_CODE, Buffer.from([0x41, 0x9a, 0x02])]);
 
   function mk(opts = {}) {
-    const session = new FakeSession();
+    const session = new FakeP2PSession();
     const frames: any[] = [];
     const live = new LiveStream(session as unknown as P2PSession, opts).start();
     live.on("video", (f) => frames.push(f));
@@ -304,9 +250,9 @@ describe("LiveStream access-unit reassembly", () => {
   it("delivers a single-frame unit larger than the threshold immediately", () => {
     const { session, frames } = mk();
     const big = Buffer.concat([
-      SC4,
+      START_CODE,
       Buffer.from([0x67, 0x42, 0x00]),
-      SC4,
+      START_CODE,
       Buffer.from([0x65, 0x88]),
       Buffer.alloc(90_000, 0x11),
     ]);
@@ -395,7 +341,7 @@ describe("LiveStream access-unit reassembly", () => {
  */
 describe("LiveStream channel isolation on a HomeBase", () => {
   function attached(channel: number, logger?: unknown) {
-    const session = new FakeSession();
+    const session = new FakeP2PSession();
     const frames: any[] = [];
     const audio: any[] = [];
     const live = new LiveStream(session as unknown as P2PSession, {
@@ -411,7 +357,7 @@ describe("LiveStream channel isolation on a HomeBase", () => {
   it("takes the frames the station tagged for its own camera", () => {
     const { session, frames } = attached(2);
 
-    session.push(videoFrame({ nal: Buffer.from([0x41]), channel: 2 }));
+    session.push(p2pVideoFrame({ nal: Buffer.from([0x41]), channel: 2 }));
 
     expect(frames).toHaveLength(1);
   });
@@ -419,8 +365,8 @@ describe("LiveStream channel isolation on a HomeBase", () => {
   it("drops another camera's video, which used to interleave into this stream", () => {
     const { session, frames } = attached(2);
 
-    session.push(videoFrame({ nal: Buffer.from([0x41]), channel: 2 }));
-    session.push(videoFrame({ nal: Buffer.from([0x41]), channel: 0 }));
+    session.push(p2pVideoFrame({ nal: Buffer.from([0x41]), channel: 2 }));
+    session.push(p2pVideoFrame({ nal: Buffer.from([0x41]), channel: 0 }));
 
     expect(frames).toHaveLength(1);
   });
@@ -429,8 +375,8 @@ describe("LiveStream channel isolation on a HomeBase", () => {
   it("drops another camera's audio too", () => {
     const { session, audio } = attached(2);
 
-    session.push({ ...audioFrame(0, Buffer.from([1, 2])), channel: 2 } as any);
-    session.push({ ...audioFrame(0, Buffer.from([1, 2])), channel: 0 } as any);
+    session.push({ ...p2pAudioFrame(0, Buffer.from([1, 2])), channel: 2 } as any);
+    session.push({ ...p2pAudioFrame(0, Buffer.from([1, 2])), channel: 0 } as any);
 
     expect(audio).toHaveLength(1);
   });
@@ -448,7 +394,7 @@ describe("LiveStream channel isolation on a HomeBase", () => {
     const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
     const { session, frames } = attached(2, logger);
 
-    for (let i = 0; i < 400; i++) session.push(videoFrame({ nal: Buffer.from([0x41]), channel: 0 }));
+    for (let i = 0; i < 400; i++) session.push(p2pVideoFrame({ nal: Buffer.from([0x41]), channel: 0 }));
 
     expect(frames).toHaveLength(0);
     expect(logger.warn).not.toHaveBeenCalled();
@@ -459,8 +405,8 @@ describe("LiveStream channel isolation on a HomeBase", () => {
     const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
     const { session, frames } = attached(2, logger);
 
-    session.push(videoFrame({ nal: Buffer.from([0x41]), channel: 2 }));
-    for (let i = 0; i < 40; i++) session.push(videoFrame({ nal: Buffer.from([0x41]), channel: 0 }));
+    session.push(p2pVideoFrame({ nal: Buffer.from([0x41]), channel: 2 }));
+    for (let i = 0; i < 40; i++) session.push(p2pVideoFrame({ nal: Buffer.from([0x41]), channel: 0 }));
 
     expect(frames).toHaveLength(1);
     expect(logger.warn).not.toHaveBeenCalled();
@@ -477,7 +423,7 @@ describe("LiveStream keepalive default", () => {
   it("re-issues the media start without the caller asking", () => {
     vi.useFakeTimers();
     try {
-      const session = new FakeSession();
+      const session = new FakeP2PSession();
       const stream = new LiveStream(session as unknown as P2PSession, { channel: 0 }).start();
       expect(session.started).toBe(1);
       vi.advanceTimersByTime(DEFAULT_KEEPALIVE_MS * 3 + 10);
@@ -504,7 +450,7 @@ describe("LiveStream keepalive default", () => {
   it("stops re-issuing the start on an attached camera while its own media keeps arriving", () => {
     vi.useFakeTimers();
     try {
-      const session = new FakeSession();
+      const session = new FakeP2PSession();
       const stream = new LiveStream(session as unknown as P2PSession, {
         channel: 2,
         homeBaseAttached: true,
@@ -514,7 +460,7 @@ describe("LiveStream keepalive default", () => {
       expect(beforeMedia).toBeGreaterThan(1);
 
       for (let tick = 0; tick < 5; tick++) {
-        session.push(videoFrame({ nal: Buffer.from([0x65, 1]), channel: 2 }));
+        session.push(p2pVideoFrame({ nal: Buffer.from([0x65, 1]), channel: 2 }));
         vi.advanceTimersByTime(DEFAULT_KEEPALIVE_MS);
       }
 
@@ -528,12 +474,12 @@ describe("LiveStream keepalive default", () => {
   it("keeps re-issuing the start on an own-session camera, which goes quiet without it", () => {
     vi.useFakeTimers();
     try {
-      const session = new FakeSession();
+      const session = new FakeP2PSession();
       const stream = new LiveStream(session as unknown as P2PSession, {
         channel: 0,
         homeBaseAttached: false,
       }).start();
-      session.push(videoFrame({ nal: Buffer.from([0x65, 1]), channel: 0 }));
+      session.push(p2pVideoFrame({ nal: Buffer.from([0x65, 1]), channel: 0 }));
       const afterMedia = session.started;
       vi.advanceTimersByTime(DEFAULT_KEEPALIVE_MS * 3 + 10);
 
@@ -548,12 +494,12 @@ describe("LiveStream keepalive default", () => {
   it("keeps re-issuing while only another camera's media arrives", () => {
     vi.useFakeTimers();
     try {
-      const session = new FakeSession();
+      const session = new FakeP2PSession();
       const stream = new LiveStream(session as unknown as P2PSession, {
         channel: 2,
         homeBaseAttached: true,
       }).start();
-      session.push(videoFrame({ nal: Buffer.from([0x65, 1]), channel: 3 }));
+      session.push(p2pVideoFrame({ nal: Buffer.from([0x65, 1]), channel: 3 }));
       const afterForeign = session.started;
       vi.advanceTimersByTime(DEFAULT_KEEPALIVE_MS * 3 + 10);
 
@@ -567,7 +513,7 @@ describe("LiveStream keepalive default", () => {
   it("honours an explicit 0 as off", () => {
     vi.useFakeTimers();
     try {
-      const session = new FakeSession();
+      const session = new FakeP2PSession();
       const stream = new LiveStream(session as unknown as P2PSession, { channel: 0, keepAliveMs: 0 }).start();
       vi.advanceTimersByTime(DEFAULT_KEEPALIVE_MS * 5);
       expect(session.started).toBe(1);
@@ -575,5 +521,54 @@ describe("LiveStream keepalive default", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+/**
+ * A stream forwards the abandonment of its OWN media start, and nothing else.
+ *
+ * The session records the channel it RESOLVED — {@link STATION_CHANNEL} where the caller named none — and
+ * reports that channel back. A stream re-deriving the default differently never matches its own
+ * abandonment, which leaves the session-replacement recovery behind it unreachable.
+ */
+describe("an abandoned media start", () => {
+  const abandon = (session: FakeP2PSession, channel: number) => session.emit("liveStartUnacknowledged", channel);
+
+  it("reaches a stream that named no channel, which starts on the station channel", () => {
+    const session = new FakeP2PSession();
+    const stream = new LiveStream(session as unknown as P2PSession, { keepAliveMs: 0 }).start();
+    const seen = vi.fn();
+    stream.on("unacknowledged", seen);
+
+    expect(session.startChannel).toBeUndefined();
+    abandon(session, STATION_CHANNEL);
+
+    expect(seen).toHaveBeenCalledTimes(1);
+    stream.stop();
+  });
+
+  it("reaches a stream on its own channel", () => {
+    const session = new FakeP2PSession();
+    const stream = new LiveStream(session as unknown as P2PSession, { channel: 2, keepAliveMs: 0 }).start();
+    const seen = vi.fn();
+    stream.on("unacknowledged", seen);
+
+    abandon(session, 2);
+
+    expect(seen).toHaveBeenCalledTimes(1);
+    stream.stop();
+  });
+
+  it("never reaches a sibling's stream on the same station session", () => {
+    const session = new FakeP2PSession();
+    const stream = new LiveStream(session as unknown as P2PSession, { channel: 2, keepAliveMs: 0 }).start();
+    const seen = vi.fn();
+    stream.on("unacknowledged", seen);
+
+    abandon(session, 0);
+    abandon(session, STATION_CHANNEL);
+
+    expect(seen).not.toHaveBeenCalled();
+    stream.stop();
   });
 });

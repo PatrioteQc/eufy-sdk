@@ -15,7 +15,7 @@
  * `error`.
  */
 import { EventEmitter } from "node:events";
-import type { P2PSession, P2PFrame } from "./p2p-session.js";
+import { STATION_CHANNEL, type P2PSession, type P2PFrame } from "./p2p-session.js";
 import { AccessUnitAssembler, VideoFrameDecoder } from "./video.js";
 import { sniffAnnexbCodec } from "./annexb.js";
 import { noopLogger, type Logger } from "../../core/logger.js";
@@ -127,9 +127,15 @@ export class LiveStream extends EventEmitter {
   private tracedDecodeFailures = 0;
   private tracedFirstForeignFrame = false;
   private stallTimer?: ReturnType<typeof setTimeout>;
+  /**
+   * The channel this stream starts, stops, traces under and matches its own abandonment on. An omitted
+   * channel resolves to {@link STATION_CHANNEL} — the value the session resolves it to.
+   */
+  private readonly channel: number;
   private readonly handler = (f: P2PFrame) => this.onFrame(f);
+  /** Forwards `liveStartUnacknowledged` only where it carries this stream's own channel. */
   private readonly unackedHandler = (channel: number) => {
-    if (channel === (this.opts.channel ?? 0)) this.emit("unacknowledged");
+    if (channel === this.channel) this.emit("unacknowledged");
   };
   private readonly logger: Logger;
 
@@ -139,7 +145,7 @@ export class LiveStream extends EventEmitter {
   ) {
     super();
     this.logger = opts.logger ?? noopLogger;
-    // Only a HomeBase serves several cameras over one session, so only there is there anything to tell apart.
+    this.channel = opts.channel ?? STATION_CHANNEL;
     if (opts.homeBaseAttached && opts.channel !== undefined) this.mediaChannel = opts.channel;
     if (opts.eccPrivateKey) this.decoder = new VideoFrameDecoder(opts.eccPrivateKey);
   }
@@ -147,7 +153,7 @@ export class LiveStream extends EventEmitter {
   /** Emit a live trace under its session's handle and the channel this stream pulls. */
   private trace(trace: LiveTrace): void {
     const session = this.session.traceId;
-    traceLiveStart(this.logger, trace, session ? `${session}:${this.opts.channel ?? 0}` : undefined);
+    traceLiveStart(this.logger, trace, session ? `${session}:${this.channel}` : undefined);
   }
 
   /** Begin streaming: attach the frame listener and tell the station to start realtime media. */
@@ -155,8 +161,6 @@ export class LiveStream extends EventEmitter {
     if (this.listening) return this;
     this.listening = true;
     this.session.on("data", this.handler);
-    // An abandonment on ANOTHER channel of a shared HomeBase session says nothing about this stream, so only
-    // this channel's own is forwarded. An own-session camera reports its single channel.
     this.session.on("liveStartUnacknowledged", this.unackedHandler);
     this.sendStart();
     const keepAliveMs = this.opts.keepAliveMs ?? DEFAULT_KEEPALIVE_MS;

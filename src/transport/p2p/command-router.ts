@@ -135,6 +135,14 @@ interface ResolvedSession {
 }
 
 /**
+ * The mutable cell a live source reads its session out of. Assigning `session` points every later
+ * `makeStream` call at a different connection, leaving the source itself in place.
+ */
+interface HeldSession {
+  session: P2PSession;
+}
+
+/**
  * The facade-side dependencies the router needs. It owns the sessions map and all wire logic, but
  * defers device-list access + lifecycle/frame event fan-out to the client (which owns the typed
  * EventEmitter and the model-coupled frame decode).
@@ -517,7 +525,8 @@ export class P2PCommandRouter {
    * cold source warms one and waits for a clean keyframe. Each shared egress passes its complete options
    * through because any of them may create the source, whose power and retention hints are fixed for
    * everyone who joins later. The bounded {@link MediaProvider.record} clip is the exception: it opens its
-   * own pull and receives its session topology directly.
+   * own pull, receives its session topology directly, and requires the level-2 key an attached camera's
+   * start has no level-1 form for.
    */
   mediaProviderFor(sn: string): MediaProvider {
     return {
@@ -543,8 +552,6 @@ export class P2PCommandRouter {
       p2pQuery: (subCmd, opts) => this.p2pQuery(sn, subCmd, opts),
       p2pControlQuery: (param, data, opts) => this.p2pControlQuery(sn, param, data, opts),
       record: async (seconds, opts) => {
-        // Opens its own pull, so it reaches `sendMediaPayloadLevel2` exactly as a shared source does and needs
-        // the key on the same terms — an attached camera's start has no level-1 form to fall back to.
         const { session, channel, accountId, homeBaseAttached } = await this.resolveSession(sn, {
           waitLevel2: "soft",
           requireLevel2ForAttached: true,
@@ -666,7 +673,11 @@ export class P2PCommandRouter {
    * Whether they can be SERVED at the same time is the station's business, not this map's. Where it serves one
    * camera at a time, a pull still lingering for a camera nobody is watching would go on re-issuing its own
    * media start against the one being asked for, so opening a new channel releases those first — see
-   * {@link releaseLingeringSiblings}. A pull with consumers is never touched.
+   * {@link releaseLingeringSiblings}. A pull with consumers is never touched. The release runs before the
+   * reuse branch, so a reuse frees the station as a cold start does.
+   *
+   * The session goes into a {@link HeldSession} cell, so it can be replaced under a source that stays in
+   * place.
    */
   async sharedLiveSourceFor(
     sn: string,
@@ -683,15 +694,10 @@ export class P2PCommandRouter {
       this.dropLiveSource(key);
       source = undefined;
     }
-    // Before the branch, because a reuse frees the station exactly as a cold start does: the measured failure
-    // was the OTHER channels re-tasking the station, not the pull already open on this one.
     this.releaseLingeringSiblings(parentSn, channel, purpose);
     if (!source) {
       const logger = this.deps.logger ?? noopLogger;
-      // The session is held rather than captured, so a start nothing acknowledged can be answered with a
-      // replacement the SAME source warms on — see `onSessionUnreachable`. Capturing it would tie the source
-      // to one connection for its whole life, which is the state a client restart used to be needed to leave.
-      const held = { session };
+      const held: HeldSession = { session };
       source = new SharedLiveSource({
         makeStream: () =>
           new LiveStream(held.session, {
@@ -790,13 +796,20 @@ export class P2PCommandRouter {
    * {@link resetStandaloneSession} this does not wait for the station to fall idle: the failed source's own
    * session user is still counted, so a deferred reset would never fire.
    */
+  private onLiveStartFailed(sn: string, key: string): void {
+    const station = this.stationKeyOf(sn);
+    if (station !== sn) {
+      this.dropLiveSource(key);
+      return;
+    }
+    void this.manager
+      .close(station)
+      .catch((error) => this.reportError(error instanceof Error ? error : new Error(String(error))))
+      .finally(() => this.dropLiveSource(key));
+  }
+
   /**
    * Replace the session under a warming source whose media start nothing acknowledged, and warm again on it.
-   *
-   * The abandonment says this connection is not being heard, so re-issuing on it spends the warm-up window to
-   * no effect — measured on a real camera as five starts, five abandonments and a `source-error` twenty seconds
-   * after a first abandonment at three that already carried the answer. Rebuilding and delivering a keyframe
-   * took 5.9 s on the attempt that followed, which fits inside the window the first one wasted.
    *
    * Only a STANDALONE device's session is replaced, for the reason {@link onLiveStartFailed} gives: an attached
    * camera shares its HomeBase session with every other camera on it, and closing that to recover one would
@@ -804,10 +817,9 @@ export class P2PCommandRouter {
    *
    * The source is left warming throughout, holding the deadline it started, so this either produces a stream
    * within that window or fails exactly as it would have. A replacement that cannot be opened leaves the
-   * source to its deadline rather than failing it early — the window is the caller's contract, not this
-   * recovery's.
+   * source to its deadline rather than failing it early — the window is the caller's contract.
    */
-  private replaceUnreachableSession(sn: string, key: string, held: { session: P2PSession }): void {
+  private replaceUnreachableSession(sn: string, key: string, held: HeldSession): void {
     const station = this.stationKeyOf(sn);
     if (station !== sn) return;
     void (async () => {
@@ -822,18 +834,6 @@ export class P2PCommandRouter {
         this.reportError(error instanceof Error ? error : new Error(String(error)));
       }
     })();
-  }
-
-  private onLiveStartFailed(sn: string, key: string): void {
-    const station = this.stationKeyOf(sn);
-    if (station !== sn) {
-      this.dropLiveSource(key);
-      return;
-    }
-    void this.manager
-      .close(station)
-      .catch((error) => this.reportError(error instanceof Error ? error : new Error(String(error))))
-      .finally(() => this.dropLiveSource(key));
   }
 
   /**
@@ -1022,6 +1022,10 @@ export class P2PCommandRouter {
    * `requireLevel2ForAttached` promotes a `"soft"` caller to `true` on a HomeBase-attached camera, whose media
    * start has no level-1 form at all.
    *
+   * A `"soft"` caller frames per send: an own-session start issued with no key rides level 1, and its own
+   * re-issue rides level 2 once the key lands. Nothing bounds an unanswered `CMD_GATEWAYINFO`, so a waiting
+   * caller's grace is the bound, charged from connect.
+   *
    * Only a caller that REQUIRES the key re-prompts — see {@link P2PSession.repromptLevel2Key}, which explains
    * why one settled negotiation is not the last word.
    */
@@ -1048,17 +1052,6 @@ export class P2PCommandRouter {
     while (!session.isConnected && Date.now() - t0 < CONNECT_WAIT_MS) await new Promise((r) => setTimeout(r, 200));
     if (!session.isConnected) throw new Error(`P2P session for ${parentSn} did not connect`);
     if (opts.waitLevel2) {
-      // An attached camera's media start has no level-1 form: `sendMediaPayloadLevel2` puts nothing on the wire
-      // without the key. Such a caller is a level-2 one however it asked, so a settled negotiation must be
-      // re-prompted and a missing key must fail here — resolving it soft left the warm-up re-issuing a command
-      // that was never sent, every interval, until it timed out.
-      // Best effort means the caller can frame without the key, and `sendStartLiveOwnSession` proves it by
-      // reading `level2Key` when it sends: the framing is chosen per command, so a start issued with no key
-      // rides level 1 and the warm-up's own re-issue rides level 2 once the key has landed. Waiting first buys
-      // nothing re-issuing does not, and costs the whole grace on a camera that will never negotiate one —
-      // nothing bounds an unanswered `CMD_GATEWAYINFO`, so the caller's grace IS the bound, and it is charged
-      // from connect. Measured on three standalone cameras: 7.8 s of dead time each, then a keyframe within
-      // 400 ms of finally starting.
       if (opts.waitLevel2 === "settle") {
         await session.awaitLevel2Key(LEVEL2_SETTLE_MS, "session");
         return { session, parentSn, channel, accountId, homeBaseAttached };

@@ -92,6 +92,11 @@ export class LiveSnapshotUnavailableError extends Error {
  * A media pull was refused: the camera is switched off.
  *
  * A disabled camera serves no live media, video or audio.
+ *
+ * Raised by every media pull on the camera surface. The pulls that answer with a promise REJECT with it;
+ * fragment recording answers with a handle and therefore THROWS it, so a caller that builds a recording
+ * outside a `try` block sees it there rather than on the handle. A retained push thumbnail is exempt — it
+ * is not a pull.
  */
 export class CameraDisabledError extends Error {
   constructor(
@@ -450,6 +455,10 @@ export interface LiveVideoFrame {
  * or from a set that cannot be parsed — the frame header's report is carried instead, so a configuration is
  * always present. The two are not distinguished in the payload: a configuration is acted on by comparing it
  * with the one already in use, and that comparison answers the same whichever half stated it.
+ *
+ * The header's report is carried as it reads, so where the header declares no geometry either the width and
+ * height are `0`. A caller sizing a decoder from these treats a zero as "not yet stated" and waits for the
+ * next announcement, which the first keyframe's parameter sets produce.
  *
  * A consequence worth knowing: the first announcements of a session can move from a header-derived
  * configuration to a parameter-set-derived one without the camera having reconfigured, because the sets
