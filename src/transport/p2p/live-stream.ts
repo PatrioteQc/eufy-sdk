@@ -224,13 +224,13 @@ export class LiveStream extends EventEmitter {
    * shared source calls this to retry a start that raced key negotiation, until frames flow. Safe to
    * call repeatedly: `startLiveMedia` self-selects start vs keepalive per the session state.
    */
-  nudge(): void {
-    if (this.listening) this.sendStart();
+  nudge(force?: boolean): void {
+    if (this.listening) this.sendStart(force);
   }
 
-  private sendStart(): void {
+  private sendStart(force?: boolean): void {
     try {
-      this.session.startLiveMedia(this.opts.channel, this.opts.accountId, this.opts.homeBaseAttached);
+      this.session.startLiveMedia(this.opts.channel, this.opts.accountId, this.opts.homeBaseAttached, { force });
     } catch (e) {
       // Non-fatal: the session may be mid-reconnect; the warm-up retry will re-issue the start.
       this.logger.debug(`[live] startLiveMedia deferred (session not ready): ${e instanceof Error ? e.message : e}`);

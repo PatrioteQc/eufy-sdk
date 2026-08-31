@@ -532,8 +532,14 @@ export interface StreamBudgetNotice {
 export interface LiveStreamHandle {
   start(): this;
   stop(): void;
-  /** Re-issue the media-start command (start-race retry / keepalive nudge). Optional. */
-  nudge?(): void;
+  /**
+   * Re-issue the media-start command (start-race retry / keepalive nudge). Optional.
+   *
+   * `force` states that the channel is NOT being served, so a real start is required rather than a keepalive.
+   * An own-session camera sends one or the other depending on whether its session believes the channel is
+   * already started — a belief that outlives a station which acknowledged a start and then served nothing.
+   */
+  nudge?(force?: boolean): void;
   on(event: "video", listener: (frame: LiveVideoFrame) => void): this;
   on(event: "audio", listener: (frame: LiveAudioFrame) => void): this;
   on(event: "start" | "stop", listener: () => void): this;

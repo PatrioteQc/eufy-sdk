@@ -812,7 +812,12 @@ export class P2PSession extends EventEmitter {
    * internal to this module, so they are named as code: a public comment cannot link to what the reference does
    * not carry. Use the `LiveStream` helper for a managed feed with keepalive.
    */
-  startLiveMedia(channel: number = STATION_CHANNEL, accountId = "", homeBaseAttached = false): void {
+  startLiveMedia(
+    channel: number = STATION_CHANNEL,
+    accountId = "",
+    homeBaseAttached = false,
+    opts?: { force?: boolean },
+  ): void {
     if (homeBaseAttached) {
       this.tracedDatagramGaps = 0;
       this.trace({
@@ -825,6 +830,11 @@ export class P2PSession extends EventEmitter {
       return;
     }
     const want: "l1" | "l2" = this.level2Key ? "l2" : "l1";
+    // `force` is the caller stating the channel is NOT being served, which outranks what this session believes:
+    // the belief is set when a start is acknowledged and cleared only by a stop or an abandonment, so a station
+    // that acknowledged a start and then served nothing leaves it standing — and every later re-issue is then a
+    // keepalive, which holds a stream that was never started and cannot begin one.
+    if (opts?.force) this.liveStartedChannels.delete(channel);
     if (this.liveStartedChannels.get(channel) === want) {
       this.trace({
         phase: "media-command",

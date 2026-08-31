@@ -29,8 +29,12 @@ export class FakeStream extends EventEmitter implements LiveStreamHandle {
     this.stopped++;
   }
 
-  nudge(): void {
+  /** How many re-issues asked for a real start rather than a keepalive — see `undelivered-restart.spec.ts`. */
+  forced = 0;
+
+  nudge(force?: boolean): void {
     this.nudged++;
+    if (force) this.forced++;
   }
 
   /** Emit one video frame to the source. */

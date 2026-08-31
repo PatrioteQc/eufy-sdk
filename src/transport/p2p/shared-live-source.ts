@@ -601,12 +601,7 @@ export class SharedLiveSource {
     stream.start();
     this.warmAttempts++;
     this.logger.debug(`${this.tag} warming again on a replacement session (attempt ${this.warmAttempts})`);
-    this.warmRetryTimer = setInterval(() => {
-      const current = this.stream;
-      if (!current?.nudge) return;
-      this.warmAttempts++;
-      current.nudge();
-    }, this.warmRetryMs);
+    this.warmRetryTimer = setInterval(() => this.reissueStart(), this.warmRetryMs);
   }
 
   /**
@@ -619,12 +614,23 @@ export class SharedLiveSource {
    */
   private armWarmWatch(): void {
     this.warmDeadlineTimer.arm(this.warmTimeoutMs, () => this.onWarmTimeout());
-    this.warmRetryTimer = setInterval(() => {
-      const current = this.stream;
-      if (!current?.nudge) return;
-      this.warmAttempts++;
-      current.nudge();
-    }, this.warmRetryMs);
+    this.warmRetryTimer = setInterval(() => this.reissueStart(), this.warmRetryMs);
+  }
+
+  /**
+   * Re-issue this stream's media start, asking for a REAL start while nothing has arrived.
+   *
+   * On an own-session camera a re-issue is a keepalive once the session believes the channel is started, and
+   * that belief outlives a station which acknowledged a start and then served nothing: every later re-issue is
+   * then a keepalive holding a stream that was never started. Nothing delivered is this source's own evidence
+   * that the channel is not being served, so it says so. Once media arrives the keepalive is what is wanted,
+   * and an attached camera re-sends a full start either way.
+   */
+  private reissueStart(): void {
+    const current = this.stream;
+    if (!current?.nudge) return;
+    this.warmAttempts++;
+    current.nudge(!this.delivered.video && !this.delivered.audio);
   }
 
   /**
