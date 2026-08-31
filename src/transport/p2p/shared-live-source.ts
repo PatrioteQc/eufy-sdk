@@ -67,8 +67,12 @@ export interface SharedLiveSourceOptions {
    * Factory that builds a fresh, **un-started** {@link LiveStreamHandle}. Called on every (re)warm so
    * a reconnect rebuilds the stream rather than reusing a dead one. `SharedLiveSource` calls
    * `.start()` itself.
+   *
+   * `ctx.reassertWanted` answers whether this pull still has anyone attached. A stream that re-asserts a
+   * channel to hold it open should consult it, so a pull nothing is watching stops competing for a station
+   * that serves one camera at a time.
    */
-  makeStream: () => LiveStreamHandle;
+  makeStream: (ctx: { reassertWanted: () => boolean }) => LiveStreamHandle;
   /** No-consumer grace before teardown (default 8000ms). Distinct from the stream's keepalive. */
   lingerMs?: number;
   /** Per-consumer bounded queue depth; overflow → drop-to-keyframe (default 900 ≈ 30s @ 30fps). */
@@ -548,7 +552,7 @@ export class SharedLiveSource {
    * the events the first attempt did.
    */
   private openStream(): void {
-    const stream = this.opts.makeStream();
+    const stream = this.opts.makeStream({ reassertWanted: () => this.consumerCount > 0 });
     this.stream = stream;
     stream.on("video", (frame) => this.onVideo(frame));
     stream.on("audio", (frame) => this.onAudio(frame));

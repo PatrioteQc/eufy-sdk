@@ -730,6 +730,15 @@ export interface MediaProvider {
     jpeg: Buffer;
     width: number;
     height: number;
+    /**
+     * Present and `true` only when these bytes are the RETAINED still rather than a fresh capture.
+     *
+     * A live still is refused while a sibling camera on the same station is being watched, because a
+     * station serves one camera at a time and the live view is the picture someone is looking at. Answering
+     * the retained still there keeps a caller's tile populated instead of failing it, and this says the
+     * bytes are not current so a caller can label them or ask again later. Absent means freshly captured.
+     */
+    retained?: true;
   }>;
   /**
    * Open a managed live stream.

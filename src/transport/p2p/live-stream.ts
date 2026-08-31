@@ -102,6 +102,18 @@ export interface LiveStreamOptions {
    */
   stallMs?: number;
   /**
+   * Whether re-asserting this camera's channel is still wanted, consulted each time the stall window
+   * elapses. Absent means always wanted.
+   *
+   * A re-assert on an attached camera is a full media start, so it takes the station from whichever camera
+   * it was serving. Whether that is wanted depends on who is attached to this pull and to its siblings,
+   * which this stream cannot see. Its owner can, so it asks rather than assuming.
+   *
+   * The watch keeps re-arming while this answers false, so a pull that gains a consumer re-asserts at the
+   * next window rather than staying silent for the rest of its life.
+   */
+  reassertWanted?: () => boolean;
+  /**
    * Runtime topology fact (from the device record: `parent_sn && parent_sn !== sn`): true = the camera
    * rides a HomeBase's session (start via the level-2 `1003` payload), false = own-session camera
    * (start via the `1700`/`cmd 1000` path, level-2 or level-1 per the session key). NOT a family trait.
@@ -194,7 +206,7 @@ export class LiveStream extends EventEmitter {
     if (!this.kaTimer) return;
     clearInterval(this.kaTimer);
     this.kaTimer = undefined;
-    this.logger.debug("[live] station is serving this camera — holding off the attached restart");
+    this.logger.debug(`[live ch${this.channel}] station is serving this camera — holding off the attached restart`);
   }
 
   /**
@@ -207,6 +219,9 @@ export class LiveStream extends EventEmitter {
    * introduced to remove.
    *
    * Replaced on every own-channel frame, so the window is measured from the last one.
+   *
+   * Gated on {@link LiveStreamOptions.reassertWanted}: silence with nobody attached is not a condition to
+   * act on, because the re-assert would take the station from a camera someone is watching.
    */
   private armStallWatch(): void {
     if (this.stallTimer) clearTimeout(this.stallTimer);
@@ -216,7 +231,14 @@ export class LiveStream extends EventEmitter {
     this.stallTimer = setTimeout(() => {
       this.stallTimer = undefined;
       if (!this.listening || this.kaTimer) return;
-      this.logger.debug(`[live] no own media for ${stallMs}ms — re-asserting this camera's channel`);
+      if (this.opts.reassertWanted?.() === false) {
+        this.logger.debug(
+          `[live ch${this.channel}] no own media for ${stallMs}ms, and its owner does not want this channel re-asserted — staying quiet`,
+        );
+        this.armStallWatch();
+        return;
+      }
+      this.logger.debug(`[live ch${this.channel}] no own media for ${stallMs}ms — re-asserting this camera's channel`);
       this.sendStart();
       this.kaTimer = setInterval(() => this.sendStart(), keepAliveMs);
     }, stallMs);

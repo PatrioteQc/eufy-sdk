@@ -25,6 +25,7 @@ import { decodeMapFrame } from "./map-channels.js";
 import { VacuumMapStore } from "../model/index.js";
 import { type P2PSession, type P2PFrame } from "../transport/p2p/p2p-session.js";
 import { P2PCommandRouter } from "../transport/p2p/command-router.js";
+import { jpegGeometry } from "../transport/p2p/media.js";
 import type { PowerTier } from "../transport/p2p/session-manager.js";
 import { MqttCommandRouter } from "../transport/mqtt/command-router.js";
 import { TuyaCommandRouter } from "../transport/tuya/command-router.js";
@@ -49,6 +50,7 @@ import { type DpCatalog, EMPTY_DP_CATALOG, parseDpCatalog } from "../model/capab
 import { type CleanRecordPage, EMPTY_CLEAN_RECORD_PAGE, parseCleanRecords } from "../model/clean-records.js";
 import {
   commandObservation,
+  LiveSnapshotUnavailableError,
   StateConvergenceError,
   type Command,
   type CommandObservation,
@@ -1039,15 +1041,39 @@ export class EufyMega extends EventEmitter {
     };
   }
 
-  /** Combine explicit P2P media with the optional passive push-thumbnail provider. */
+  /**
+   * Combine explicit P2P media with the optional passive push-thumbnail provider.
+   *
+   * The retained still also becomes the answer for a live still that could not be captured. A station
+   * serves one camera at a time and a live view outranks a tile, so a still asked for while a sibling is
+   * being watched is refused at the transport. Answering the retained bytes keeps a caller's tile
+   * populated rather than failing it, marked {@link MediaProvider.snapshotLive} `retained` so the caller
+   * knows they are not current. With nothing retained the refusal stands.
+   */
   private mediaProviderFor(sn: string): MediaProvider {
     const media = this.p2p.mediaProviderFor(sn);
-    if (!this.storedImages) return media;
+    const cache = this.storedImages;
+    if (!cache) return media;
+    const retainedStill = () => {
+      if (!this.mega.loggedIn) return Promise.reject(new Error("login() first"));
+      return cache.snapshotStored(sn);
+    };
     return {
       ...media,
-      snapshotStored: () => {
-        if (!this.mega.loggedIn) return Promise.reject(new Error("login() first"));
-        return this.storedImages!.snapshotStored(sn);
+      snapshotStored: retainedStill,
+      snapshotLive: async (opts) => {
+        try {
+          return await media.snapshotLive(opts);
+        } catch (error) {
+          if (!(error instanceof LiveSnapshotUnavailableError)) throw error;
+          const retained = await retainedStill().catch(() => undefined);
+          const geometry = retained && jpegGeometry(retained);
+          if (!retained || !geometry) throw error;
+          (this.opts.logger ?? noopLogger).debug(
+            `[media] a live still was unavailable (${error.reason}) — answering the retained one instead`,
+          );
+          return { jpeg: retained, ...geometry, retained: true };
+        }
       },
     };
   }

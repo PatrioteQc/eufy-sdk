@@ -4,6 +4,7 @@ import type { EufyDevice } from "../../core/types.js";
 import type { ThumbnailCandidate } from "../../transport/push/types.js";
 import { LoginStatus, type LoginResult } from "../../transport/http/mega-client.js";
 import { EufyMega } from "../eufy-mega.js";
+import { LiveSnapshotUnavailableError } from "../../core/contracts.js";
 
 const CAMERA_SN = "T8000P0000000001";
 const UNKNOWN_SN = "T8000P0000000002";
@@ -34,6 +35,18 @@ function sessionStore(userId = "synthetic-user"): SessionStore {
 
 function jpeg(body = "image"): Buffer {
   return Buffer.from([0xff, 0xd8, 0xff, ...Buffer.from(body), 0xff, 0xd9]);
+}
+
+/** A baseline JPEG whose SOF0 declares the geometry a reader has to answer with. */
+function jpegOf(width: number, height: number): Buffer {
+  const sof0 = Buffer.alloc(12);
+  sof0.writeUInt16BE(0xffc0, 0);
+  sof0.writeUInt16BE(11, 2);
+  sof0.writeUInt8(8, 4);
+  sof0.writeUInt16BE(height, 5);
+  sof0.writeUInt16BE(width, 7);
+  sof0.writeUInt8(1, 9);
+  return Buffer.concat([Buffer.from([0xff, 0xd8]), sof0, Buffer.from([0xff, 0xd9])]);
 }
 
 function cameraRecord(sn = CAMERA_SN): EufyDevice {
@@ -73,6 +86,11 @@ type ClientInternals = {
     capabilitiesForDevice(sn: string): ReadonlySet<string> | undefined;
   };
   observeStoredImage(candidate: ThumbnailCandidate): Promise<void>;
+  p2p: { mediaProviderFor(sn: string): { snapshotLive(opts?: unknown): Promise<unknown> } };
+  mediaProviderFor(sn: string): {
+    snapshotLive(opts?: unknown): Promise<{ jpeg: Buffer; width: number; height: number; retained?: true }>;
+    snapshotStored?(): Promise<Buffer>;
+  };
 };
 
 function makeClient(storedSnapshotCache?: boolean) {
@@ -219,5 +237,59 @@ describe("stored snapshot client lifecycle", () => {
     await client.eufy.login();
 
     await expect(action()).rejects.toMatchObject({ reason: "not-observed" });
+  });
+});
+
+/**
+ * A live still refused because a sibling is being watched answers with the retained one.
+ *
+ * A station serves one camera at a time and a live view outranks a tile, so the still is genuinely
+ * unavailable rather than broken. Failing there empties a caller's tile; answering the retained bytes keeps
+ * it populated, and `retained` says they are not current so nothing mistakes them for a fresh capture.
+ */
+describe("a live still that could not be captured", () => {
+  const refuse = (internals: ClientInternals) =>
+    vi.spyOn(internals.p2p, "mediaProviderFor").mockReturnValue({
+      snapshotLive: () => Promise.reject(new LiveSnapshotUnavailableError("no-keyframe", "no-keyframe")),
+    } as never);
+
+  it("answers the retained bytes, marked as retained, with the geometry the image declares", async () => {
+    const { eufy, internals, download } = makeClient();
+    download.mockResolvedValue(jpegOf(1920, 1080));
+    await eufy.login();
+    await internals.observeStoredImage(exactCandidate());
+    await vi.waitFor(() => expect(internals.mediaProviderFor(CAMERA_SN).snapshotStored!()).resolves.toBeDefined());
+    refuse(internals);
+
+    const still = await internals.mediaProviderFor(CAMERA_SN).snapshotLive();
+
+    expect(still).toMatchObject({ width: 1920, height: 1080, retained: true });
+    expect(still.jpeg.equals(jpegOf(1920, 1080))).toBe(true);
+  });
+
+  it("lets the refusal stand when nothing is retained", async () => {
+    const { eufy, internals } = makeClient();
+    await eufy.login();
+    refuse(internals);
+
+    await expect(internals.mediaProviderFor(CAMERA_SN).snapshotLive()).rejects.toBeInstanceOf(
+      LiveSnapshotUnavailableError,
+    );
+  });
+
+  it("never marks a fresh capture as retained, even with bytes in hand", async () => {
+    const { eufy, internals, download } = makeClient();
+    download.mockResolvedValue(jpegOf(640, 480));
+    await eufy.login();
+    await internals.observeStoredImage(exactCandidate());
+    await vi.waitFor(() => expect(internals.mediaProviderFor(CAMERA_SN).snapshotStored!()).resolves.toBeDefined());
+    vi.spyOn(internals.p2p, "mediaProviderFor").mockReturnValue({
+      snapshotLive: () => Promise.resolve({ jpeg: jpegOf(2560, 1440), width: 2560, height: 1440 }),
+    } as never);
+
+    const still = await internals.mediaProviderFor(CAMERA_SN).snapshotLive();
+
+    expect(still.width).toBe(2560);
+    expect(still.retained).toBeUndefined();
   });
 });

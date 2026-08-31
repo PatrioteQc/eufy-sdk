@@ -290,7 +290,7 @@ const JPEG_NOT_FRAME_HEADERS = new Set([0xc4, 0xc8, 0xcc]);
  * Decoding the image (the `jpeg-js` path the v2 thumbnail decoder needs) would answer the same question,
  * but it is synchronous pure JS over every pixel: this needs a dozen bytes of header, so it reads them.
  */
-function jpegGeometry(jpeg: Buffer): { width: number; height: number } | undefined {
+export function jpegGeometry(jpeg: Buffer): { width: number; height: number } | undefined {
   let at = 2;
   while (at + 1 < jpeg.length && jpeg[at] === 0xff) {
     const marker = jpeg[at + 1];

@@ -21,13 +21,14 @@ import { FakeP2PSession, p2pVideoFrame } from "./live-source-fixtures.js";
 const ownFrame = (channel: number) =>
   p2pVideoFrame({ nal: Buffer.from([0x65, 0x11]), keyframe: true, width: 1920, height: 1080, channel });
 
-function attached(stallMs: number) {
+function attached(stallMs: number, reassertWanted?: () => boolean) {
   const session = new FakeP2PSession();
   const stream = new LiveStream(session as unknown as P2PSession, {
     channel: 2,
     homeBaseAttached: true,
     keepAliveMs: 20,
     stallMs,
+    reassertWanted,
     logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
   });
   stream.on("video", () => undefined);
@@ -78,5 +79,36 @@ describe("an attached stream whose station stopped serving it", () => {
     await settle(120);
 
     expect(session.starts.length).toBe(atStop);
+  });
+});
+
+/**
+ * A re-assert takes the station from whichever camera it was serving, so a pull nothing is attached to
+ * must not issue one. The owner answers whether anyone is attached; the stream only asks.
+ */
+describe("an attached stream nothing is attached to", () => {
+  it("stays quiet through the stall window instead of taking the station", async () => {
+    const { session, stream } = attached(50, () => false);
+    session.push(ownFrame(2));
+    const settled = session.starts.length;
+    await settle(200);
+
+    expect(session.starts.length).toBe(settled);
+    stream.stop();
+  });
+
+  it("re-asserts at the next window once a consumer arrives, rather than staying silent for good", async () => {
+    let watched = false;
+    const { session, stream } = attached(50, () => watched);
+    session.push(ownFrame(2));
+    const settled = session.starts.length;
+    await settle(200);
+    expect(session.starts.length).toBe(settled);
+
+    watched = true;
+    await settle(140);
+
+    expect(session.starts.length).toBeGreaterThan(settled);
+    stream.stop();
   });
 });

@@ -699,13 +699,14 @@ export class P2PCommandRouter {
       const logger = this.deps.logger ?? noopLogger;
       const held: HeldSession = { session };
       source = new SharedLiveSource({
-        makeStream: () =>
+        makeStream: (ctx) =>
           new LiveStream(held.session, {
             channel,
             accountId,
             homeBaseAttached,
             eccPrivateKey: opts.eccPrivateKey,
             keepAliveMs: opts.keepAliveMs,
+            reassertWanted: () => this.reassertWanted(parentSn, key, ctx.reassertWanted),
             logger,
           }),
         lingerMs: opts.lingerMs,
@@ -761,6 +762,32 @@ export class P2PCommandRouter {
       );
       this.dropLiveSource(key);
     }
+  }
+
+  /**
+   * Whether the stream on `key` should re-assert its channel to hold the station.
+   *
+   * A re-assert on an attached camera is a full media start, so it takes the station from whichever camera
+   * it was serving. Three answers, in order:
+   *
+   *  - Nothing attached: no. There is nobody to take the station for.
+   *  - A live viewer attached: yes. That is the picture someone is looking at.
+   *  - Held only for stills, while a sibling on this station has a live viewer: no. A still refreshes a
+   *    tile that is off screen while the live view is on it, and a station serving one camera at a time
+   *    cannot satisfy both. Measured: a still on a sibling halved a live view's frame rate for as long as
+   *    it took, and its own capture then took fifteen seconds because it was contending.
+   *
+   * A still with no live sibling re-asserts as before, so a tile refreshing on a quiet station is
+   * unaffected.
+   */
+  private reassertWanted(parentSn: string, key: string, attached: () => boolean): boolean {
+    if (!attached()) return false;
+    if (this.liveSources.get(key)?.watchedLive !== false) return true;
+    for (const [siblingKey, sibling] of this.liveSources) {
+      if (siblingKey === key || !siblingKey.startsWith(`${parentSn}:`)) continue;
+      if (sibling.watchedLive) return false;
+    }
+    return true;
   }
 
   /** Dispose one cached live source and forget it, so the next acquisition builds a fresh one. */
