@@ -56,7 +56,7 @@ import {
   readNullTerminatedString,
 } from "./codec.js";
 import { commandName } from "./commands.js";
-import { traceLiveStart } from "./live-trace.js";
+import { traceLiveStart, type LiveTrace } from "./live-trace.js";
 import { noopLogger, type Logger } from "../../core/logger.js";
 
 const LOCAL_LOOKUP_PORT = 32108;
@@ -297,6 +297,9 @@ export interface P2PFrame extends P2PDataFrameHeader {
  * A live PPCS session. Internal transport; a host drives cameras through the capability surface.
  * @internal
  */
+/** Per-process counter behind {@link P2PSession.traceId} — see it for why this is not a serial. */
+let traceSequence = 0;
+
 export class P2PSession extends EventEmitter {
   private socket?: dgram.Socket;
   private connected = false;
@@ -378,6 +381,19 @@ export class P2PSession extends EventEmitter {
     this.level2Pending = cfg.resolveCipherKey !== undefined;
   }
 
+  /**
+   * This session's opaque handle for tracing — `station-N` by order of construction in this process.
+   *
+   * Not the serial: a trace carrying one could not be retained by a host, which is the whole point of the
+   * phase vocabulary. It groups one station's records within a run and resolves to nothing outside it.
+   */
+  readonly traceId = `station-${++traceSequence}`;
+
+  /** Emit a live trace under this session's handle. */
+  private trace(trace: LiveTrace): void {
+    traceLiveStart(this.logger, trace, this.traceId);
+  }
+
   /** Provide the negotiated 32-byte session key so level-2 (signCode 2/8) frames can be decrypted. */
   setLevel2Key(key: Buffer): void {
     if (key.length !== 32) throw new Error(`level-2 key must be 32 bytes, got ${key.length}`);
@@ -420,11 +436,11 @@ export class P2PSession extends EventEmitter {
     const remaining = graceMs - (Date.now() - since);
     if (remaining <= 0) {
       this.logger.debug(`[p2p] ${this.cfg.stationSn} no level-2 key and its ${graceMs}ms grace has elapsed`);
-      traceLiveStart(this.logger, { phase: "level2-absent", waitedMs: graceMs });
+      this.trace({ phase: "level2-absent", waitedMs: graceMs });
       return false;
     }
     this.logger.debug(`[p2p] ${this.cfg.stationSn} waiting up to ${remaining}ms for the level-2 key`);
-    traceLiveStart(this.logger, { phase: "level2-wait", waitMs: remaining });
+    this.trace({ phase: "level2-wait", waitMs: remaining });
     const waiters = this.level2Waiters;
     const outcome = await new Promise<"key" | "terminal" | "closed" | "timeout">((resolve) => {
       let deadline: ReturnType<typeof setTimeout> | undefined;
@@ -515,7 +531,7 @@ export class P2PSession extends EventEmitter {
         }
         this.setLevel2Key(key);
         this.logger.debug(`[p2p] ${this.cfg.stationSn} level-2 key negotiated (cipher_id ${cipherId})`);
-        traceLiveStart(this.logger, { phase: "level2-ready", cipherId });
+        this.trace({ phase: "level2-ready", cipherId });
         this.emit("level2Ready", { cipherId });
       } catch (e) {
         if (this.closed || generation !== this.connectionGeneration) return;
@@ -791,15 +807,15 @@ export class P2PSession extends EventEmitter {
    * keepalive tick re-issue the start at level-2, so a camera that only accepts level-2 recovers from a
    * `live()` that raced ahead of key negotiation.
    *
-   * Each start is retained until its DATA acknowledgement and repeated every
-   * {@link LIVE_START_RETRANSMIT_MS} until the device acknowledges one, bounded by
-   * {@link LIVE_START_ACK_DEADLINE_MS} rather than by a send count. Use the `LiveStream` helper for a
-   * managed feed with keepalive.
+   * Each start is retained until its DATA acknowledgement and repeated every `LIVE_START_RETRANSMIT_MS` until
+   * the device acknowledges one, bounded by `LIVE_START_ACK_DEADLINE_MS` rather than by a send count. Both are
+   * internal to this module, so they are named as code: a public comment cannot link to what the reference does
+   * not carry. Use the `LiveStream` helper for a managed feed with keepalive.
    */
   startLiveMedia(channel: number = STATION_CHANNEL, accountId = "", homeBaseAttached = false): void {
     if (homeBaseAttached) {
       this.tracedDatagramGaps = 0;
-      traceLiveStart(this.logger, {
+      this.trace({
         phase: "media-command",
         topology: "attached",
         action: "start",
@@ -810,7 +826,7 @@ export class P2PSession extends EventEmitter {
     }
     const want: "l1" | "l2" = this.level2Key ? "l2" : "l1";
     if (this.liveStartedChannels.get(channel) === want) {
-      traceLiveStart(this.logger, {
+      this.trace({
         phase: "media-command",
         topology: "own",
         action: "keepalive",
@@ -818,7 +834,7 @@ export class P2PSession extends EventEmitter {
       });
       this.sendCommand(CMD_STREAM_KEEPALIVE, channel);
     } else {
-      traceLiveStart(this.logger, { phase: "media-command", topology: "own", action: "start", level2: want === "l2" });
+      this.trace({ phase: "media-command", topology: "own", action: "start", level2: want === "l2" });
       this.tracedDatagramGaps = 0;
       this.sendStartLiveOwnSession(channel, accountId);
       this.liveStartedChannels.set(channel, want);
@@ -922,10 +938,10 @@ export class P2PSession extends EventEmitter {
       const outstanding = this.retransmitUnacked(this.unackedLiveStarts, {
         retransmitMs: LIVE_START_RETRANSMIT_MS,
         spent: (held) => Date.now() - held.firstSentAt >= LIVE_START_ACK_DEADLINE_MS,
-        onResent: () => traceLiveStart(this.logger, { phase: "media-command-retry", action: "start" }),
+        onResent: () => this.trace({ phase: "media-command-retry", action: "start" }),
         onAbandoned: (_sequence, held) => {
           this.liveStartedChannels.delete(held.channel);
-          traceLiveStart(this.logger, { phase: "media-command-unacknowledged", action: "start" });
+          this.trace({ phase: "media-command-unacknowledged", action: "start" });
           // Stated as well as traced: a stream waiting on this start can only time out, and the channel is what
           // tells a shared HomeBase session's other streams that it was not theirs.
           this.emit("liveStartUnacknowledged", held.channel);
@@ -1218,7 +1234,7 @@ export class P2PSession extends EventEmitter {
       for (let i = 0; i < count && 10 + 2 * i <= msg.length; i++) {
         const sequence = msg.readUInt16BE(8 + 2 * i);
         if (this.unackedLiveStarts.delete(sequence)) {
-          traceLiveStart(this.logger, { phase: "media-command-ack", action: "start" });
+          this.trace({ phase: "media-command-ack", action: "start" });
         }
       }
       if (!this.unackedLiveStarts.size) this.clearLiveStartRetransmit();
@@ -1243,7 +1259,7 @@ export class P2PSession extends EventEmitter {
     payload: Record<string, unknown>,
   ): void {
     if (!this.connectAddress || !this.level2Key) {
-      traceLiveStart(this.logger, {
+      this.trace({
         phase: "media-command-unsent",
         reason: this.connectAddress ? "level2-key" : "address",
       });
@@ -1576,7 +1592,7 @@ export class P2PSession extends EventEmitter {
     this.lastSeqByType.set(dataType, seqNo);
     if ((advance > 1 || restarted) && this.pendingByDataType.has(dataType)) {
       if (this.tracedDatagramGaps++ < MAX_TRACED_DATAGRAM_GAPS) {
-        traceLiveStart(this.logger, { phase: restarted ? "sequence-restart" : "datagram-gap", dataType });
+        this.trace({ phase: restarted ? "sequence-restart" : "datagram-gap", dataType });
       }
       this.pendingByDataType.delete(dataType);
     }

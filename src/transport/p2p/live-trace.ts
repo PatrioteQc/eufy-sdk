@@ -60,6 +60,15 @@ export type LiveTrace =
   | { phase: "media-command-unsent"; reason: "level2-key" | "address" };
 
 /** Record one startup observation at debug level. */
-export function traceLiveStart(logger: Logger, trace: LiveTrace): void {
-  logger.debug(LIVE_TRACE_MESSAGE, trace);
+/**
+ * Which pull a trace belongs to, as an OPAQUE per-process handle — never a serial, a channel or an address.
+ *
+ * A phase says what happened and nothing about where, so four cameras warming off one HomeBase produce four
+ * indistinguishable records and a reader is left correlating them by time, which is guesswork. A handle
+ * assigned per process groups them without naming anything: it cannot be resolved to a device by whoever
+ * reads it, and it means nothing in the next run. That is what keeps these records retainable — a serial here
+ * would survive every redaction a host applies, which is why the source's own label is not used.
+ */
+export function traceLiveStart(logger: Logger, trace: LiveTrace, source?: string): void {
+  logger.debug(LIVE_TRACE_MESSAGE, source === undefined ? trace : { ...trace, source });
 }

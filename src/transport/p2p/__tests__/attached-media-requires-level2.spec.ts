@@ -56,7 +56,9 @@ describe("an attached media start with no level-2 key", () => {
 
     session.startLiveMedia(2, "account", true);
 
-    expect(traces(debug)).toContainEqual({ phase: "media-command-unsent", reason: "level2-key" });
+    expect(traces(debug)).toContainEqual(
+      expect.objectContaining({ phase: "media-command-unsent", reason: "level2-key" }),
+    );
   });
 
   it("puts it on the wire once the key is held, and says nothing about being unsent", () => {

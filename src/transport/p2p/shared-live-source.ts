@@ -29,7 +29,7 @@ import { LiveStreamStartError, type LiveStreamStartFailureReason } from "../../c
 import { noopLogger, type Logger } from "../../core/logger.js";
 import { Timer } from "../../core/util.js";
 import { codedGeometry, updatedParamSets, type CodedGeometry, type ParamSets } from "./annexb.js";
-import { traceLiveStart } from "./live-trace.js";
+import { traceLiveStart, type LiveTrace } from "./live-trace.js";
 import type {
   LiveAudioFrame,
   LiveStreamConsumer,
@@ -358,6 +358,9 @@ class ConsumerImpl extends EventEmitter implements Consumer {
   }
 }
 
+/** Per-process counter behind {@link SharedLiveSource.trace}'s handle. */
+let pullSequence = 0;
+
 export class SharedLiveSource {
   private stream?: LiveStreamHandle;
   private readonly consumers = new Set<ConsumerImpl>();
@@ -405,6 +408,8 @@ export class SharedLiveSource {
    * group of pictures is longer than the window, and the timeout fails EVERY consumer.
    */
   private reuseWatch = false;
+  /** This source's opaque handle for tracing — see {@link SharedLiveSource.trace}. */
+  private readonly traceId: string;
   private readonly warmDeadlineTimer = new Timer();
   private warmAttempts = 0;
   /** Battery budget timer + post-notice grace timer (battery/solar sources only). */
@@ -433,6 +438,7 @@ export class SharedLiveSource {
     this.budgetGraceMs = opts.budgetGraceMs ?? 10000;
     this.logger = opts.logger ?? noopLogger;
     this.tag = opts.label ? `[live ${opts.label}]` : "[live]";
+    this.traceId = `pull-${++pullSequence}`;
   }
 
   get state(): SharedLiveState {
@@ -519,6 +525,16 @@ export class SharedLiveSource {
   }
 
   /**
+   * Emit a live trace under this source's opaque handle — `pull-N` by order of construction in this process.
+   *
+   * Not {@link SharedLiveSourceOptions.label}, which is the router's `stationSn:channel` key: that is a serial,
+   * and a serial in a retained record survives every redaction a host applies.
+   */
+  private trace(trace: LiveTrace): void {
+    traceLiveStart(this.logger, trace, this.traceId);
+  }
+
+  /**
    * Build + start the underlying stream, wire its frames into the fan-out, and watch the warm-up.
    */
   private warm(): void {
@@ -528,7 +544,7 @@ export class SharedLiveSource {
     this.delivered = { keyframe: false, video: false, audio: false };
     this.warmAttempts = 1;
     this.logger.debug(`${this.tag} warming (retry=${this.warmRetryMs}ms deadline=${this.warmTimeoutMs}ms)`);
-    traceLiveStart(this.logger, { phase: "warming", retryMs: this.warmRetryMs, deadlineMs: this.warmTimeoutMs });
+    this.trace({ phase: "warming", retryMs: this.warmRetryMs, deadlineMs: this.warmTimeoutMs });
     const stream = this.opts.makeStream();
     this.stream = stream;
     stream.on("video", (frame) => this.onVideo(frame));

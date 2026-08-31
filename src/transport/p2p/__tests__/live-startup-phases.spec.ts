@@ -30,11 +30,9 @@ describe("warm-up phase", () => {
 
     const consumer = source.attach();
 
-    expect(phases(debug.mock.calls as never)).toContainEqual({
-      phase: "warming",
-      retryMs: 2000,
-      deadlineMs: 20000,
-    });
+    expect(phases(debug.mock.calls as never)).toContainEqual(
+      expect.objectContaining({ phase: "warming", retryMs: 2000, deadlineMs: 20000 }),
+    );
     consumer.detach();
   });
 
@@ -50,11 +48,9 @@ describe("warm-up phase", () => {
 
     const consumer = source.attach();
 
-    expect(phases(debug.mock.calls as never)).toContainEqual({
-      phase: "warming",
-      retryMs: 750,
-      deadlineMs: 9000,
-    });
+    expect(phases(debug.mock.calls as never)).toContainEqual(
+      expect.objectContaining({ phase: "warming", retryMs: 750, deadlineMs: 9000 }),
+    );
     consumer.detach();
   });
 
@@ -93,7 +89,11 @@ describe("warm-up phase", () => {
 
     const consumer = source.attach();
 
-    expect(JSON.stringify(phases(debug.mock.calls as never))).not.toContain("T8000P0000000000");
+    const traced = phases(debug.mock.calls as never) as { source?: string }[];
+    expect(JSON.stringify(traced)).not.toContain("T8000P0000000000");
+    // The handle that groups a run's records is opaque by construction, and asserted to be so: it is what a
+    // reader uses instead of the label, which is a serial.
+    expect(traced[0]?.source).toMatch(/^pull-\d+$/);
     consumer.detach();
   });
 });

@@ -19,7 +19,7 @@ import type { P2PSession, P2PFrame } from "./p2p-session.js";
 import { AccessUnitAssembler, VideoFrameDecoder } from "./video.js";
 import { sniffAnnexbCodec } from "./annexb.js";
 import { noopLogger, type Logger } from "../../core/logger.js";
-import { traceLiveStart } from "./live-trace.js";
+import { traceLiveStart, type LiveTrace } from "./live-trace.js";
 import type { AudioCodec, LiveAudioFrame, LiveVideoFrame, VideoCodec } from "../../core/contracts.js";
 
 const CMD_VIDEO_FRAME = 1300;
@@ -144,6 +144,12 @@ export class LiveStream extends EventEmitter {
     if (opts.eccPrivateKey) this.decoder = new VideoFrameDecoder(opts.eccPrivateKey);
   }
 
+  /** Emit a live trace under its session's handle and the channel this stream pulls. */
+  private trace(trace: LiveTrace): void {
+    const session = this.session.traceId;
+    traceLiveStart(this.logger, trace, session ? `${session}:${this.opts.channel ?? 0}` : undefined);
+  }
+
   /** Begin streaming: attach the frame listener and tell the station to start realtime media. */
   start(): this {
     if (this.listening) return this;
@@ -265,7 +271,7 @@ export class LiveStream extends EventEmitter {
     const accepted = this.acceptsMedia(f);
     if (f.commandId === CMD_VIDEO_FRAME && !this.tracedFirstVideoCommand) {
       this.tracedFirstVideoCommand = true;
-      traceLiveStart(this.logger, { phase: "first-video-command", signCode: f.signCode, accepted });
+      this.trace({ phase: "first-video-command", signCode: f.signCode, accepted });
     }
     if (!accepted) return;
     try {
@@ -273,11 +279,11 @@ export class LiveStream extends EventEmitter {
         for (const unit of this.units.push(f.data, (payload) => this.annexbOf(payload, f.signCode))) {
           if (!this.tracedFirstVideoUnit) {
             this.tracedFirstVideoUnit = true;
-            traceLiveStart(this.logger, { phase: "first-video-unit", keyframe: unit.keyframe });
+            this.trace({ phase: "first-video-unit", keyframe: unit.keyframe });
           }
           if (unit.keyframe && !this.tracedFirstKeyframe) {
             this.tracedFirstKeyframe = true;
-            traceLiveStart(this.logger, { phase: "first-keyframe" });
+            this.trace({ phase: "first-keyframe" });
           }
           // Sniff the codec only on a keyframe (it carries the parameter sets); delta frames have no
           // config NAL, so they inherit the last-known codec.
@@ -336,7 +342,7 @@ export class LiveStream extends EventEmitter {
     if (frame.channel === this.mediaChannel) return true;
     if (!this.tracedFirstForeignFrame) {
       this.tracedFirstForeignFrame = true;
-      traceLiveStart(this.logger, {
+      this.trace({
         phase: "first-foreign-media-command",
         media: frame.commandId === CMD_VIDEO_FRAME ? "video" : "audio",
       });
@@ -354,7 +360,7 @@ export class LiveStream extends EventEmitter {
     if (annexb) return annexb;
     const decoded = this.decoder?.decodeFrame(payload)?.h264;
     if (!decoded && this.tracedDecodeFailures++ < MAX_TRACED_DECODE_FAILURES) {
-      traceLiveStart(this.logger, { phase: "video-decode-empty", signCode });
+      this.trace({ phase: "video-decode-empty", signCode });
     }
     return decoded;
   }

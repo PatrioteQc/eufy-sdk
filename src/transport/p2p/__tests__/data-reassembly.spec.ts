@@ -87,7 +87,10 @@ describe("P2P data reassembly", () => {
 
     expect(received).toHaveLength(1);
     expect(received[0]!.commandId).toBe(1301);
-    expect(debug).toHaveBeenCalledWith(LIVE_TRACE_MESSAGE, { phase: "datagram-gap", dataType: VIDEO_DATA_TYPE });
+    expect(debug).toHaveBeenCalledWith(
+      LIVE_TRACE_MESSAGE,
+      expect.objectContaining({ phase: "datagram-gap", dataType: VIDEO_DATA_TYPE }),
+    );
   });
 
   it("traces a bounded number of datagram gaps however many the channel drops", () => {
@@ -150,7 +153,10 @@ describe("P2P data reassembly", () => {
 
     expect(received.map(({ commandId }) => commandId)).toEqual([1300, 1301]);
     expect(received[0]!.raw).toEqual(payload);
-    expect(debug).toHaveBeenCalledWith(LIVE_TRACE_MESSAGE, { phase: "sequence-restart", dataType: VIDEO_DATA_TYPE });
+    expect(debug).toHaveBeenCalledWith(
+      LIVE_TRACE_MESSAGE,
+      expect.objectContaining({ phase: "sequence-restart", dataType: VIDEO_DATA_TYPE }),
+    );
   });
 
   it("ignores a repeat from as far back as the device has been seen to repeat", () => {
