@@ -45,7 +45,7 @@ import { freshestLanIp } from "./lan-ip.js";
 import { captureSnapshotFromShared, recordClip } from "./media.js";
 import type { FfmpegLevel } from "../ffmpeg.js";
 import { LiveStream } from "./live-stream.js";
-import { SharedLiveSource, type PullPurpose, type Consumer } from "./shared-live-source.js";
+import { SharedLiveSource, type Consumer } from "./shared-live-source.js";
 import { SessionManager, PREWARM_MS, type PowerTier, type SessionManagerOpts } from "./session-manager.js";
 import { Fmp4Muxer } from "./fmp4.js";
 import { openReadableFromConsumer } from "./readable-egress.js";
@@ -551,7 +551,7 @@ export class P2PCommandRouter {
   mediaProviderFor(sn: string): MediaProvider {
     return {
       snapshotLive: async (opts) => {
-        const source = await this.sharedLiveSourceFor(sn, opts ?? {}, "snapshot");
+        const source = await this.sharedLiveSourceFor(sn, opts ?? {});
         return abortable(
           captureSnapshotFromShared(source, {
             ...opts,
@@ -563,12 +563,12 @@ export class P2PCommandRouter {
         );
       },
       live: async (opts) => {
-        const source = await this.sharedLiveSourceFor(sn, opts as SharedLiveOpts, "live");
-        return this.attachUnlessAborted(source, "live", (opts as SharedLiveOpts | undefined)?.signal);
+        const source = await this.sharedLiveSourceFor(sn, opts as SharedLiveOpts);
+        return this.attachUnlessAborted(source, (opts as SharedLiveOpts | undefined)?.signal);
       },
       openReadable: async (opts) => {
         const source = await this.sharedLiveSourceFor(sn, opts ?? {});
-        return openReadableFromConsumer(this.attachUnlessAborted(source, "live", opts?.signal), opts);
+        return openReadableFromConsumer(this.attachUnlessAborted(source, opts?.signal), opts);
       },
       recordFragments: (opts) => this.recordFragments(sn, opts),
       talkback: (opts) => this.openTalkback(sn, opts),
@@ -702,11 +702,7 @@ export class P2PCommandRouter {
    * The session goes into a {@link HeldSession} cell, so it can be replaced under a source that stays in
    * place.
    */
-  async sharedLiveSourceFor(
-    sn: string,
-    opts: SharedLiveOpts = {},
-    purpose: PullPurpose = "live",
-  ): Promise<SharedLiveSource> {
+  async sharedLiveSourceFor(sn: string, opts: SharedLiveOpts = {}): Promise<SharedLiveSource> {
     const { session, parentSn, channel, accountId, homeBaseAttached } = await this.resolveSession(sn, {
       waitLevel2: "soft",
       requireLevel2ForAttached: true,
@@ -718,9 +714,9 @@ export class P2PCommandRouter {
       this.dropLiveSource(key);
       source = undefined;
     }
-    this.releaseLingeringSiblings(parentSn, channel, purpose);
-    if (purpose === "live") {
-      const serving = this.liveViewerOn(parentSn, key);
+    this.releaseLingeringSiblings(parentSn, channel);
+    if (homeBaseAttached) {
+      const serving = this.occupiedSiblingChannel(parentSn, key);
       if (serving !== undefined) throw new StationBusyError(serving);
     }
     if (!source) {
@@ -734,7 +730,7 @@ export class P2PCommandRouter {
             homeBaseAttached,
             eccPrivateKey: opts.eccPrivateKey,
             keepAliveMs: opts.keepAliveMs,
-            reassertWanted: () => this.reassertWanted(parentSn, key, ctx.reassertWanted),
+            reassertWanted: ctx.reassertWanted,
             logger,
           }),
         lingerMs: opts.lingerMs,
@@ -777,15 +773,12 @@ export class P2PCommandRouter {
    * nothing from anyone: a home page must not fight itself, and a viewer outranks a thumbnail in one
    * direction only.
    */
-  private releaseLingeringSiblings(parentSn: string, channel: number, purpose: PullPurpose): void {
+  private releaseLingeringSiblings(parentSn: string, channel: number): void {
     const own = `${parentSn}:${channel}`;
     for (const [key, source] of [...this.liveSources]) {
-      if (!key.startsWith(`${parentSn}:`) || key === own) continue;
-      const idle = source.consumerCount === 0;
-      const yieldsToLive = purpose === "live" && !source.watchedLive;
-      if (!idle && !yieldsToLive) continue;
+      if (!key.startsWith(`${parentSn}:`) || key === own || source.consumerCount > 0) continue;
       (this.deps.logger ?? noopLogger).debug(
-        `[live ${key}] releasing ${idle ? "a lingering pull" : "a snapshot-only pull"} so ${own} can start — ` +
+        `[live ${key}] releasing a pull nothing is attached to so ${own} can start — ` +
           `one station serves one camera at a time`,
       );
       this.dropLiveSource(key);
@@ -800,10 +793,10 @@ export class P2PCommandRouter {
    * and counting that as a viewer would refuse every later stream on the station until the client
    * restarted. Only a source that can still deliver holds a place.
    */
-  private liveViewerOn(parentSn: string, key: string): number | undefined {
+  private occupiedSiblingChannel(parentSn: string, key: string): number | undefined {
     for (const [siblingKey, sibling] of this.liveSources) {
       if (siblingKey === key || !siblingKey.startsWith(`${parentSn}:`)) continue;
-      if (sibling.state === "stopped" || !sibling.watchedLive) continue;
+      if (sibling.state === "stopped" || sibling.consumerCount === 0) continue;
       const channel = Number(siblingKey.slice(parentSn.length + 1));
       return Number.isFinite(channel) ? channel : undefined;
     }
@@ -826,15 +819,6 @@ export class P2PCommandRouter {
    * A still with no live sibling re-asserts as before, so a tile refreshing on a quiet station is
    * unaffected.
    */
-  private reassertWanted(parentSn: string, key: string, attached: () => boolean): boolean {
-    if (!attached()) return false;
-    if (this.liveSources.get(key)?.watchedLive !== false) return true;
-    for (const [siblingKey, sibling] of this.liveSources) {
-      if (siblingKey === key || !siblingKey.startsWith(`${parentSn}:`)) continue;
-      if (sibling.watchedLive) return false;
-    }
-    return true;
-  }
 
   /**
    * Attach a consumer, unless the caller has already abandoned the call.
@@ -844,8 +828,8 @@ export class P2PCommandRouter {
    * lets it linger and fall away if this was the only thing holding it, and leaves it untouched if it was
    * not.
    */
-  private attachUnlessAborted(source: SharedLiveSource, purpose: PullPurpose, signal?: AbortSignal): Consumer {
-    const consumer = source.attach(purpose);
+  private attachUnlessAborted(source: SharedLiveSource, signal?: AbortSignal): Consumer {
+    const consumer = source.attach();
     if (signal?.aborted) {
       consumer.detach();
       signal.throwIfAborted();

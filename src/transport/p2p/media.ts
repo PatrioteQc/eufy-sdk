@@ -64,7 +64,7 @@ export async function captureSnapshotFromShared(
   const timeoutMs = opts.timeoutMs ?? 20000;
   const collectMs = opts.collectMs ?? 1500;
   const skip = opts.skipKeyframes ?? 1;
-  const consumer = source.attach("snapshot");
+  const consumer = source.attach();
   // A primed consumer gets the cached IDR first — a single decodable keyframe: take it and decode at
   // once (no skip, no collect window). A cold consumer skips the (often partial) first IDR.
   const primed = consumer.primed;

@@ -4,14 +4,13 @@ export * from "./video.js";
 export * from "./media.js";
 // `Consumer` is what `SharedLiveSource.attach` returns, so a caller has to be able to name it —
 // exported under `LiveConsumer`, since `Consumer` alone is too generic to claim at the root barrel.
-// `PullPurpose` is what `attach` takes and what `LiveConsumer.purpose` answers with, so it is named too.
+
 export {
   SharedLiveSource,
   type SharedLiveState,
   type SharedLiveSourceOptions,
   type TimedMediaFrame,
   type Consumer as LiveConsumer,
-  type PullPurpose,
 } from "./shared-live-source.js";
 // `ParamSets` is what `SharedLiveSource.parameterSets` answers with, so a caller has to be able to name it.
 export { type ParamSets } from "./annexb.js";

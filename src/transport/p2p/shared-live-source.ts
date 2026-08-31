@@ -140,21 +140,11 @@ export interface SharedLiveSourceOptions {
 }
 
 /**
- * What a consumer holds a pull for.
- *
- * `"live"` is on screen and `"snapshot"` is a still being refreshed. They differ in what may be taken from
- * them: a station serving one camera at a time can drop a thumbnail's pull to free the channel somebody is
- * watching, and can never do the reverse.
- */
-export type PullPurpose = "live" | "snapshot";
-
-/**
  * A single consumer of a {@link SharedLiveSource}. A {@link LiveStreamConsumer} (so `live()` can hand it
  * back directly), plus the listener removal and arrival-timed feed the recording and readable egresses use.
  */
 export interface Consumer extends LiveStreamConsumer {
   /** What this consumer holds the pull for. */
-  readonly purpose: PullPurpose;
   /** Detach a previously registered listener (mirrors {@link LiveStreamHandle.on}). */
   off(event: "video", listener: (frame: LiveVideoFrame) => void): this;
   off(event: "audio", listener: (frame: LiveAudioFrame) => void): this;
@@ -195,7 +185,6 @@ class ConsumerImpl extends EventEmitter implements Consumer {
   constructor(
     private readonly onDetach: (c: ConsumerImpl) => void,
     private readonly maxQueue: number,
-    readonly purpose: PullPurpose,
   ) {
     super();
     // Deliver the keyframe-prime only once someone is listening. `live()` is async, so a naive
@@ -483,21 +472,8 @@ export class SharedLiveSource {
    * Attach a new consumer. Warms the stream on the first attach (or cancels a pending linger teardown
    * and reuses the warm stream), then replays the cached keyframe so the consumer can decode at once.
    */
-  attach(purpose: PullPurpose = "live"): Consumer {
-    return this.attachConsumer(true, purpose);
-  }
-
-  /**
-   * Whether anybody is watching this pull, as opposed to refreshing a still from it.
-   *
-   * A station that serves one camera at a time has to be arbitrated between its channels, and the two kinds of
-   * consumer have opposite claims: a live view is on screen, while a snapshot tile is a thumbnail whose pull
-   * can be re-run at no cost to anyone. `consumerCount` cannot tell them apart, so it answers "somebody is
-   * holding this" where the question is "somebody is looking at this".
-   */
-  get watchedLive(): boolean {
-    for (const consumer of this.consumers) if (consumer.purpose === "live") return true;
-    return false;
+  attach(): Consumer {
+    return this.attachConsumer(true);
   }
 
   /**
@@ -506,14 +482,14 @@ export class SharedLiveSource {
    * duplicates the newest IDR nor leaves a gap at the handoff.
    */
   attachWithPrebuffer(seconds: number): { consumer: Consumer; buffered: TimedMediaFrame[] } {
-    const consumer = this.attachConsumer(false, "live");
+    const consumer = this.attachConsumer(false);
     return { consumer, buffered: this.bufferedMedia(seconds) };
   }
 
-  private attachConsumer(prime: boolean, purpose: PullPurpose): Consumer {
+  private attachConsumer(prime: boolean): Consumer {
     if (this.disposed) throw new Error("SharedLiveSource is disposed");
     const wasEmpty = this.consumers.size === 0;
-    const consumer = new ConsumerImpl((c) => this.onDetach(c), this.maxQueue, purpose);
+    const consumer = new ConsumerImpl((c) => this.onDetach(c), this.maxQueue);
     this.consumers.add(consumer);
     if (wasEmpty) this.opts.onActive?.();
 
