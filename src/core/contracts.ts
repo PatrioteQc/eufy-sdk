@@ -110,6 +110,39 @@ export class CameraDisabledError extends Error {
 }
 
 /**
+ * A live stream was refused: the station is already serving another of its cameras to a viewer.
+ *
+ * A station fans several cameras out over one session and serves ONE of them at a time. Accepting a second
+ * live pull does not make it serve two: measured on a base carrying three attached cameras, each opened
+ * stream took the station from the others in turn and all three received their media in bursts. So a second
+ * viewer is refused rather than admitted and degraded, which is the difference between a caller being told
+ * the constraint and a caller watching every picture stutter.
+ *
+ * Which camera deserves the station is the caller's decision, not the SDK's, so nothing is queued or
+ * pre-empted here. Stop the stream you no longer need and open the one you do.
+ *
+ * A still is not refused: it yields the station instead, and answers with the retained image where one is
+ * held. Only pulls that deliver continuous media contend for a viewer's place.
+ */
+export class StationBusyError extends Error {
+  /** Always true: the station is busy now, and stops being busy when the other stream is released. */
+  readonly retryable = true;
+
+  constructor(
+    /** The channel the station is already serving, so a caller can say which camera holds it. */
+    readonly servingChannel: number,
+    options?: { cause?: unknown },
+  ) {
+    super(
+      `the station is already serving channel ${servingChannel} to a viewer, and serves one camera at a ` +
+        `time — stop that stream before opening another`,
+      options,
+    );
+    this.name = "StationBusyError";
+  }
+}
+
+/**
  * How a live stream ended before its first video keyframe: the warm-up deadline elapsed, the source
  * reported an error, or the source ended on its own.
  */
@@ -743,8 +776,12 @@ export interface MediaProvider {
   /**
    * Open a managed live stream.
    *
-   * Several cameras behind one station may stream at the same time: each handle receives only the frames
-   * the station tagged for ITS camera.
+   * Several cameras behind one station may stream at the same time only where the station serves them at
+   * the same time. Where it serves one camera at a time, a second viewer is refused with
+   * {@link StationBusyError} rather than admitted and degraded: accepting it does not make the station
+   * serve two, it makes both stutter. Which camera deserves the station is the caller's decision, so
+   * nothing is queued or pre-empted. Each handle receives only the frames the station tagged for ITS
+   * camera.
    *
    * @example
    * ```ts

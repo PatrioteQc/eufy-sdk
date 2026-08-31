@@ -21,6 +21,7 @@ import type {
   SharedSourceHints,
   TalkbackHandle,
 } from "../../core/contracts.js";
+import { StationBusyError } from "../../core/contracts.js";
 import { noopLogger, type Logger } from "../../core/logger.js";
 import { assertNever } from "../../core/util.js";
 import { P2PSession, type P2PFrame } from "./p2p-session.js";
@@ -695,6 +696,10 @@ export class P2PCommandRouter {
       source = undefined;
     }
     this.releaseLingeringSiblings(parentSn, channel, purpose);
+    if (purpose === "live") {
+      const serving = this.liveViewerOn(parentSn, key);
+      if (serving !== undefined) throw new StationBusyError(serving);
+    }
     if (!source) {
       const logger = this.deps.logger ?? noopLogger;
       const held: HeldSession = { session };
@@ -762,6 +767,24 @@ export class P2PCommandRouter {
       );
       this.dropLiveSource(key);
     }
+  }
+
+  /**
+   * The channel a live viewer already holds on this station, if any, ignoring `key` itself.
+   *
+   * A stopped source is skipped even when consumers are still attached to it. A failed start fails its
+   * consumers without detaching them, so a caller still holding a dead handle leaves the count non-zero,
+   * and counting that as a viewer would refuse every later stream on the station until the client
+   * restarted. Only a source that can still deliver holds a place.
+   */
+  private liveViewerOn(parentSn: string, key: string): number | undefined {
+    for (const [siblingKey, sibling] of this.liveSources) {
+      if (siblingKey === key || !siblingKey.startsWith(`${parentSn}:`)) continue;
+      if (sibling.state === "stopped" || !sibling.watchedLive) continue;
+      const channel = Number(siblingKey.slice(parentSn.length + 1));
+      return Number.isFinite(channel) ? channel : undefined;
+    }
+    return undefined;
   }
 
   /**

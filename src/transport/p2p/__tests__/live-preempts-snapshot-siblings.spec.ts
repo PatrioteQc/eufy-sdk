@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { P2PCommandRouter, type P2PRouterDeps } from "../command-router.js";
 import { connectedSession, type FakeP2PSession } from "./session-fixtures.js";
+import { StationBusyError } from "../../../core/contracts.js";
 
 /**
  * A station that serves one camera at a time has to be arbitrated, and a snapshot tile is not a viewer.
@@ -71,14 +72,69 @@ describe("a live request on a station whose other cameras are refreshing tiles",
     expect(sources(r).has(`${STATION_SN}:0`)).toBe(false);
   });
 
-  it("keeps a sibling pull somebody is watching, because that is a second viewer and not a tile", async () => {
+  /**
+   * A station serving one camera at a time cannot serve a second viewer, and admitting one does not make it
+   * try harder: measured on a base carrying three attached cameras, each opened stream took the station from
+   * the others in turn and all three received their media in bursts. So the second viewer is refused, and the
+   * one already being served keeps its pull. Which camera deserves the station is the caller's call, so
+   * nothing is queued and nothing is pre-empted.
+   */
+  it("refuses a second viewer, naming the channel the station is already serving", async () => {
     const r = router();
     const watched = await r.sharedLiveSourceFor(SIBLING, {}, "live");
     watched.attach("live");
 
-    await r.sharedLiveSourceFor(DOORBELL, {}, "live");
-
+    await expect(r.sharedLiveSourceFor(DOORBELL, {}, "live")).rejects.toMatchObject({
+      name: "StationBusyError",
+      servingChannel: 0,
+      retryable: true,
+    });
     expect(sources(r).has(`${STATION_SN}:0`)).toBe(true);
+    expect(sources(r).has(`${STATION_SN}:2`)).toBe(false);
+  });
+
+  it("admits the second viewer once the first releases the station", async () => {
+    const r = router();
+    const watched = await r.sharedLiveSourceFor(SIBLING, {}, "live");
+    const consumer = watched.attach("live");
+    await expect(r.sharedLiveSourceFor(DOORBELL, {}, "live")).rejects.toBeInstanceOf(StationBusyError);
+
+    consumer.detach();
+
+    expect(await r.sharedLiveSourceFor(DOORBELL, {}, "live")).toBeDefined();
+  });
+
+  /** A still yields the station rather than competing for it, so it is never refused for a viewer. */
+  it("still takes a snapshot while a sibling is being watched", async () => {
+    const r = router();
+    const watched = await r.sharedLiveSourceFor(SIBLING, {}, "live");
+    watched.attach("live");
+
+    expect(await r.sharedLiveSourceFor(DOORBELL, {}, "snapshot")).toBeDefined();
+  });
+
+  /** Joining the pull already open on THIS camera is not a second viewer, however many consumers it has. */
+  it("lets a second viewer join the same camera, which costs the station nothing", async () => {
+    const r = router();
+    const opened = await r.sharedLiveSourceFor(DOORBELL, {}, "live");
+    opened.attach("live");
+
+    expect(await r.sharedLiveSourceFor(DOORBELL, {}, "live")).toBe(opened);
+  });
+
+  /**
+   * A failed start fails its consumers without detaching them, so a caller still holding a dead handle leaves
+   * the count non-zero. Counting that as a viewer would refuse every later stream on the station until the
+   * client restarted, which is the failure this arbitration exists to prevent rather than cause.
+   */
+  it("does not let a stopped sibling hold the station, even with consumers still attached to it", async () => {
+    const r = router();
+    const dead = await r.sharedLiveSourceFor(SIBLING, {}, "live");
+    dead.attach("live");
+    dead.dispose();
+    expect(dead.state).toBe("stopped");
+
+    expect(await r.sharedLiveSourceFor(DOORBELL, {}, "live")).toBeDefined();
   });
 
   it("keeps a sibling tile when the request is itself a tile, so a home page does not fight itself", async () => {
