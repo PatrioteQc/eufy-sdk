@@ -123,6 +123,25 @@ describe("a live request on a station whose other cameras are refreshing tiles",
   });
 
   /**
+   * The case a motion notification produces: something records a camera, the operator taps that camera's tile,
+   * and both want the SAME channel. One pull serves them, so there is no second viewer and nothing to refuse.
+   * This is the common shape by far, which is why the refusal above costs less than it appears to.
+   */
+  it("serves a recording and a viewer of the same camera from one pull", async () => {
+    const r = router();
+    const recording = await r.sharedLiveSourceFor(DOORBELL, {}, "live");
+    recording.attach("live");
+
+    const viewer = await r.sharedLiveSourceFor(DOORBELL, {}, "live");
+
+    expect(viewer).toBe(recording);
+    expect(viewer.consumerCount).toBe(1);
+    expect(viewer.attach("live")).toBeDefined();
+    expect(viewer.consumerCount).toBe(2);
+    expect(sources(r).size).toBe(1);
+  });
+
+  /**
    * A failed start fails its consumers without detaching them, so a caller still holding a dead handle leaves
    * the count non-zero. Counting that as a viewer would refuse every later stream on the station until the
    * client restarted, which is the failure this arbitration exists to prevent rather than cause.

@@ -704,6 +704,26 @@ export interface WebRTCPeerHandle {
  * attached. An egress that omits one is not opting out of it; it is leaving the choice to whichever call
  * got there first, which is why every egress accepts them rather than only the ones they read like.
  */
+/**
+ * How a caller abandons ONE media call, without touching the shared pull other callers hold.
+ *
+ * Acquiring media can wait a long time before it can succeed or fail: a station has to connect, a level-2
+ * key has to be negotiated or given up on, and a camera has to produce a keyframe. Measured at twenty
+ * seconds and more on a battery camera. A caller that has changed its mind in that window, because the
+ * operator navigated away or something more important needs the station, has no way to say so and must
+ * wait for a result it will discard.
+ *
+ * Aborting settles the call with an `AbortError` and gives back whatever it had taken, so a pull nothing
+ * else holds is released rather than left running for a caller that has gone. It never disturbs a pull
+ * another consumer is attached to: this abandons a call, not a stream.
+ *
+ * Separate from {@link SharedSourceHints} on purpose. Those describe the pull a call may open and are
+ * fixed for everyone who joins it; this belongs to one call and to nobody else.
+ */
+export interface AbortableCall {
+  signal?: AbortSignal;
+}
+
 export interface SharedSourceHints {
   /**
    * Power source, a runtime device fact (`"battery"` incl. solar, or `"wired"`) — never a device-family
@@ -758,7 +778,8 @@ export interface MediaProvider {
       timeoutMs?: number;
       collectMs?: number;
       skipKeyframes?: number;
-    } & SharedSourceHints,
+    } & SharedSourceHints &
+      AbortableCall,
   ): Promise<{
     jpeg: Buffer;
     width: number;
@@ -793,7 +814,7 @@ export interface MediaProvider {
    * A caller writing into a sink of its own paces the stream through {@link LiveStreamConsumer.pause} and
    * {@link LiveStreamConsumer.resume} rather than buffering what the sink will not take.
    */
-  live(opts?: SharedSourceHints & Record<string, unknown>): Promise<LiveStreamConsumer>;
+  live(opts?: SharedSourceHints & AbortableCall & Record<string, unknown>): Promise<LiveStreamConsumer>;
   /**
    * Record `seconds` of video → an mp4/h264 buffer.
    *
@@ -807,7 +828,9 @@ export interface MediaProvider {
    * {@link live} or muxed through {@link recordFragments}; it is never interleaved into raw video.
    * The caller owns the Readable's lifetime, and destroying it releases the shared pull.
    */
-  openReadable?(opts?: { objectMode?: boolean } & SharedSourceHints): Promise<import("node:stream").Readable>;
+  openReadable?(
+    opts?: { objectMode?: boolean } & SharedSourceHints & AbortableCall,
+  ): Promise<import("node:stream").Readable>;
   /**
    * Continuously record the live feed as fragmented-MP4 (CMAF). The caller-owned
    * {@link FragmentRecordingHandle} yields an init segment then keyframe-bounded media fragments,
@@ -818,7 +841,7 @@ export interface MediaProvider {
    * that was already open. The drain opens on the newest keyframe at or before the window starts, so it
    * covers the request and exceeds it by however far back that keyframe sits.
    */
-  recordFragments?(opts?: { fragmentSeconds?: number } & SharedSourceHints): FragmentRecordingHandle;
+  recordFragments?(opts?: { fragmentSeconds?: number } & SharedSourceHints & AbortableCall): FragmentRecordingHandle;
   /**
    * Open the camera's **talkback** path — audio travelling from the host TO the device, the opposite
    * direction to everything else here. See {@link TalkbackHandle} for the accepted audio. Optional (an

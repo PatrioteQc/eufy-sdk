@@ -19,6 +19,7 @@ import type {
   ScalarForm,
   AacEncoder,
   SharedSourceHints,
+  AbortableCall,
   TalkbackHandle,
 } from "../../core/contracts.js";
 import { StationBusyError } from "../../core/contracts.js";
@@ -44,7 +45,7 @@ import { freshestLanIp } from "./lan-ip.js";
 import { captureSnapshotFromShared, recordClip } from "./media.js";
 import type { FfmpegLevel } from "../ffmpeg.js";
 import { LiveStream } from "./live-stream.js";
-import { SharedLiveSource, type PullPurpose } from "./shared-live-source.js";
+import { SharedLiveSource, type PullPurpose, type Consumer } from "./shared-live-source.js";
 import { SessionManager, PREWARM_MS, type PowerTier, type SessionManagerOpts } from "./session-manager.js";
 import { Fmp4Muxer } from "./fmp4.js";
 import { openReadableFromConsumer } from "./readable-egress.js";
@@ -62,6 +63,24 @@ const DIRECT_CMD_SENDS = 5;
 
 /** How long a freshly resolved session is given to reach a connected state. */
 const CONNECT_WAIT_MS = 20_000;
+
+/**
+ * Settle `work` as it settles, or reject the moment `signal` aborts, whichever comes first.
+ *
+ * The underlying wait is left to finish on its own: these are shared negotiations whose result other callers
+ * are also waiting on, so a caller abandoning its own call must not cancel the work itself. This abandons
+ * WAITING, which is the only part that belonged to the caller.
+ */
+function abortable<T>(work: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return work;
+  signal.throwIfAborted();
+  return Promise.race([
+    work,
+    new Promise<never>((_resolve, reject) => {
+      signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+    }),
+  ]);
+}
 
 /**
  * How long each command is given where the level-2 key is a REQUIREMENT — the HomeBase-routed commands
@@ -86,7 +105,7 @@ const LEVEL2_SETTLE_MS = 8_000;
  * {@link SharedSourceHints} are the members any media egress may supply, because any of them may be the
  * call that opens the pull; the rest reach it only from a caller that warms a source directly.
  */
-export interface SharedLiveOpts extends SharedSourceHints {
+export interface SharedLiveOpts extends SharedSourceHints, AbortableCall {
   eccPrivateKey?: Buffer;
   keepAliveMs?: number;
   lingerMs?: number;
@@ -533,20 +552,23 @@ export class P2PCommandRouter {
     return {
       snapshotLive: async (opts) => {
         const source = await this.sharedLiveSourceFor(sn, opts ?? {}, "snapshot");
-        return captureSnapshotFromShared(source, {
-          ...opts,
-          logger: this.deps.logger ?? noopLogger,
-          ffmpegLevel: this.deps.ffmpegLogLevel,
-          ffmpegPath: this.deps.ffmpegPath,
-        });
+        return abortable(
+          captureSnapshotFromShared(source, {
+            ...opts,
+            logger: this.deps.logger ?? noopLogger,
+            ffmpegLevel: this.deps.ffmpegLogLevel,
+            ffmpegPath: this.deps.ffmpegPath,
+          }),
+          opts?.signal,
+        );
       },
       live: async (opts) => {
         const source = await this.sharedLiveSourceFor(sn, opts as SharedLiveOpts, "live");
-        return source.attach("live");
+        return this.attachUnlessAborted(source, "live", (opts as SharedLiveOpts | undefined)?.signal);
       },
       openReadable: async (opts) => {
         const source = await this.sharedLiveSourceFor(sn, opts ?? {});
-        return openReadableFromConsumer(source.attach(), opts);
+        return openReadableFromConsumer(this.attachUnlessAborted(source, "live", opts?.signal), opts);
       },
       recordFragments: (opts) => this.recordFragments(sn, opts),
       talkback: (opts) => this.openTalkback(sn, opts),
@@ -688,6 +710,7 @@ export class P2PCommandRouter {
     const { session, parentSn, channel, accountId, homeBaseAttached } = await this.resolveSession(sn, {
       waitLevel2: "soft",
       requireLevel2ForAttached: true,
+      signal: opts.signal,
     });
     const key = `${parentSn}:${channel}`;
     let source = this.liveSources.get(key);
@@ -811,6 +834,23 @@ export class P2PCommandRouter {
       if (sibling.watchedLive) return false;
     }
     return true;
+  }
+
+  /**
+   * Attach a consumer, unless the caller has already abandoned the call.
+   *
+   * The acquisition it just waited through can outlast the caller's interest, and a consumer attached for
+   * somebody who has gone keeps the pull warm for nobody. Detaching immediately gives the pull back, which
+   * lets it linger and fall away if this was the only thing holding it, and leaves it untouched if it was
+   * not.
+   */
+  private attachUnlessAborted(source: SharedLiveSource, purpose: PullPurpose, signal?: AbortSignal): Consumer {
+    const consumer = source.attach(purpose);
+    if (signal?.aborted) {
+      consumer.detach();
+      signal.throwIfAborted();
+    }
+    return consumer;
   }
 
   /** Dispose one cached live source and forget it, so the next acquisition builds a fresh one. */
@@ -1081,7 +1121,7 @@ export class P2PCommandRouter {
    */
   private async resolveSession(
     sn: string,
-    opts: { waitLevel2?: boolean | "soft" | "settle"; requireLevel2ForAttached?: boolean } = {},
+    opts: { waitLevel2?: boolean | "soft" | "settle"; requireLevel2ForAttached?: boolean; signal?: AbortSignal } = {},
   ): Promise<ResolvedSession> {
     const dev = await this.deviceFor(sn);
     const raw = (dev.raw ?? {}) as Record<string, any>;
@@ -1099,18 +1139,22 @@ export class P2PCommandRouter {
     const accountId = ((raw.member as any)?.admin_user_id as string) ?? this.deps.mega.auth?.userId ?? "";
 
     const t0 = Date.now();
-    while (!session.isConnected && Date.now() - t0 < CONNECT_WAIT_MS) await new Promise((r) => setTimeout(r, 200));
+    while (!session.isConnected && Date.now() - t0 < CONNECT_WAIT_MS) {
+      opts.signal?.throwIfAborted();
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    opts.signal?.throwIfAborted();
     if (!session.isConnected) throw new Error(`P2P session for ${parentSn} did not connect`);
     if (opts.waitLevel2) {
       if (opts.waitLevel2 === "settle") {
-        await session.awaitLevel2Key(LEVEL2_SETTLE_MS, "session");
+        await abortable(session.awaitLevel2Key(LEVEL2_SETTLE_MS, "session"), opts.signal);
         return { session, parentSn, channel, accountId, homeBaseAttached };
       }
       const required = opts.waitLevel2 !== "soft" || (opts.requireLevel2ForAttached === true && homeBaseAttached);
       if (!required) return { session, parentSn, channel, accountId, homeBaseAttached };
-      let ready = await session.awaitLevel2Key(LEVEL2_GRACE_MS, "call");
+      let ready = await abortable(session.awaitLevel2Key(LEVEL2_GRACE_MS, "call"), opts.signal);
       if (!ready && session.repromptLevel2Key()) {
-        ready = await session.awaitLevel2Key(LEVEL2_GRACE_MS, "call");
+        ready = await abortable(session.awaitLevel2Key(LEVEL2_GRACE_MS, "call"), opts.signal);
       }
       if (!ready) throw new Error(`level-2 key not ready for ${parentSn}`);
     }
