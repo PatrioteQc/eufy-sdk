@@ -160,3 +160,38 @@ describe("a required level-2 key is asked for twice before refusing", () => {
     expect(session.repromptLevel2Key).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * A session whose path stopped answering the heartbeat is rebuilt before anything is committed to it.
+ *
+ * Measured on a wired camera: idle 18 s, resumed, twenty byte-identical retransmits with no acknowledgement,
+ * and a rebuilt session streaming at once — seven seconds of black screen, three of them spent discovering
+ * what the unanswered heartbeat had already established.
+ *
+ * A station that has never ponged is untouched: silence is only evidence where an answer was once given.
+ */
+describe("resolving a session whose path has gone silent", () => {
+  it("rebuilds it rather than handing a caller a path that stopped answering", async () => {
+    const { router, session } = setup(true);
+    (session as unknown as { pathAnswering: boolean }).pathAnswering = false;
+    const manager = (router as unknown as { manager: { close: (sn: string) => Promise<void> } }).manager;
+    const closed: string[] = [];
+    manager.close = async (sn) => void closed.push(sn);
+
+    await router.sharedLiveSourceFor(DEVICE_SN).catch(() => undefined);
+
+    expect(closed).toContain(STATION_SN);
+  });
+
+  it("hands over a path that has never answered, that being no evidence at all", async () => {
+    const { router, session } = setup(true);
+    (session as unknown as { pathAnswering: boolean }).pathAnswering = true;
+    const manager = (router as unknown as { manager: { close: (sn: string) => Promise<void> } }).manager;
+    const closed: string[] = [];
+    manager.close = async (sn) => void closed.push(sn);
+
+    await router.sharedLiveSourceFor(DEVICE_SN).catch(() => undefined);
+
+    expect(closed).toEqual([]);
+  });
+});

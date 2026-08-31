@@ -61,6 +61,13 @@ import { noopLogger, type Logger } from "../../core/logger.js";
 
 const LOCAL_LOOKUP_PORT = 32108;
 const HEARTBEAT_MS = 5_000;
+/**
+ * How long a path may go without answering a heartbeat before it stops being committed to.
+ *
+ * Three heartbeats. The station answers every PING, so one missed answer is a lost datagram and three is the
+ * path being gone.
+ */
+const PATH_SILENCE_MS = HEARTBEAT_MS * 3;
 const LOOKUP_RETRY_MS = 1_000;
 const CONNECT_TIMEOUT_MS = 15_000;
 /**
@@ -335,6 +342,10 @@ export class P2PSession extends EventEmitter {
   private audioStalled = false;
   private audioRetransmitTimer?: ReturnType<typeof setInterval>;
   private lastPongData?: Buffer;
+  /** When this connection last received a PONG — `undefined` until the first, see {@link pathSilentMs}. */
+  private lastPongAt?: number;
+  /** Whether the silence has already been stated, so it is traced once per connection rather than per read. */
+  private pathStaleTraced = false;
   private lookupTimer?: ReturnType<typeof setInterval>;
   private heartbeatTimer?: ReturnType<typeof setInterval>;
   private connectTimer?: ReturnType<typeof setTimeout>;
@@ -392,6 +403,35 @@ export class P2PSession extends EventEmitter {
    * phase vocabulary. It groups one station's records within a run and resolves to nothing outside it.
    */
   readonly traceId = `station-${++traceSequence}`;
+
+  /**
+   * How long this connection's path has been silent, or nothing where it has never answered.
+   *
+   * A PONG is the station stating that the path is alive. `undefined` is neither alive nor dead: it is a station
+   * that has said nothing either way.
+   */
+  get pathSilentMs(): number | undefined {
+    return this.lastPongAt === undefined ? undefined : Date.now() - this.lastPongAt;
+  }
+
+  /**
+   * Whether this path can still be committed to, on the evidence the heartbeat gives.
+   *
+   * False where a pong arrived and then stopped for {@link PATH_SILENCE_MS}. A station that has never ponged is
+   * not known to be dead, so it answers true.
+   *
+   * Traces the silence once per connection, on the read that first observes it.
+   */
+  get pathAnswering(): boolean {
+    const silentMs = this.pathSilentMs;
+    if (silentMs === undefined || silentMs < PATH_SILENCE_MS) return true;
+    if (!this.pathStaleTraced) {
+      this.pathStaleTraced = true;
+      this.logger.debug(`[p2p] ${this.cfg.stationSn} path silent for ${silentMs}ms — no heartbeat answer`);
+      this.trace({ phase: "path-stale", silentMs });
+    }
+    return false;
+  }
 
   /** Emit a live trace under this session's handle. */
   private trace(trace: LiveTrace): void {
@@ -756,6 +796,8 @@ export class P2PSession extends EventEmitter {
       this.onConnected({ host: rinfo.address, port: rinfo.port });
     } else if (hasHeader(msg, ResponseMessageType.PONG)) {
       this.lastPongData = msg.length > 4 ? msg.subarray(4) : undefined;
+      this.lastPongAt = Date.now();
+      this.pathStaleTraced = false;
     } else if (hasHeader(msg, ResponseMessageType.PING)) {
       this.send({ host: rinfo.address, port: rinfo.port }, RequestMessageType.PONG); // echo
     } else if (hasHeader(msg, ResponseMessageType.ACK)) {

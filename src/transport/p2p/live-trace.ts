@@ -57,7 +57,14 @@ export type LiveTrace =
    * send. A command that was never sent is otherwise indistinguishable from one the station ignored, which is
    * the difference between a key that never arrived and a station that is not answering.
    */
-  | { phase: "media-command-unsent"; reason: "level2-key" | "address" };
+  | { phase: "media-command-unsent"; reason: "level2-key" | "address" }
+  /**
+   * This connection's path has stopped answering the heartbeat, with how long it has been silent.
+   *
+   * The station answers every PING with a PONG, so silence past several heartbeats is the path being gone.
+   * Stated only where a pong arrived: a station that has never answered says nothing by not answering now.
+   */
+  | { phase: "path-stale"; silentMs: number };
 
 /**
  * Record one startup observation at debug level.

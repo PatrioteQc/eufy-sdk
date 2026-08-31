@@ -1102,10 +1102,18 @@ export class P2PCommandRouter {
    *
    * Only a caller that REQUIRES the key re-prompts — see {@link P2PSession.repromptLevel2Key}, which explains
    * why one settled negotiation is not the last word.
+   *
+   * A session whose {@link P2PSession.pathAnswering} is false is closed and re-resolved before it is handed
+   * over: the station answers every heartbeat, so a path silent past several of them is gone. A session
+   * reporting nothing about its path is not reporting that evidence and is handed over as it is. Replaced at
+   * most once per resolution, so a station whose replacement is silent too is returned rather than closed
+   * again.
    */
   private async resolveSession(
     sn: string,
     opts: { waitLevel2?: boolean | "soft" | "settle"; requireLevel2ForAttached?: boolean; signal?: AbortSignal } = {},
+    /** Whether this resolution has already replaced a silent path — see the check below. */
+    rebuilt = false,
   ): Promise<ResolvedSession> {
     const dev = await this.deviceFor(sn);
     const raw = (dev.raw ?? {}) as Record<string, any>;
@@ -1117,6 +1125,13 @@ export class P2PCommandRouter {
       (dev.stationSn ? this.manager.get(dev.stationSn) : undefined);
     if (!session) {
       throw new Error(`no P2P session for ${sn} (known: ${this.manager.keys().join(", ") || "none"})`);
+    }
+    if (session.pathAnswering === false && !rebuilt) {
+      (this.deps.logger ?? noopLogger).debug(`[p2p] ${parentSn} path stopped answering — rebuilding before use`);
+      await this.manager
+        .close(parentSn)
+        .catch((error) => this.reportError(error instanceof Error ? error : new Error(String(error))));
+      return await this.resolveSession(sn, opts, true);
     }
     this.manager.bumpCommand(parentSn);
     const channel = typeof raw.device_channel === "number" ? (raw.device_channel as number) : 0;
