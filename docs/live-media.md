@@ -416,16 +416,27 @@ session idle-detaches so a battery device sleeps — see [Connectivity & battery
 - **A camera that is switched off looks like a broken transport.** It keeps its session, accepts the media
   start, and then sends audio and never a video frame — measured: 234 audio frames, no video, no
   stream-status report and no lost datagrams across a 20s window, then 217 video access units with nothing
-  changed but its own on/off state. The signature is `stage: "audio-only"` together with
-  `cam.enabled === false`, and `snapshotStored()` will also report `not-observed` on such a camera, because a
-  camera that has been off recorded no events and so banked no thumbnail.
-- **Read `cam.enabled` before opening an egress, and trust it.** Nothing pushes enablement, so a write used
-  to leave the reported value frozen — `setEnabled(true)` succeeded, the camera streamed, and the reading
-  stayed `false` indefinitely. An enablement write is now confirmed by bounded readback on whichever param
-  the device actually reports: the value converges on its own (measured 2–6s on both wire families) and
-  `cameraEnabledChanged` fires once when it lands. The SDK does not refuse an egress on that reading —
-  skipping an off camera, or publishing it as unavailable so nothing asks in the first place, is a caller's
-  policy. The value it needs for that is now one it can rely on.
+  changed but its own on/off state. The signature is `stage: "audio-only"`. Since the refusal below landed, a
+  pull normally never gets that far: it is reached on a camera whose enablement reads `undefined`, and
+  otherwise only where a camera is switched off after its pull was admitted, which the warm-up window is long
+  enough to contain. `snapshotStored()` will also report `not-observed` on such a camera, because a camera that
+  has been off recorded no events and so banked no thumbnail.
+- **`cam.enabled` is trustworthy, and the SDK acts on it.** A write used to leave the reported value frozen —
+  `setEnabled(true)` succeeded, the camera streamed, and the reading stayed `false` indefinitely. An
+  enablement write is now confirmed by bounded readback on whichever param the device actually reports: the
+  value converges on its own (measured 2–6s on both wire families) and `cameraEnabledChanged` fires once when
+  it lands. A change made anywhere else — the vendor app, another client, a physical switch — arrives as
+  `propertyChanged` on whichever inbound path saw it, including the read-through re-read, so a long-lived
+  client is no longer left polling for one.
+- **A pull on a camera reading `enabled === false` is refused.** `live()`, `snapshotLive()`, `record()`,
+  `openReadable()` and `recordFragments()` answer `CameraDisabledError` rather than a stream that can only
+  deliver audio — rejecting on the four that answer with a promise, and throwing on `recordFragments()`, which
+  answers with a handle. `snapshotStored()` is exempt, because a retained push thumbnail is not a pull. A
+  reading of `undefined` refuses nothing: families reporting neither wire param leave the state unknown, and
+  unknown is not known-off, so such a camera pulls exactly as before. The reading is consulted when a pull is
+  opened and at no other point, so a camera switched off mid-stream keeps the pull it already has; a caller
+  that must end a live view for it acts on `propertyChanged` or on its own re-read. Presenting an off camera as
+  unavailable so nothing asks in the first place is still a caller's policy.
 - **Reconnect.** On a session close the source stops and consumers get `stop`/`error`; re-attach
   (`cam.live()` again) to rebuild the pull.
 
