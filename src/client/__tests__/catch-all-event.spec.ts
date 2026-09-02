@@ -93,7 +93,13 @@ describe("catch-all event tag", () => {
     expect(device.applyParams).toHaveBeenCalledExactlyOnceWith({ 1224: "63" });
   });
 
-  it("applies a converged cloud record once after unchanged refresh attempts", async () => {
+  /**
+   * The convergence wait polls the CLOUD through the registry's coalesced list, so an unconverged param
+   * costs one account-wide list per reuse window rather than one per pass. The loop still runs at its own
+   * ~500ms cadence — that is what lets state the device volunteers settle the wait between two cloud reads —
+   * so the two cannot be conflated: this pins the fetch count as well as the eventual convergence.
+   */
+  it("applies a converged cloud record once, polling the account list once per reuse window", async () => {
     vi.useFakeTimers();
     const eufy = client();
     let mode = 1;
@@ -120,14 +126,16 @@ describe("catch-all event tag", () => {
       { deviceSn: "T8000P0000000000" },
       { refresh: { param: 1224, property: "armingMode", timeoutMs: 20_000 } },
     );
-    await vi.advanceTimersByTimeAsync(1000);
+    await vi.advanceTimersByTimeAsync(11_000);
 
     expect(seen).toEqual([63]);
+    expect(polls, "one account-wide list per 5s reuse window, not one per 500ms pass").toBe(3);
     expect(device.applyParams).toHaveBeenCalledExactlyOnceWith({ 1224: "63" });
     vi.useRealTimers();
   });
 
   it("serializes consecutive valueless transitions so each event observes its own state", async () => {
+    vi.useFakeTimers();
     const eufy = client();
     let mode = 1;
     let cloudMode = "1";
@@ -149,8 +157,10 @@ describe("catch-all event tag", () => {
 
     (eufy as any).emitSemantic("armingModeChanged", { deviceSn: "T8000P0000000000" }, options);
     (eufy as any).emitSemantic("armingModeChanged", { deviceSn: "T8000P0000000000" }, options);
+    await vi.advanceTimersByTimeAsync(11_000);
 
-    await vi.waitFor(() => expect(seen).toEqual([63, 1]));
+    expect(seen).toEqual([63, 1]);
+    vi.useRealTimers();
   });
 
   it("refreshes and emits after an observed command even when no push event arrives", async () => {

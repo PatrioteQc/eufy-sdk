@@ -820,6 +820,10 @@ export interface MediaProvider {
    *
    * Opens its OWN pull rather than joining the shared source, so it costs a second stream on a camera that
    * is already streaming. {@link recordFragments} is a shared consumer like every other egress.
+   *
+   * Always settles: it resolves once the requested window has elapsed — with the run the camera actually
+   * delivered inside it, which a camera that goes quiet mid-clip makes shorter than asked — and rejects when
+   * the pull fails or ends before that window is up, or when no keyframe arrives to start the clip at.
    */
   record(seconds: number, opts?: { timeoutMs?: number; skipKeyframes?: number }): Promise<Buffer>;
   /**

@@ -624,6 +624,16 @@ export class P2PCommandRouter {
    * with no error on either side. The second caller is refused rather than handed the first one's
    * handle, which would silently discard its `encoder` and hand it a clip already in progress.
    *
+   * The refusal is decided and RECORDED in one synchronous step, before the shared media source is awaited.
+   * Warming that source is a round-trip, so two concurrent callers would otherwise both find the map empty,
+   * both build a talkback, and the second would overwrite the first in the map — two paced streams on the one
+   * audio sequence, and the orphaned handle no longer reachable by {@link P2PCommandRouter.closeAll}. The
+   * entry is therefore claimed by the talkback itself, which the media consumer is wired into once it exists;
+   * a failure to warm or to open the audio path releases the claim.
+   *
+   * The claim is re-checked after the wait for the mirror case: a station close or `closeAll` in that window
+   * stops the talkback that is holding it, and starting the pacing tick on a stopped talkback would pace into
+   * a session nobody is listening on.
    */
   private async openTalkback(
     sn: string,
@@ -638,32 +648,36 @@ export class P2PCommandRouter {
           `open talkback before starting another`,
       );
     }
-    const source = await this.sharedLiveSourceFor(sn, opts);
-    const consumer = source.attach();
+    let consumer: Consumer | undefined;
     const talk = new Talkback(session, {
       channel,
       homeBaseAttached,
       encoder: opts.encoder,
-      releaseMedia: () => consumer.stop(),
+      releaseMedia: () => consumer?.stop(),
       logger,
-    });
-    consumer.on("error", (e: Error) => {
-      if (talk.listenerCount("error")) talk.emit("error", e);
-      else logger.warn?.(`talkback: media session for ${sn} failed: ${e.message}`);
-    });
-    consumer.on("budget", (notice) => talk.emit("budget", notice));
-    consumer.on("stop", () => {
-      void talk.stop().catch((e: unknown) => logger.warn?.(`talkback: stop for ${sn} failed: ${String(e)}`));
     });
     talk.on("stop", () => {
       if (this.talkbacks.get(key) === talk) this.talkbacks.delete(key);
     });
     this.talkbacks.set(key, talk);
     try {
+      const source = await this.sharedLiveSourceFor(sn, opts);
+      if (this.talkbacks.get(key) !== talk) {
+        throw new Error(`talkback: ${sn} was closed while its media session was warming`);
+      }
+      consumer = source.attach();
+      consumer.on("error", (e: Error) => {
+        if (talk.listenerCount("error")) talk.emit("error", e);
+        else logger.warn?.(`talkback: media session for ${sn} failed: ${e.message}`);
+      });
+      consumer.on("budget", (notice) => talk.emit("budget", notice));
+      consumer.on("stop", () => {
+        void talk.stop().catch((e: unknown) => logger.warn?.(`talkback: stop for ${sn} failed: ${String(e)}`));
+      });
       return talk.start();
     } catch (e) {
-      this.talkbacks.delete(key);
-      consumer.stop();
+      if (this.talkbacks.get(key) === talk) this.talkbacks.delete(key);
+      consumer?.stop();
       throw e;
     }
   }

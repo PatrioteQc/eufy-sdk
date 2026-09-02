@@ -158,6 +158,24 @@ export async function captureSnapshotFromShared(
  * dropped along with it — every frame is watched for an announcement, including the skipped ones, and
  * the collected run is primed before muxing. This also settles the codec, which is sniffed from a config NAL:
  * a run of bare slices would otherwise fall back to H.264 and mislabel an H.265 clip.
+ *
+ * **Bounded in both phases, so it always settles.** The first phase is bounded by `timeoutMs` waiting for the
+ * keyframe the clip starts at; the second is bounded by the clip's own window, which is armed as a deadline
+ * the moment capture starts rather than being read off the next frame to arrive. A camera that goes quiet
+ * mid-clip delivers no further frame to compare a clock against — measured on an own-session camera that
+ * stopped 13.6 s into a stream with no `stop` and no `error` — so a clip whose end is decided inside a frame
+ * handler has no end at all, and the promise stays pending for the life of the process. The deadline answers
+ * with the run collected up to it: the window the caller asked for has elapsed, and frames the camera never
+ * sent cannot be waited into existence.
+ *
+ * A pull whose SESSION goes away before that window elapses fails the clip instead, naming the close. No
+ * further frame can arrive on it, so there is nothing left to wait for, and a caller that asked for a clip of
+ * a stated length is told the session went away rather than handed a fragment as if it were the clip. A decode
+ * failure on the stream fails it the same way.
+ *
+ * The `error` listener outlives the collection deliberately. An unhandled `error` on an emitter takes the host
+ * process down, and the stream is stopped only after the promise settles, so it stays attached and a late
+ * failure lands on an already-settled promise as the no-op it is.
  */
 export async function recordClip(
   session: P2PSession,
@@ -178,14 +196,23 @@ export async function recordClip(
     h264 = await new Promise<Buffer>((resolve, reject) => {
       const bufs: Buffer[] = [];
       let keyCount = 0,
-        capturing = false,
-        stopAt = 0;
+        capturing = false;
       let sets: ParamSets | undefined;
       let codec: VideoCodec = "h264";
-      const timer = setTimeout(() => {
-        cleanup();
-        reject(new Error("timeout waiting for a clean keyframe"));
-      }, timeoutMs);
+      let deadline: ReturnType<typeof setTimeout>;
+      const detach = () => {
+        clearTimeout(deadline);
+        stream.off("video", onVideo);
+        session.off("close", onClose);
+      };
+      const collected = () => {
+        detach();
+        resolve(primeForDecode(Buffer.concat(bufs), sets, codec));
+      };
+      const failed = (reason: string, cause?: Error) => {
+        detach();
+        reject(new Error(reason, cause ? { cause } : undefined));
+      };
       const onVideo = (fr: LiveVideoFrame) => {
         sets = updatedParamSets(fr.data, sets);
         if (fr.keyframe) keyCount++;
@@ -193,21 +220,21 @@ export async function recordClip(
           if (!fr.keyframe || keyCount <= skip) return; // start the clip at the first COMPLETE keyframe
           capturing = true;
           codec = fr.codec;
-          clearTimeout(timer);
-          stopAt = Date.now() + seconds * 1000;
+          clearTimeout(deadline);
+          deadline = setTimeout(collected, Math.max(0, seconds * 1000));
         }
         bufs.push(fr.data);
-        if (Date.now() >= stopAt) {
-          cleanup();
-          resolve(primeForDecode(Buffer.concat(bufs), sets, codec));
-        }
       };
-      const cleanup = () => {
-        clearTimeout(timer);
-        stream.off("video", onVideo);
-      };
+      const onClose = () =>
+        failed(
+          capturing
+            ? `the P2P session closed ${bufs.length} frame(s) into the clip, before its ${seconds}s window elapsed`
+            : "the P2P session closed before the keyframe the clip starts at",
+        );
+      deadline = setTimeout(() => failed("timeout waiting for a clean keyframe"), timeoutMs);
       stream.on("video", onVideo);
-      stream.on("error", () => {});
+      session.on("close", onClose);
+      stream.on("error", (e: Error) => failed(`the stream failed during the clip: ${e.message}`, e));
     });
   } finally {
     stream.stop();

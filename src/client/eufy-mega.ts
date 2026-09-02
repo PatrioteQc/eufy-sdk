@@ -706,6 +706,14 @@ export class EufyMega extends EventEmitter {
    * already said costs a dozen requests to reach the same answer. Without an expectation, "converged" means
    * only "differs from what was read before", which state already on hand can satisfy spuriously — and the
    * caller that has no expectation is the push path, where the signal itself is the news that a re-read is owed.
+   *
+   * The cloud half is asked for through {@link DeviceRegistry.refreshedList}, never by fetching the account
+   * list outright. The fetch is account-wide — one house list plus one device list per house — so a param that
+   * never converges would otherwise spend a whole burst of those every iteration of this loop, and concurrent
+   * transitions would multiply it by however many are in flight. The registry's reuse window and its
+   * single in-flight fetch collapse all of that to one list per window, shared across every waiter. The loop
+   * still turns on its own cadence: each pass re-reads what is known, so a value the device volunteers over
+   * its own session settles the wait between two cloud reads rather than after them.
    */
   private refreshEventState(sn: string, refresh: SemanticEventRefresh): Promise<boolean> {
     const epoch = this.realtimeEpoch;
@@ -739,7 +747,7 @@ export class EufyMega extends EventEmitter {
       while (Date.now() < deadline) {
         const remaining = deadline - Date.now();
         try {
-          await this.beforeDeadline(this.registry.getDevices(), remaining);
+          await this.beforeDeadline(this.registry.refreshedList(sn), remaining);
         } catch (error) {
           if (!(error instanceof RefreshWindowClosedError)) throw error;
           break;

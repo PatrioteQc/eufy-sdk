@@ -492,11 +492,16 @@ export class DeviceRegistry {
   }
 
   /**
-   * Re-fetch the device list, coalescing concurrent callers onto one in-flight fetch.
+   * Re-fetch the device list, coalescing concurrent callers onto one in-flight fetch and reusing one
+   * younger than {@link LIST_REUSE_MS}. Answers with this serial's record from that list, or `undefined`.
    *
    * The list is account-wide (`get_house_list` plus one `get_devs_list` per house), so without this a refresh
    * cycle over N devices would multiply into N of those bursts — and every fetch clears the capability caches,
    * so they would stop working. One fetch serves every device that wants the same answer.
+   *
+   * This is the ONLY way a caller in a loop should ask for a fresher list. A convergence wait that polls
+   * {@link getDevices} directly bypasses both the window and the coalescing, so one write whose param never
+   * lands spends a whole account-wide burst per iteration, and concurrent transitions multiply that again.
    *
    * Only a fetch that RESOLVED opens the reuse window. {@link getDevices} tolerates a failing house/body
    * query as a partial and answers anyway, so an outage still holds the window on purpose — retrying per
@@ -504,7 +509,7 @@ export class DeviceRegistry {
    * session, which also propagates rather than degrading to `undefined`, because answering "no such device"
    * for an expired token is the same lie {@link getDevices} stopped telling, one level down.
    */
-  private async refreshedList(sn: string): Promise<EufyDevice | undefined> {
+  async refreshedList(sn: string): Promise<EufyDevice | undefined> {
     if (Date.now() - this.listFetchedAtMs < LIST_REUSE_MS) return this.devices.find((d) => d.sn === sn);
     this.listInFlight ??= this.getDevices()
       .then((devices) => {
