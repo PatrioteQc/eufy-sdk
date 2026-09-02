@@ -207,10 +207,7 @@ describe("describeCapabilities — enumeration of the live bound objects", () =>
   it("announces the events a capability emits, including the ones it decodes itself", () => {
     const described = describeAll(allParams());
     expect(described.find((d) => d.capability === "ptz")!.events).toEqual(["ptzNotify"]);
-    expect([...described.find((d) => d.capability === "battery")!.events].sort()).toEqual([
-      "batteryAlert",
-      "batteryLevel",
-    ]);
+    expect(described.find((d) => d.capability === "battery")!.events).toEqual(["batteryAlert"]);
   });
 
   /**

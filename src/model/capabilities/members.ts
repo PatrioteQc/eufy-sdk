@@ -805,8 +805,13 @@ function reports(requires: readonly number[] | undefined, ctx: CommandContext): 
  * raw string so the mismatch is visible in the log, and a param the dictionary declares `json`-encoded
  * is stored as a decoded object. Handing either through a getter typed `number` is the one lie this
  * table exists to prevent.
+ *
+ * Exported so the ONE narrowing the getters use is also the one a property-change announcement carries.
+ * A second conversion of the wire value is precisely how a payload comes to disagree with the getter
+ * beside it, which would defeat the point of announcing the change at all.
+ * @internal
  */
-function narrow(
+export function narrow(
   type: PropertyValueType,
   read: CapabilityStateReader,
   prop: string,

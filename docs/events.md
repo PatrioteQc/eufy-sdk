@@ -10,8 +10,7 @@ eufy.on("doorbellPress", (e) => …);
 eufy.on("personDetected", (e) => …);
 eufy.on("lockState", (e) => …);
 eufy.on("contactState", (e) => e.open); // entry sensor: true = open (station notify, push or poll)
-eufy.on("batteryLevel", (e) => e.to); // new 0–100 level (cloud poll — see cadence below)
-eufy.on("cameraEnabled", (e) => e.enabled); // camera switched on/off (cloud poll)
+eufy.on("propertyChanged", (e) => e.property); // ANY readable property moved — `e.value` is the new one
 eufy.on("strangerDetected", (e) => …); // a person the device does NOT recognise
 eufy.on("soundDetected", (e) => …); // also cryingDetected, vehicleDetected, dogDetected
 eufy.on("armingModeChanged", (e) => …); // guard mode switched — re-read the mode
@@ -22,6 +21,62 @@ eufy.on("ptzNotify", (e) => e.kind); // "rotate" | "zoom" | "position"
 // union, so `switch (e.eventName)` narrows the type). Ideal for fanning to a bus.
 eufy.on("event", (e) => bus.emit(e.eventName, e));
 ```
+
+## Any property moving is announced
+
+Most of what a device reports has no push of its own. A camera's status LED and night-vision mode, a
+floodlight's brightness, a device's speaker volume, a battery level — these arrive only as cloud params,
+so re-reading was the only way to learn one had moved, and re-reading cannot say _when_. A host that
+only reads while its UI is open therefore showed the previous value indefinitely after someone changed
+the setting in the vendor app.
+
+**`propertyChanged` fires for every readable property whose value moves**, whatever it is and whatever
+transport carried it:
+
+```ts
+eufy.on("propertyChanged", ({ deviceSn, property, value }) => {
+  console.log(`${deviceSn}: ${property} is now ${value}`);
+});
+```
+
+- **`property`** is the name [`dev.getProperty(name)`](/devices) takes and the one the capability getter
+  answers. To reach the fluent accessor behind it, join once against
+  [`dev.describe()`](/capability-manifest), which publishes the `{ accessor, property }` pair.
+- **`value`** is what `getProperty` now serves, narrowed the way the capability getter narrows it — read
+  from the same live state, never a second conversion of the wire value, so the two cannot disagree. It is
+  **absent** where no scalar can honestly be given: a property whose stored form is a config payload
+  (`videoQuality`, `snoozeTime`), or one whose stored value does not match its declared type. Absent
+  means "this moved, re-read it". A handful of properties are in the schema with no typed getter at all,
+  because their value space is not evidenced yet — those announce the stored value, which is exactly what
+  `getProperty` already serves for them and no more.
+- **No wire id travels with it.** Several ids resolve to one property — a camera's enablement rides 1035
+  on one family and 2001 on another, with opposite polarity — and that resolution is the point. The ids
+  stay available through `inspectDevice()` and `dev.describe()`.
+- **Keep a reference to the devices you want announcements for.** The value comes out of a device's own
+  live state, and the SDK holds the `Device` objects it hands out **weakly** — so `getDevice(sn)` and then
+  discarding the result stops the announcements for that serial once the collector takes it. The SDK
+  warns once on your `logger` when it notices, naming the serial, rather than leaving you a silence to
+  investigate; `getDevice(sn)` resumes them. Liveness reaches you as `deviceState` either way.
+- **Echoes are announced too.** The SDK cannot tell a change it caused from one made in the app, and
+  guessing would lose a real external change in exchange for one redundant re-read.
+- **Latency is the transport's.** Seconds for a property a device reports over its realtime wire. For one
+  that only ever arrives as a cloud param — which is most of them — it is whichever comes first of the
+  poll (`pollMs` at construction, or `setPollInterval(ms)` at runtime; default 10 minutes) and the
+  read-through cache's own background re-read, which fires when you read a value older than `cacheTtlMs`.
+
+**Nothing is filtered out for being uninteresting.** Which of a device's truths you act on is yours to
+decide, so every schema property that moves is announced — including the chatty ones. A sensor's own
+`lastSeen` fires on every check-in, and a robot's session and lifetime counters tick throughout a clean.
+If you want liveness, read `deviceState`, which carries the same fact; if you want clean progress, those
+counters are the only place it comes from. Either way it costs you one comparison on `property` to ignore
+a name, and the SDK never decides on your behalf that you did not want a reading.
+
+**When a property change is not enough, the event has its own name.** A named event carries something a
+bare property change cannot — an inbound source the property path does not reach, a threshold crossing,
+or a dedupe across transports. `batteryAlert` is a threshold push with no level in it. `contactState`
+arrives on three transports and is deduped across them, and its FCM push carries no param at all. On the
+cloud poll an entry sensor's movement is therefore announced twice, idempotently: use `contactState` for
+the door, `propertyChanged` for everything else.
 
 ## One change, announced once
 

@@ -5,7 +5,7 @@ import { setScalar, setPayload, hasCapability } from "./access.js";
 import { AUDIO_CMD } from "./audio.js";
 import { accepts, propertiesOf, provided, type Members, type Surface } from "./members.js";
 import type { CapabilityModule, CapabilityActions, CommandContext } from "./types.js";
-import type { Command, CommandSink, MediaProvider } from "../../core/contracts.js";
+import { CameraDisabledError, type Command, type CommandSink, type MediaProvider } from "../../core/contracts.js";
 
 /**
  * The P2P **feature-command ids** this camera capability drives (direct-binary switches + `1350`
@@ -296,23 +296,6 @@ function poweredOf(ctx: CommandContext): "wired" | "battery" {
 }
 
 /**
- * Every wire id that carries the camera's enablement state, with the polarity it reports under — the
- * READ side of {@link CAMERA_MEMBERS}.enabled, read back off that member rather than restated.
- *
- * A second list would be a second answer to "which ids mean enablement, and which way round": the
- * getter would keep one and the poll event the other, and a family whose alias moved would report the
- * inverse of what it reads. `invert` is the member's own convention — the value is a DISABLE bit where
- * it is set.
- */
-function enablementReads(): { paramType: number; invert: boolean }[] {
-  const member = CAMERA_MEMBERS.enabled;
-  return [
-    { paramType: member.param, invert: member.invert },
-    ...member.readAliases.map((alias) => ({ paramType: alias.paramType, invert: alias.invert })),
-  ];
-}
-
-/**
  * The param an enablement write will be reflected under on THIS device, and the raw value to expect there.
  *
  * Written wire and reported wire are not the same one. Every family is written on
@@ -340,6 +323,15 @@ function enablementReflection(
 }
 
 /**
+ * Refuse a media pull where the `enabled` reading is false.
+ *
+ * `undefined` is permissive: a camera that never reported its state is not a camera known to be off.
+ */
+function refuseWhenDisabled(ctx: CommandContext, read: (name: string) => { value: unknown } | undefined): void {
+  if (read("enabled")?.value === false) throw new CameraDisabledError(ctx.name ?? ctx.serial);
+}
+
+/**
  * Every `camera` feature, declared once. The property schema, the typed getters, the derived setters,
  * the intent routes, the media methods and the descriptions all come out of this table.
  *
@@ -361,8 +353,8 @@ export const CAMERA_MEMBERS = {
    * 1035, standalone indoor/outdoor cams under 2001 OPEN_DEVICE with direct polarity, so 2001 is a
    * read-alias. Both verified live, and the write polarity is confirmed against the app's own frames.
    *
-   * The read and the setter observe the SAME wire on every family — see {@link powerCommand} — which is what
-   * makes this value track what it is told, and what lets {@link enablementReflection} confirm a write.
+   * The read and the setter observe the SAME wire on every family — see `powerCommand` — which is what
+   * makes this value track what it is told, and what lets `enablementReflection` confirm a write.
    *
    * The privacy param (6250) is reported by the outdoor-PT family and by no other camera measured, and both
    * of its polarities are observed. It is deliberately NOT aliased here: it moved in the same step as 1035, so
@@ -530,14 +522,17 @@ export const CAMERA_MEMBERS = {
    * value, and it exists only on a device bound to a provider. Each is declared once, with its
    * signature taken FROM {@link MediaProvider} — so a change there is a compile error here, not a drift.
    *
-   * None of these is withheld from a camera whose {@link CAMERA_MEMBERS.enabled} reads false, though such a
-   * camera answers a live start with audio and never a video frame — measured on a mains-powered own-session
-   * `INDOOR_PT_CAMERA`: 234 audio frames and no video across 20s, no stream-status report, and zero datagram
-   * gaps, which then delivered 217 video access units with nothing changed but its own on/off state.
+   * Every pull is refused where {@link CAMERA_MEMBERS.enabled} reads false, with {@link CameraDisabledError} —
+   * `live`, `snapshotLive`, `record`, `openReadable` and `recordFragments` alike, since each opens media on a
+   * camera that serves none. That reading is the on/off source; a live probe is not one, since a disabled
+   * camera answers a start with audio and never a video frame.
    *
-   * Deciding not to ask an off camera is the caller's, and it is made on the `enabled` getter — which that
-   * member's own observation now keeps convergent, so it is a value worth deciding on. What the SDK owes is
-   * the evidence: the reading, and the media source's own `audio-only` start stage.
+   * {@link CAMERA_MEMBERS.snapshotStored} is exempt — a retained push thumbnail is not a pull. A reading of
+   * `undefined` refuses nothing: families reporting neither wire param leave the state unknown, and unknown is
+   * not known-off.
+   *
+   * The refusal REJECTS on the four that answer with a promise, and THROWS on
+   * {@link CAMERA_MEMBERS.recordFragments}, which answers with a handle.
    */
   snapshotStored: provided(
     "media",
@@ -547,33 +542,49 @@ export const CAMERA_MEMBERS = {
   ),
   snapshotLive: provided(
     "media",
-    (m, { ctx }) =>
-      (opts?: Parameters<MediaProvider["snapshotLive"]>[0]) =>
-        m.snapshotLive({ powered: poweredOf(ctx), ...opts }),
+    (m, { ctx, read }) =>
+      async (opts?: Parameters<MediaProvider["snapshotLive"]>[0]) => {
+        refuseWhenDisabled(ctx, read);
+        return m.snapshotLive({ powered: poweredOf(ctx), ...opts });
+      },
     "Fresh still decoded from a short live burst.",
   ),
   live: provided(
     "media",
-    (m, { ctx }) =>
-      (opts?: Parameters<MediaProvider["live"]>[0]) =>
-        m.live({ powered: poweredOf(ctx), ...opts }),
+    (m, { ctx, read }) =>
+      async (opts?: Parameters<MediaProvider["live"]>[0]) => {
+        refuseWhenDisabled(ctx, read);
+        return m.live({ powered: poweredOf(ctx), ...opts });
+      },
     "Open a managed live stream.",
   ),
-  record: provided("media", (m) => m.record, "Record N seconds → an mp4/h264 buffer."),
+  record: provided(
+    "media",
+    (m, { ctx, read }) =>
+      async (...args: Parameters<MediaProvider["record"]>) => {
+        refuseWhenDisabled(ctx, read);
+        return m.record(...args);
+      },
+    "Record N seconds → an mp4/h264 buffer.",
+  ),
   openReadable: provided(
     "media",
-    (m, { ctx }) =>
+    (m, { ctx, read }) =>
       m.openReadable &&
-      ((opts?: Parameters<NonNullable<MediaProvider["openReadable"]>>[0]) =>
-        m.openReadable!({ powered: poweredOf(ctx), ...opts })),
+      (async (opts?: Parameters<NonNullable<MediaProvider["openReadable"]>>[0]) => {
+        refuseWhenDisabled(ctx, read);
+        return m.openReadable!({ powered: poweredOf(ctx), ...opts });
+      }),
     "Open a node:stream Readable of the live feed.",
   ),
   recordFragments: provided(
     "media",
-    (m, { ctx }) =>
+    (m, { ctx, read }) =>
       m.recordFragments &&
-      ((opts?: Parameters<NonNullable<MediaProvider["recordFragments"]>>[0]) =>
-        m.recordFragments!({ powered: poweredOf(ctx), ...opts })),
+      ((opts?: Parameters<NonNullable<MediaProvider["recordFragments"]>>[0]) => {
+        refuseWhenDisabled(ctx, read);
+        return m.recordFragments!({ powered: poweredOf(ctx), ...opts });
+      }),
     "Continuous fragmented-MP4 (CMAF) recording.",
   ),
   /**
@@ -601,26 +612,6 @@ export const CAMERA: CapabilityModule = {
   properties: propertiesOf(CAMERA_MEMBERS),
   /** Every camera-codec device has the power/privacy surface. */
   detection: { codecs: ["camera"] },
-  /**
-   * Inbound `cameraEnabled`: the enablement state changing between cloud polls.
-   *
-   * Enablement only ever arrives as a cloud param — no id pushes it — so re-reading was the only way a
-   * caller could learn it had moved, and re-reading cannot say WHEN. Every id that carries the read is
-   * mapped, from {@link enablementReads}, so the event and the getter cannot disagree about which ids
-   * those are or which polarity each reports under; the raw value is normalised to `enabled` because
-   * the two ids report it inverted from each other.
-   *
-   * Neither id is claimed by another capability, so both emit without capability context — which is the
-   * declared behaviour for an uncontested id, and safe here because both have only ever been reported by
-   * camera devices.
-   */
-  events: enablementReads().map(({ paramType, invert }) => ({
-    source: "poll" as const,
-    match: paramType,
-    emit: "cameraEnabled",
-    derive: (s) =>
-      s.source === "poll" && s.to !== undefined ? { enabled: asBool(s.to) !== invert } : ({} as Record<string, never>),
-  })),
   /** Only the no-argument power verbs, which carry no value for a member to hold. */
   actions(ctx: CommandContext, sink: CommandSink): CapabilityActions {
     return {

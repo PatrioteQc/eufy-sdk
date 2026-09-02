@@ -262,6 +262,39 @@ export interface PropertyValue {
 }
 
 /**
+ * One property whose value moved, as a host is told about it.
+ *
+ * Identified by property NAME and nothing else. The name is unique per device, is what `applyParams`
+ * already answers with, and is the key `Device.getProperty` takes — so a caller can re-read
+ * immediately. No wire id travels with it: resolving several ids to one property is the whole job the
+ * param → spec map does, and handing the id back out undoes it and gives a caller a second identifier
+ * to key on, which then breaks on the family where that property's read alias is promoted. The ids stay
+ * available through `inspectDevice` and `Device.describe()`.
+ *
+ * A caller that wants the capability accessor behind the name already has that mapping:
+ * `Device.describe()` publishes the `{ accessor, property }` pair, joined once at setup.
+ */
+export interface PropertyChange {
+  /** The property whose value moved — a key of this device's own schema. */
+  property: string;
+  /**
+   * What {@link Device.getProperty} now serves for this property, narrowed to its declared type the same
+   * way a capability getter narrows it.
+   *
+   * Read out of live state, never re-converted from the wire, so it cannot disagree with the getter
+   * beside it. Said as "what `getProperty` serves" rather than "what the getter answers" because a
+   * schema property does not always HAVE a typed getter: an `unexposed` member is reported and readable
+   * but has no confirmed meaning for its value, so promising the getter here would be a claim this SDK
+   * has not made anywhere else.
+   *
+   * Absent where no scalar can honestly be given: a property whose stored value is a PAYLOAD rather than
+   * the value (see {@link PropertySpec.raw}), and one whose stored value does not match its declared
+   * type. In both cases the honest answer is "this moved, re-read it".
+   */
+  value?: boolean | number | string;
+}
+
+/**
  * A capability module = property schema + detection + inbound decode + outbound commands.
  * Written ONCE, reused by every device that lists the capability. This is how "extra bits" (a
  * camera's light, pan-tilt, doorbell button) attach without subclassing. The full shape lives in

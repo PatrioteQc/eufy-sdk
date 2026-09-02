@@ -6,7 +6,7 @@
  * @module model/capabilities
  */
 
-import type { Capability, CloudRecord, Codec, PropertySpec } from "../types.js";
+import type { Capability, CloudRecord, Codec, PropertyChange, PropertySpec } from "../types.js";
 import { bindMembers, hasRequiredCapabilities, installs, memberWrite, propertiesOf } from "./members.js";
 import { camelCase } from "./access.js";
 import { describeBound, type CapabilityDescriptor } from "./manifest.js";
@@ -646,8 +646,9 @@ export interface DeviceEventMap {
    * A camera's own enablement was confirmed changed, after a write this SDK issued was read back off the
    * device. Carries no value — re-read `enabled`, which has converged by the time this fires.
    *
-   * Distinct from `cameraEnabled`, which reports the value moving between cloud polls for any reason. This
-   * one says a write LANDED, which is the only thing that can be known about a value nothing pushes.
+   * Distinct from {@link propertyChanged}, which reports `enabled` moving for any reason on whichever
+   * inbound path saw it. This one says a write LANDED, which is a different fact and the only thing that
+   * can be known about a value nothing pushes.
    */
   cameraEnabledChanged: PushSemanticEvent;
   /** Station alarm lifecycle; `phase` says whether it fired or is counting down. */
@@ -660,14 +661,40 @@ export interface DeviceEventMap {
    * carried no contact value, so `undefined` means "not reported here", not "closed".
    */
   contactState: PushSemanticEvent & PollSemanticEvent & { open?: boolean };
-  /** Battery level changed (poll). `to` is the new 0–100 level. */
-  batteryLevel: PollSemanticEvent;
   /**
-   * A camera was enabled or disabled (poll). `enabled` is the state after the change, normalised from
-   * whichever id the device reports it under — the two carry opposite polarity, so read `enabled` rather
-   * than `to`. Absent when the change carried no value.
+   * A property this device reports changed value — the generic announcement, derived from the same
+   * `members` table the getters are, for every readable property of every capability.
+   *
+   * `property` is the name `Device.getProperty` takes and the one a capability getter answers, so a
+   * caller can re-read immediately; `Device.describe()` publishes the `{ accessor, property }` pair for a
+   * caller that wants the fluent accessor behind the name. `value` is what `getProperty` now serves,
+   * narrowed the way the capability getter narrows it and read from the same live state rather than
+   * re-converted from the wire. It is absent where no scalar can honestly be given — a property whose
+   * stored form is a payload, or one whose stored value does not match its declared type — which means
+   * "this moved, re-read it". No wire id travels with it: several ids resolve to one property, which is
+   * the point.
+   *
+   * Announced from the cloud poll, from a realtime report, and from the read-through cache's own
+   * background re-read, for a change with any cause — the SDK cannot tell its own write's echo from a
+   * change made in the vendor app, and suppressing on a guess would lose a real external change in
+   * exchange for one redundant re-read. Not announced on first sight of a device (that is discovery, not
+   * a transition), nor inside a write's own confirmation (already reported through that command's
+   * outcome).
+   *
+   * Announced against a `Device` the caller is holding, since the value is read out of that device's own
+   * live state and the SDK holds the devices it hands out weakly.
+   *
+   * Every readable property of every capability, with nothing filtered for being uninteresting: which of
+   * a device's truths a host acts on is the host's call. So a sensor's own check-in timestamp is
+   * announced too, even though the `deviceState` event already carries that fact — read `deviceState`
+   * for liveness and ignore the name, rather than have this floor decide nobody wanted it.
+   *
+   * Latency is the inbound path's: seconds for a property a device reports over realtime. For one that
+   * only ever arrives as a cloud param — which is most of them — it is whichever comes first of the poll
+   * (`EufyMegaOptions.pollMs`, `EufyMega.setPollInterval`) and the cache's re-read
+   * (`EufyMegaOptions.cacheTtlMs`), both the caller's to choose.
    */
-  cameraEnabled: PollSemanticEvent & { enabled?: boolean };
+  propertyChanged: SemanticEventBase & PropertyChange & { deviceSn: string };
   /** Battery alert — `state` discriminates low / hot / full. */
   batteryAlert: PushSemanticEvent & { state?: "low" | "hot" | "full" };
   /** Pan/tilt status streamed while the camera moves. */

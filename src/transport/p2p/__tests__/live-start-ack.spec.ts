@@ -53,7 +53,10 @@ describe("live start acknowledgement diagnostics", () => {
     session.startLiveMedia();
     acknowledge(0);
 
-    expect(debug).toHaveBeenCalledWith(LIVE_TRACE_MESSAGE, { phase: "media-command-ack", action: "start" });
+    expect(debug).toHaveBeenCalledWith(
+      LIVE_TRACE_MESSAGE,
+      expect.objectContaining({ phase: "media-command-ack", action: "start" }),
+    );
     vi.advanceTimersByTime(1000);
     expect(send).toHaveBeenCalledTimes(1);
   });
@@ -96,7 +99,10 @@ describe("live start acknowledgement diagnostics", () => {
     const sent = send.mock.calls.length;
     vi.advanceTimersByTime(10_000);
 
-    expect(debug).toHaveBeenCalledWith(LIVE_TRACE_MESSAGE, { phase: "media-command-unacknowledged", action: "start" });
+    expect(debug).toHaveBeenCalledWith(
+      LIVE_TRACE_MESSAGE,
+      expect.objectContaining({ phase: "media-command-unacknowledged", action: "start" }),
+    );
     expect(send).toHaveBeenCalledTimes(sent);
   });
 

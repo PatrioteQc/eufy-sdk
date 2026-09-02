@@ -1,4 +1,20 @@
 /**
+ * The station a device's traffic belongs to, from its cloud record and its own serial.
+ *
+ * `parent_sn` carries the parent on a HomeBase-attached device. `station_sn` is frequently absent there —
+ * empty on every attached sensor of a T8010 — and serves only as a fallback. An empty string states no
+ * station.
+ *
+ * A device naming no parent answers its own serial, so every device has a station.
+ */
+export function resolvedStationSn(raw: Record<string, unknown>, sn: string): string {
+  const parent = typeof raw.parent_sn === "string" && raw.parent_sn ? raw.parent_sn : undefined;
+  if (parent && parent !== sn) return parent;
+  const station = typeof raw.station_sn === "string" && raw.station_sn ? raw.station_sn : undefined;
+  return station ?? sn;
+}
+
+/**
  * DeviceRegistry — the device list/record/capability-resolution collaborator behind {@link EufyMega}.
  *
  * The facade owns orchestration + event fan-out; this owns the resolution logic: fetching + merging
@@ -296,7 +312,7 @@ export class DeviceRegistry {
           sn: raw.device_sn,
           name: raw.device_name ?? raw.device_alias_name ?? raw.alias_name,
           model: raw.device_model,
-          stationSn: raw.station_sn,
+          stationSn: resolvedStationSn(raw, raw.device_sn),
           p2pDid: raw.p2p_did,
           params,
           paramUpdatedAt,
@@ -476,11 +492,16 @@ export class DeviceRegistry {
   }
 
   /**
-   * Re-fetch the device list, coalescing concurrent callers onto one in-flight fetch.
+   * Re-fetch the device list, coalescing concurrent callers onto one in-flight fetch and reusing one
+   * younger than {@link LIST_REUSE_MS}. Answers with this serial's record from that list, or `undefined`.
    *
    * The list is account-wide (`get_house_list` plus one `get_devs_list` per house), so without this a refresh
    * cycle over N devices would multiply into N of those bursts — and every fetch clears the capability caches,
    * so they would stop working. One fetch serves every device that wants the same answer.
+   *
+   * This is the ONLY way a caller in a loop should ask for a fresher list. A convergence wait that polls
+   * {@link getDevices} directly bypasses both the window and the coalescing, so one write whose param never
+   * lands spends a whole account-wide burst per iteration, and concurrent transitions multiply that again.
    *
    * Only a fetch that RESOLVED opens the reuse window. {@link getDevices} tolerates a failing house/body
    * query as a partial and answers anyway, so an outage still holds the window on purpose — retrying per
@@ -488,7 +509,7 @@ export class DeviceRegistry {
    * session, which also propagates rather than degrading to `undefined`, because answering "no such device"
    * for an expired token is the same lie {@link getDevices} stopped telling, one level down.
    */
-  private async refreshedList(sn: string): Promise<EufyDevice | undefined> {
+  async refreshedList(sn: string): Promise<EufyDevice | undefined> {
     if (Date.now() - this.listFetchedAtMs < LIST_REUSE_MS) return this.devices.find((d) => d.sn === sn);
     this.listInFlight ??= this.getDevices()
       .then((devices) => {
@@ -512,6 +533,9 @@ export class DeviceRegistry {
    * Merged rather than replaced because a report can be partial — a status frame that omits a field is
    * silent about it, not asserting it went away. Marks the device seen and drops its capability cache,
    * since a newly-reported id can widen the evidence-gated read surface.
+   *
+   * What lands here outranks the cloud half in {@link record}, and stays there until
+   * {@link retireRealtimeParams} says the cloud has moved that id itself.
    */
   applyRealtimeParams(sn: string, params: Record<number, string>): void {
     if (!Object.keys(params).length) return;
@@ -524,6 +548,33 @@ export class DeviceRegistry {
       this.stateWaiters.delete(sn);
       for (const resolve of waiters) resolve();
     }
+  }
+
+  /**
+   * Drop this device's reported value for these param ids, because the CLOUD has since been observed to
+   * move them — {@link EufyMega} calls this with the ids of a poll diff.
+   *
+   * {@link record} joins the two halves by letting the report win, which is right only while the report
+   * is the fresher of the two: the cloud list carries a pre-report value long after the device
+   * volunteered the new one, so without that precedence an open door reads as closed. A poll diff on the
+   * same id is the cloud stating a transition it observed, which ends the lag the report was standing in
+   * for. Leaving the report in place would make it outrank the cloud permanently, and every later join
+   * would revert that id to a value the cloud has already superseded.
+   *
+   * Ids alone, never a value: this says the report is out of date, not what replaced it. The replacement
+   * is already in the cloud half, and writing it in here would put one value in two maps for the next
+   * change to disagree about.
+   *
+   * The capability cache is deliberately NOT dropped: an id stops being remembered here, but the device
+   * did report it, and evidence-gated reads are granted on having reported — retracting that would take
+   * a getter away from a `Device` that legitimately earned it. The map itself stays for the same reason
+   * even once emptied, since its presence is what {@link hasRealtimeState} answers "this device has
+   * reported" from, and a device does not become one that never reported.
+   */
+  retireRealtimeParams(sn: string, paramTypes: readonly number[]): void {
+    const reported = this.dpParams.get(sn);
+    if (!reported) return;
+    for (const paramType of paramTypes) delete reported[paramType];
   }
 
   /** Whether this device has reported any realtime state yet. */
@@ -597,8 +648,7 @@ export class DeviceRegistry {
    * means, so this is also the topology signal `record()`/`capsOf` hand the resolver.
    */
   private stationOf(dev: EufyDevice): string {
-    const raw = (dev.raw ?? {}) as Record<string, any>;
-    return raw.parent_sn && raw.parent_sn !== dev.sn ? (raw.parent_sn as string) : (dev.stationSn ?? dev.sn);
+    return dev.stationSn ?? resolvedStationSn((dev.raw ?? {}) as Record<string, unknown>, dev.sn);
   }
 
   /**

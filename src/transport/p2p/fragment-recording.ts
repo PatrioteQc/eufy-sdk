@@ -9,6 +9,17 @@ export interface FragmentRecordingOptions {
 }
 
 /**
+ * Fragments an owner may fall behind by before this recording holds its consumer.
+ *
+ * A fragment is a complete ordered media unit, so unlike a frame it cannot be dropped without breaking the
+ * recording that contains it. The bound therefore holds the consumer rather than discarding anything, which
+ * moves the decision to the frame queue behind it — where crossing a bound drops to the next IDR and the
+ * recording resumes on decodable media. A recording is pulled one fragment at a time, so this only has to
+ * cover the gap between one pull and the next.
+ */
+const MAX_PENDING_FRAGMENTS = 8;
+
+/**
  * One caller-owned fragmented recording over a shared live source. Buffered and live frames pass
  * through the same timestamp-aware muxer, while budget notices retain the source's `extend()` handle.
  */
@@ -20,6 +31,7 @@ export class FragmentRecording extends EventEmitter implements FragmentRecording
   private failure?: Error;
   private ended = false;
   private iterated = false;
+  private held = false;
   private readonly ready: Promise<void>;
 
   constructor(
@@ -52,7 +64,7 @@ export class FragmentRecording extends EventEmitter implements FragmentRecording
       await this.ready;
       for (;;) {
         if (this.queue.length) {
-          yield this.queue.shift()!;
+          yield this.take();
           continue;
         }
         if (this.failure) throw this.failure;
@@ -88,10 +100,24 @@ export class FragmentRecording extends EventEmitter implements FragmentRecording
           ? this.mux.push(item.frame, item.timestampMs)
           : this.mux.pushAudio(item.frame, item.timestampMs);
       if (fragment) this.queue.push(fragment);
+      if (!this.held && this.queue.length >= MAX_PENDING_FRAGMENTS) {
+        this.held = true;
+        this.consumer?.pause();
+      }
       this.nudge();
     } catch (error) {
       this.fail(error instanceof Error ? error : new Error(String(error)));
     }
+  }
+
+  /** Hand over the next fragment, releasing the consumer once the owner is back inside the bound. */
+  private take(): MediaFragment {
+    const fragment = this.queue.shift()!;
+    if (this.held && this.queue.length < MAX_PENDING_FRAGMENTS) {
+      this.held = false;
+      this.consumer?.resume();
+    }
+    return fragment;
   }
 
   private fail(error: Error): void {

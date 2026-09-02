@@ -89,6 +89,60 @@ export class LiveSnapshotUnavailableError extends Error {
 }
 
 /**
+ * A media pull was refused: the camera is switched off.
+ *
+ * A disabled camera serves no live media, video or audio.
+ *
+ * Raised by every media pull on the camera surface. The pulls that answer with a promise REJECT with it;
+ * fragment recording answers with a handle and therefore THROWS it, so a caller that builds a recording
+ * outside a `try` block sees it there rather than on the handle. A retained push thumbnail is exempt — it
+ * is not a pull.
+ */
+export class CameraDisabledError extends Error {
+  constructor(
+    /** How the camera identifies itself to a reader — its name where the record carries one. */
+    readonly camera: string | undefined,
+    options?: { cause?: unknown },
+  ) {
+    super(`camera${camera ? ` ${camera}` : ""} is disabled — no live stream possible`, options);
+    this.name = "CameraDisabledError";
+  }
+}
+
+/**
+ * A live stream was refused: the station is already serving another of its cameras to a viewer.
+ *
+ * A station fans several cameras out over one session and serves ONE of them at a time. Accepting a second
+ * live pull does not make it serve two: measured on a base carrying three attached cameras, each opened
+ * stream took the station from the others in turn and all three received their media in bursts. So a second
+ * viewer is refused rather than admitted and degraded, which is the difference between a caller being told
+ * the constraint and a caller watching every picture stutter.
+ *
+ * Which camera deserves the station is the caller's decision, not the SDK's, so nothing is queued or
+ * pre-empted here. Stop the stream you no longer need and open the one you do.
+ *
+ * A still is not refused: it yields the station instead, and answers with the retained image where one is
+ * held. Only pulls that deliver continuous media contend for a viewer's place.
+ */
+export class StationBusyError extends Error {
+  /** Always true: the station is busy now, and stops being busy when the other stream is released. */
+  readonly retryable = true;
+
+  constructor(
+    /** The channel the station is already serving, so a caller can say which camera holds it. */
+    readonly servingChannel: number,
+    options?: { cause?: unknown },
+  ) {
+    super(
+      `the station is already serving channel ${servingChannel} to a viewer, and serves one camera at a ` +
+        `time — stop that stream before opening another`,
+      options,
+    );
+    this.name = "StationBusyError";
+  }
+}
+
+/**
  * How a live stream ended before its first video keyframe: the warm-up deadline elapsed, the source
  * reported an error, or the source ended on its own.
  */
@@ -395,7 +449,21 @@ export type VideoCodec = "h264" | "h265" | "av1";
 export interface LiveVideoFrame {
   /** True on an IDR — a unit a consumer may begin decoding at, never a continuation of an earlier one. */
   keyframe: boolean;
+  /**
+   * Frame geometry as the station's own frame header states it — {@link height} is the same field.
+   *
+   * A camera reconfigures its live source WITHIN one session, so these change between frames of one
+   * stream. Measured on eight cameras and both codecs: four of them changed, 2 to 9 times per 25-60 s,
+   * oscillating up and down a ladder rather than only climbing it; the other four held one geometry
+   * throughout. A change arriving on a keyframe carrying fresh parameter sets is what every run but one
+   * showed, and that run is not accounted for, so it is not a property to rely on.
+   *
+   * This is what the station REPORTED. The size a decoder will actually produce is stated by the
+   * parameter sets, and a consumer is told it through {@link LiveStreamConsumer} rather than having to
+   * retain these and diff every frame against them.
+   */
   width: number;
+  /** See {@link width} — the same field, and it moves with it. */
   height: number;
   /**
    * Codec of the elementary stream this access unit belongs to. Sniffed off the parameter sets on a
@@ -404,6 +472,36 @@ export interface LiveVideoFrame {
   codec: VideoCodec;
   /** Annex-B bytes (one or more NAL units, start-code prefixed). */
   data: Buffer;
+}
+
+/**
+ * The coded video configuration a live source is producing — the codec, and the picture size a decoder
+ * will produce from the parameter sets in force.
+ *
+ * The geometry is the CODED one, read out of the sequence parameter set and cropped by the offsets it
+ * declares, not the geometry a frame header reports. Those agreed on all but 28 of some 6000 measured
+ * frames, but only one of them is the size a decoder produces: 1080 is not a multiple of the 16-sample
+ * macroblock, so a 1080p H.264 stream codes 1088 rows and crops 8 away, and the frame header is a report
+ * about that rather than the definition of it.
+ *
+ * Where the parameter sets state no readable geometry — before a stream's first keyframe has carried any,
+ * or from a set that cannot be parsed — the frame header's report is carried instead, so a configuration is
+ * always present. The two are not distinguished in the payload: a configuration is acted on by comparing it
+ * with the one already in use, and that comparison answers the same whichever half stated it.
+ *
+ * The header's report is carried as it reads, so where the header declares no geometry either the width and
+ * height are `0`. A caller sizing a decoder from these treats a zero as "not yet stated" and waits for the
+ * next announcement, which the first keyframe's parameter sets produce.
+ *
+ * A consequence worth knowing: the first announcements of a session can move from a header-derived
+ * configuration to a parameter-set-derived one without the camera having reconfigured, because the sets
+ * arrive with the first keyframe and the frames before it have only their headers. A caller that rebuilds on
+ * a difference rebuilds once there, which is the same cost as a real first configuration.
+ */
+export interface LiveVideoConfig {
+  codec: VideoCodec;
+  width: number;
+  height: number;
 }
 
 /**
@@ -476,14 +574,85 @@ export interface StreamBudgetNotice {
 export interface LiveStreamHandle {
   start(): this;
   stop(): void;
-  /** Re-issue the media-start command (start-race retry / keepalive nudge). Optional. */
-  nudge?(): void;
+  /**
+   * Re-issue the media-start command (start-race retry / keepalive nudge). Optional.
+   *
+   * `force` states that the channel is NOT being served, so a real start is required rather than a keepalive.
+   * An own-session camera sends one or the other depending on whether its session believes the channel is
+   * already started — a belief that outlives a station which acknowledged a start and then served nothing.
+   */
+  nudge?(force?: boolean): void;
   on(event: "video", listener: (frame: LiveVideoFrame) => void): this;
   on(event: "audio", listener: (frame: LiveAudioFrame) => void): this;
   on(event: "start" | "stop", listener: () => void): this;
   on(event: "error", listener: (err: Error) => void): this;
   /** Battery-budget elapsed — extend to keep streaming or let it auto-stop (battery cameras only). */
   on(event: "budget", listener: (notice: StreamBudgetNotice) => void): this;
+  /**
+   * A media start was repeated to its acknowledgement deadline and abandoned.
+   *
+   * The start is repeated byte-identically, so an abandonment is many sends with no reply — the device was
+   * never told to stream, and a warm-up waiting on it can only time out. Distinct from `error`: the transport
+   * is intact and the session is simply not being heard.
+   */
+  on(event: "unacknowledged", listener: () => void): this;
+}
+
+/**
+ * One consumer's view of a live stream, carrying the flow control a sink needs to apply backpressure.
+ *
+ * A sink that cannot keep up calls {@link pause}, and the frames it would have received queue against a
+ * bound instead of accumulating behind the sink. Crossing that bound drops the backlog and resynchronises
+ * at the next IDR, so a sink that stays slow resumes on decodable media rather than replaying stale media.
+ * {@link resume} stops the moment the sink pauses again, so the bound keeps applying to whatever is left.
+ *
+ * This is per consumer: pausing never stalls the shared source or any peer consumer.
+ */
+export interface LiveStreamConsumer extends LiveStreamHandle {
+  /** True while this consumer is dropping frames after crossing its bound, waiting for the next IDR. */
+  readonly awaitingKeyframe: boolean;
+  /** Hold delivery — frames queue against the bound until {@link resume}. */
+  pause(): void;
+  /** Release delivery and hand over the queued backlog, stopping if the sink pauses again mid-drain. */
+  resume(): void;
+  /**
+   * The coded configuration of the video that follows, announced immediately before the first frame
+   * carrying it and again whenever it changes.
+   *
+   * A camera reconfigures its source repeatedly within one session, and an encoder opened for one geometry
+   * cannot accept a frame of another — so a consumer adapting this source to a fixed output has to rebuild
+   * on every change. Fires once per change rather than per frame, beginning with the first frame this
+   * consumer receives, so a consumer holding media it has not been told the configuration of is not a state
+   * it can reach.
+   *
+   * Per consumer, against what THIS consumer was last given: a consumer that joins mid-session is primed
+   * with a cached keyframe it did not witness arriving, and one that crosses its bound resynchronises onto
+   * a later IDR having skipped the frame the source saw the change on. Announcing what the source saw
+   * would leave both holding an encoder built for media they never received.
+   *
+   * Only a consumer announces this, never a bare {@link LiveStreamHandle}: it is read from the parameter
+   * sets a shared source watches every frame for, which the raw pull underneath it does not do. That is
+   * also why the inherited events are restated here — a subtype may add an overload only by declaring the
+   * whole set.
+   */
+  on(event: "video-config", listener: (config: LiveVideoConfig) => void): this;
+  /** One whole video access unit — see {@link LiveVideoFrame}. */
+  on(event: "video", listener: (frame: LiveVideoFrame) => void): this;
+  /** One audio access unit, in the codec the station declared for it. */
+  on(event: "audio", listener: (frame: LiveAudioFrame) => void): this;
+  on(event: "start" | "stop", listener: () => void): this;
+  /** Why this consumer's stream is over, including a warm-up that never produced a keyframe. */
+  on(event: "error", listener: (err: Error) => void): this;
+  /** Battery-budget elapsed — extend to keep streaming or let it auto-stop (battery cameras only). */
+  on(event: "budget", listener: (notice: StreamBudgetNotice) => void): this;
+  /**
+   * A media start was repeated to its acknowledgement deadline and abandoned.
+   *
+   * The start is repeated byte-identically, so an abandonment is many sends with no reply — the device was
+   * never told to stream, and a warm-up waiting on it can only time out. Distinct from `error`: the transport
+   * is intact and the session is simply not being heard.
+   */
+  on(event: "unacknowledged", listener: () => void): this;
 }
 
 /** An SDP session description crossing the WebRTC signaling boundary (JSEP shape). */
@@ -535,6 +704,26 @@ export interface WebRTCPeerHandle {
  * attached. An egress that omits one is not opting out of it; it is leaving the choice to whichever call
  * got there first, which is why every egress accepts them rather than only the ones they read like.
  */
+/**
+ * How a caller abandons ONE media call, without touching the shared pull other callers hold.
+ *
+ * Acquiring media can wait a long time before it can succeed or fail: a station has to connect, a level-2
+ * key has to be negotiated or given up on, and a camera has to produce a keyframe. Measured at twenty
+ * seconds and more on a battery camera. A caller that has changed its mind in that window, because the
+ * operator navigated away or something more important needs the station, has no way to say so and must
+ * wait for a result it will discard.
+ *
+ * Aborting settles the call with an `AbortError` and gives back whatever it had taken, so a pull nothing
+ * else holds is released rather than left running for a caller that has gone. It never disturbs a pull
+ * another consumer is attached to: this abandons a call, not a stream.
+ *
+ * Separate from {@link SharedSourceHints} on purpose. Those describe the pull a call may open and are
+ * fixed for everyone who joins it; this belongs to one call and to nobody else.
+ */
+export interface AbortableCall {
+  signal?: AbortSignal;
+}
+
 export interface SharedSourceHints {
   /**
    * Power source, a runtime device fact (`"battery"` incl. solar, or `"wired"`) — never a device-family
@@ -589,17 +778,31 @@ export interface MediaProvider {
       timeoutMs?: number;
       collectMs?: number;
       skipKeyframes?: number;
-    } & SharedSourceHints,
+    } & SharedSourceHints &
+      AbortableCall,
   ): Promise<{
     jpeg: Buffer;
     width: number;
     height: number;
+    /**
+     * Present and `true` only when these bytes are the RETAINED still rather than a fresh capture.
+     *
+     * A live still is refused while a sibling camera on the same station is being watched, because a
+     * station serves one camera at a time and the live view is the picture someone is looking at. Answering
+     * the retained still there keeps a caller's tile populated instead of failing it, and this says the
+     * bytes are not current so a caller can label them or ask again later. Absent means freshly captured.
+     */
+    retained?: true;
   }>;
   /**
    * Open a managed live stream.
    *
-   * Several cameras behind one station may stream at the same time: each handle receives only the frames
-   * the station tagged for ITS camera.
+   * Several cameras behind one station may stream at the same time only where the station serves them at
+   * the same time. Where it serves one camera at a time, a second viewer is refused with
+   * {@link StationBusyError} rather than admitted and degraded: accepting it does not make the station
+   * serve two, it makes both stutter. Which camera deserves the station is the caller's decision, so
+   * nothing is queued or pre-empted. Each handle receives only the frames the station tagged for ITS
+   * camera.
    *
    * @example
    * ```ts
@@ -607,13 +810,20 @@ export interface MediaProvider {
    * stream.on("video", (frame) => write(frame.data)); // Annex-B
    * stream.stop(); // detach this consumer
    * ```
+   *
+   * A caller writing into a sink of its own paces the stream through {@link LiveStreamConsumer.pause} and
+   * {@link LiveStreamConsumer.resume} rather than buffering what the sink will not take.
    */
-  live(opts?: SharedSourceHints & Record<string, unknown>): Promise<LiveStreamHandle>;
+  live(opts?: SharedSourceHints & AbortableCall & Record<string, unknown>): Promise<LiveStreamConsumer>;
   /**
    * Record `seconds` of video → an mp4/h264 buffer.
    *
    * Opens its OWN pull rather than joining the shared source, so it costs a second stream on a camera that
    * is already streaming. {@link recordFragments} is a shared consumer like every other egress.
+   *
+   * Always settles: it resolves once the requested window has elapsed — with the run the camera actually
+   * delivered inside it, which a camera that goes quiet mid-clip makes shorter than asked — and rejects when
+   * the pull fails or ends before that window is up, or when no keyframe arrives to start the clip at.
    */
   record(seconds: number, opts?: { timeoutMs?: number; skipKeyframes?: number }): Promise<Buffer>;
   /**
@@ -622,7 +832,9 @@ export interface MediaProvider {
    * {@link live} or muxed through {@link recordFragments}; it is never interleaved into raw video.
    * The caller owns the Readable's lifetime, and destroying it releases the shared pull.
    */
-  openReadable?(opts?: { objectMode?: boolean } & SharedSourceHints): Promise<import("node:stream").Readable>;
+  openReadable?(
+    opts?: { objectMode?: boolean } & SharedSourceHints & AbortableCall,
+  ): Promise<import("node:stream").Readable>;
   /**
    * Continuously record the live feed as fragmented-MP4 (CMAF). The caller-owned
    * {@link FragmentRecordingHandle} yields an init segment then keyframe-bounded media fragments,
@@ -633,7 +845,7 @@ export interface MediaProvider {
    * that was already open. The drain opens on the newest keyframe at or before the window starts, so it
    * covers the request and exceeds it by however far back that keyframe sits.
    */
-  recordFragments?(opts?: { fragmentSeconds?: number } & SharedSourceHints): FragmentRecordingHandle;
+  recordFragments?(opts?: { fragmentSeconds?: number } & SharedSourceHints & AbortableCall): FragmentRecordingHandle;
   /**
    * Open the camera's **talkback** path — audio travelling from the host TO the device, the opposite
    * direction to everything else here. See {@link TalkbackHandle} for the accepted audio. Optional (an

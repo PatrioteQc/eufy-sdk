@@ -114,6 +114,13 @@ What you cannot do is **pull** state: a robot reports on change, and the vendor 
 read that returns its current values. So the honest pattern is event-driven — react to `deviceState`
 rather than sampling. A robot that has not reported since you connected simply has no getters yet.
 
+A report also announces each value it moved as [`propertyChanged`](/events), naming the property rather
+than the whole device — so you update one reading instead of re-reading the object. That includes the
+session and lifetime counters (`clearTime`, `clearArea`, `lifetimeCleanTime`, `lifetimeCleanArea`), which
+advance throughout a run: since the realtime feed is the only place a robot's state comes from, this is
+also the only way to follow a clean in progress. They are payload-backed on the AIoT line, so those
+announcements name the property with no value — re-read it through the accessor.
+
 **Controls** — start / pause / return-to-dock, suction, volume — are not implemented; the robot surface
 is read-only today.
 

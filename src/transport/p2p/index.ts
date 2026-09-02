@@ -4,6 +4,7 @@ export * from "./video.js";
 export * from "./media.js";
 // `Consumer` is what `SharedLiveSource.attach` returns, so a caller has to be able to name it —
 // exported under `LiveConsumer`, since `Consumer` alone is too generic to claim at the root barrel.
+
 export {
   SharedLiveSource,
   type SharedLiveState,

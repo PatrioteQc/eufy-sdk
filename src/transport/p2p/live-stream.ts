@@ -15,11 +15,11 @@
  * `error`.
  */
 import { EventEmitter } from "node:events";
-import type { P2PSession, P2PFrame } from "./p2p-session.js";
+import { STATION_CHANNEL, type P2PSession, type P2PFrame } from "./p2p-session.js";
 import { AccessUnitAssembler, VideoFrameDecoder } from "./video.js";
 import { sniffAnnexbCodec } from "./annexb.js";
 import { noopLogger, type Logger } from "../../core/logger.js";
-import { traceLiveStart } from "./live-trace.js";
+import { traceLiveStart, type LiveTrace } from "./live-trace.js";
 import type { AudioCodec, LiveAudioFrame, LiveVideoFrame, VideoCodec } from "../../core/contracts.js";
 
 const CMD_VIDEO_FRAME = 1300;
@@ -39,16 +39,6 @@ const SC3 = Buffer.from([0, 0, 1]);
  * itself when a stream produces no audio at all, to feed its decoder silence.
  */
 const AUDIO_CODECS: Readonly<Record<number, AudioCodec>> = { 0: "aac-lc", 2: "g711a", 7: "aac-eld" };
-
-/**
- * How many frames tagged for another camera this stream tolerates before concluding that the station does
- * NOT tag media per camera, and taking every frame instead.
- *
- * Two seconds of a 15fps stream. Enough that a station which tags as measured never reaches it (its very
- * first media frame carries the started channel), and short enough that a station which tags differently
- * costs a caller a brief gap rather than a stream that never delivers.
- */
-const FOREIGN_FRAME_TOLERANCE = 30;
 
 /**
  * Undecodable video payloads traced per stream. Every frame of a stream whose cipher this build cannot read
@@ -72,9 +62,13 @@ const MAX_TRACED_DECODE_FAILURES = 3;
  * What the nudge costs differs by topology, and only one branch is a true keepalive: an own-session
  * camera's `startLiveMedia` tracks that the stream is already started and sends the small ping, while a
  * HomeBase-attached camera has no such state and re-sends the full media start — a genuine restart on
- * that path. Measured, that restart is not harmful at this interval: both attached cameras streamed a
- * 40 s window with and without it at the same frame rate (15.6–16.9 fps either way) and with no stall
- * either way.
+ * that path.
+ *
+ * That restart is harmless on a station serving ONE camera and harmful on a station serving several: it
+ * re-asserts this camera's channel every interval, so two attached streams contend continuously. Measured on
+ * a real base as a full start every 3 s from each. So an attached stream stops nudging as soon as the station
+ * delivers a frame of its own channel — see the private `settleKeepalive`. The measurement that justifies it
+ * is the one above: the attached cameras held their window with the nudge disabled outright.
  */
 export const DEFAULT_KEEPALIVE_MS = 3000;
 
@@ -85,7 +79,8 @@ export interface LiveStreamOptions {
    *
    * On a HomeBase-attached camera it is ALSO what inbound media is matched against, so one camera's stream
    * never carries another camera's frames: a station fanning several cameras out over one session tags every
-   * media frame with the camera it belongs to.
+   * media frame with the camera it belongs to. A frame tagged for a channel a sibling started is never taken,
+   * however long the station keeps serving that sibling instead of this one.
    */
   channel?: number;
   /** Camera ECC private key (32B) for E2E/encrypted cameras; omit for plaintext cameras. */
@@ -97,6 +92,27 @@ export interface LiveStreamOptions {
    * {@link DEFAULT_KEEPALIVE_MS}; pass `0` to disable.
    */
   keepAliveMs?: number;
+  /**
+   * How long an attached stream tolerates silence on its own channel before re-asserting again, in ms.
+   *
+   * The re-assert is settled by the first own-channel frame, because settling it is what stops two attached
+   * streams contending on a station that serves one camera at a time. Silence for this long says the station
+   * is no longer serving this camera, which is the only condition the re-assert was for. Defaults to twice
+   * the keepalive interval, so a stream whose media flows never reaches it.
+   */
+  stallMs?: number;
+  /**
+   * Whether re-asserting this camera's channel is still wanted, consulted each time the stall window
+   * elapses. Absent means always wanted.
+   *
+   * A re-assert on an attached camera is a full media start, so it takes the station from whichever camera
+   * it was serving. Whether that is wanted depends on who is attached to this pull and to its siblings,
+   * which this stream cannot see. Its owner can, so it asks rather than assuming.
+   *
+   * The watch keeps re-arming while this answers false, so a pull that gains a consumer re-asserts at the
+   * next window rather than staying silent for the rest of its life.
+   */
+  reassertWanted?: () => boolean;
   /**
    * Runtime topology fact (from the device record: `parent_sn && parent_sn !== sn`): true = the camera
    * rides a HomeBase's session (start via the level-2 `1003` payload), false = own-session camera
@@ -117,14 +133,22 @@ export class LiveStream extends EventEmitter {
   private readonly units = new AccessUnitAssembler((drop) => this.reportDroppedUnit(drop));
   /** The channel inbound media must be tagged with, once {@link acceptsMedia} trusts the station's tag. */
   private mediaChannel?: number;
-  private ownFrames = 0;
-  private foreignFrames = 0;
   private tracedFirstVideoCommand = false;
   private tracedFirstVideoUnit = false;
   private tracedFirstKeyframe = false;
   private tracedDecodeFailures = 0;
   private tracedFirstForeignFrame = false;
+  private stallTimer?: ReturnType<typeof setTimeout>;
+  /**
+   * The channel this stream starts, stops, traces under and matches its own abandonment on. An omitted
+   * channel resolves to {@link STATION_CHANNEL} — the value the session resolves it to.
+   */
+  private readonly channel: number;
   private readonly handler = (f: P2PFrame) => this.onFrame(f);
+  /** Forwards `liveStartUnacknowledged` only where it carries this stream's own channel. */
+  private readonly unackedHandler = (channel: number) => {
+    if (channel === this.channel) this.emit("unacknowledged");
+  };
   private readonly logger: Logger;
 
   constructor(
@@ -133,9 +157,15 @@ export class LiveStream extends EventEmitter {
   ) {
     super();
     this.logger = opts.logger ?? noopLogger;
-    // Only a HomeBase serves several cameras over one session, so only there is there anything to tell apart.
+    this.channel = opts.channel ?? STATION_CHANNEL;
     if (opts.homeBaseAttached && opts.channel !== undefined) this.mediaChannel = opts.channel;
     if (opts.eccPrivateKey) this.decoder = new VideoFrameDecoder(opts.eccPrivateKey);
+  }
+
+  /** Emit a live trace under its session's handle and the channel this stream pulls. */
+  private trace(trace: LiveTrace): void {
+    const session = this.session.traceId;
+    traceLiveStart(this.logger, trace, session ? `${session}:${this.channel}` : undefined);
   }
 
   /** Begin streaming: attach the frame listener and tell the station to start realtime media. */
@@ -143,6 +173,7 @@ export class LiveStream extends EventEmitter {
     if (this.listening) return this;
     this.listening = true;
     this.session.on("data", this.handler);
+    this.session.on("liveStartUnacknowledged", this.unackedHandler);
     this.sendStart();
     const keepAliveMs = this.opts.keepAliveMs ?? DEFAULT_KEEPALIVE_MS;
     if (keepAliveMs > 0) {
@@ -153,17 +184,79 @@ export class LiveStream extends EventEmitter {
   }
 
   /**
+   * Stop re-issuing the media start once this camera's own media has arrived, on an attached camera.
+   *
+   * The nudge differs by topology and only one branch is a ping: an own-session camera sends a small
+   * keepalive, while an attached camera has no such state and re-sends the FULL media start. On a station that
+   * serves one camera at a time that restart re-asserts this channel against whatever else is warm, so two
+   * attached streams restart every interval and contend for the station continuously — measured on a real base
+   * as a full start every 3 s from each.
+   *
+   * A frame of this camera's own channel is the station stating it is serving THIS camera, which is the only
+   * thing the restart was trying to bring about. The SDK's own measurement agrees it is then unnecessary: both
+   * attached cameras held a 40 s stream with the nudge disabled, while the own-session camera that needs it
+   * went quiet at 13.6 s without it — so an own-session stream keeps its ping.
+   *
+   * The warm-up retry a shared source runs is untouched: it recovers a start that raced the level-2 key, and
+   * it stops at the first keyframe by its own rule.
+   */
+  private settleKeepalive(): void {
+    if (!this.opts.homeBaseAttached) return;
+    this.armStallWatch();
+    if (!this.kaTimer) return;
+    clearInterval(this.kaTimer);
+    this.kaTimer = undefined;
+    this.logger.debug(`[live ch${this.channel}] station is serving this camera — holding off the attached restart`);
+  }
+
+  /**
+   * Re-arm the attached re-assert if this camera's own media goes silent.
+   *
+   * Holding the re-assert off is right while the station is serving this camera and wrong the moment it stops:
+   * a station that switches to a sibling leaves this stream with no frames, no error and no `stop`, and the
+   * warm-up watch that would have caught it was cleared by the first frame. Silence is therefore the condition
+   * the re-assert exists for, and the only one — re-arming while media flows is the contention this settle was
+   * introduced to remove.
+   *
+   * Replaced on every own-channel frame, so the window is measured from the last one.
+   *
+   * Gated on {@link LiveStreamOptions.reassertWanted}: silence with nobody attached is not a condition to
+   * act on, because the re-assert would take the station from a camera someone is watching.
+   */
+  private armStallWatch(): void {
+    if (this.stallTimer) clearTimeout(this.stallTimer);
+    const keepAliveMs = this.opts.keepAliveMs ?? DEFAULT_KEEPALIVE_MS;
+    if (keepAliveMs <= 0) return;
+    const stallMs = this.opts.stallMs ?? keepAliveMs * 2;
+    this.stallTimer = setTimeout(() => {
+      this.stallTimer = undefined;
+      if (!this.listening || this.kaTimer) return;
+      if (this.opts.reassertWanted?.() === false) {
+        this.logger.debug(
+          `[live ch${this.channel}] no own media for ${stallMs}ms, and its owner does not want this channel re-asserted — staying quiet`,
+        );
+        this.armStallWatch();
+        return;
+      }
+      this.logger.debug(`[live ch${this.channel}] no own media for ${stallMs}ms — re-asserting this camera's channel`);
+      this.sendStart();
+      this.kaTimer = setInterval(() => this.sendStart(), keepAliveMs);
+    }, stallMs);
+    this.stallTimer.unref?.();
+  }
+
+  /**
    * Re-issue the start command (idempotent while listening) — the media-start / keepalive nudge. The
    * shared source calls this to retry a start that raced key negotiation, until frames flow. Safe to
    * call repeatedly: `startLiveMedia` self-selects start vs keepalive per the session state.
    */
-  nudge(): void {
-    if (this.listening) this.sendStart();
+  nudge(force?: boolean): void {
+    if (this.listening) this.sendStart(force);
   }
 
-  private sendStart(): void {
+  private sendStart(force?: boolean): void {
     try {
-      this.session.startLiveMedia(this.opts.channel, this.opts.accountId, this.opts.homeBaseAttached);
+      this.session.startLiveMedia(this.opts.channel, this.opts.accountId, this.opts.homeBaseAttached, { force });
     } catch (e) {
       // Non-fatal: the session may be mid-reconnect; the warm-up retry will re-issue the start.
       this.logger.debug(`[live] startLiveMedia deferred (session not ready): ${e instanceof Error ? e.message : e}`);
@@ -175,8 +268,11 @@ export class LiveStream extends EventEmitter {
     if (!this.listening) return;
     this.listening = false;
     this.session.off("data", this.handler);
+    this.session.off("liveStartUnacknowledged", this.unackedHandler);
     if (this.kaTimer) clearInterval(this.kaTimer);
     this.kaTimer = undefined;
+    if (this.stallTimer) clearTimeout(this.stallTimer);
+    this.stallTimer = undefined;
     try {
       this.session.stopLiveMedia(this.opts.channel, this.opts.accountId);
     } catch (e) {
@@ -201,7 +297,7 @@ export class LiveStream extends EventEmitter {
     const accepted = this.acceptsMedia(f);
     if (f.commandId === CMD_VIDEO_FRAME && !this.tracedFirstVideoCommand) {
       this.tracedFirstVideoCommand = true;
-      traceLiveStart(this.logger, { phase: "first-video-command", signCode: f.signCode, accepted });
+      this.trace({ phase: "first-video-command", signCode: f.signCode, accepted });
     }
     if (!accepted) return;
     try {
@@ -209,15 +305,16 @@ export class LiveStream extends EventEmitter {
         for (const unit of this.units.push(f.data, (payload) => this.annexbOf(payload, f.signCode))) {
           if (!this.tracedFirstVideoUnit) {
             this.tracedFirstVideoUnit = true;
-            traceLiveStart(this.logger, { phase: "first-video-unit", keyframe: unit.keyframe });
+            this.trace({ phase: "first-video-unit", keyframe: unit.keyframe });
           }
           if (unit.keyframe && !this.tracedFirstKeyframe) {
             this.tracedFirstKeyframe = true;
-            traceLiveStart(this.logger, { phase: "first-keyframe" });
+            this.trace({ phase: "first-keyframe" });
           }
           // Sniff the codec only on a keyframe (it carries the parameter sets); delta frames have no
           // config NAL, so they inherit the last-known codec.
           if (unit.keyframe) this.lastCodec = sniffAnnexbCodec(unit.data) ?? this.lastCodec;
+          this.settleKeepalive();
           this.emit("video", {
             keyframe: unit.keyframe,
             width: unit.width,
@@ -256,34 +353,27 @@ export class LiveStream extends EventEmitter {
    * numbers its stream for itself: one was started on channel 0 and tagged its frames channel 1, so
    * matching there would drop the whole stream. Hence only an attached camera filters.
    *
-   * A station that contradicts the measurement — tagging an attached camera's frames with something other
-   * than the channel that was started — would otherwise get a stream that never delivers, so after
-   * {@link FOREIGN_FRAME_TOLERANCE} frames with none of its own the stream stops filtering and says so.
-   * Nothing about the fleet this was measured on needs that path; it exists because one account's firmware
-   * is not every account's.
+   * The match is UNCONDITIONAL, however long a station serves another camera instead of this one.
+   *
+   * A station serving one camera at a time hands a newly opened camera nothing but its sibling's frames until
+   * it switches, so "no media of my own yet, plenty for someone else" is what an ordinary handover looks like
+   * and does not distinguish a station that tags differently from one that is simply busy.
+   *
+   * A stream receiving none of its own media reaches the warm-up deadline and raises a typed start failure
+   * naming the stage it got to. Delivering another camera's picture raises nothing.
    */
   private acceptsMedia(frame: P2PFrame): boolean {
     if (this.mediaChannel === undefined || (frame.commandId !== CMD_VIDEO_FRAME && frame.commandId !== CMD_AUDIO_FRAME))
       return true;
-    if (frame.channel === this.mediaChannel) {
-      this.ownFrames++;
-      return true;
-    }
+    if (frame.channel === this.mediaChannel) return true;
     if (!this.tracedFirstForeignFrame) {
       this.tracedFirstForeignFrame = true;
-      traceLiveStart(this.logger, {
+      this.trace({
         phase: "first-foreign-media-command",
         media: frame.commandId === CMD_VIDEO_FRAME ? "video" : "audio",
       });
     }
-    if (this.ownFrames > 0) return false;
-    if (++this.foreignFrames < FOREIGN_FRAME_TOLERANCE) return false;
-    this.logger.warn(
-      `[live] station tags media channel ${frame.channel}, not the started ${this.mediaChannel} — taking every ` +
-        `frame from here (another camera streaming on this station would interleave with this one)`,
-    );
-    this.mediaChannel = undefined;
-    return true;
+    return false;
   }
 
   /**
@@ -296,7 +386,7 @@ export class LiveStream extends EventEmitter {
     if (annexb) return annexb;
     const decoded = this.decoder?.decodeFrame(payload)?.h264;
     if (!decoded && this.tracedDecodeFailures++ < MAX_TRACED_DECODE_FAILURES) {
-      traceLiveStart(this.logger, { phase: "video-decode-empty", signCode });
+      this.trace({ phase: "video-decode-empty", signCode });
     }
     return decoded;
   }
@@ -305,8 +395,8 @@ export class LiveStream extends EventEmitter {
    * Report an access unit the transport could not complete.
    *
    * Loud once per stream, then quiet: a station losing datagrams steadily would otherwise flood a host's
-   * log with one line per unit, and the first one already says everything the rest repeat. It was
-   * previously silent in both directions — no frame reached a consumer, and nothing said why.
+   * log with one line per unit, and the first one already says everything the rest repeat. A dropped unit is
+   * otherwise silent in both directions: no frame reaches a consumer, and nothing states why.
    */
   private reportDroppedUnit(drop: { carried: number; chunks: number; count: number }): void {
     const message = `[live] dropped an incomplete access unit (${drop.carried} bytes in ${drop.chunks} frame(s), tail never arrived, ${drop.count} so far)`;
@@ -323,8 +413,10 @@ export interface LiveStream {
   // Structural conformance to LiveStreamHandle; the upstream stream never emits "budget" itself
   // (the shared source raises it on the consumer side), but the type must be assignable.
   on(event: "budget", listener: (notice: import("../../core/contracts.js").StreamBudgetNotice) => void): this;
+  /** This channel's media start was abandoned unacknowledged — see {@link LiveStreamHandle}. */
+  on(event: "unacknowledged", listener: () => void): this;
   emit(event: "video", frame: LiveVideoFrame): boolean;
   emit(event: "audio", frame: LiveAudioFrame): boolean;
-  emit(event: "start" | "stop"): boolean;
+  emit(event: "start" | "stop" | "unacknowledged"): boolean;
   emit(event: "error", err: Error): boolean;
 }

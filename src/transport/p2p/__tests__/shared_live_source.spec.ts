@@ -156,6 +156,50 @@ describe("SharedLiveSource", () => {
     expect(sg[sg.length - 2].keyframe).toBe(true);
   });
 
+  it("keeps the backlog queued when the sink re-pauses inside its own drain", () => {
+    const { source, last } = mk({ maxQueue: 10 });
+    const consumer = source.attach();
+    const got: LiveVideoFrame[] = [];
+    consumer.on("video", (f) => {
+      got.push(f);
+      consumer.pause();
+    });
+    consumer.pause();
+    last().video(frame(true));
+    for (let i = 0; i < 4; i++) last().video(frame(false));
+
+    consumer.resume();
+
+    expect(got).toHaveLength(1);
+    consumer.resume();
+    expect(got).toHaveLength(2);
+  });
+
+  it("drops a re-paused sink's stale backlog to the next keyframe instead of replaying it", () => {
+    const { source, last } = mk({ maxQueue: 3 });
+    const consumer = source.attach();
+    const got: LiveVideoFrame[] = [];
+    consumer.on("video", (f) => {
+      got.push(f);
+      consumer.pause();
+    });
+    consumer.pause();
+    last().video(frame(true));
+    for (let i = 0; i < 2; i++) last().video(frame(false));
+
+    consumer.resume();
+    expect(got).toHaveLength(1);
+    for (let i = 0; i < 3; i++) last().video(frame(false));
+    expect(consumer.awaitingKeyframe).toBe(true);
+
+    consumer.resume();
+    last().video(frame(false));
+    expect(got).toHaveLength(1);
+    last().video(frame(true));
+    expect(got).toHaveLength(2);
+    expect(got[1].keyframe).toBe(true);
+  });
+
   it("warm-retry nudges the stream until a frame arrives, then stops", () => {
     const { source, last } = mk({ warmRetryMs: 2000, warmTimeoutMs: 20000 });
     source.attach();

@@ -40,7 +40,7 @@ describe("decodeEvent — unified inbound dispatch", () => {
       expect(push(3)[0]).toMatchObject({ event: "contactState" });
     });
 
-    it("battery threshold pushes → batteryAlert with a discriminating state (NOT batteryLevel)", () => {
+    it("battery threshold pushes → batteryAlert with a discriminating state", () => {
       expect(push(6)[0]).toMatchObject({ event: "batteryAlert", payload: { state: "low" } });
       expect(push(7)[0]).toMatchObject({ event: "batteryAlert", payload: { state: "hot" } });
       expect(push(11)[0]).toMatchObject({ event: "batteryAlert", payload: { state: "full" } });
@@ -59,9 +59,14 @@ describe("decodeEvent — unified inbound dispatch", () => {
       ]);
     });
 
-    it("battery param (1101) change → batteryLevel", () => {
-      const ev = decodeEvent({ source: "poll", deviceSn: "D2", paramType: 1101, to: "80", params: {} });
-      expect(ev[0]).toMatchObject({ event: "batteryLevel" });
+    /**
+     * The battery level has no poll event of its own, and must not get one back: "param 1101 moved" is
+     * exactly what the generic `propertyChanged` announcement says, and it carries the coerced 0-100
+     * number where a mapped event's payload carried the raw `from`/`to` strings. A semantic event earns
+     * its name by carrying something a bare property change cannot.
+     */
+    it("battery param (1101) change → nothing (the level is announced generically)", () => {
+      expect(decodeEvent({ source: "poll", deviceSn: "D2", paramType: 1101, to: "80", params: {} })).toEqual([]);
     });
 
     it("an unmapped param → no events", () => {
@@ -196,8 +201,6 @@ describe("the announced event vocabulary", () => {
         "alarm",
         "armingModeChanged",
         "batteryAlert",
-        "batteryLevel",
-        "cameraEnabled",
         "contactState",
         "cryingDetected",
         "dogDetected",

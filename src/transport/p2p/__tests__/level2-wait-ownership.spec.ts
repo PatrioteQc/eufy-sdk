@@ -6,8 +6,8 @@ const DEVICE_SN = "T8000P0000000000";
 const STATION_SN = "T8000P0000000001";
 const ACCOUNT_ID = "0000000000000000000000000000000000000000";
 
-const SOFT_GRACE_MS = 8_000;
 const HARD_GRACE_MS = 25_000;
+const SETTLE_GRACE_MS = 8_000;
 
 interface FakeSession extends FakeP2PSession {
   sendSetPayload: ReturnType<typeof vi.fn>;
@@ -16,7 +16,7 @@ interface FakeSession extends FakeP2PSession {
   sendIntStringCommand: ReturnType<typeof vi.fn>;
 }
 
-function setup(hasLevel2Key: boolean) {
+function setup(hasLevel2Key: boolean, attached = true) {
   const session = connectedSession(hasLevel2Key) as FakeSession;
   session.sendSetPayload = vi.fn();
   session.sendRawLevel2 = vi.fn(() => true);
@@ -27,8 +27,12 @@ function setup(hasLevel2Key: boolean) {
     listDevices: () => [
       {
         sn: DEVICE_SN,
-        stationSn: STATION_SN,
-        raw: { parent_sn: STATION_SN, device_channel: 1, member: { admin_user_id: ACCOUNT_ID } },
+        stationSn: attached ? STATION_SN : DEVICE_SN,
+        raw: {
+          ...(attached ? { parent_sn: STATION_SN } : {}),
+          device_channel: 1,
+          member: { admin_user_id: ACCOUNT_ID },
+        },
       } as never,
     ],
     ensureDevices: async () => {},
@@ -40,7 +44,7 @@ function setup(hasLevel2Key: boolean) {
   };
   const router = new P2PCommandRouter(deps);
   (router as unknown as { manager: { register(sn: string, value: unknown): void } }).manager.register(
-    STATION_SN,
+    attached ? STATION_SN : DEVICE_SN,
     session,
   );
   return { router, session };
@@ -53,16 +57,52 @@ function setup(hasLevel2Key: boolean) {
  */
 describe("resolving a session defers the level-2 wait to the session", () => {
   /**
-   * A media egress asks best-effort, because only the HomeBase-attached path needs the key and a camera on
-   * its own session legitimately never negotiates one. Best-effort has to mean "ask the session", or it
-   * means "stall every stream on a camera that will never answer".
+   * A camera on its own session does not wait for the key at all.
+   *
+   * `sendStartLiveOwnSession` reads `level2Key` when it sends, so the framing is chosen per command and not
+   * per session: a start issued with no key rides level 1, and the warm-up's own re-issue two seconds later
+   * rides level 2 if the key has landed by then. Blocking first buys nothing that re-issuing does not, and
+   * best-effort means the caller can proceed without the key by definition — measured on three standalone
+   * cameras, all three waited the full 8 s grace for a key that never arrives and then produced a keyframe
+   * within 400 ms of finally starting.
    */
-  it("asks the session once, with the best-effort grace, and streams without a key", async () => {
-    const { router, session } = setup(false);
+  it("does not wait for a key its start does not need, for a camera on its own session", async () => {
+    const { router, session } = setup(false, false);
     const source = await router.sharedLiveSourceFor(DEVICE_SN);
     expect(source).toBeDefined();
-    expect(session.awaitLevel2Key).toHaveBeenCalledTimes(1);
-    expect(session.awaitLevel2Key).toHaveBeenCalledWith(SOFT_GRACE_MS, "session");
+    expect(session.awaitLevel2Key).not.toHaveBeenCalled();
+  });
+
+  /**
+   * A caller that picks its seal ONCE waits for the negotiation to settle first.
+   *
+   * `sendBySessionLevel` reads `hasLevel2Key` and frames the command on that answer, with no second chance:
+   * unlike a media start, which reads the key on every send and is re-issued by the warm-up, a property write
+   * framed level-1 to a family that only accepts level-2 is simply ignored. So it waits, session-scoped and
+   * bounded, and proceeds with whatever the negotiation concluded.
+   */
+  it("waits for the negotiation to settle before choosing a seal, session-scoped", async () => {
+    const { router, session } = setup(false);
+    await router
+      .dispatchCommand(DEVICE_SN, { kind: "set-param", param: 6, value: 0, form: "auto", channel: 1 })
+      .catch(() => undefined);
+    expect(session.awaitLevel2Key).toHaveBeenCalledWith(SETTLE_GRACE_MS, "session");
+  });
+
+  /**
+   * An attached camera's start has no level-1 form, so best-effort was the wrong ask for it: the send returns
+   * without putting anything on the wire, and the warm-up then re-issues that nothing every interval until it
+   * times out. Measured on a real account as 48 starts with no key, one keyframe between them, and a
+   * `source-error` at the end.
+   */
+  it("refuses an attached camera's source where the session reports no key", async () => {
+    const { router } = setup(false);
+    await expect(router.sharedLiveSourceFor(DEVICE_SN)).rejects.toThrow(/level-2 key not ready/);
+  });
+
+  it("hands over an attached camera's source once the key is held", async () => {
+    const { router } = setup(true);
+    await expect(router.sharedLiveSourceFor(DEVICE_SN)).resolves.toBeDefined();
   });
 
   it("asks with the full grace where the key is a requirement", async () => {
@@ -118,5 +158,40 @@ describe("a required level-2 key is asked for twice before refusing", () => {
     await router.p2pQuery(DEVICE_SN, 6237, { timeoutMs: 5 }).catch(() => {});
 
     expect(session.repromptLevel2Key).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * A session whose path stopped answering the heartbeat is rebuilt before anything is committed to it.
+ *
+ * Measured on a wired camera: idle 18 s, resumed, twenty byte-identical retransmits with no acknowledgement,
+ * and a rebuilt session streaming at once — seven seconds of black screen, three of them spent discovering
+ * what the unanswered heartbeat had already established.
+ *
+ * A station that has never ponged is untouched: silence is only evidence where an answer was once given.
+ */
+describe("resolving a session whose path has gone silent", () => {
+  it("rebuilds it rather than handing a caller a path that stopped answering", async () => {
+    const { router, session } = setup(true);
+    (session as unknown as { pathAnswering: boolean }).pathAnswering = false;
+    const manager = (router as unknown as { manager: { close: (sn: string) => Promise<void> } }).manager;
+    const closed: string[] = [];
+    manager.close = async (sn) => void closed.push(sn);
+
+    await router.sharedLiveSourceFor(DEVICE_SN).catch(() => undefined);
+
+    expect(closed).toContain(STATION_SN);
+  });
+
+  it("hands over a path that has never answered, that being no evidence at all", async () => {
+    const { router, session } = setup(true);
+    (session as unknown as { pathAnswering: boolean }).pathAnswering = true;
+    const manager = (router as unknown as { manager: { close: (sn: string) => Promise<void> } }).manager;
+    const closed: string[] = [];
+    manager.close = async (sn) => void closed.push(sn);
+
+    await router.sharedLiveSourceFor(DEVICE_SN).catch(() => undefined);
+
+    expect(closed).toEqual([]);
   });
 });

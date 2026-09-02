@@ -35,9 +35,46 @@ export type LiveTrace =
   /** A datagram was missing on a data channel, discarding the logical frame being reassembled. */
   | { phase: "datagram-gap"; dataType: number }
   /** A data channel's numbering restarted mid-connection, so sequencing resynchronized onto it. */
-  | { phase: "sequence-restart"; dataType: number };
+  | { phase: "sequence-restart"; dataType: number }
+  /**
+   * A live start is holding for the station's level-2 key, with the milliseconds it will wait.
+   *
+   * The first of three phases that account for the wait before any media command is sent. A start that looks
+   * slow is either waiting here, waiting for the station to serve the channel it was asked for, or being
+   * re-issued — and only these separate them.
+   */
+  | { phase: "level2-wait"; waitMs: number }
+  /** The station's level-2 key was negotiated, under the cipher it selected. */
+  | { phase: "level2-ready"; cipherId: number }
+  /** The level-2 key did not arrive in its grace, so the start proceeds at level 1 or not at all. */
+  | { phase: "level2-absent"; waitedMs: number }
+  /** A shared source began warming, with the interval it re-issues on and the deadline it fails at. */
+  | { phase: "warming"; retryMs: number; deadlineMs: number }
+  /**
+   * A media command was never put on the wire, and what it was missing.
+   *
+   * The attached media start has no level-1 form, so without the station's level-2 key there is nothing to
+   * send. A command that was never sent is otherwise indistinguishable from one the station ignored, which is
+   * the difference between a key that never arrived and a station that is not answering.
+   */
+  | { phase: "media-command-unsent"; reason: "level2-key" | "address" }
+  /**
+   * This connection's path has stopped answering the heartbeat, with how long it has been silent.
+   *
+   * The station answers every PING with a PONG, so silence past several heartbeats is the path being gone.
+   * Stated only where a pong arrived: a station that has never answered says nothing by not answering now.
+   */
+  | { phase: "path-stale"; silentMs: number };
 
-/** Record one startup observation at debug level. */
-export function traceLiveStart(logger: Logger, trace: LiveTrace): void {
-  logger.debug(LIVE_TRACE_MESSAGE, trace);
+/**
+ * Record one startup observation at debug level.
+ *
+ * `source` states which pull the record belongs to, as an OPAQUE per-process handle — never a serial, a
+ * channel or an address. A phase says what happened and nothing about where, so four cameras warming off one
+ * HomeBase produce four indistinguishable records; the handle groups them without naming anything, cannot be
+ * resolved to a device by whoever reads it, and means nothing in the next run. That is what keeps these
+ * records retainable.
+ */
+export function traceLiveStart(logger: Logger, trace: LiveTrace, source?: string): void {
+  logger.debug(LIVE_TRACE_MESSAGE, source === undefined ? trace : { ...trace, source });
 }

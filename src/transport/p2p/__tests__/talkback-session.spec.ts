@@ -608,7 +608,7 @@ describe("Talkback media-session lifetime", () => {
  * nobody extends, the source ends every consumer and tears down — and talkback must go with it.
  */
 describe("Talkback wiring installed by the router", () => {
-  function routerWithFakeSource() {
+  function routerWithFakeSource(opts: { warm?: Promise<void> } = {}) {
     const sink = fakeSink();
     const consumer = new EventEmitter() as EventEmitter & { stop: ReturnType<typeof vi.fn> };
     consumer.stop = vi.fn();
@@ -631,8 +631,20 @@ describe("Talkback wiring installed by the router", () => {
       accountId: "",
       homeBaseAttached: false,
     });
-    stub.sharedLiveSourceFor = async () => ({ attach: () => consumer });
+    stub.sharedLiveSourceFor = async () => {
+      await opts.warm;
+      return { attach: () => consumer };
+    };
     return { router, sink, consumer };
+  }
+
+  /** A gate a spec opens by hand, standing in for the media source's warm-up round-trip. */
+  function warmGate(): { warm: Promise<void>; warmed: () => void } {
+    let warmed!: () => void;
+    const warm = new Promise<void>((resolve) => {
+      warmed = resolve;
+    });
+    return { warm, warmed };
   }
 
   it("ends the talkback when the media session it rides inside ends", async () => {
@@ -675,5 +687,39 @@ describe("Talkback wiring installed by the router", () => {
     await talk.stop();
     await expect(provider.talkback!()).resolves.toBeDefined();
     expect(consumer.stop).toHaveBeenCalled();
+  });
+
+  /**
+   * Warming the media source is a round-trip, so a check made before it and a claim made after it are two
+   * different moments: two callers arriving together both found the map empty, both started, and both paced
+   * onto the session's single audio sequence — with the first handle overwritten in the map and no longer
+   * reachable by `closeAll`. One start frame on the sink is the proof only one of them opened the path.
+   */
+  it("refuses a second talkback that arrives while the first one's media session is warming", async () => {
+    const { warm, warmed } = warmGate();
+    const { router, sink } = routerWithFakeSource({ warm });
+    const provider = router.mediaProviderFor("T8000P0000000000");
+
+    const first = provider.talkback!();
+    const second = provider.talkback!();
+    warmed();
+
+    await expect(second).rejects.toThrow(/already talking/);
+    await expect(first).resolves.toBeDefined();
+    expect(sink.started).toEqual([[0, false]]);
+  });
+
+  /** The mirror case: the claim is gone because everything was closed, so pacing would talk into a dead session. */
+  it("does not start a talkback that was closed while its media session was warming", async () => {
+    const { warm, warmed } = warmGate();
+    const { router, sink } = routerWithFakeSource({ warm });
+
+    const opening = router.mediaProviderFor("T8000P0000000000").talkback!();
+    await vi.advanceTimersByTimeAsync(0); // the camera is claimed, and its media source is warming
+    await router.closeAll();
+    warmed();
+
+    await expect(opening).rejects.toThrow(/closed while its media session was warming/);
+    expect(sink.started).toEqual([]);
   });
 });

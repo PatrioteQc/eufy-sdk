@@ -25,6 +25,7 @@ import { decodeMapFrame } from "./map-channels.js";
 import { VacuumMapStore } from "../model/index.js";
 import { type P2PSession, type P2PFrame } from "../transport/p2p/p2p-session.js";
 import { P2PCommandRouter } from "../transport/p2p/command-router.js";
+import { jpegGeometry } from "../transport/p2p/media.js";
 import type { PowerTier } from "../transport/p2p/session-manager.js";
 import { MqttCommandRouter } from "../transport/mqtt/command-router.js";
 import { TuyaCommandRouter } from "../transport/tuya/command-router.js";
@@ -49,6 +50,7 @@ import { type DpCatalog, EMPTY_DP_CATALOG, parseDpCatalog } from "../model/capab
 import { type CleanRecordPage, EMPTY_CLEAN_RECORD_PAGE, parseCleanRecords } from "../model/clean-records.js";
 import {
   commandObservation,
+  LiveSnapshotUnavailableError,
   StateConvergenceError,
   type Command,
   type CommandObservation,
@@ -65,9 +67,16 @@ import { StoredImageCache } from "../transport/stored-image-cache.js";
 import type { PushEvent, RawPushMessage } from "../transport/push/types.js";
 import { type AvailabilityObservation, type EufyDevice, type RealtimeTransport } from "../core/types.js";
 import { Timer } from "../core/util.js";
-import { Device, resolveDevice, detectionName, type Capability, type DeviceInspection } from "../model/index.js";
+import {
+  Device,
+  resolveDevice,
+  detectionName,
+  type Capability,
+  type DeviceInspection,
+  type RawParams,
+} from "../model/index.js";
 import { isHomeBase } from "../model/device-family.js";
-import { DeviceRegistry } from "./device-registry.js";
+import { DeviceRegistry, type ParamChange } from "./device-registry.js";
 import type {
   EufyMegaOptions,
   EufyMegaEvent,
@@ -519,20 +528,6 @@ export class EufyMega extends EventEmitter {
   }
 
   /**
-   * Land state a capability recovered from a realtime signal: into the registry (so the next
-   * {@link getDevice} sees it) AND into any `Device` already handed out (so a caller holding one sees
-   * the new value without re-fetching). Emits `deviceState` so a host can react without polling.
-   *
-   * Both writes matter: the registry alone would leave an existing `Device` stale until its freshness
-   * window expired, and that refresh re-reads the CLOUD record — which for a realtime-only line does
-   * not carry this state at all.
-   *
-   * The reported ids are recorded as evidence BEFORE the re-bind is fired, not after it lands. One
-   * report fans out to one call per capability that decoded it, and the re-bind is a cloud round-trip:
-   * advancing the set here is what stops the second call from firing a duplicate, and what stops a
-   * failed re-bind from re-triggering on every subsequent report.
-   */
-  /**
    * Land ONE report, however many capabilities recognised part of it.
    *
    * A robot's report carries data points several capabilities own a slice of, and each returns its own
@@ -577,6 +572,27 @@ export class EufyMega extends EventEmitter {
     this.applyRealtimeState(sn, Object.assign({}, ...states.map((s) => s.params)));
   }
 
+  /**
+   * Land state a capability recovered from a realtime signal: into the registry (so the next
+   * {@link getDevice} sees it) AND into any `Device` already handed out (so a caller holding one sees
+   * the new value without re-fetching). Announces every property whose value moved, then `deviceState`,
+   * so a host can react without polling.
+   *
+   * Both writes matter: the registry alone would leave an existing `Device` stale until its freshness
+   * window expired, and that refresh re-reads the CLOUD record — which for a realtime-only line does
+   * not carry this state at all.
+   *
+   * This is three of the four inbound paths the security line has, and the ONLY one the clean and life
+   * lines have — a robot's cloud record carries none of its data points — so it is what brings those
+   * lines into scope for a property announcement at all. The announcement is edge-triggered for free:
+   * {@link Device.applyParams} names only the properties whose value actually moved, so a device
+   * re-reporting the same state is silent with no dedupe table to keep.
+   *
+   * The reported ids are recorded as evidence BEFORE the re-bind is fired, not after it lands. One
+   * report fans out to one call per capability that decoded it, and the re-bind is a cloud round-trip:
+   * advancing the set here is what stops the second call from firing a duplicate, and what stops a
+   * failed re-bind from re-triggering on every subsequent report.
+   */
   private applyRealtimeState(sn: string | undefined, params: Record<number, string>): void {
     if (!sn) return;
     const known = this.boundParamIds.get(sn);
@@ -584,7 +600,8 @@ export class EufyMega extends EventEmitter {
     const widens = known ? reported.some((id) => !known.has(id)) : false;
     if (widens && known) this.boundParamIds.set(sn, new Set([...known, ...reported]));
     this.registry.applyRealtimeParams(sn, params);
-    this.liveDevices.get(sn)?.deref()?.applyParams(params);
+    const device = this.liveDeviceToAnnounce(sn);
+    if (device) this.applyAndAnnounce(device, params);
     this.emit("deviceState", this.deviceState(sn));
     if (widens) void this.rebindReads(sn);
   }
@@ -689,6 +706,14 @@ export class EufyMega extends EventEmitter {
    * already said costs a dozen requests to reach the same answer. Without an expectation, "converged" means
    * only "differs from what was read before", which state already on hand can satisfy spuriously — and the
    * caller that has no expectation is the push path, where the signal itself is the news that a re-read is owed.
+   *
+   * The cloud half is asked for through {@link DeviceRegistry.refreshedList}, never by fetching the account
+   * list outright. The fetch is account-wide — one house list plus one device list per house — so a param that
+   * never converges would otherwise spend a whole burst of those every iteration of this loop, and concurrent
+   * transitions would multiply it by however many are in flight. The registry's reuse window and its
+   * single in-flight fetch collapse all of that to one list per window, shared across every waiter. The loop
+   * still turns on its own cadence: each pass re-reads what is known, so a value the device volunteers over
+   * its own session settles the wait between two cloud reads rather than after them.
    */
   private refreshEventState(sn: string, refresh: SemanticEventRefresh): Promise<boolean> {
     const epoch = this.realtimeEpoch;
@@ -722,7 +747,7 @@ export class EufyMega extends EventEmitter {
       while (Date.now() < deadline) {
         const remaining = deadline - Date.now();
         try {
-          await this.beforeDeadline(this.registry.getDevices(), remaining);
+          await this.beforeDeadline(this.registry.refreshedList(sn), remaining);
         } catch (error) {
           if (!(error instanceof RefreshWindowClosedError)) throw error;
           break;
@@ -1024,15 +1049,39 @@ export class EufyMega extends EventEmitter {
     };
   }
 
-  /** Combine explicit P2P media with the optional passive push-thumbnail provider. */
+  /**
+   * Combine explicit P2P media with the optional passive push-thumbnail provider.
+   *
+   * The retained still also becomes the answer for a live still that could not be captured. A station
+   * serves one camera at a time and a live view outranks a tile, so a still asked for while a sibling is
+   * being watched is refused at the transport. Answering the retained bytes keeps a caller's tile
+   * populated rather than failing it, marked {@link MediaProvider.snapshotLive} `retained` so the caller
+   * knows they are not current. With nothing retained the refusal stands.
+   */
   private mediaProviderFor(sn: string): MediaProvider {
     const media = this.p2p.mediaProviderFor(sn);
-    if (!this.storedImages) return media;
+    const cache = this.storedImages;
+    if (!cache) return media;
+    const retainedStill = () => {
+      if (!this.mega.loggedIn) return Promise.reject(new Error("login() first"));
+      return cache.snapshotStored(sn);
+    };
     return {
       ...media,
-      snapshotStored: () => {
-        if (!this.mega.loggedIn) return Promise.reject(new Error("login() first"));
-        return this.storedImages!.snapshotStored(sn);
+      snapshotStored: retainedStill,
+      snapshotLive: async (opts) => {
+        try {
+          return await media.snapshotLive(opts);
+        } catch (error) {
+          if (!(error instanceof LiveSnapshotUnavailableError)) throw error;
+          const retained = await retainedStill().catch(() => undefined);
+          const geometry = retained && jpegGeometry(retained);
+          if (!retained || !geometry) throw error;
+          (this.opts.logger ?? noopLogger).debug(
+            `[media] a live still was unavailable (${error.reason}) — answering the retained one instead`,
+          );
+          return { jpeg: retained, ...geometry, retained: true };
+        }
       },
     };
   }
@@ -1200,6 +1249,17 @@ export class EufyMega extends EventEmitter {
    * {@link Device.setFreshnessPolicy}), so a host that reuses it (e.g. a periodic polling loop) serves
    * repeat reads from cache instead of re-fetching, and realtime updates keep values fresh.
    *
+   * That refresh ANNOUNCES what it lands, like the other two inbound paths. For a host that reads often it
+   * fires every `cacheTtlMs` where the poll fires every ten minutes, so it is where most fresh cloud values
+   * arrive — and each announcing path is edge-triggered on the same live state, so whichever sees a change
+   * first announces it and the others stay silent. Its timing says only when a caller happened to read; the
+   * value is the news. It applies what the device volunteered over realtime on top of the cloud half, which
+   * the registry keeps apart, so it can neither revert nor announce a revert of a report already landed.
+   *
+   * The `Device` returned is held WEAKLY: it is what the inbound paths announce against, so a caller that
+   * wants property changes for a serial keeps its own reference. Dropping it stops the announcements, not
+   * the device.
+   *
    * @example
    * ```ts
    * const dev = await eufy.getDevice(sn);
@@ -1226,7 +1286,8 @@ export class EufyMega extends EventEmitter {
       dev.setFreshnessPolicy({
         staleAfterMs: this.opts.cacheTtlMs ?? 15_000,
         refresh: async () => {
-          dev.applyParams((await this.registry.record(sn)).params);
+          const fresh = await this.registry.record(sn);
+          this.applyAndAnnounce(dev, { ...fresh.params, ...fresh.dpParams });
         },
       });
     }
@@ -1402,12 +1463,14 @@ export class EufyMega extends EventEmitter {
   }
 
   /**
-   * One poll pass: re-read the device list and emit a semantic event for every param that changed
-   * value since the last pass.
+   * One poll pass: re-read the device list, land what moved on the live devices, announce every property
+   * whose value changed, and emit a semantic event for every param that changed value since the last pass.
    *
-   * This is the producer behind the capabilities' `source:"poll"` event mappings — the channel for
-   * state that has no push of its own (`battery.ts` maps the battery level here; `contact.ts` maps the
-   * contact param as a second path alongside its push).
+   * `propertyChanged` is the generic channel this exists for: most readable members arrive only as a
+   * cloud param and no push carries them, so re-reading was the only way a caller could learn one had
+   * moved and re-reading cannot say WHEN. A capability's own `source:"poll"` mapping is beside it, for a
+   * state that carries something a bare property change cannot (`contact.ts` maps the contact param as a
+   * third transport for a state its push and its station notify also report).
    *
    * Each change is decoded against the reporting device's capabilities, the same argument the push path
    * passes: a param id claimed by more than one capability cannot be resolved without it, so a poll
@@ -1424,6 +1487,7 @@ export class EufyMega extends EventEmitter {
       const diff = await this.registry.pollChanges();
       for (const dev of diff.added) this.emit("deviceAdded", dev);
       for (const dev of diff.removed) this.emit("deviceRemoved", dev);
+      this.applyPolledParams(diff.params);
       for (const change of diff.params)
         for (const out of decodeCapabilityEvent({ source: "poll", ...change }, this.capsForEvent(change.deviceSn)))
           this.emitSemantic(out.event, out.payload, { refresh: out.refresh });
@@ -1432,6 +1496,106 @@ export class EufyMega extends EventEmitter {
     } catch (e) {
       this.reportError(e);
     }
+  }
+
+  /**
+   * Land a poll pass's CHANGES on every live {@link Device} and announce what moved, BEFORE anything
+   * else derived from them is emitted.
+   *
+   * Ordered that way because live state is the map every capability getter reads: a listener reading a
+   * getter inside a poll event handler has to see the value that event is about. The read-through
+   * freshness policy cannot stand in for this — it fires on a READ of a stale value and hands that read
+   * the stale one, so a value nothing happens to read is never refreshed by it.
+   *
+   * The CHANGES, not the whole post-change map {@link ParamChange} also carries. That map is there so an
+   * event decode can read sibling params; applying it would revert every id a realtime report made
+   * fresher, because {@link DeviceRegistry.applyRealtimeParams} keeps a report apart from the cloud
+   * record's params — the cloud list carries the pre-report value long after the device volunteered the
+   * new one, so an open door reads as closed on the next pass that sees anything on that device move.
+   *
+   * That precedence is the reason a moved id is also RETIRED from the report map
+   * ({@link DeviceRegistry.retireRealtimeParams}). The report outranks the cloud only while it is the
+   * fresher half, and a diff on that id is the cloud stating a transition of its own — so left in place
+   * the report would outrank it forever, and the next join of the two halves would revert this pass's
+   * value and announce the revert. Retired for EVERY device the diff touched, not only a live one: the
+   * join also feeds the `Device` a later {@link getDevice} builds, which no live entry exists for yet.
+   */
+  private applyPolledParams(changes: readonly ParamChange[]): void {
+    const byDevice = new Map<string, RawParams>();
+    for (const change of changes) {
+      const params = byDevice.get(change.deviceSn) ?? {};
+      params[change.paramType] = change.to;
+      byDevice.set(change.deviceSn, params);
+    }
+    for (const [sn, params] of byDevice) {
+      this.registry.retireRealtimeParams(sn, Object.keys(params).map(Number));
+      const device = this.liveDeviceToAnnounce(sn);
+      if (device) this.applyAndAnnounce(device, params);
+    }
+  }
+
+  /**
+   * The live {@link Device} for a serial, for a path that is about to ANNOUNCE against it — reporting
+   * once when one the caller asked for has since been collected.
+   *
+   * An announcement carries the value read out of that device's own live state, so a collected device
+   * cannot be announced for, and the caller is the only thing keeping one alive — {@link liveDevices} is
+   * weak by contract. Losing announcements that way fails in the three worst ways at once: it is
+   * non-deterministic (it turns on when the collector runs, so it holds in development and stops under
+   * memory pressure), silent (no error, the events simply cease), and non-local (the obligation is on
+   * {@link getDevice}, the symptom shows on `propertyChanged`).
+   *
+   * Neither alternative is available: re-deriving the value outside live state is two answers for one
+   * reading, which is the disagreement the announcement exists to remove, and keeping every device alive
+   * here reverses this map's own invariant. So it is LOUD — a host learns why its events stopped rather
+   * than investigating a silence.
+   *
+   * Reported only for a serial the caller DID ask for, since one never fetched has no object by definition
+   * and was never owed an announcement — reporting those would name most of the account on every pass. The
+   * dead entry is dropped as it is reported, which is what makes it once: a device let go on purpose must
+   * not narrate every inbound signal for the rest of the session, and a later {@link getDevice} re-registers
+   * the serial and resumes announcing.
+   *
+   * Deliberately not routed through {@link reportError}: nothing in this SDK failed, so it must not reach a
+   * host's `error` handling. It is a usage fact, at `warn` because a host does want to see it.
+   */
+  private liveDeviceToAnnounce(sn: string): Device | undefined {
+    const held = this.liveDevices.get(sn);
+    if (!held) return undefined;
+    const device = held.deref();
+    if (device) return device;
+    this.liveDevices.delete(sn);
+    this.opts.logger?.warn?.(
+      `[eufy] ${sn}: the Device handed to this caller has been garbage-collected, so its propertyChanged ` +
+        `announcements have stopped. Keep a reference to every Device you want them for; getDevice(sn) resumes them.`,
+    );
+    return undefined;
+  }
+
+  /**
+   * Apply a param map to one live {@link Device} and announce every property it moved, one
+   * `propertyChanged` each. The one place the two halves are joined, shared by all three inbound paths
+   * that reach live state.
+   *
+   * The device decides which of the changed names it will stand behind and what value each carries
+   * ({@link Device.announcements}), so this stays a fan-out: no capability name, no member id, and no
+   * second conversion of a wire value that could disagree with the getter beside it.
+   *
+   * Only a device a caller is HOLDING is announced for, because the announced value is read out of that
+   * device's own live state and a serial nobody asked for has none. Resolving one on demand could not
+   * help: a device built from the already-updated record has nothing to diff against, so the pass that
+   * created it could never be the pass it announces. Such a device's liveness still reaches a host as
+   * `deviceState`.
+   *
+   * Echoes of the SDK's own writes are announced rather than suppressed. An inbound path cannot tell a
+   * change it caused from one an external actor caused, and suppressing on that guess is unsound, not
+   * merely conservative: if a user also changes the value in the vendor app inside the window, the real
+   * external change is the one lost — a wrong state held indefinitely, against one redundant idempotent
+   * re-read.
+   */
+  private applyAndAnnounce(device: Device, params: RawParams): void {
+    for (const change of device.announcements(device.applyParams(params)))
+      this.emitSemantic("propertyChanged", { deviceSn: device.sn, ...change });
   }
 
   /**

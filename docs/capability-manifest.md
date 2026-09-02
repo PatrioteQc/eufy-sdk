@@ -44,7 +44,7 @@ See `examples/10-describe-device.ts` for the runnable version, which also reads 
           args: [{ name: "workingMode", kind: "enum", values: [0, 1, 2] }], description: "…" },
       ],
       undescribedActions: [],
-      events: ["batteryLevel", "batteryAlert"],
+      events: ["batteryAlert"],
     },
   ],
 }

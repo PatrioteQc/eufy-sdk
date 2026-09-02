@@ -390,12 +390,12 @@ export const BATTERY: CapabilityModule = {
   /** A reported battery-level param (1101) is the verified proof the device is battery-powered. */
   detection: { evidenceParams: [BATTERY_PARAM.BATTERY] },
   /**
-   * Two distinct inbound signals, two events: `batteryLevel` is the numeric level param (1101) changing
-   * on a cloud poll (0-100, in `to`), while `batteryAlert` is an FCM threshold push (`CusPushEvent` 6
-   * LOW / 7 HOT / 11 FULL) — a STATE with no level value, whose `payload.state` says which fired.
+   * `batteryAlert` is an FCM threshold push (`CusPushEvent` 6 LOW / 7 HOT / 11 FULL) — a STATE with no
+   * level value, whose `payload.state` says which fired. That threshold crossing is what earns it a name:
+   * the level itself carries no name of its own, because "param 1101 moved" is exactly what the generic
+   * `propertyChanged` announcement says, and it carries the coerced 0-100 number rather than a raw string.
    */
   events: [
-    { source: "poll", match: BATTERY_PARAM.BATTERY, emit: "batteryLevel" },
     { source: "push", match: CusPushEvent.BATTERY_LOW, emit: "batteryAlert", payload: { state: "low" } },
     { source: "push", match: CusPushEvent.BATTERY_HOT, emit: "batteryAlert", payload: { state: "hot" } },
     { source: "push", match: CusPushEvent.BATTERY_FULL, emit: "batteryAlert", payload: { state: "full" } },

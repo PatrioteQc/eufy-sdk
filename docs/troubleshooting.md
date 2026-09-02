@@ -62,6 +62,7 @@ eufy.on("sessionExpired", async () => {
 | A command fails only on a standalone camera                                       | some controls need a HomeBase-attached device and aren't available standalone                                                                                                                                                        | expected — drive that control on a HomeBase-attached device, or use the property that adapts automatically                                                                                                |
 | `live stream failed to start (no frames within warm-up window)`                   | the source never produced a frame in time                                                                                                                                                                                            | handle the stream `error`, then call `cam.live()` again to rebuild                                                                                                                                        |
 | `timeout waiting for a clean keyframe`                                            | a snapshot/record couldn't get a keyframe in the window                                                                                                                                                                              | retry, or widen the timeout via the call's options                                                                                                                                                        |
+| `the P2P session closed … into the clip` / `the stream failed during the clip`    | `record()`'s own pull went away before the clip's window elapsed                                                                                                                                                                     | retry once the session is back; a clip shorter than requested is returned rather than failed when the camera simply goes quiet                                                                            |
 | `ffmpeg not runnable` / snapshot or record fails                                  | no runnable `ffmpeg` (needed for JPEG snapshot / mp4 record / WebRTC container)                                                                                                                                                      | point the SDK at the binary you ship with `ffmpegPath`, install `ffmpeg`, or use the ffmpeg-free paths (`openReadable()`, `recordFragments()`); see [§5](#_5-media-snapshot-record-ffmpeg)                |
 | `p2p down` / `smqtt reconnecting` on `error`                                      | a transient transport drop                                                                                                                                                                                                           | the channels reconnect on their own; re-attach live streams when a consumer gets `stop`                                                                                                                   |
 
@@ -75,6 +76,22 @@ eufy.on("sessionExpired", async () => {
 - **Trace the lifecycle.** With a logger attached (§1), `[live …]` lines trace a stream warming, going
   live, a warm-up timeout, an upstream drop, and the linger-before-teardown — the detail you want when
   a live view won't start or drops unexpectedly.
+- **Match startup traces on the published vocabulary, not on strings.** Every startup trace is logged
+  under `LIVE_TRACE_MESSAGE` with a `LiveTrace` payload, and **both are exported from the package root**:
+
+  ```ts
+  import { LIVE_TRACE_MESSAGE, type LiveTrace } from "@mega-yfue/eufy-sdk";
+  ```
+
+  A host that bounds or redacts what it retains should key its phase allowlist off the union, so a phase
+  added here fails to compile rather than being discarded:
+
+  ```ts
+  } satisfies Record<LiveTrace["phase"], true>;
+  ```
+
+  Copying the message literal or the phase names by hand is the one thing that cannot survive a new phase
+  being added — the SDK widens that union without needing any coordination from you.
 
 ## 5. Media (snapshot / record / ffmpeg)
 
