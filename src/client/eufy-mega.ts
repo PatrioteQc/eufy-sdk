@@ -27,6 +27,7 @@ import { type P2PSession, type P2PFrame } from "../transport/p2p/p2p-session.js"
 import { P2PCommandRouter } from "../transport/p2p/command-router.js";
 import { jpegGeometry } from "../transport/p2p/media.js";
 import type { PowerTier } from "../transport/p2p/session-manager.js";
+import { reportedRtspUrl } from "../transport/p2p/lan-ip.js";
 import { MqttCommandRouter } from "../transport/mqtt/command-router.js";
 import { TuyaCommandRouter } from "../transport/tuya/command-router.js";
 import { TuyaDpRouter, parseTuyaDpReport } from "../transport/tuya/dp-codec.js";
@@ -1233,6 +1234,32 @@ export class EufyMega extends EventEmitter {
    */
   async inspectDevice(sn: string): Promise<DeviceInspection> {
     return this.registry.inspectDevice(sn);
+  }
+
+  /**
+   * The freshest device-reported `rtsp://` URL for a device, or `undefined` when its record carries
+   * none.
+   *
+   * Read-through, not roster: this goes via the registry's per-device record fetch (the live
+   * `get_device_param_list` merged over the account list), because the URL's embedded credentials
+   * are REGENERATED every time the vendor app toggles the publish switch — a cached roster keeps
+   * returning the previous pair, which authenticates nothing. Still a hint to verify, not a
+   * guarantee: the device pushes the new value to the cloud on its own schedule.
+   */
+  async reportedRtspUrl(sn: string): Promise<string | undefined> {
+    // The LIVE P2P read first — it is the only source of the freshly-generated credentials (the
+    // vendor app regenerates them on every publish toggle; cloud and realtime both lag a cycle).
+    // readReportedRtspUrl OPENS the station's session on demand, so it is NOT gated on one already
+    // existing — a viewer opening the tile wants the stream anyway, and adoption at connect time
+    // races session warm-up. Any failure (no route, level-2 not ready, no push in the window)
+    // falls back to mining the record.
+    try {
+      const live = await this.p2p.readReportedRtspUrl(sn);
+      if (live) return live;
+    } catch {
+      /* fall back to the record */
+    }
+    return reportedRtspUrl(await this.registry.record(sn));
   }
 
   /** Inspect every owned device (the bulk enrichment export). */

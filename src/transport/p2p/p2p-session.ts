@@ -211,6 +211,15 @@ interface RetainedDatagram {
 }
 /** CMD_SET_PAYLOAD (1350) wraps a JSON command; CMD_DATABASE_IMAGE (1308) is the image reply. */
 const CMD_SET_PAYLOAD = 1350;
+/**
+ * CMD_NAS_SWITCH (1145) — the RTSP publish switch. The station ALSO pushes it back as a DATA frame
+ * whose NUL-terminated string payload is the camera's full authoritative `rtsp://user:pass@ip/path`
+ * URL, with the credentials it is enforcing RIGHT NOW. That live push is the only source of the
+ * regenerated pair: the vendor app rewrites the credentials on every publish toggle and the cloud
+ * record lags a cycle behind, so a host adopting a running stream must read the URL from here.
+ * Provoked by writing CMD_NAS_TEST (1146) for the channel (see the command router).
+ */
+const CMD_NAS_SWITCH = 1145;
 /** CMD_NOTIFY_PAYLOAD (1351) — the station's unsolicited JSON notification. */
 const CMD_NOTIFY_PAYLOAD = 1351;
 /** CMD_CAMERA_INFO — a camera reporting its OWN params, as a root-level array. */
@@ -1783,6 +1792,11 @@ export class P2PSession extends EventEmitter {
             ? paramReport(frame.json)
             : undefined;
       if (reported) frame.params = reported;
+    }
+    // CMD_NAS_SWITCH reply: a bare `rtsp://…` string — the camera's live, authoritative URL with the
+    // credentials it currently enforces. Emitted as `rtspUrl` for a host adopting the stream.
+    if (header.commandId === CMD_NAS_SWITCH && text.startsWith("rtsp://")) {
+      this.emit("rtspUrl", { channel: header.channel, url: text });
     }
     // CMD_DATABASE_IMAGE reply: { file, content:<base64 image> } → emit decoded bytes.
     if (header.commandId === CMD_DATABASE_IMAGE && frame.json && typeof frame.json.content === "string") {

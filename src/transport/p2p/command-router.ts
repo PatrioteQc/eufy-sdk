@@ -197,6 +197,11 @@ export interface P2PRouterDeps {
   localAddresses?: Record<string, string>;
 }
 
+/** CMD_NAS_SWITCH (1145): the RTSP publish switch — writing 1 makes the station push its URL. */
+const CMD_NAS_SWITCH = 1145;
+/** CMD_NAS_TEST (1146): starts the RTSP livestream; also elicits the URL push on some firmwares. */
+const CMD_NAS_TEST = 1146;
+
 export class P2PCommandRouter {
   /** Per-station P2P session lifecycle: on-demand open + battery-aware idle-detach + refcount. */
   private readonly manager: SessionManager;
@@ -1226,6 +1231,51 @@ export class P2PCommandRouter {
   }
 
   /** Send a level-1 int-plus-string frame with authenticated account identity injected by the transport. */
+  /**
+   * Read the camera's LIVE authoritative RTSP URL — host, path, and the credentials it enforces
+   * RIGHT NOW — by writing CMD_NAS_TEST (1146) for the channel and awaiting the CMD_NAS_SWITCH
+   * (1145) DATA frame the station pushes back with the `rtsp://…` string. This is the only source
+   * of the freshly-generated credentials: the vendor app regenerates them on every publish toggle
+   * and the cloud record lags a cycle. `undefined` when no URL is pushed within the window.
+   */
+  async readReportedRtspUrl(sn: string, timeoutMs = 12000): Promise<string | undefined> {
+    const log = this.deps.logger ?? noopLogger;
+    // The whole thing is bounded, resolveSession included: a station whose session is being
+    // rebuilt (or is battery and slow to wake) must not hang the URL listener that awaits this.
+    const deadline = new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), timeoutMs));
+    const read = (async (): Promise<string | undefined> => {
+      const { session, accountId, channel } = await this.resolveSession(sn, { waitLevel2: "soft" });
+      if (!accountId) return undefined;
+      return await new Promise<string | undefined>((resolve) => {
+        const onUrl = (ev: { channel: number; url: string }): void => {
+          if (ev.channel !== channel) return;
+          session.off("rtspUrl", onUrl);
+          resolve(ev.url);
+        };
+        session.on("rtspUrl", onUrl);
+        try {
+          // The device pushes its URL (a CMD_NAS_SWITCH data frame carrying the credentials it
+          // ALREADY enforces) in response to the publish switch. Writing the switch to 1 is
+          // idempotent when it is already on and — crucially — never touches the credentials, which
+          // are a separate command: a NAS/NVR consuming the stream elsewhere keeps working. NAS_TEST
+          // then starts the livestream, which also elicits the push on firmwares that gate it there.
+          session.sendIntStringCommand(CMD_NAS_SWITCH, 1, channel, accountId, channel);
+          session.sendIntStringCommand(CMD_NAS_TEST, 1, channel, accountId, channel);
+        } catch (e) {
+          session.off("rtspUrl", onUrl);
+          resolve(undefined);
+          log.debug(`[p2p] ${sn} live RTSP URL read could not send the provoke commands`, e);
+        }
+      });
+    })().catch((e) => {
+      log.debug(`[p2p] ${sn} live RTSP URL read failed`, e);
+      return undefined;
+    });
+    const url = await Promise.race([read, deadline]);
+    log.debug(`[p2p] ${sn} live RTSP URL read ${url ? "returned a URL" : "returned nothing"}`);
+    return url;
+  }
+
   private async sendIntString(
     sn: string,
     commandType: number,
