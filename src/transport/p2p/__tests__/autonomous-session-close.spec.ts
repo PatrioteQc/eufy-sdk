@@ -43,7 +43,7 @@ function routerFor() {
   const manager = (router as unknown as { manager: SessionManager }).manager;
   const sources = (router as unknown as { liveSources: Map<string, { dispose: () => void }> }).liveSources;
   const talkbacks = (router as unknown as { talkbacks: Map<string, { stop: () => Promise<void> }> }).talkbacks;
-  return { router, manager, sources, talkbacks, closedStations };
+  return { manager, sources, talkbacks, closedStations };
 }
 
 /** Seed a cached live source + talkback on the station, as a warm stream would have left behind. */
@@ -62,53 +62,42 @@ describe("a station's session closing without a caller", () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
 
-  it("drops the live source riding it when the idle window elapses", async () => {
+  it("drops the riders and reports it closed when the idle window elapses", async () => {
     const { manager, sources, talkbacks, closedStations } = routerFor();
     manager.register(STATION, fakeSession());
     const { dispose, stop } = seedRiders(sources, talkbacks);
 
     manager.retain(STATION);
-    manager.release(STATION); // last viewer detaches → idle armed
+    manager.release(STATION);
     await vi.advanceTimersByTimeAsync(1000);
 
     expect(dispose, "a source kept past its session is handed to the next viewer over a dead one").toHaveBeenCalled();
     expect(sources.has(`${STATION}:0`)).toBe(false);
     expect(stop).toHaveBeenCalled();
     expect(talkbacks.has(`${STATION}:0`)).toBe(false);
+    expect(closedStations, "an open with no matching close makes the pair useless").toEqual([STATION]);
   });
 
-  it("reports the station closed, so an open is not left without a matching close", async () => {
-    const { manager, sources, talkbacks, closedStations } = routerFor();
-    manager.register(STATION, fakeSession());
-    seedRiders(sources, talkbacks);
-
-    manager.retain(STATION);
-    manager.release(STATION);
-    await vi.advanceTimersByTimeAsync(1000);
-
-    expect(closedStations).toEqual([STATION]);
-  });
-
-  it("drops it when a deferred reset falls due instead, which fires inside the linger window", async () => {
+  it("drops them when a deferred reset falls due instead, which fires inside the linger window", async () => {
     const { manager, sources, talkbacks, closedStations } = routerFor();
     manager.register(STATION, fakeSession());
     const { dispose } = seedRiders(sources, talkbacks);
 
     manager.retain(STATION);
-    const reset = manager.resetWhenUnused(STATION); // parks behind the attached viewer
-    manager.release(STATION); // viewer detaches → reset falls due immediately
+    const reset = manager.resetWhenUnused(STATION);
+    manager.release(STATION);
     await reset;
 
     expect(dispose).toHaveBeenCalled();
     expect(closedStations).toEqual([STATION]);
   });
 
-  it("drops it when a reset finds only expiring holds left, which its caller never cleans up after", async () => {
+  it("drops them when a reset finds only expiring holds left, which its caller never cleans up after", async () => {
     const { manager, sources, talkbacks, closedStations } = routerFor();
     manager.register(STATION, fakeSession());
     const { dispose } = seedRiders(sources, talkbacks);
 
-    manager.bumpCommand(STATION); // only an expiring hold remains → the reset closes immediately
+    manager.bumpCommand(STATION);
     await manager.resetWhenUnused(STATION);
 
     expect(dispose, "a source lingering with no viewer survives over the dead session otherwise").toHaveBeenCalled();
@@ -119,7 +108,7 @@ describe("a station's session closing without a caller", () => {
     const { manager, sources, talkbacks, closedStations } = routerFor();
     seedRiders(sources, talkbacks);
 
-    manager.hold(STATION, 100); // a pre-warm whose open failed: an entry, but no session
+    manager.hold(STATION, 100);
     await vi.advanceTimersByTimeAsync(100 + 1000);
 
     expect(closedStations).toEqual([]);
@@ -127,24 +116,15 @@ describe("a station's session closing without a caller", () => {
 
   it("leaves a caller's own close alone, so a session being replaced keeps its source to rewarm", async () => {
     const { manager, sources, talkbacks, closedStations } = routerFor();
-    manager.register(STATION, fakeSession());
     const { dispose, stop } = seedRiders(sources, talkbacks);
 
+    manager.register(STATION, fakeSession());
     await manager.close(STATION);
+    manager.register(STATION, fakeSession());
+    await manager.closeAll();
 
     expect(dispose, "replaceUnreachableSession closes, then rewarms the SAME source").not.toHaveBeenCalled();
     expect(stop).not.toHaveBeenCalled();
-    expect(closedStations).toEqual([]);
-  });
-
-  it("leaves closeAll alone too, which disposes its own sources before closing", async () => {
-    const { manager, sources, talkbacks, closedStations } = routerFor();
-    manager.register(STATION, fakeSession());
-    const { dispose } = seedRiders(sources, talkbacks);
-
-    await manager.closeAll();
-
-    expect(dispose).not.toHaveBeenCalled();
     expect(closedStations).toEqual([]);
   });
 });
