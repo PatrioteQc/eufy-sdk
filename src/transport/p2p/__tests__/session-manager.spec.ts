@@ -151,6 +151,18 @@ describe("SessionManager lifecycle", () => {
     expect(resetFinished).toBe(true);
   });
 
+  it("hands every caller of a pending reset the same promise, so waiters cannot pile up", async () => {
+    const mgr = managerFor("battery");
+    mgr.register("ST", fakeSession());
+    mgr.retain("ST");
+
+    const first = mgr.resetWhenUnused("ST");
+    expect(mgr.resetWhenUnused("ST")).toBe(first);
+
+    mgr.release("ST");
+    await first;
+  });
+
   it("reset closes immediately when only command holds remain", async () => {
     const mgr = managerFor("battery");
     const session = fakeSession();
