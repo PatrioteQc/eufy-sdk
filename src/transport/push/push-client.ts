@@ -117,16 +117,17 @@ export class PushClient extends EventEmitter {
   /**
    * Open the MCS connection and log in.
    *
-   * No TLS options are passed: the MCS endpoint serves a publicly verifiable certificate, so Node's
-   * defaults — trust store verification, SNI and hostname matching from `host` — are exactly right.
-   * Verification matters here because the login request carries the account's `securityToken`, and an
-   * unverified peer could both read it and inject forged pushes into the event path.
+   * `servername` is passed explicitly: Node sends SNI only when told to, never deriving it from `host`,
+   * and this endpoint answers a connection without SNI with a self-signed certificate naming
+   * `invalid2.invalid` — which now fails the handshake rather than being accepted. Verification matters
+   * because the login request carries the account's `securityToken`, and an unverified peer could both
+   * read it and inject forged pushes into the event path.
    */
   connect(): void {
     this.closing = false;
     this.parser.reset();
     this.loggedIn = false;
-    const socket = tls.connect(PORT, HOST);
+    const socket = tls.connect(PORT, HOST, { servername: HOST });
     this.socket = socket;
     socket.setKeepAlive(true);
     socket.on("secureConnect", () => {

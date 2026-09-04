@@ -8,8 +8,7 @@
  * against the name passed to `connect`, which for an IP dial is the IP, and the broker's certificate
  * names the hostname.
  *
- * Both call sites need the identical recipe, which is why it lives in one place — it was previously
- * copied, and the copy is how the same mistake ended up in both.
+ * Both call sites need the identical recipe, so it lives in one place.
  */
 import tls from "node:tls";
 
