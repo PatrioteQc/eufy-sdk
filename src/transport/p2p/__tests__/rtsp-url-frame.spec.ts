@@ -39,9 +39,8 @@ function harness() {
 }
 
 describe("the RTSP URL the station pushes on CMD_NAS_SWITCH", () => {
-  it("is emitted as rtspUrl with the channel and the full authoritative link", () => {
+  it("is emitted as rtspUrl with the channel and the full NUL-terminated authoritative link", () => {
     const { urls, feed, close } = harness();
-    // A NUL-terminated rtsp:// string — host, path, and the credentials the device enforces now.
     const url = "rtsp://freshuser:freshpass@192.168.0.5/live0";
     const body = Buffer.concat([Buffer.from(url, "utf8"), Buffer.from([0])]);
     feed(dataPacket(1, commandFrame(1, CMD_NAS_SWITCH, body)));

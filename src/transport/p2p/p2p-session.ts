@@ -216,10 +216,11 @@ const CMD_SET_PAYLOAD = 1350;
  * whose NUL-terminated string payload is the camera's full authoritative `rtsp://user:pass@ip/path`
  * URL, with the credentials it is enforcing RIGHT NOW. That live push is the only source of the
  * regenerated pair: the vendor app rewrites the credentials on every publish toggle and the cloud
- * record lags a cycle behind, so a host adopting a running stream must read the URL from here.
- * Provoked by writing CMD_NAS_TEST (1146) for the channel (see the command router).
+ * record lags a cycle behind, so a host adopting a running stream must read the URL from here. This
+ * session emits that push as `rtspUrl`, `{ channel, url }`. Provoked by writing CMD_NAS_TEST (1146)
+ * for the channel (see the command router).
  */
-const CMD_NAS_SWITCH = 1145;
+export const CMD_NAS_SWITCH = 1145;
 /** CMD_NOTIFY_PAYLOAD (1351) — the station's unsolicited JSON notification. */
 const CMD_NOTIFY_PAYLOAD = 1351;
 /** CMD_CAMERA_INFO — a camera reporting its OWN params, as a root-level array. */
@@ -1793,8 +1794,6 @@ export class P2PSession extends EventEmitter {
             : undefined;
       if (reported) frame.params = reported;
     }
-    // CMD_NAS_SWITCH reply: a bare `rtsp://…` string — the camera's live, authoritative URL with the
-    // credentials it currently enforces. Emitted as `rtspUrl` for a host adopting the stream.
     if (header.commandId === CMD_NAS_SWITCH && text.startsWith("rtsp://")) {
       this.emit("rtspUrl", { channel: header.channel, url: text });
     }
