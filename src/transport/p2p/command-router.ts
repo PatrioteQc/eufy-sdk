@@ -287,6 +287,11 @@ export class P2PCommandRouter {
     await this.manager.closeAll();
   }
 
+  /** This serial's loaded record, or `undefined` — the one place the cached list is searched by serial. */
+  private recordFor(sn: string): EufyDevice | undefined {
+    return this.deps.listDevices().find((d) => d.sn === sn);
+  }
+
   /** The parent-station key a device's session lives under (its HomeBase, or itself if standalone). */
   private stationKeyFor(dev: EufyDevice): string {
     const raw = (dev.raw ?? {}) as Record<string, any>;
@@ -299,13 +304,13 @@ export class P2PCommandRouter {
    * serial itself if the device isn't loaded (a standalone device is its own station).
    */
   stationKeyOf(sn: string): string {
-    const dev = this.deps.listDevices().find((d) => d.sn === sn);
+    const dev = this.recordFor(sn);
     return dev ? this.stationKeyFor(dev) : sn;
   }
 
   /** Reset only a standalone device's session; an attached device must not close its shared HomeBase. */
   async resetStandaloneSession(sn: string): Promise<void> {
-    const device = this.deps.listDevices().find((candidate) => candidate.sn === sn);
+    const device = this.recordFor(sn);
     if (!device) return;
     const station = this.stationKeyFor(device);
     if (station === sn) await this.manager.resetWhenUnused(station);
@@ -314,18 +319,21 @@ export class P2PCommandRouter {
   /**
    * Open (or reuse) the P2P session for a station **on demand**, coalescing concurrent cold opens via
    * the {@link SessionManager}. A command / stream / pre-warm opens only the station it targets; idle
-   * battery stations auto-close. The station's own record carries the P2P creds; a per-station DSK key
-   * is fetched best-effort (ThroughTek PPCS UDP, LAN broadcast fallback if the key lookup fails). The
-   * LAN address for a direct local lookup is a caller-supplied override ({@link P2PRouterDeps.localAddresses})
+   * battery stations auto-close. The station's own record carries the P2P creds — a serial with no
+   * record of its own throws, because every value the session carries comes from that one record (the
+   * endpoint dialled, its cloud and LAN addresses, the admin user id the cipher lookup quotes) and is
+   * keyed under that one serial, so there is no partial answer to give. A per-station DSK key is
+   * fetched best-effort (ThroughTek PPCS UDP, LAN broadcast fallback if the key lookup fails). The LAN
+   * address for a direct local lookup is a caller-supplied override ({@link P2PRouterDeps.localAddresses})
    * when present, else the freshest private IP in the record ({@link freshestLanIp}) — so P2P works
    * on-LAN even when broadcast is blocked (AP isolation) or the record's `ip_addr` went stale.
    */
   private async openStation(parentSn: string): Promise<P2PSession> {
     return this.manager.acquire(parentSn, async (register) => {
-      const devs = this.deps.listDevices();
-      const stationDev = devs.find((d) => d.sn === parentSn) ?? devs.find((d) => this.stationKeyFor(d) === parentSn);
-      const raw = (stationDev?.raw ?? {}) as Record<string, any>;
-      const did = (stationDev?.p2pDid ?? raw.p2p_did) as string | undefined;
+      const stationDev = this.recordFor(parentSn);
+      if (!stationDev) throw new Error(`station ${parentSn} is not in the device list`);
+      const raw = (stationDev.raw ?? {}) as Record<string, any>;
+      const did = (stationDev.p2pDid ?? raw.p2p_did) as string | undefined;
       if (!did) throw new Error(`no P2P endpoint (p2p_did) for station ${parentSn}`);
       let dskKey: string | undefined;
       try {
@@ -452,7 +460,7 @@ export class P2PCommandRouter {
   /** Resolve a serial to its loaded device record, opening its station's P2P session on demand. */
   async deviceFor(sn: string): Promise<EufyDevice> {
     if (!this.deps.listDevices().length) await this.deps.ensureDevices();
-    const dev = this.deps.listDevices().find((d) => d.sn === sn);
+    const dev = this.recordFor(sn);
     if (!dev) throw new Error(`device ${sn} not found`);
     await this.openStation(this.stationKeyFor(dev));
     return dev;
