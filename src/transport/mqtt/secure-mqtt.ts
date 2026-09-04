@@ -96,11 +96,8 @@ export class SecureMqtt extends EventEmitter implements RealtimeTransport {
   }
 
   /**
-   * Open the broker connection, resolving once it is established.
-   *
-   * Two dial shapes: pinned to a broker instance's IP (see `./bare-ip-tls.ts` for why that needs its
-   * own TLS options), or the plain hostname, which needs nothing beyond the client certificate because
-   * the dialled name is the name the certificate is verified against.
+   * Open the broker connection, resolving once it is established. Pinned to a broker instance's IP, or
+   * to the plain hostname; only the former needs its own TLS shape, see `./bare-ip-tls.ts`.
    */
   connect(): Promise<void> {
     const c = this.o.credentials;

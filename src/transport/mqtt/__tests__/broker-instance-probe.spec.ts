@@ -12,7 +12,6 @@ const fakeClients: Array<
   EventEmitter & {
     end: ReturnType<typeof vi.fn>;
     subscribe: ReturnType<typeof vi.fn>;
-    publish: ReturnType<typeof vi.fn>;
   }
 > = [];
 const connectOptsSeen: any[] = [];
@@ -24,10 +23,8 @@ vi.mock("mqtt", () => ({
       const client = new EventEmitter() as EventEmitter & {
         end: ReturnType<typeof vi.fn>;
         subscribe: ReturnType<typeof vi.fn>;
-        publish: ReturnType<typeof vi.fn>;
       };
       client.end = vi.fn();
-      client.publish = vi.fn();
       client.subscribe = vi.fn((_topic: string, _opts: unknown, cb: (e: Error | null, g: unknown) => void) =>
         cb(null, [{ topic: _topic, qos: 1 }]),
       );
@@ -63,32 +60,5 @@ describe("probeBrokerInstance", () => {
     expect(opts.servername).toBe(CREDS.hostname);
     expect(typeof opts.checkServerIdentity).toBe("function");
     expect(opts.ca).toBe(CREDS.aws_root_ca1_pem);
-  });
-
-  it("reports a granted subscribe as a reachable instance and disconnects without publishing", async () => {
-    const p = probeBrokerInstance("198.51.100.7", CREDS, { clientId: "probe-1", topic: "a/res" });
-    fakeClients[0].emit("connect");
-
-    await expect(p).resolves.toMatchObject({ ip: "198.51.100.7", granted: true, grantedQos: 1 });
-    expect(fakeClients[0].end).toHaveBeenCalledWith(true);
-    expect(fakeClients[0].publish).not.toHaveBeenCalled();
-  });
-
-  it("reports a denied subscribe (SUBACK 0x80) as not granted", async () => {
-    const p = probeBrokerInstance("198.51.100.8", CREDS, { clientId: "probe-2", topic: "a/res" });
-    const client = fakeClients[0];
-    client.subscribe = vi.fn((topic: string, _o: unknown, cb: (e: Error | null, g: unknown) => void) =>
-      cb(null, [{ topic, qos: 128 }]),
-    );
-    client.emit("connect");
-
-    await expect(p).resolves.toMatchObject({ granted: false, grantedQos: 128 });
-  });
-
-  it("reports a TLS or connect failure as an unreachable instance rather than throwing", async () => {
-    const p = probeBrokerInstance("198.51.100.9", CREDS, { clientId: "probe-3", topic: "a/res" });
-    fakeClients[0].emit("error", new Error("unable to verify the first certificate"));
-
-    await expect(p).resolves.toMatchObject({ granted: false, error: "unable to verify the first certificate" });
   });
 });

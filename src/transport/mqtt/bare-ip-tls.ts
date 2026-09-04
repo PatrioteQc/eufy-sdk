@@ -6,7 +6,9 @@
  * to one instance's IP directly rather than letting DNS pick. That is the only reason a bare-IP dial
  * exists here, and it is what makes this fragment necessary: Node matches the presented certificate
  * against the name passed to `connect`, which for an IP dial is the IP, and the broker's certificate
- * names the hostname.
+ * names the hostname. `servername` keeps SNI on that hostname so the instance answers with the same
+ * certificate a DNS-resolved connect would have got, and the check is then run against it — Node's own
+ * matcher, given the name the server answered for. Nothing is relaxed or reimplemented.
  *
  * Both call sites need the identical recipe, so it lives in one place.
  */
@@ -31,12 +33,6 @@ export interface BareIpTlsOptions {
 
 /**
  * Build the TLS options for reaching `hostname`'s broker at a specific instance IP.
- *
- * `servername` sets SNI to the real hostname, so the instance answers with the certificate it would
- * have served a DNS-resolved connect. Verification is then performed against that same hostname rather
- * than the dialled IP — Node's own {@link tls.checkServerIdentity}, given the name the server actually
- * answered for. Nothing about the check is relaxed or reimplemented; only the name it matches against
- * is corrected.
  *
  * `ca` REPLACES Node's trust store rather than extending it. It arrives per-user from the cloud's
  * `get_user_mqtt_info` response over an already-verified HTTPS channel, alongside the client

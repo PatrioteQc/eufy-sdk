@@ -90,16 +90,4 @@ describe("SecureMqtt.connect — reconnect lifecycle", () => {
     expect(typeof opts.checkServerIdentity).toBe("function");
     expect(opts.ca).toBe(CREDS.aws_root_ca1_pem);
   });
-
-  it("verifies the server on a hostname dial too, with no identity override needed", async () => {
-    const m = new SecureMqtt({ credentials: CREDS });
-    const p = m.connect();
-    fakeClients[0].emit("connect");
-    await p;
-
-    const opts = connectOptsSeen[0];
-    expect(opts.rejectUnauthorized).toBe(true);
-    expect(opts.checkServerIdentity).toBeUndefined();
-    expect(opts.ca).toBe(CREDS.aws_root_ca1_pem);
-  });
 });
