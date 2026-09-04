@@ -803,33 +803,23 @@ export class EufyMega extends EventEmitter {
    *
    * The recycle itself waits for every viewer to detach, so that a write does not drop a live stream.
    * That wait is unbounded by design — a viewer may watch indefinitely — and it happens INSIDE the keyed
-   * transaction, so the next write to the same member queues behind it. Bounding the wait decouples the
-   * two: the recycle stays pending and still runs when the station falls idle, it just stops gating an
+   * transaction, so the next write to the same member queues behind it. Racing it decouples the two: the
+   * losing recycle stays pending and still runs when the station falls idle, it just stops gating an
    * unrelated write.
    *
-   * A failure is still reported; only a wait that outlives its usefulness is abandoned.
+   * A failure reported before the bound propagates; one arriving after it survives only as the session
+   * manager's own log, since by then nothing is waiting to receive it.
    */
   private recycleStandaloneSession(sn: string): Promise<void> {
-    const recycle = this.p2p.resetStandaloneSession(sn);
-    return new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => {
+    const releaseWrite = new Promise<void>((resolve) => void setTimeout(resolve, SESSION_RECYCLE_WAIT_MS).unref?.());
+    return Promise.race([
+      this.p2p.resetStandaloneSession(sn),
+      releaseWrite.then(() =>
         this.opts.logger?.debug(
           `[session ${sn}] recycle still waiting on an attached viewer — releasing the write that asked for it`,
-        );
-        resolve();
-      }, SESSION_RECYCLE_WAIT_MS);
-      timer.unref?.();
-      recycle.then(
-        () => {
-          clearTimeout(timer);
-          resolve();
-        },
-        (error) => {
-          clearTimeout(timer);
-          reject(error);
-        },
-      );
-    });
+        ),
+      ),
+    ]);
   }
 
   /**
