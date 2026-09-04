@@ -198,7 +198,7 @@ export interface P2PRouterDeps {
    */
   poweredFor?: (parentSn: string) => PowerTier;
   /** Idle/keepalive window overrides for the session lifecycle (see {@link SessionManagerOpts}). */
-  sessionIdle?: Pick<SessionManagerOpts, "batteryIdleMs" | "commandKeepAliveMs">;
+  sessionIdle?: Pick<SessionManagerOpts, "batteryIdleMs">;
   /** LAN address overrides for direct P2P, keyed by parent-station serial (host or host:port). */
   localAddresses?: Record<string, string>;
 }
@@ -258,10 +258,10 @@ export class P2PCommandRouter {
    * event → station and decides whether this station may be pre-warmed at all; the router never learns
    * event semantics.
    *
-   * Held twice: once before the open so a slow connect can't idle-close mid-flight, and again once it
-   * lands so the warm window is `ms` from a session being READY rather than `ms` from the attempt. Both
-   * holds expire on their own, which arms the station's idle window rather than closing the session, per
-   * {@link PREWARM_MS}.
+   * One hold, taken before the open so a slow connect can't idle-close mid-flight. It expires on its
+   * own, which arms the station's idle window rather than closing the session, per {@link PREWARM_MS}.
+   * A second hold after the open would buy nothing: {@link openStation} returns once the socket is bound
+   * and the lookups are away, not once the peer has answered, so both would expire together.
    *
    * Best-effort — a failed open surfaces via `onError`. A {@link SessionSupersededError} does not: the
    * session was deliberately closed underneath a speculative open, which is not a fault to report.
@@ -273,9 +273,7 @@ export class P2PCommandRouter {
     } catch (e) {
       if (e instanceof SessionSupersededError) return;
       this.deps.onError(e instanceof Error ? e : new Error(String(e)));
-      return;
     }
-    this.manager.hold(parentSn, ms);
   }
 
   /** Close every P2P session and drop them. */

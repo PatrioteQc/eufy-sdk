@@ -35,12 +35,7 @@ export type PowerTier = "wired" | "battery";
  * simply stopped applying. A speculative caller treats this as a non-event; anyone who asked for the
  * session on a caller's behalf must still surface it.
  */
-export class SessionSupersededError extends Error {
-  constructor(parentSn: string) {
-    super(`P2P session start superseded for station ${parentSn}`);
-    this.name = "SessionSupersededError";
-  }
-}
+export class SessionSupersededError extends Error {}
 
 /** Default idle window for a battery station before its session is closed to let the device sleep. */
 export const BATTERY_IDLE_MS = 300_000;
@@ -124,18 +119,6 @@ export class SessionManager {
     return m;
   }
 
-  /**
-   * Resolve a station's idle window from the injected {@link SessionManagerOpts.poweredFor}.
-   *
-   * Called at every idle-arm rather than once per entry: `poweredFor` reads whatever the facade knows
-   * now, and a station's battery evidence can arrive after its first session was already open.
-   */
-  private resolvePower(parentSn: string): { powered: PowerTier; idleMs: number } {
-    const powered = this.opts.poweredFor?.(parentSn) ?? "wired";
-    const idleMs = powered === "battery" ? (this.opts.batteryIdleMs ?? BATTERY_IDLE_MS) : Infinity;
-    return { powered, idleMs };
-  }
-
   /** Get or create the lifecycle entry for a station. */
   private entry(parentSn: string): SessionEntry {
     let e = this.entries.get(parentSn);
@@ -174,7 +157,7 @@ export class SessionManager {
       const session = await p;
       if (generation !== this.generation || this.entries.get(parentSn) !== e) {
         await session.close();
-        throw new SessionSupersededError(parentSn);
+        throw new SessionSupersededError(`P2P session start superseded for station ${parentSn}`);
       }
       e.session ??= session;
       this.logger.debug(`[session ${parentSn}] connected`);
@@ -251,11 +234,11 @@ export class SessionManager {
    */
   private armIdle(parentSn: string, e: SessionEntry): void {
     e.idle.cancel();
-    const { powered, idleMs } = this.resolvePower(parentSn);
-    if (!Number.isFinite(idleMs)) {
-      this.logger.debug(`[session ${parentSn}] idle (0 consumers) — staying persistent (${powered})`);
+    if ((this.opts.poweredFor?.(parentSn) ?? "wired") !== "battery") {
+      this.logger.debug(`[session ${parentSn}] idle (0 consumers) — staying persistent (wired)`);
       return;
     }
+    const idleMs = this.opts.batteryIdleMs ?? BATTERY_IDLE_MS;
     this.logger.debug(`[session ${parentSn}] idle (0 consumers) — detaching in ${idleMs}ms unless reused`);
     e.idle.arm(idleMs, () => this.onIdle(parentSn));
   }

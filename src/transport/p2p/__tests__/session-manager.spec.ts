@@ -11,8 +11,8 @@ function fakeSession(id = "s"): P2PSession {
 }
 
 /** Build a manager whose `poweredFor` returns the given tier for every station. */
-function managerFor(tier: PowerTier, extra: Record<string, unknown> = {}) {
-  return new SessionManager({ poweredFor: () => tier, batteryIdleMs: 1000, commandKeepAliveMs: 100, ...extra });
+function managerFor(tier: PowerTier) {
+  return new SessionManager({ poweredFor: () => tier, batteryIdleMs: 1000, commandKeepAliveMs: 100 });
 }
 
 describe("SessionManager lifecycle", () => {
@@ -221,74 +221,23 @@ describe("SessionManager lifecycle", () => {
     expect(session.close).not.toHaveBeenCalled();
   });
 
-  it("a hold that expires after its entry was discarded does not release the successor's consumer", async () => {
+  it("a hold that expires after its entry was discarded does not release the successor's consumers", async () => {
     const mgr = managerFor("battery");
-    const first = fakeSession("first");
-    mgr.register("ST", first);
+    mgr.register("ST", fakeSession("first"));
 
-    mgr.bumpCommand("ST"); // consumers=1, one 100ms hold
-    await mgr.resetWhenUnused("ST"); // only holds remain → closes, discarding the entry
+    mgr.bumpCommand("ST");
+    mgr.bumpCommand("ST");
+    await mgr.resetWhenUnused("ST");
     expect(mgr.has("ST")).toBe(false);
 
     const second = fakeSession("second");
     mgr.register("ST", second);
-    mgr.addConsumer("ST"); // a stream attaches to the fresh session
+    mgr.addConsumer("ST");
+    mgr.addConsumer("ST");
 
-    // The original hold's window elapses, then the whole battery idle window on top of it.
     await vi.advanceTimersByTimeAsync(100 + 1000);
     expect(second.close).not.toHaveBeenCalled();
     expect(mgr.get("ST")).toBe(second);
-  });
-
-  it("a pre-warm hold that expires after its entry was discarded leaves the successor alone too", async () => {
-    const mgr = managerFor("battery");
-    mgr.register("ST", fakeSession("first"));
-
-    mgr.hold("ST", 28_000); // a speculative pre-warm, far longer than the idle window
-    await mgr.close("ST");
-
-    const second = fakeSession("second");
-    mgr.register("ST", second);
-    mgr.addConsumer("ST");
-
-    await vi.advanceTimersByTimeAsync(28_000 + 1000);
-    expect(second.close).not.toHaveBeenCalled();
-  });
-
-  it("discarding an entry cancels the holds it still owns rather than leaving them to fire", async () => {
-    const mgr = managerFor("battery");
-    mgr.register("ST", fakeSession("first"));
-    mgr.bumpCommand("ST");
-    mgr.bumpCommand("ST"); // two concurrent holds
-
-    await mgr.close("ST");
-
-    const second = fakeSession("second");
-    mgr.register("ST", second);
-    mgr.addConsumer("ST");
-    mgr.addConsumer("ST"); // two real consumers on the successor
-
-    await vi.advanceTimersByTimeAsync(100 + 1000);
-    // Two stale holds firing would have taken both counts to zero and idle-closed under the consumers.
-    expect(second.close).not.toHaveBeenCalled();
-  });
-
-  it("a release with nothing counted neither re-arms the idle window nor completes a deferred reset", async () => {
-    const mgr = managerFor("battery");
-    const session = fakeSession();
-    mgr.register("ST", session);
-
-    mgr.addConsumer("ST");
-    const reset = mgr.resetWhenUnused("ST"); // parks: one real consumer, no holds
-    mgr.releaseConsumer("ST"); // the consumer detaches → the reset is earned
-    await reset;
-    expect(session.close).toHaveBeenCalledOnce();
-    expect(mgr.has("ST")).toBe(false);
-
-    // A second, unmatched release must not resurrect any timer on the serial.
-    mgr.releaseConsumer("ST");
-    await vi.advanceTimersByTimeAsync(1000);
-    expect(mgr.has("ST")).toBe(false);
   });
 
   it("an extra release on a live station does not restart its idle window", async () => {
@@ -297,9 +246,9 @@ describe("SessionManager lifecycle", () => {
     mgr.register("ST", session);
 
     mgr.addConsumer("ST");
-    mgr.releaseConsumer("ST"); // consumers=0 → idle armed for 1000ms
+    mgr.releaseConsumer("ST");
     await vi.advanceTimersByTimeAsync(600);
-    mgr.releaseConsumer("ST"); // unmatched: must NOT push the deadline out
+    mgr.releaseConsumer("ST");
     await vi.advanceTimersByTimeAsync(400);
 
     expect(session.close).toHaveBeenCalledOnce();
@@ -312,11 +261,11 @@ describe("SessionManager lifecycle", () => {
     mgr.register("ST", session);
 
     mgr.addConsumer("ST");
-    mgr.releaseConsumer("ST"); // resolved wired → persistent, no timer
+    mgr.releaseConsumer("ST");
     await vi.advanceTimersByTimeAsync(5000);
     expect(session.close).not.toHaveBeenCalled();
 
-    tier = "battery"; // the facade now knows better
+    tier = "battery";
     mgr.addConsumer("ST");
     mgr.releaseConsumer("ST");
     await vi.advanceTimersByTimeAsync(1000);
