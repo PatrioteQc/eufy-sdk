@@ -114,11 +114,19 @@ export class PushClient extends EventEmitter {
     return this.persistentIds;
   }
 
+  /**
+   * Open the MCS connection and log in.
+   *
+   * No TLS options are passed: the MCS endpoint serves a publicly verifiable certificate, so Node's
+   * defaults — trust store verification, SNI and hostname matching from `host` — are exactly right.
+   * Verification matters here because the login request carries the account's `securityToken`, and an
+   * unverified peer could both read it and inject forged pushes into the event path.
+   */
   connect(): void {
     this.closing = false;
     this.parser.reset();
     this.loggedIn = false;
-    const socket = tls.connect(PORT, HOST, { rejectUnauthorized: false });
+    const socket = tls.connect(PORT, HOST);
     this.socket = socket;
     socket.setKeepAlive(true);
     socket.on("secureConnect", () => {

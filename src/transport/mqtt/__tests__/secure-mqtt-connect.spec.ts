@@ -76,4 +76,30 @@ describe("SecureMqtt.connect — reconnect lifecycle", () => {
     await p;
     expect(connectOptsSeen[0].reconnectPeriod).toBe(0);
   });
+
+  it("verifies the server on a pinned-instance dial, checking the certificate against the hostname", async () => {
+    const m = new SecureMqtt({ credentials: CREDS, instanceIp: "198.51.100.7" });
+    const p = m.connect();
+    fakeClients[0].emit("connect");
+    await p;
+
+    const opts = connectOptsSeen[0];
+    expect(opts.host).toBe("198.51.100.7");
+    expect(opts.rejectUnauthorized).toBe(true);
+    expect(opts.servername).toBe(CREDS.endpoint_addr);
+    expect(typeof opts.checkServerIdentity).toBe("function");
+    expect(opts.ca).toBe(CREDS.aws_root_ca1_pem);
+  });
+
+  it("verifies the server on a hostname dial too, with no identity override needed", async () => {
+    const m = new SecureMqtt({ credentials: CREDS });
+    const p = m.connect();
+    fakeClients[0].emit("connect");
+    await p;
+
+    const opts = connectOptsSeen[0];
+    expect(opts.rejectUnauthorized).toBe(true);
+    expect(opts.checkServerIdentity).toBeUndefined();
+    expect(opts.ca).toBe(CREDS.aws_root_ca1_pem);
+  });
 });

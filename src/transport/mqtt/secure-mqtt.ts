@@ -15,6 +15,7 @@ import { EventEmitter } from "node:events";
 import mqtt, { type MqttClient } from "mqtt";
 import type { EufyDevice, RealtimeMessage, RealtimeTransport } from "../../core/types.js";
 import { noopLogger, type Logger } from "../../core/logger.js";
+import { bareIpTlsOptions } from "./bare-ip-tls.js";
 import { parseSecureTopic, subscribeTopics } from "./topics.js";
 
 /**
@@ -94,6 +95,13 @@ export class SecureMqtt extends EventEmitter implements RealtimeTransport {
     return this.o.clientId ?? this.o.credentials.thing_name ?? "";
   }
 
+  /**
+   * Open the broker connection, resolving once it is established.
+   *
+   * Two dial shapes: pinned to a broker instance's IP (see `./bare-ip-tls.ts` for why that needs its
+   * own TLS options), or the plain hostname, which needs nothing beyond the client certificate because
+   * the dialled name is the name the certificate is verified against.
+   */
   connect(): Promise<void> {
     const c = this.o.credentials;
     const port = c.endpoint_port ?? 8883;
@@ -105,20 +113,17 @@ export class SecureMqtt extends EventEmitter implements RealtimeTransport {
             host: pinned,
             port,
             protocol: "mqtts",
-            // SNI stays the real hostname even though we dial the bare IP directly.
-            servername: c.endpoint_addr,
             clientId: this.id,
-            cert: c.certificate_pem,
-            key: c.private_key,
-            ca: c.aws_root_ca1_pem,
+            ...bareIpTlsOptions({
+              hostname: c.endpoint_addr,
+              cert: c.certificate_pem,
+              key: c.private_key,
+              ca: c.aws_root_ca1_pem,
+            }),
             protocolVersion: 4,
             keepalive: 60,
             clean: true,
             reconnectPeriod,
-            // Dialing the bare IP can fail Node's hostname-verification step depending on which name
-            // ends up in the cert path checked; the proven-working recipe needs this off. The CA is
-            // still pinned above, so the chain itself is still verified.
-            rejectUnauthorized: false,
           })
         : mqtt.connect(`mqtts://${c.endpoint_addr}:${port}`, {
             clientId: this.id,
