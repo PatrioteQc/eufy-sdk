@@ -46,7 +46,13 @@ import { captureSnapshotFromShared, recordClip } from "./media.js";
 import type { FfmpegLevel } from "../ffmpeg.js";
 import { LiveStream } from "./live-stream.js";
 import { SharedLiveSource, type Consumer } from "./shared-live-source.js";
-import { SessionManager, PREWARM_MS, type PowerTier, type SessionManagerOpts } from "./session-manager.js";
+import {
+  SessionManager,
+  SessionSupersededError,
+  PREWARM_MS,
+  type PowerTier,
+  type SessionManagerOpts,
+} from "./session-manager.js";
 import { Fmp4Muxer } from "./fmp4.js";
 import { openReadableFromConsumer } from "./readable-egress.js";
 import { Talkback } from "./talkback.js";
@@ -192,7 +198,7 @@ export interface P2PRouterDeps {
    */
   poweredFor?: (parentSn: string) => PowerTier;
   /** Idle/keepalive window overrides for the session lifecycle (see {@link SessionManagerOpts}). */
-  sessionIdle?: Pick<SessionManagerOpts, "batteryIdleMs" | "wiredIdleMs" | "commandKeepAliveMs">;
+  sessionIdle?: Pick<SessionManagerOpts, "batteryIdleMs">;
   /** LAN address overrides for direct P2P, keyed by parent-station serial (host or host:port). */
   localAddresses?: Record<string, string>;
 }
@@ -250,18 +256,23 @@ export class P2PCommandRouter {
    * Speculatively open + briefly hold a station's session (e.g. after a doorbell ring) so a
    * tap-to-view / talkback attaches to a warm session. Transport-neutral: the facade maps the semantic
    * event → station and decides whether this station may be pre-warmed at all; the router never learns
-   * event semantics. A user hold is taken before the open so a slow connect can't idle-close mid-flight,
-   * and released `ms` later — which arms the station's idle window rather than closing the session, per
-   * {@link PREWARM_MS}. Best-effort — a failed open surfaces via `onError`.
+   * event semantics.
+   *
+   * One hold, taken before the open so a slow connect can't idle-close mid-flight. It expires on its
+   * own, which arms the station's idle window rather than closing the session, per {@link PREWARM_MS}.
+   * A second hold after the open would buy nothing: {@link openStation} returns once the socket is bound
+   * and the lookups are away, not once the peer has answered, so both would expire together.
+   *
+   * Best-effort — a failed open surfaces via `onError`. A {@link SessionSupersededError} does not: the
+   * session was deliberately closed underneath a speculative open, which is not a fault to report.
    */
   async prewarm(parentSn: string, ms: number = PREWARM_MS): Promise<void> {
-    this.manager.addUser(parentSn);
+    this.manager.hold(parentSn, ms);
     try {
       await this.openStation(parentSn);
     } catch (e) {
+      if (e instanceof SessionSupersededError) return;
       this.deps.onError(e instanceof Error ? e : new Error(String(e)));
-    } finally {
-      setTimeout(() => this.manager.releaseUser(parentSn), ms).unref?.();
     }
   }
 
@@ -754,8 +765,8 @@ export class P2PCommandRouter {
         budgetGraceMs: opts.budgetGraceMs,
         logger,
         label: key,
-        onActive: () => this.manager.addUser(parentSn),
-        onIdle: () => this.manager.releaseUser(parentSn),
+        onActive: () => this.manager.addConsumer(parentSn),
+        onIdle: () => this.manager.releaseConsumer(parentSn),
         onStartFailed: () => this.onLiveStartFailed(sn, key),
         onSessionUnreachable: () => this.replaceUnreachableSession(sn, key, held),
       });
