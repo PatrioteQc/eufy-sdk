@@ -279,11 +279,14 @@ export class SessionManager {
    * resolves a new session while a cached source still points at the old one, so announcing later leaves
    * a window in which a viewer can attach to a stale source; and a caller awaiting a reset should find
    * the station's riders already dropped when it resumes.
+   *
+   * An entry that never carried a session is still torn down, but silently: a pre-warm whose open failed
+   * leaves one behind, and announcing it would report a station closed that was never reported open.
    */
   private async autoClose(parentSn: string): Promise<void> {
     const entry = this.discard(parentSn);
     if (!entry) return;
-    this.opts.onAutoClose?.(parentSn);
+    if (entry.session) this.opts.onAutoClose?.(parentSn);
     await this.closeEntry(entry);
   }
 
@@ -305,11 +308,14 @@ export class SessionManager {
    * Every caller that arrives while one is already pending gets the SAME promise: the outcome is a
    * property of the station's teardown, not of who asked, so one deferred per entry is the whole
    * mechanism — and it cannot grow with the number of callers.
+   *
+   * Both branches close through {@link autoClose}: the caller asked for a recycle, not for the station's
+   * live sources to be dropped, so it does not clean up after one — exactly like the idle path.
    */
   resetWhenUnused(parentSn: string): Promise<void> {
     const entry = this.entries.get(parentSn);
     if (!entry) return Promise.resolve();
-    if (entry.retained <= entry.holdTimers.size) return this.close(parentSn);
+    if (entry.retained <= entry.holdTimers.size) return this.autoClose(parentSn);
     entry.reset ??= Promise.withResolvers<void>();
     return entry.reset.promise;
   }

@@ -103,6 +103,28 @@ describe("a station's session closing without a caller", () => {
     expect(closedStations).toEqual([STATION]);
   });
 
+  it("drops it when a reset finds only expiring holds left, which its caller never cleans up after", async () => {
+    const { manager, sources, talkbacks, closedStations } = routerFor();
+    manager.register(STATION, fakeSession());
+    const { dispose } = seedRiders(sources, talkbacks);
+
+    manager.bumpCommand(STATION); // only an expiring hold remains → the reset closes immediately
+    await manager.resetWhenUnused(STATION);
+
+    expect(dispose, "a source lingering with no viewer survives over the dead session otherwise").toHaveBeenCalled();
+    expect(closedStations).toEqual([STATION]);
+  });
+
+  it("says nothing about a station that never opened, so a close is never reported without an open", async () => {
+    const { manager, sources, talkbacks, closedStations } = routerFor();
+    seedRiders(sources, talkbacks);
+
+    manager.hold(STATION, 100); // a pre-warm whose open failed: an entry, but no session
+    await vi.advanceTimersByTimeAsync(100 + 1000);
+
+    expect(closedStations).toEqual([]);
+  });
+
   it("leaves a caller's own close alone, so a session being replaced keeps its source to rewarm", async () => {
     const { manager, sources, talkbacks, closedStations } = routerFor();
     manager.register(STATION, fakeSession());
