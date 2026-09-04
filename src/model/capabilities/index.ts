@@ -201,6 +201,10 @@ function hintHaystack(rec: CloudRecord): string {
  * Which product line each codec belongs to — the device-side half of the line partition enforced in
  * {@link detectCapabilities}. Exhaustive over {@link Codec} on purpose: a new codec must state its
  * line rather than silently defaulting into the security ecosystem.
+ *
+ * `display` is grouped into `security` by maintainer decision, not wire evidence — see the caveat on
+ * `NAMESPACE_BY_CODEC` in `model/param-namespace.ts` for what that actually opens up (inference-based
+ * capability attachment from `security`-line modules whose `modelHints` match this device's name/model).
  */
 const CODEC_LINE: Record<Codec, ProductLine> = {
   station: "security",
@@ -212,7 +216,7 @@ const CODEC_LINE: Record<Codec, ProductLine> = {
   mower: "clean",
   light: "life",
   printer: "print",
-  display: "mega",
+  display: "security",
 };
 
 /**

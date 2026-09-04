@@ -16,7 +16,7 @@ import { SECURITY_PARAMS, CLEAN_PARAMS, type ParamDef } from "./param-dictionary
 import { LIFE_PARAMS } from "./life-params.js";
 
 /** The param id spaces this SDK models. */
-export type ParamNamespace = "security" | "clean" | "life" | "print" | "mega";
+export type ParamNamespace = "security" | "clean" | "life" | "print";
 
 const TABLES: Record<ParamNamespace, Record<number, ParamDef>> = {
   security: SECURITY_PARAMS,
@@ -26,10 +26,6 @@ const TABLES: Record<ParamNamespace, Record<number, ParamDef>> = {
   // (printer-support plan Stage 3). Present so the printer codec resolves to its OWN namespace rather
   // than falling through to `security` and decoding another line's dictionary.
   print: {},
-  // eufy_mega-category id space (e.g. T87A0 Smart Display) — empty until a live capture confirms the
-  // param↔semantic map for ids 8001-8006 and beyond. Present for the same reason as `print`: so the
-  // `display` codec resolves to its OWN namespace rather than decoding a security id by accident.
-  mega: {},
 };
 
 /** Look up a param def in the given namespace. */
@@ -46,6 +42,14 @@ export function paramDef(ns: ParamNamespace, paramType: number): ParamDef | unde
  *
  * `mower` shares the **clean** namespace: it's a Clean-line Tuya-DP device (the app's `TuyaP2PMower`
  * family), so its DPs live in the same `~150-180` space as the vacuums.
+ *
+ * `display` (the `eufy_mega` line, e.g. T87A0 Smart Display) is placed in **`security`** by maintainer
+ * decision, not wire evidence — the confirmed transport is secure MQTT with no `p2p_did`, never P2P,
+ * and its own params (8001-8006) don't presently exist in `SECURITY_PARAMS`. Grouping it here means a
+ * future security param assigned in that id range would silently misdecode against this device, and
+ * any security capability whose `modelHints` regex matches "Smart Display"/"T87A0" text becomes
+ * inference-attachable (the exact `T8L20`-as-"Outdoor Spotlights" collision this partition otherwise
+ * guards against) — flagged here so a future reader doesn't mistake this grouping for evidence.
  */
 const NAMESPACE_BY_CODEC: Record<Codec, ParamNamespace> = {
   station: "security",
@@ -57,7 +61,7 @@ const NAMESPACE_BY_CODEC: Record<Codec, ParamNamespace> = {
   mower: "clean",
   light: "life",
   printer: "print",
-  display: "mega",
+  display: "security",
 };
 
 /** The param namespace a device's ids live in, from its codec, via the module-local `NAMESPACE_BY_CODEC` table. */

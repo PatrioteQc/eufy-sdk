@@ -22,7 +22,7 @@ const EXPECTED_LINE: Record<Codec, string> = {
   mower: "clean",
   light: "life",
   printer: "print",
-  display: "mega",
+  display: "security",
 };
 
 /** A name stuffed with trigger words from every line at once — the adversarial case. */
