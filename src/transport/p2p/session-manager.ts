@@ -11,10 +11,13 @@
  * `model/` is never imported here (the decorrelation invariant).
  *
  * Refcount model — ONE counter per station, shared by every "reason to stay connected": a live stream
- * holds one user while any consumer is attached; a control command holds a short keepalive so a burst
- * stays warm; a speculative pre-warm (e.g. a doorbell ring) holds a user for a window so a tap-to-view
- * is instant. When the counter hits zero the idle timer arms; a new user cancels it. `wired` stations
- * use an infinite window (never auto-close); `battery` stations a short one.
+ * holds one consumer while any viewer is attached; a control command and a speculative pre-warm (e.g. a
+ * doorbell ring) each take a **hold**, a consumer that releases itself when its timer expires. When the
+ * counter hits zero the idle timer arms; a new consumer cancels it. `wired` stations use an infinite
+ * window (never auto-close); `battery` stations a short one.
+ *
+ * A hold is distinguished from an attached consumer only for {@link SessionManager.resetWhenUnused},
+ * which may close through expiring holds but must wait for a real viewer.
  *
  * @module transport/p2p/session-manager
  */
@@ -24,6 +27,20 @@ import type { P2PSession } from "./p2p-session.js";
 
 /** A station's power tier — governs its idle window. */
 export type PowerTier = "wired" | "battery";
+
+/**
+ * A station open was abandoned because its entry was closed or superseded while the factory ran.
+ *
+ * Distinct from a connect failure: nothing is wrong with the device, the caller's reason to open it
+ * simply stopped applying. A speculative caller treats this as a non-event; anyone who asked for the
+ * session on a caller's behalf must still surface it.
+ */
+export class SessionSupersededError extends Error {
+  constructor(parentSn: string) {
+    super(`P2P session start superseded for station ${parentSn}`);
+    this.name = "SessionSupersededError";
+  }
+}
 
 /** Default idle window for a battery station before its session is closed to let the device sleep. */
 export const BATTERY_IDLE_MS = 300_000;
@@ -37,27 +54,27 @@ export const COMMAND_KEEPALIVE_MS = 15_000;
 export const PREWARM_MS = 28_000;
 
 /**
- * Per-station lifecycle state. `session` is the live connection (absent while cold); `users` counts the
- * active reasons to stay connected; `idle` is armed only when `users` is zero; `idleMs` is the resolved
- * window (`Infinity` = persistent); `connecting` coalesces concurrent cold opens.
+ * Per-station lifecycle state. `session` is the live connection (absent while cold); `consumers` counts
+ * the active reasons to stay connected; `holdTimers` is the subset of those that expire on their own, so
+ * its size IS the hold count and a discarded entry cannot leave one running; `idle` is armed only when
+ * `consumers` is zero; `connecting` coalesces concurrent cold opens.
+ *
+ * The power tier is deliberately NOT stored: it is resolved per idle-arm, so a station whose battery
+ * evidence arrives after its first session still gets the right window.
  */
 interface SessionEntry {
   session?: P2PSession;
-  users: number;
-  holds: number;
+  consumers: number;
+  holdTimers: Set<ReturnType<typeof setTimeout>>;
   resetPending: boolean;
   resetWaiters: Array<{ resolve: () => void; reject: (error: unknown) => void }>;
   idle: Timer;
-  powered: PowerTier;
-  idleMs: number;
   connecting?: Promise<P2PSession>;
 }
 
 export interface SessionManagerOpts {
   /** Idle window for battery stations (ms). Default {@link BATTERY_IDLE_MS}. */
   batteryIdleMs?: number;
-  /** Idle window for wired stations (ms). Default `Infinity` (persistent). */
-  wiredIdleMs?: number;
   /** Keepalive a single command holds after dispatch (ms). Default {@link COMMAND_KEEPALIVE_MS}. */
   commandKeepAliveMs?: number;
   /** Power tier per station serial — injected by the facade (no model import). Default: everything `wired`. */
@@ -107,20 +124,23 @@ export class SessionManager {
     return m;
   }
 
-  /** Resolve a station's power tier + idle window from the injected {@link SessionManagerOpts.poweredFor}. */
+  /**
+   * Resolve a station's idle window from the injected {@link SessionManagerOpts.poweredFor}.
+   *
+   * Called at every idle-arm rather than once per entry: `poweredFor` reads whatever the facade knows
+   * now, and a station's battery evidence can arrive after its first session was already open.
+   */
   private resolvePower(parentSn: string): { powered: PowerTier; idleMs: number } {
     const powered = this.opts.poweredFor?.(parentSn) ?? "wired";
-    const idleMs =
-      powered === "battery" ? (this.opts.batteryIdleMs ?? BATTERY_IDLE_MS) : (this.opts.wiredIdleMs ?? Infinity);
+    const idleMs = powered === "battery" ? (this.opts.batteryIdleMs ?? BATTERY_IDLE_MS) : Infinity;
     return { powered, idleMs };
   }
 
-  /** Get or create the lifecycle entry for a station (resolving its power tier once, lazily). */
+  /** Get or create the lifecycle entry for a station. */
   private entry(parentSn: string): SessionEntry {
     let e = this.entries.get(parentSn);
     if (!e) {
-      const { powered, idleMs } = this.resolvePower(parentSn);
-      e = { users: 0, holds: 0, resetPending: false, resetWaiters: [], idle: new Timer(), powered, idleMs };
+      e = { consumers: 0, holdTimers: new Set(), resetPending: false, resetWaiters: [], idle: new Timer() };
       this.entries.set(parentSn, e);
     }
     return e;
@@ -142,11 +162,11 @@ export class SessionManager {
   ): Promise<P2PSession> {
     const e = this.entry(parentSn);
     if (e.connecting) {
-      this.logger.debug(`[session ${parentSn}] connecting — joining in-flight open (${e.powered})`);
+      this.logger.debug(`[session ${parentSn}] connecting — joining in-flight open`);
       return e.connecting;
     }
     if (e.session) return e.session;
-    this.logger.debug(`[session ${parentSn}] connecting now (${e.powered}, on demand)`);
+    this.logger.debug(`[session ${parentSn}] connecting now (on demand)`);
     const generation = this.generation;
     const p = factory((session) => (e.session = session));
     e.connecting = p;
@@ -154,7 +174,7 @@ export class SessionManager {
       const session = await p;
       if (generation !== this.generation || this.entries.get(parentSn) !== e) {
         await session.close();
-        throw new Error(`P2P session start superseded for station ${parentSn}`);
+        throw new SessionSupersededError(parentSn);
       }
       e.session ??= session;
       this.logger.debug(`[session ${parentSn}] connected`);
@@ -165,25 +185,36 @@ export class SessionManager {
   }
 
   /** Add a reason to stay connected; cancels a pending idle-close. */
-  addUser(parentSn: string): void {
+  addConsumer(parentSn: string): void {
     const e = this.entry(parentSn);
-    e.users++;
+    e.consumers++;
     if (e.idle.pending) this.logger.debug(`[session ${parentSn}] in use again — idle-detach cancelled`);
     e.idle.cancel();
   }
 
-  /** Release a reason; arm the idle-close when the last one goes. */
-  releaseUser(parentSn: string): void {
+  /**
+   * Release a reason; arm the idle-close when the last one goes.
+   *
+   * A release with nothing counted is REFUSED rather than clamped to zero. Such a release belongs to no
+   * consumer on this entry — it is a deferred release whose own entry was already discarded — and
+   * letting it proceed would either restart a battery station's idle window from scratch or complete a
+   * deferred reset that someone else is still waiting to earn.
+   */
+  releaseConsumer(parentSn: string): void {
     const e = this.entries.get(parentSn);
     if (!e) return;
-    e.users = Math.max(0, e.users - 1);
-    if (e.resetPending && e.users <= e.holds) {
+    if (e.consumers === 0) {
+      this.logger.warn(`[session ${parentSn}] release with no consumer counted — ignored`);
+      return;
+    }
+    e.consumers -= 1;
+    if (e.resetPending && e.consumers <= e.holdTimers.size) {
       void this.close(parentSn).catch((error) =>
         this.logger.error(`[session ${parentSn}] deferred reset failed`, error),
       );
       return;
     }
-    if (e.users === 0) this.armIdle(parentSn, e);
+    if (e.consumers === 0) this.armIdle(parentSn, e);
   }
 
   /**
@@ -194,45 +225,50 @@ export class SessionManager {
     this.hold(parentSn, this.opts.commandKeepAliveMs ?? COMMAND_KEEPALIVE_MS);
   }
 
-  /** Add a user then auto-release after `ms` — the primitive behind command-keepalive + event pre-warm. */
+  /**
+   * Take a consumer that releases itself after `ms` — the primitive behind command-keepalive and event
+   * pre-warm, and the only way to hold a station without an attachment to release it.
+   *
+   * The timer is owned by the entry, so {@link discard} cancels it. That ownership is the point: keyed
+   * only by serial, an expiring hold would otherwise outlive the entry it was taken on and release a
+   * consumer counted by the SUCCESSOR entry — dropping a live viewer's count and arming an idle-detach
+   * underneath it.
+   */
   hold(parentSn: string, ms: number): void {
     const entry = this.entry(parentSn);
-    this.addUser(parentSn);
-    entry.holds += 1;
-    setTimeout(() => this.releaseHold(parentSn), ms).unref?.();
-  }
-
-  /** Release one expiring hold without counting it as an active session consumer. */
-  private releaseHold(parentSn: string): void {
-    const entry = this.entries.get(parentSn);
-    if (!entry) return;
-    entry.holds = Math.max(0, entry.holds - 1);
-    this.releaseUser(parentSn);
+    this.addConsumer(parentSn);
+    const timer = setTimeout(() => {
+      entry.holdTimers.delete(timer);
+      this.releaseConsumer(parentSn);
+    }, ms);
+    timer.unref?.();
+    entry.holdTimers.add(timer);
   }
 
   /**
-   * Arm the idle-close timer for a station whose user count just reached zero. A wired station with an
-   * infinite window is left persistent (no timer). Any subsequent {@link addUser} cancels the timer.
+   * Arm the idle-close timer for a station whose consumer count just reached zero. A wired station with
+   * an infinite window is left persistent (no timer). Any subsequent {@link addConsumer} cancels it.
    */
   private armIdle(parentSn: string, e: SessionEntry): void {
     e.idle.cancel();
-    if (!Number.isFinite(e.idleMs)) {
-      this.logger.debug(`[session ${parentSn}] idle (0 users) — staying persistent (${e.powered})`);
+    const { powered, idleMs } = this.resolvePower(parentSn);
+    if (!Number.isFinite(idleMs)) {
+      this.logger.debug(`[session ${parentSn}] idle (0 consumers) — staying persistent (${powered})`);
       return;
     }
-    this.logger.debug(`[session ${parentSn}] idle (0 users) — detaching in ${e.idleMs}ms unless reused`);
-    e.idle.arm(e.idleMs, () => this.onIdle(parentSn));
+    this.logger.debug(`[session ${parentSn}] idle (0 consumers) — detaching in ${idleMs}ms unless reused`);
+    e.idle.arm(idleMs, () => this.onIdle(parentSn));
   }
 
   /**
-   * Close a station's session once its idle window elapses with no users, letting the device sleep. Re-
-   * checks the user count first (activity between the timer firing and now re-arms instead). Dropping
-   * the entry here and the session's own `close` → {@link remove} are both idempotent.
+   * Close a station's session once its idle window elapses with no consumers, letting the device sleep.
+   * Re-checks the count first (activity between the timer firing and now re-arms instead). Dropping the
+   * entry here and the session's own `close` → {@link remove} are both idempotent.
    */
   private onIdle(parentSn: string): void {
     const e = this.entries.get(parentSn);
     if (!e) return;
-    if (e.users > 0) return;
+    if (e.consumers > 0) return;
     this.logger.debug(`[session ${parentSn}] idle window elapsed — disconnecting now (device can sleep)`);
     void this.close(parentSn).catch((error) => this.logger.error(`[session ${parentSn}] idle detach failed`, error));
   }
@@ -249,11 +285,11 @@ export class SessionManager {
     if (entry) await this.closeEntry(entry);
   }
 
-  /** Reset after active consumers detach, ignoring only expiring command holds. */
+  /** Reset after active consumers detach, ignoring only expiring holds. */
   async resetWhenUnused(parentSn: string): Promise<void> {
     const entry = this.entries.get(parentSn);
     if (!entry) return;
-    if (entry.users <= entry.holds) {
+    if (entry.consumers <= entry.holdTimers.size) {
       await this.close(parentSn);
       return;
     }
@@ -281,11 +317,19 @@ export class SessionManager {
     }
   }
 
-  /** Discard one lifecycle entry and return it for bounded close/reset completion. */
+  /**
+   * Discard one lifecycle entry and return it for bounded close/reset completion.
+   *
+   * Every timer the entry owns dies with it — the idle window and any hold still counting down. A
+   * discarded entry owns no live timer, which is what stops a deferred release from landing on whatever
+   * entry next occupies this serial.
+   */
   private discard(parentSn: string): SessionEntry | undefined {
     const entry = this.entries.get(parentSn);
     if (!entry) return undefined;
     entry.idle.cancel();
+    for (const timer of entry.holdTimers) clearTimeout(timer);
+    entry.holdTimers.clear();
     this.entries.delete(parentSn);
     return entry;
   }

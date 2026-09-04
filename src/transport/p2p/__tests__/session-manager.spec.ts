@@ -32,8 +32,8 @@ describe("SessionManager lifecycle", () => {
     const mgr = managerFor("battery");
     const session = fakeSession();
     await mgr.acquire("ST", async () => session);
-    mgr.addUser("ST");
-    mgr.releaseUser("ST");
+    mgr.addConsumer("ST");
+    mgr.releaseConsumer("ST");
     expect(session.close).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(1000);
     expect(session.close).toHaveBeenCalledOnce();
@@ -44,8 +44,8 @@ describe("SessionManager lifecycle", () => {
     const mgr = managerFor("wired");
     const session = fakeSession();
     await mgr.acquire("ST", async () => session);
-    mgr.addUser("ST");
-    mgr.releaseUser("ST");
+    mgr.addConsumer("ST");
+    mgr.releaseConsumer("ST");
     await vi.advanceTimersByTimeAsync(10 * 60_000);
     expect(session.close).not.toHaveBeenCalled();
     expect(mgr.has("ST")).toBe(true);
@@ -55,10 +55,10 @@ describe("SessionManager lifecycle", () => {
     const mgr = managerFor("battery");
     const session = fakeSession();
     await mgr.acquire("ST", async () => session);
-    mgr.addUser("ST");
-    mgr.releaseUser("ST");
+    mgr.addConsumer("ST");
+    mgr.releaseConsumer("ST");
     await vi.advanceTimersByTimeAsync(500);
-    mgr.addUser("ST");
+    mgr.addConsumer("ST");
     await vi.advanceTimersByTimeAsync(1000);
     expect(session.close).not.toHaveBeenCalled();
   });
@@ -81,8 +81,8 @@ describe("SessionManager lifecycle", () => {
     const mgr = managerFor("battery");
     const session = fakeSession();
     await mgr.acquire("ST", async () => session);
-    mgr.addUser("ST");
-    mgr.releaseUser("ST");
+    mgr.addConsumer("ST");
+    mgr.releaseConsumer("ST");
     mgr.remove("ST");
     await vi.advanceTimersByTimeAsync(1000);
     expect(session.close).not.toHaveBeenCalled();
@@ -94,8 +94,8 @@ describe("SessionManager lifecycle", () => {
     const first = fakeSession("first");
     const second = fakeSession("second");
     await mgr.acquire("ST", async () => first);
-    mgr.addUser("ST");
-    mgr.releaseUser("ST");
+    mgr.addConsumer("ST");
+    mgr.releaseConsumer("ST");
 
     await mgr.close("ST");
     await vi.advanceTimersByTimeAsync(1000);
@@ -132,7 +132,7 @@ describe("SessionManager lifecycle", () => {
     const mgr = managerFor("battery");
     const session = fakeSession();
     await mgr.acquire("ST", async () => session);
-    mgr.addUser("ST");
+    mgr.addConsumer("ST");
     mgr.bumpCommand("ST");
 
     const reset = mgr.resetWhenUnused("ST");
@@ -145,7 +145,7 @@ describe("SessionManager lifecycle", () => {
     expect(session.close).not.toHaveBeenCalled();
     expect(resetFinished).toBe(false);
 
-    mgr.releaseUser("ST");
+    mgr.releaseConsumer("ST");
     await reset;
     expect(session.close).toHaveBeenCalledOnce();
     expect(resetFinished).toBe(true);
@@ -181,7 +181,7 @@ describe("SessionManager lifecycle", () => {
     const session = fakeSession();
     vi.mocked(session.close).mockRejectedValue(failure);
     await mgr.acquire("ST", async () => session);
-    mgr.addUser("ST");
+    mgr.addConsumer("ST");
     const reset = mgr.resetWhenUnused("ST");
 
     const resetResult = expect(reset).rejects.toBe(failure);
@@ -198,8 +198,8 @@ describe("SessionManager lifecycle", () => {
     vi.mocked(failed.close).mockRejectedValue(failure);
     await mgr.acquire("A", async () => failed);
     await mgr.acquire("B", async () => closed);
-    mgr.addUser("A");
-    mgr.addUser("B");
+    mgr.addConsumer("A");
+    mgr.addConsumer("B");
     const failedReset = mgr.resetWhenUnused("A");
     const closedReset = mgr.resetWhenUnused("B");
 
@@ -219,5 +219,107 @@ describe("SessionManager lifecycle", () => {
     expect(mgr.get("ST")).toBe(session);
     await vi.advanceTimersByTimeAsync(10 * 60_000);
     expect(session.close).not.toHaveBeenCalled();
+  });
+
+  it("a hold that expires after its entry was discarded does not release the successor's consumer", async () => {
+    const mgr = managerFor("battery");
+    const first = fakeSession("first");
+    mgr.register("ST", first);
+
+    mgr.bumpCommand("ST"); // consumers=1, one 100ms hold
+    await mgr.resetWhenUnused("ST"); // only holds remain → closes, discarding the entry
+    expect(mgr.has("ST")).toBe(false);
+
+    const second = fakeSession("second");
+    mgr.register("ST", second);
+    mgr.addConsumer("ST"); // a stream attaches to the fresh session
+
+    // The original hold's window elapses, then the whole battery idle window on top of it.
+    await vi.advanceTimersByTimeAsync(100 + 1000);
+    expect(second.close).not.toHaveBeenCalled();
+    expect(mgr.get("ST")).toBe(second);
+  });
+
+  it("a pre-warm hold that expires after its entry was discarded leaves the successor alone too", async () => {
+    const mgr = managerFor("battery");
+    mgr.register("ST", fakeSession("first"));
+
+    mgr.hold("ST", 28_000); // a speculative pre-warm, far longer than the idle window
+    await mgr.close("ST");
+
+    const second = fakeSession("second");
+    mgr.register("ST", second);
+    mgr.addConsumer("ST");
+
+    await vi.advanceTimersByTimeAsync(28_000 + 1000);
+    expect(second.close).not.toHaveBeenCalled();
+  });
+
+  it("discarding an entry cancels the holds it still owns rather than leaving them to fire", async () => {
+    const mgr = managerFor("battery");
+    mgr.register("ST", fakeSession("first"));
+    mgr.bumpCommand("ST");
+    mgr.bumpCommand("ST"); // two concurrent holds
+
+    await mgr.close("ST");
+
+    const second = fakeSession("second");
+    mgr.register("ST", second);
+    mgr.addConsumer("ST");
+    mgr.addConsumer("ST"); // two real consumers on the successor
+
+    await vi.advanceTimersByTimeAsync(100 + 1000);
+    // Two stale holds firing would have taken both counts to zero and idle-closed under the consumers.
+    expect(second.close).not.toHaveBeenCalled();
+  });
+
+  it("a release with nothing counted neither re-arms the idle window nor completes a deferred reset", async () => {
+    const mgr = managerFor("battery");
+    const session = fakeSession();
+    mgr.register("ST", session);
+
+    mgr.addConsumer("ST");
+    const reset = mgr.resetWhenUnused("ST"); // parks: one real consumer, no holds
+    mgr.releaseConsumer("ST"); // the consumer detaches → the reset is earned
+    await reset;
+    expect(session.close).toHaveBeenCalledOnce();
+    expect(mgr.has("ST")).toBe(false);
+
+    // A second, unmatched release must not resurrect any timer on the serial.
+    mgr.releaseConsumer("ST");
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(mgr.has("ST")).toBe(false);
+  });
+
+  it("an extra release on a live station does not restart its idle window", async () => {
+    const mgr = managerFor("battery");
+    const session = fakeSession();
+    mgr.register("ST", session);
+
+    mgr.addConsumer("ST");
+    mgr.releaseConsumer("ST"); // consumers=0 → idle armed for 1000ms
+    await vi.advanceTimersByTimeAsync(600);
+    mgr.releaseConsumer("ST"); // unmatched: must NOT push the deadline out
+    await vi.advanceTimersByTimeAsync(400);
+
+    expect(session.close).toHaveBeenCalledOnce();
+  });
+
+  it("re-resolves the power tier per idle-arm, so battery evidence arriving late still lets the device sleep", async () => {
+    let tier: PowerTier = "wired";
+    const mgr = new SessionManager({ poweredFor: () => tier, batteryIdleMs: 1000 });
+    const session = fakeSession();
+    mgr.register("ST", session);
+
+    mgr.addConsumer("ST");
+    mgr.releaseConsumer("ST"); // resolved wired → persistent, no timer
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(session.close).not.toHaveBeenCalled();
+
+    tier = "battery"; // the facade now knows better
+    mgr.addConsumer("ST");
+    mgr.releaseConsumer("ST");
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(session.close).toHaveBeenCalledOnce();
   });
 });
