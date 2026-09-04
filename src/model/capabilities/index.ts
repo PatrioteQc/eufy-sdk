@@ -212,6 +212,7 @@ const CODEC_LINE: Record<Codec, ProductLine> = {
   mower: "clean",
   light: "life",
   printer: "print",
+  display: "mega",
 };
 
 /**

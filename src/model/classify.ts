@@ -270,6 +270,13 @@ export function classify(rec: CloudRecord): Codec {
   // code FIRST — otherwise `codecForType`'s camera bucket could swallow a T8L light below.
   if (codecFromModel(rec.model) === "light") return "light";
 
+  // The `eufy_mega` category (e.g. T87A0 "Smart Display") is its own ecosystem too, confirmed live
+  // (2026-09-04): it connects over secure MQTT with no `p2p_did`, never P2P, yet its `device_type`
+  // (1, observed) falls inside `isKnownSecurityType`'s residual range — the same trap `light` and
+  // `vacuum` avoid above. Decided from the exact category string, not a model-code guess: only one
+  // model has been observed on this line so far.
+  if (rec.category === "eufy_mega") return "display";
+
   if (rec.deviceType !== undefined) {
     const byType = codecForType(rec.deviceType);
     if (byType !== undefined) return byType;

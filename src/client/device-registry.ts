@@ -122,6 +122,7 @@ const CLASS_BY_CODEC: Record<Codec, DeviceClass> = {
   keypad: "other",
   light: "light",
   printer: "printer",
+  display: "other",
 };
 
 /**

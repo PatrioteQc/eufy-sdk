@@ -170,6 +170,11 @@ export const MODEL_REGISTRY: Readonly<Record<string, RegistryEntry>> = {
   T8L40: { codec: "light", name: "Indoor Floor Lamp E10" },
   // 3D printers (eufyMake/AnkerMake) classify from `category` alone — no curated model-code rows, since
   // no printer has been observed on a code yet (rows would guess; the category path already resolves one).
+
+  // eufy_mega category — its own `display` codec (classify.ts). Confirmed live (2026-09-04): the
+  // cloud `device_name` self-reports "Smart Display E10" (param 8005 echoes the same string). No
+  // capabilities are curated — no screen/audio/assistant param has been observed yet.
+  T87A0: { codec: "display", name: "Smart Display E10" },
 };
 
 /** Deduplicate a capability list, preserving first-seen order (precedence). */

@@ -26,8 +26,15 @@
  * `light` is the eufy **life** smart-lighting line (e.g. T8L02 "Permanent Outdoor Lights") — its
  * own secure-MQTT "DP" TLV wire, decoded by its own transport codec. Named distinctly
  * from the camera-floodlight `light` *capability* so the two never collide as bare `"light"`.
+ *
+ * `display` is the `eufy_mega`-category line (e.g. T87A0 "Smart Display E10") — confirmed live
+ * (2026-09-04) to connect over secure MQTT with no `p2p_did`, so it is NOT a security-line device
+ * despite its `device_type` falling inside the security residual range. No capability module
+ * targets it yet: no screen/audio/assistant param has been observed, only its own small cloud-param
+ * namespace (ids 8001-8006).
  */
-export type Codec = "station" | "camera" | "sensor" | "lock" | "keypad" | "vacuum" | "mower" | "light" | "printer";
+export type Codec =
+  "station" | "camera" | "sensor" | "lock" | "keypad" | "vacuum" | "mower" | "light" | "printer" | "display";
 
 /**
  * Capability identifiers (axis A). A capability is a composable feature a device exposes;

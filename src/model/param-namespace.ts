@@ -16,7 +16,7 @@ import { SECURITY_PARAMS, CLEAN_PARAMS, type ParamDef } from "./param-dictionary
 import { LIFE_PARAMS } from "./life-params.js";
 
 /** The param id spaces this SDK models. */
-export type ParamNamespace = "security" | "clean" | "life" | "print";
+export type ParamNamespace = "security" | "clean" | "life" | "print" | "mega";
 
 const TABLES: Record<ParamNamespace, Record<number, ParamDef>> = {
   security: SECURITY_PARAMS,
@@ -26,6 +26,10 @@ const TABLES: Record<ParamNamespace, Record<number, ParamDef>> = {
   // (printer-support plan Stage 3). Present so the printer codec resolves to its OWN namespace rather
   // than falling through to `security` and decoding another line's dictionary.
   print: {},
+  // eufy_mega-category id space (e.g. T87A0 Smart Display) — empty until a live capture confirms the
+  // param↔semantic map for ids 8001-8006 and beyond. Present for the same reason as `print`: so the
+  // `display` codec resolves to its OWN namespace rather than decoding a security id by accident.
+  mega: {},
 };
 
 /** Look up a param def in the given namespace. */
@@ -53,6 +57,7 @@ const NAMESPACE_BY_CODEC: Record<Codec, ParamNamespace> = {
   mower: "clean",
   light: "life",
   printer: "print",
+  display: "mega",
 };
 
 /** The param namespace a device's ids live in, from its codec, via the module-local `NAMESPACE_BY_CODEC` table. */

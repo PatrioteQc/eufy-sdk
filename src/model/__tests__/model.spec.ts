@@ -44,6 +44,17 @@ describe("classify (device_type → codec)", () => {
     expect(classify({ model: "T8L99", deviceType: 9 })).toBe("light");
     expect(resolveDevice({ model: "T8L77" }).capabilities).toContain("smart_light");
   });
+
+  it("maps the eufy_mega category to display — category wins over a colliding security device_type", () => {
+    // device_type 1 (confirmed live on a T87A0) falls inside the security residual range — category
+    // must be checked first, or this would silently resolve to "camera" and pick up capabilities
+    // (camera, person_detection) the device has no P2P path to ever answer for.
+    expect(classify({ category: "eufy_mega", deviceType: 1 })).toBe("display");
+    const r = resolveDevice({ category: "eufy_mega", model: "T87A0", deviceType: 1 });
+    expect(r.codec).toBe("display");
+    expect(r.name).toBe("Smart Display E10"); // curated registry row
+    expect(r.capabilities).toEqual(["info"]); // no camera-line capability leaks in
+  });
 });
 
 describe("resolveDevice — 3-tier composition", () => {
