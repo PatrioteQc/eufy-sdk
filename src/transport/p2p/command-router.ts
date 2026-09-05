@@ -765,8 +765,8 @@ export class P2PCommandRouter {
         budgetGraceMs: opts.budgetGraceMs,
         logger,
         label: key,
-        onActive: () => this.manager.addConsumer(parentSn),
-        onIdle: () => this.manager.releaseConsumer(parentSn),
+        onActive: () => this.manager.retain(parentSn),
+        onIdle: () => this.manager.release(parentSn),
         onStartFailed: () => this.onLiveStartFailed(sn, key),
         onSessionUnreachable: () => this.replaceUnreachableSession(sn, key, held),
       });

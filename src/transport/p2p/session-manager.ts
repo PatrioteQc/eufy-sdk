@@ -11,12 +11,12 @@
  * `model/` is never imported here (the decorrelation invariant).
  *
  * Refcount model — ONE counter per station, shared by every "reason to stay connected": a live stream
- * holds one consumer while any viewer is attached; a control command and a speculative pre-warm (e.g. a
- * doorbell ring) each take a **hold**, a consumer that releases itself when its timer expires. When the
- * counter hits zero the idle timer arms; a new consumer cancels it. `wired` stations use an infinite
+ * retains it while any viewer is attached; a control command and a speculative pre-warm (e.g. a doorbell
+ * ring) each take a **hold**, which retains it and then releases itself when its timer expires. When the
+ * counter hits zero the idle timer arms; a new retain cancels it. `wired` stations use an infinite
  * window (never auto-close); `battery` stations a short one.
  *
- * A hold is distinguished from an attached consumer only for {@link SessionManager.resetWhenUnused},
+ * A hold is distinguished from an attached viewer only for {@link SessionManager.resetWhenUnused},
  * which may close through expiring holds but must wait for a real viewer.
  *
  * @module transport/p2p/session-manager
@@ -49,17 +49,17 @@ export const COMMAND_KEEPALIVE_MS = 15_000;
 export const PREWARM_MS = 28_000;
 
 /**
- * Per-station lifecycle state. `session` is the live connection (absent while cold); `consumers` counts
+ * Per-station lifecycle state. `session` is the live connection (absent while cold); `retained` counts
  * the active reasons to stay connected; `holdTimers` is the subset of those that expire on their own, so
  * its size IS the hold count and a discarded entry cannot leave one running; `idle` is armed only when
- * `consumers` is zero; `connecting` coalesces concurrent cold opens.
+ * `retained` is zero; `connecting` coalesces concurrent cold opens.
  *
  * The power tier is deliberately NOT stored: it is resolved per idle-arm, so a station whose battery
  * evidence arrives after its first session still gets the right window.
  */
 interface SessionEntry {
   session?: P2PSession;
-  consumers: number;
+  retained: number;
   holdTimers: Set<ReturnType<typeof setTimeout>>;
   resetPending: boolean;
   resetWaiters: Array<{ resolve: () => void; reject: (error: unknown) => void }>;
@@ -123,7 +123,7 @@ export class SessionManager {
   private entry(parentSn: string): SessionEntry {
     let e = this.entries.get(parentSn);
     if (!e) {
-      e = { consumers: 0, holdTimers: new Set(), resetPending: false, resetWaiters: [], idle: new Timer() };
+      e = { retained: 0, holdTimers: new Set(), resetPending: false, resetWaiters: [], idle: new Timer() };
       this.entries.set(parentSn, e);
     }
     return e;
@@ -168,9 +168,9 @@ export class SessionManager {
   }
 
   /** Add a reason to stay connected; cancels a pending idle-close. */
-  addConsumer(parentSn: string): void {
+  retain(parentSn: string): void {
     const e = this.entry(parentSn);
-    e.consumers++;
+    e.retained++;
     if (e.idle.pending) this.logger.debug(`[session ${parentSn}] in use again — idle-detach cancelled`);
     e.idle.cancel();
   }
@@ -178,26 +178,26 @@ export class SessionManager {
   /**
    * Release a reason; arm the idle-close when the last one goes.
    *
-   * A release with nothing counted is REFUSED rather than clamped to zero. Such a release belongs to no
-   * consumer on this entry — it is a deferred release whose own entry was already discarded — and
-   * letting it proceed would either restart a battery station's idle window from scratch or complete a
-   * deferred reset that someone else is still waiting to earn.
+   * A release with nothing retained is REFUSED rather than clamped to zero. Such a release was never
+   * earned on this entry, and letting it proceed would either restart a battery station's idle window
+   * from scratch or complete a deferred reset a real viewer has not yet earned. Clamping to zero did
+   * both silently.
    */
-  releaseConsumer(parentSn: string): void {
+  release(parentSn: string): void {
     const e = this.entries.get(parentSn);
     if (!e) return;
-    if (e.consumers === 0) {
-      this.logger.warn(`[session ${parentSn}] release with no consumer counted — ignored`);
+    if (e.retained === 0) {
+      this.logger.warn(`[session ${parentSn}] release with nothing retained — ignored`);
       return;
     }
-    e.consumers -= 1;
-    if (e.resetPending && e.consumers <= e.holdTimers.size) {
+    e.retained -= 1;
+    if (e.resetPending && e.retained <= e.holdTimers.size) {
       void this.close(parentSn).catch((error) =>
         this.logger.error(`[session ${parentSn}] deferred reset failed`, error),
       );
       return;
     }
-    if (e.consumers === 0) this.armIdle(parentSn, e);
+    if (e.retained === 0) this.armIdle(parentSn, e);
   }
 
   /**
@@ -209,49 +209,49 @@ export class SessionManager {
   }
 
   /**
-   * Take a consumer that releases itself after `ms` — the primitive behind command-keepalive and event
-   * pre-warm, and the only way to hold a station without an attachment to release it.
+   * Retain a station and release it again after `ms` — the primitive behind command-keepalive and event
+   * pre-warm, and the only way to hold one open without an attachment to release it.
    *
    * The timer is owned by the entry, so {@link discard} cancels it. That ownership is the point: keyed
    * only by serial, an expiring hold would otherwise outlive the entry it was taken on and release a
-   * consumer counted by the SUCCESSOR entry — dropping a live viewer's count and arming an idle-detach
+   * retain counted by the SUCCESSOR entry — dropping a live viewer's count and arming an idle-detach
    * underneath it.
    */
   hold(parentSn: string, ms: number): void {
     const entry = this.entry(parentSn);
-    this.addConsumer(parentSn);
+    this.retain(parentSn);
     const timer = setTimeout(() => {
       entry.holdTimers.delete(timer);
-      this.releaseConsumer(parentSn);
+      this.release(parentSn);
     }, ms);
     timer.unref?.();
     entry.holdTimers.add(timer);
   }
 
   /**
-   * Arm the idle-close timer for a station whose consumer count just reached zero. A wired station with
-   * an infinite window is left persistent (no timer). Any subsequent {@link addConsumer} cancels it.
+   * Arm the idle-close timer for a station whose retain count just reached zero. A wired station with
+   * an infinite window is left persistent (no timer). Any subsequent {@link retain} cancels it.
    */
   private armIdle(parentSn: string, e: SessionEntry): void {
     e.idle.cancel();
     if ((this.opts.poweredFor?.(parentSn) ?? "wired") !== "battery") {
-      this.logger.debug(`[session ${parentSn}] idle (0 consumers) — staying persistent (wired)`);
+      this.logger.debug(`[session ${parentSn}] idle (nothing retained) — staying persistent (wired)`);
       return;
     }
     const idleMs = this.opts.batteryIdleMs ?? BATTERY_IDLE_MS;
-    this.logger.debug(`[session ${parentSn}] idle (0 consumers) — detaching in ${idleMs}ms unless reused`);
+    this.logger.debug(`[session ${parentSn}] idle (nothing retained) — detaching in ${idleMs}ms unless reused`);
     e.idle.arm(idleMs, () => this.onIdle(parentSn));
   }
 
   /**
-   * Close a station's session once its idle window elapses with no consumers, letting the device sleep.
+   * Close a station's session once its idle window elapses with nothing retained, letting the device sleep.
    * Re-checks the count first (activity between the timer firing and now re-arms instead). Dropping the
    * entry here and the session's own `close` → {@link remove} are both idempotent.
    */
   private onIdle(parentSn: string): void {
     const e = this.entries.get(parentSn);
     if (!e) return;
-    if (e.consumers > 0) return;
+    if (e.retained > 0) return;
     this.logger.debug(`[session ${parentSn}] idle window elapsed — disconnecting now (device can sleep)`);
     void this.close(parentSn).catch((error) => this.logger.error(`[session ${parentSn}] idle detach failed`, error));
   }
@@ -268,11 +268,11 @@ export class SessionManager {
     if (entry) await this.closeEntry(entry);
   }
 
-  /** Reset after active consumers detach, ignoring only expiring holds. */
+  /** Reset once every viewer detaches, ignoring only expiring holds. */
   async resetWhenUnused(parentSn: string): Promise<void> {
     const entry = this.entries.get(parentSn);
     if (!entry) return;
-    if (entry.consumers <= entry.holdTimers.size) {
+    if (entry.retained <= entry.holdTimers.size) {
       await this.close(parentSn);
       return;
     }
