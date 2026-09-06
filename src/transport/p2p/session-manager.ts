@@ -73,6 +73,16 @@ export interface SessionManagerOpts {
   commandKeepAliveMs?: number;
   /** Power tier per station serial — injected by the facade (no model import). Default: everything `wired`. */
   poweredFor?: (parentSn: string) => PowerTier;
+  /**
+   * Called after the manager closes a station on its OWN initiative — an elapsed idle window, or a
+   * deferred reset falling due.
+   *
+   * Those two are the only closes with no caller to follow up: everything riding the session is stale the
+   * moment it goes, and only the owner knows what that is. A close a caller asked for is that caller's to
+   * clean up after, which is why this does not fire for {@link SessionManager.close},
+   * {@link SessionManager.closeAll}, or a superseded open.
+   */
+  onAutoClose?: (parentSn: string) => void;
   /** Diagnostics sink for the lifecycle transitions (open / idle-arm / detach). Omit for silence. */
   logger?: Logger;
 }
@@ -191,7 +201,7 @@ export class SessionManager {
     }
     e.retained -= 1;
     if (e.reset && e.retained <= e.holdTimers.size) {
-      void this.close(parentSn).catch((error) =>
+      void this.autoClose(parentSn).catch((error) =>
         this.logger.error(`[session ${parentSn}] deferred reset failed`, error),
       );
       return;
@@ -252,7 +262,32 @@ export class SessionManager {
     if (!e) return;
     if (e.retained > 0) return;
     this.logger.debug(`[session ${parentSn}] idle window elapsed — disconnecting now (device can sleep)`);
-    void this.close(parentSn).catch((error) => this.logger.error(`[session ${parentSn}] idle detach failed`, error));
+    void this.autoClose(parentSn).catch((error) =>
+      this.logger.error(`[session ${parentSn}] idle detach failed`, error),
+    );
+  }
+
+  /**
+   * Close a station the manager itself decided to close, and announce it.
+   *
+   * The announcement is the whole point: {@link SessionManagerOpts.onAutoClose} is how the owner learns
+   * about a teardown it did not request, and so the only way anything riding the session — a lingering
+   * live source, a talkback — gets dropped rather than handed out again over a dead connection.
+   *
+   * It fires the moment the entry is discarded, BEFORE the socket teardown and before any deferred reset
+   * settles. That is deliberate on both counts: from the instant the entry is gone a fresh acquisition
+   * resolves a new session while a cached source still points at the old one, so announcing later leaves
+   * a window in which a viewer can attach to a stale source; and a caller awaiting a reset should find
+   * the station's riders already dropped when it resumes.
+   *
+   * An entry that never carried a session is still torn down, but silently: a pre-warm whose open failed
+   * leaves one behind, and announcing it would report a station closed that was never reported open.
+   */
+  private async autoClose(parentSn: string): Promise<void> {
+    const entry = this.discard(parentSn);
+    if (!entry) return;
+    if (entry.session) this.opts.onAutoClose?.(parentSn);
+    await this.closeEntry(entry);
   }
 
   /** Drop a station's entry + timer (called from the session's `close` handler). Idempotent. */
@@ -273,11 +308,14 @@ export class SessionManager {
    * Every caller that arrives while one is already pending gets the SAME promise: the outcome is a
    * property of the station's teardown, not of who asked, so one deferred per entry is the whole
    * mechanism — and it cannot grow with the number of callers.
+   *
+   * Both branches close through {@link autoClose}: the caller asked for a recycle, not for the station's
+   * live sources to be dropped, so it does not clean up after one — exactly like the idle path.
    */
   resetWhenUnused(parentSn: string): Promise<void> {
     const entry = this.entries.get(parentSn);
     if (!entry) return Promise.resolve();
-    if (entry.retained <= entry.holdTimers.size) return this.close(parentSn);
+    if (entry.retained <= entry.holdTimers.size) return this.autoClose(parentSn);
     entry.reset ??= Promise.withResolvers<void>();
     return entry.reset.promise;
   }

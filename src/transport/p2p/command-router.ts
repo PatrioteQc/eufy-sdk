@@ -222,7 +222,12 @@ export class P2PCommandRouter {
   private readonly cipherKeyCache = new Map<number, string | undefined>();
 
   constructor(private readonly deps: P2PRouterDeps) {
-    this.manager = new SessionManager({ poweredFor: deps.poweredFor, logger: deps.logger, ...deps.sessionIdle });
+    this.manager = new SessionManager({
+      poweredFor: deps.poweredFor,
+      logger: deps.logger,
+      onAutoClose: (parentSn) => this.tearDownStation(parentSn),
+      ...deps.sessionIdle,
+    });
   }
 
   /** Forward one P2P failure once even when both the session listener and startup waiter observe it. */
@@ -395,17 +400,7 @@ export class P2PCommandRouter {
     });
     session.on("close", () => {
       if (this.manager.get(stationSn) !== session) return;
-      this.manager.remove(stationSn);
-      for (const key of [...this.liveSources.keys()]) {
-        if (key.startsWith(`${stationSn}:`)) this.dropLiveSource(key);
-      }
-      for (const [key, talk] of this.talkbacks) {
-        if (key.startsWith(`${stationSn}:`)) {
-          this.talkbacks.delete(key);
-          void talk.stop().catch(() => {});
-        }
-      }
-      this.deps.onClose(stationSn);
+      this.tearDownStation(stationSn);
     });
     session.on("error", (e: Error) => this.reportError(e));
     session.on("level2Ready", ({ cipherId }: { cipherId: number }) => this.deps.onLevel2Ready(stationSn, cipherId));
@@ -877,6 +872,34 @@ export class P2PCommandRouter {
     source.dispose();
     this.liveSources.delete(key);
     this.liveSourceOpts.delete(key);
+  }
+
+  /**
+   * Drop everything that was riding a station's session, and report the station closed.
+   *
+   * A live source holds the `P2PSession` it was BUILT with and never re-resolves it, so one left cached
+   * past its session is handed back to the next viewer over a dead connection: it answers the retained
+   * keyframe, then fails on the warm-up deadline. Talkbacks are the same shape. Both are therefore
+   * dropped whenever the session under them goes.
+   *
+   * Reached two ways, both idempotent: the session's own `close` event, when it died while still the
+   * station's registered session, and {@link SessionManagerOpts.onAutoClose}, when the manager closed it
+   * unasked. A close a CALLER made is deliberately not routed here — {@link closeAll} disposes its own
+   * sources first, and {@link replaceUnreachableSession} keeps its source alive on purpose to rewarm it
+   * on the replacement session.
+   */
+  private tearDownStation(stationSn: string): void {
+    this.manager.remove(stationSn);
+    for (const key of [...this.liveSources.keys()]) {
+      if (key.startsWith(`${stationSn}:`)) this.dropLiveSource(key);
+    }
+    for (const [key, talk] of this.talkbacks) {
+      if (key.startsWith(`${stationSn}:`)) {
+        this.talkbacks.delete(key);
+        void talk.stop().catch(() => {});
+      }
+    }
+    this.deps.onClose(stationSn);
   }
 
   /**
