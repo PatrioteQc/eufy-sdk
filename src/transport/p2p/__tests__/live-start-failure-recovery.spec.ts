@@ -52,8 +52,8 @@ function routerFor(sn: string) {
   const manager = (router as unknown as { manager: Record<string, unknown> }).manager;
   manager.close = async (station: string) => void closed.push(station);
   manager.resetWhenUnused = async (station: string) => void resetWhenUnused.push(station);
-  manager.addUser = () => {};
-  manager.releaseUser = () => {};
+  manager.retain = () => {};
+  manager.release = () => {};
 
   return { router, closed, resetWhenUnused, opened };
 }

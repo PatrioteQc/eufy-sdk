@@ -47,7 +47,13 @@ import { captureSnapshotFromShared, recordClip } from "./media.js";
 import type { FfmpegLevel } from "../ffmpeg.js";
 import { LiveStream } from "./live-stream.js";
 import { SharedLiveSource, type Consumer } from "./shared-live-source.js";
-import { SessionManager, PREWARM_MS, type PowerTier, type SessionManagerOpts } from "./session-manager.js";
+import {
+  SessionManager,
+  SessionSupersededError,
+  PREWARM_MS,
+  type PowerTier,
+  type SessionManagerOpts,
+} from "./session-manager.js";
 import { Fmp4Muxer } from "./fmp4.js";
 import { openReadableFromConsumer } from "./readable-egress.js";
 import { Talkback } from "./talkback.js";
@@ -193,7 +199,7 @@ export interface P2PRouterDeps {
    */
   poweredFor?: (parentSn: string) => PowerTier;
   /** Idle/keepalive window overrides for the session lifecycle (see {@link SessionManagerOpts}). */
-  sessionIdle?: Pick<SessionManagerOpts, "batteryIdleMs" | "wiredIdleMs" | "commandKeepAliveMs">;
+  sessionIdle?: Pick<SessionManagerOpts, "batteryIdleMs">;
   /** LAN address overrides for direct P2P, keyed by parent-station serial (host or host:port). */
   localAddresses?: Record<string, string>;
 }
@@ -220,7 +226,12 @@ export class P2PCommandRouter {
   private readonly cipherKeyCache = new Map<number, string | undefined>();
 
   constructor(private readonly deps: P2PRouterDeps) {
-    this.manager = new SessionManager({ poweredFor: deps.poweredFor, logger: deps.logger, ...deps.sessionIdle });
+    this.manager = new SessionManager({
+      poweredFor: deps.poweredFor,
+      logger: deps.logger,
+      onAutoClose: (parentSn) => this.tearDownStation(parentSn),
+      ...deps.sessionIdle,
+    });
   }
 
   /** Forward one P2P failure once even when both the session listener and startup waiter observe it. */
@@ -254,18 +265,23 @@ export class P2PCommandRouter {
    * Speculatively open + briefly hold a station's session (e.g. after a doorbell ring) so a
    * tap-to-view / talkback attaches to a warm session. Transport-neutral: the facade maps the semantic
    * event → station and decides whether this station may be pre-warmed at all; the router never learns
-   * event semantics. A user hold is taken before the open so a slow connect can't idle-close mid-flight,
-   * and released `ms` later — which arms the station's idle window rather than closing the session, per
-   * {@link PREWARM_MS}. Best-effort — a failed open surfaces via `onError`.
+   * event semantics.
+   *
+   * One hold, taken before the open so a slow connect can't idle-close mid-flight. It expires on its
+   * own, which arms the station's idle window rather than closing the session, per {@link PREWARM_MS}.
+   * A second hold after the open would buy nothing: {@link openStation} returns once the socket is bound
+   * and the lookups are away, not once the peer has answered, so both would expire together.
+   *
+   * Best-effort — a failed open surfaces via `onError`. A {@link SessionSupersededError} does not: the
+   * session was deliberately closed underneath a speculative open, which is not a fault to report.
    */
   async prewarm(parentSn: string, ms: number = PREWARM_MS): Promise<void> {
-    this.manager.addUser(parentSn);
+    this.manager.hold(parentSn, ms);
     try {
       await this.openStation(parentSn);
     } catch (e) {
+      if (e instanceof SessionSupersededError) return;
       this.deps.onError(e instanceof Error ? e : new Error(String(e)));
-    } finally {
-      setTimeout(() => this.manager.releaseUser(parentSn), ms).unref?.();
     }
   }
 
@@ -280,6 +296,11 @@ export class P2PCommandRouter {
     await this.manager.closeAll();
   }
 
+  /** This serial's loaded record, or `undefined` — the one place the cached list is searched by serial. */
+  private recordFor(sn: string): EufyDevice | undefined {
+    return this.deps.listDevices().find((d) => d.sn === sn);
+  }
+
   /** The parent-station key a device's session lives under (its HomeBase, or itself if standalone). */
   private stationKeyFor(dev: EufyDevice): string {
     const raw = (dev.raw ?? {}) as Record<string, any>;
@@ -292,13 +313,13 @@ export class P2PCommandRouter {
    * serial itself if the device isn't loaded (a standalone device is its own station).
    */
   stationKeyOf(sn: string): string {
-    const dev = this.deps.listDevices().find((d) => d.sn === sn);
+    const dev = this.recordFor(sn);
     return dev ? this.stationKeyFor(dev) : sn;
   }
 
   /** Reset only a standalone device's session; an attached device must not close its shared HomeBase. */
   async resetStandaloneSession(sn: string): Promise<void> {
-    const device = this.deps.listDevices().find((candidate) => candidate.sn === sn);
+    const device = this.recordFor(sn);
     if (!device) return;
     const station = this.stationKeyFor(device);
     if (station === sn) await this.manager.resetWhenUnused(station);
@@ -307,18 +328,21 @@ export class P2PCommandRouter {
   /**
    * Open (or reuse) the P2P session for a station **on demand**, coalescing concurrent cold opens via
    * the {@link SessionManager}. A command / stream / pre-warm opens only the station it targets; idle
-   * battery stations auto-close. The station's own record carries the P2P creds; a per-station DSK key
-   * is fetched best-effort (ThroughTek PPCS UDP, LAN broadcast fallback if the key lookup fails). The
-   * LAN address for a direct local lookup is a caller-supplied override ({@link P2PRouterDeps.localAddresses})
+   * battery stations auto-close. The station's own record carries the P2P creds — a serial with no
+   * record of its own throws, because every value the session carries comes from that one record (the
+   * endpoint dialled, its cloud and LAN addresses, the admin user id the cipher lookup quotes) and is
+   * keyed under that one serial, so there is no partial answer to give. A per-station DSK key is
+   * fetched best-effort (ThroughTek PPCS UDP, LAN broadcast fallback if the key lookup fails). The LAN
+   * address for a direct local lookup is a caller-supplied override ({@link P2PRouterDeps.localAddresses})
    * when present, else the freshest private IP in the record ({@link freshestLanIp}) — so P2P works
    * on-LAN even when broadcast is blocked (AP isolation) or the record's `ip_addr` went stale.
    */
   private async openStation(parentSn: string): Promise<P2PSession> {
     return this.manager.acquire(parentSn, async (register) => {
-      const devs = this.deps.listDevices();
-      const stationDev = devs.find((d) => d.sn === parentSn) ?? devs.find((d) => this.stationKeyFor(d) === parentSn);
-      const raw = (stationDev?.raw ?? {}) as Record<string, any>;
-      const did = (stationDev?.p2pDid ?? raw.p2p_did) as string | undefined;
+      const stationDev = this.recordFor(parentSn);
+      if (!stationDev) throw new Error(`station ${parentSn} is not in the device list`);
+      const raw = (stationDev.raw ?? {}) as Record<string, any>;
+      const did = (stationDev.p2pDid ?? raw.p2p_did) as string | undefined;
       if (!did) throw new Error(`no P2P endpoint (p2p_did) for station ${parentSn}`);
       let dskKey: string | undefined;
       try {
@@ -380,17 +404,7 @@ export class P2PCommandRouter {
     });
     session.on("close", () => {
       if (this.manager.get(stationSn) !== session) return;
-      this.manager.remove(stationSn);
-      for (const key of [...this.liveSources.keys()]) {
-        if (key.startsWith(`${stationSn}:`)) this.dropLiveSource(key);
-      }
-      for (const [key, talk] of this.talkbacks) {
-        if (key.startsWith(`${stationSn}:`)) {
-          this.talkbacks.delete(key);
-          void talk.stop().catch(() => {});
-        }
-      }
-      this.deps.onClose(stationSn);
+      this.tearDownStation(stationSn);
     });
     session.on("error", (e: Error) => this.reportError(e));
     session.on("level2Ready", ({ cipherId }: { cipherId: number }) => this.deps.onLevel2Ready(stationSn, cipherId));
@@ -445,7 +459,7 @@ export class P2PCommandRouter {
   /** Resolve a serial to its loaded device record, opening its station's P2P session on demand. */
   async deviceFor(sn: string): Promise<EufyDevice> {
     if (!this.deps.listDevices().length) await this.deps.ensureDevices();
-    const dev = this.deps.listDevices().find((d) => d.sn === sn);
+    const dev = this.recordFor(sn);
     if (!dev) throw new Error(`device ${sn} not found`);
     await this.openStation(this.stationKeyFor(dev));
     return dev;
@@ -758,8 +772,8 @@ export class P2PCommandRouter {
         budgetGraceMs: opts.budgetGraceMs,
         logger,
         label: key,
-        onActive: () => this.manager.addUser(parentSn),
-        onIdle: () => this.manager.releaseUser(parentSn),
+        onActive: () => this.manager.retain(parentSn),
+        onIdle: () => this.manager.release(parentSn),
         onStartFailed: () => this.onLiveStartFailed(sn, key),
         onSessionUnreachable: () => this.replaceUnreachableSession(sn, key, held),
       });
@@ -862,6 +876,34 @@ export class P2PCommandRouter {
     source.dispose();
     this.liveSources.delete(key);
     this.liveSourceOpts.delete(key);
+  }
+
+  /**
+   * Drop everything that was riding a station's session, and report the station closed.
+   *
+   * A live source holds the `P2PSession` it was BUILT with and never re-resolves it, so one left cached
+   * past its session is handed back to the next viewer over a dead connection: it answers the retained
+   * keyframe, then fails on the warm-up deadline. Talkbacks are the same shape. Both are therefore
+   * dropped whenever the session under them goes.
+   *
+   * Reached two ways, both idempotent: the session's own `close` event, when it died while still the
+   * station's registered session, and {@link SessionManagerOpts.onAutoClose}, when the manager closed it
+   * unasked. A close a CALLER made is deliberately not routed here — {@link closeAll} disposes its own
+   * sources first, and {@link replaceUnreachableSession} keeps its source alive on purpose to rewarm it
+   * on the replacement session.
+   */
+  private tearDownStation(stationSn: string): void {
+    this.manager.remove(stationSn);
+    for (const key of [...this.liveSources.keys()]) {
+      if (key.startsWith(`${stationSn}:`)) this.dropLiveSource(key);
+    }
+    for (const [key, talk] of this.talkbacks) {
+      if (key.startsWith(`${stationSn}:`)) {
+        this.talkbacks.delete(key);
+        void talk.stop().catch(() => {});
+      }
+    }
+    this.deps.onClose(stationSn);
   }
 
   /**

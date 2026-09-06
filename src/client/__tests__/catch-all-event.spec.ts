@@ -418,6 +418,48 @@ describe("catch-all event tag", () => {
     vi.useRealTimers();
   });
 
+  it("releases a following write when the session recycle is still waiting on an attached viewer", async () => {
+    vi.useFakeTimers();
+    const eufy = client();
+    let mode = 1;
+    let cloudMode = "1";
+    const device = {
+      getProperty: () => ({ value: mode }),
+      applyParams: (params: Record<number, string>) => {
+        mode = Number(params[1224]);
+      },
+    };
+    (eufy as any).liveDevices.set("T8000P0000000000", new WeakRef(device));
+    vi.spyOn((eufy as any).registry, "require").mockImplementation(() => ({ params: { 1224: cloudMode } }));
+    vi.spyOn((eufy as any).registry, "getDevices").mockResolvedValue([]);
+    const route = vi.spyOn(eufy as any, "routeCommand").mockImplementation(async (...args: unknown[]) => {
+      cloudMode = String(commandObservation(args[1] as never)!.expected);
+    });
+    // A viewer never detaches, so the recycle this write asks for never settles.
+    vi.spyOn((eufy as any).p2p, "resetStandaloneSession").mockReturnValue(new Promise<void>(() => {}));
+    const command = (expected: number) =>
+      observeCommand(
+        { kind: "set-param", param: 1224, value: expected, form: "auto", channel: 0 },
+        {
+          event: "armingModeChanged",
+          expected,
+          param: 1224,
+          property: "armingMode",
+          resetStandaloneSession: true,
+          timeoutMs: 20_000,
+        },
+      );
+    const sink = (eufy as any).commandSinkFor("T8000P0000000000");
+
+    await sink.dispatch(command(63));
+    const queued = sink.dispatch(command(1));
+
+    await vi.advanceTimersByTimeAsync(5_000);
+    await expect(queued).resolves.toBeUndefined();
+    expect(route, "the queued write reached the wire rather than waiting on the viewer").toHaveBeenCalledTimes(2);
+    vi.useRealTimers();
+  });
+
   it("allows observation policy to be replaced on a reused command object", () => {
     const command = { kind: "set-param", param: 1224, value: 63, form: "auto", channel: 0 } as const;
     const first = { event: "armingModeChanged", expected: 63, param: 1224, property: "armingMode", timeoutMs: 1 };
