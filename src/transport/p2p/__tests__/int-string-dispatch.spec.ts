@@ -21,6 +21,8 @@ function setup(accountId = ACCOUNT_ID, register = true) {
         stationSn: STATION_SN,
         raw: { parent_sn: STATION_SN, device_channel: 1, member: { admin_user_id: accountId } },
       } as never,
+      // Listed but endpoint-less, so a cold open fails at session resolution — what `register: false` tests.
+      { sn: STATION_SN, stationSn: STATION_SN, p2pDid: "", raw: { member: { admin_user_id: accountId } } } as never,
     ],
     ensureDevices: async () => {},
     onConnect: () => {},
