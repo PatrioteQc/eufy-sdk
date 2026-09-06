@@ -1,91 +1,109 @@
 import { describe, expect, it, vi } from "vitest";
-import { P2PCommandRouter, type P2PRouterDeps } from "../command-router.js";
-import { connectedSession, type FakeP2PSession } from "./session-fixtures.js";
+import { connectedSession, routerWithSession, ACCOUNT_ID, DEVICE_SN, type FakeP2PSession } from "./session-fixtures.js";
 
-const DEVICE_SN = "T8114P0000000000";
-const STATION_SN = "T8010P0000000000";
-const ACCOUNT_ID = "0000000000000000000000000000000000000000";
 const CMD_NAS_SWITCH = 1145;
 const CMD_NAS_TEST = 1146;
 
 interface FakeSession extends FakeP2PSession {
   sendIntStringCommand: ReturnType<typeof vi.fn>;
+  sendRawLevel2Bytes: ReturnType<typeof vi.fn>;
 }
 
-function setup(overrides: Partial<P2PRouterDeps> = {}) {
-  const session = connectedSession() as FakeSession;
-  session.sendIntStringCommand = vi.fn();
-  const deps: P2PRouterDeps = {
-    mega: {} as P2PRouterDeps["mega"],
-    listDevices: () => [
-      {
-        sn: DEVICE_SN,
-        stationSn: STATION_SN,
-        raw: { parent_sn: STATION_SN, device_channel: 1, member: { admin_user_id: ACCOUNT_ID } },
-      } as never,
-    ],
-    ensureDevices: async () => {},
-    onConnect: () => {},
-    onClose: () => {},
-    onError: () => {},
-    onLevel2Ready: () => {},
-    onFrame: () => {},
-    rtspUrlReadTimeoutMs: 30,
-    ...overrides,
-  };
-  const router = new P2PCommandRouter(deps);
-  (router as unknown as { manager: { register(sn: string, value: unknown): void } }).manager.register(
-    STATION_SN,
-    session,
-  );
-  return { router, session };
+/** A fake station session with both send wires spied, keyed (level-2) or not (standalone level-1). */
+function session(hasLevel2Key: boolean): FakeSession {
+  const s = connectedSession(hasLevel2Key) as FakeSession;
+  s.sendIntStringCommand = vi.fn();
+  s.sendRawLevel2Bytes = vi.fn(() => true);
+  return s;
 }
-
-/** One event-loop turn — enough for `resolveSession`'s already-registered fast path to settle. */
-const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
 describe("P2PCommandRouter.readReportedRtspUrl", () => {
-  it("writes the publish switch then the livestream test, both for the resolved channel", async () => {
-    const { router, session } = setup();
-    const read = router.readReportedRtspUrl(DEVICE_SN);
-    await tick();
+  it("provokes the publish switch and the livestream, then returns the pushed URL", async () => {
+    vi.useFakeTimers();
+    try {
+      const s = session(false); // a standalone camera negotiates no level-2 key → the int-string wire
+      const router = routerWithSession(s);
+      const read = router.readReportedRtspUrl(DEVICE_SN);
+      await vi.advanceTimersByTimeAsync(500); // both provokes' first datagram have gone out
 
-    expect(session.sendIntStringCommand).toHaveBeenNthCalledWith(1, CMD_NAS_SWITCH, 1, 1, ACCOUNT_ID, 1);
-    expect(session.sendIntStringCommand).toHaveBeenNthCalledWith(2, CMD_NAS_TEST, 1, 1, ACCOUNT_ID, 1);
+      expect(s.sendIntStringCommand).toHaveBeenCalledWith(CMD_NAS_SWITCH, 1, 1, ACCOUNT_ID, 1);
+      expect(s.sendIntStringCommand).toHaveBeenCalledWith(CMD_NAS_TEST, 1, 1, ACCOUNT_ID, 1);
 
-    session.emit("rtspUrl", { channel: 1, url: "rtsp://u:p@host/live0" });
-    await expect(read).resolves.toBe("rtsp://u:p@host/live0");
+      s.emit("rtspUrl", { channel: 1, url: "rtsp://u:p@host/live0" });
+      await expect(read).resolves.toBe("rtsp://u:p@host/live0");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
-  it("ignores a push for another channel on the same station session", async () => {
-    const { router, session } = setup();
-    const read = router.readReportedRtspUrl(DEVICE_SN);
-    await tick();
+  it("routes the provoke through the session level decision — a keyed station uses its level-2 wire", async () => {
+    // The fix for the HomeBase-attached read that never answered: a keyed session publishes 1145 on
+    // its level-2 seal, so the provoke must ride that wire, not a pinned level-1 int-string frame.
+    vi.useFakeTimers();
+    try {
+      const s = session(true); // holds a level-2 key
+      const router = routerWithSession(s);
+      const read = router.readReportedRtspUrl(DEVICE_SN);
+      await vi.advanceTimersByTimeAsync(500);
 
-    session.emit("rtspUrl", { channel: 2, url: "rtsp://wrong-camera/live0" });
-    await tick(); // let the wait loop re-arm its listener before the next push arrives
-    session.emit("rtspUrl", { channel: 1, url: "rtsp://right-camera/live0" });
-    await expect(read).resolves.toBe("rtsp://right-camera/live0");
+      expect(s.sendRawLevel2Bytes).toHaveBeenCalled();
+      expect(s.sendIntStringCommand, "a keyed station must not get the level-1 form").not.toHaveBeenCalled();
+
+      s.emit("rtspUrl", { channel: 1, url: "rtsp://u:p@host/live0" });
+      await expect(read).resolves.toBe("rtsp://u:p@host/live0");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
-  it("resolves undefined and leaves no listener behind when nothing answers in time", async () => {
-    const { router, session } = setup({ rtspUrlReadTimeoutMs: 20 });
+  it("ignores a push for another channel on the multiplexed station session", async () => {
+    vi.useFakeTimers();
+    try {
+      const s = session(false);
+      const router = routerWithSession(s);
+      const read = router.readReportedRtspUrl(DEVICE_SN);
+      await vi.advanceTimersByTimeAsync(0); // arm the single listener
+
+      // One persistent listener, so a wrong-channel push and the right one can land in the same turn —
+      // no re-arm gap between them to lose the second.
+      s.emit("rtspUrl", { channel: 2, url: "rtsp://wrong-camera/live0" });
+      s.emit("rtspUrl", { channel: 1, url: "rtsp://right-camera/live0" });
+      await expect(read).resolves.toBe("rtsp://right-camera/live0");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("resolves undefined and leaves no listener when nothing answers before the deadline", async () => {
+    vi.useFakeTimers();
+    try {
+      const s = session(false);
+      const router = routerWithSession(s);
+      const read = router.readReportedRtspUrl(DEVICE_SN);
+      await vi.advanceTimersByTimeAsync(60_000); // past the read deadline
+
+      await expect(read).resolves.toBeUndefined();
+      expect(s.listenerCount("rtspUrl"), "a timed-out read must not leak a listener on the session").toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not provoke a device that has no account id", async () => {
+    const s = session(false);
+    const router = routerWithSession(s, { accountId: "" });
 
     await expect(router.readReportedRtspUrl(DEVICE_SN)).resolves.toBeUndefined();
-
-    expect(session.listenerCount("rtspUrl"), "a timed-out read must not leave a listener on the station session").toBe(
-      0,
-    );
+    expect(s.sendIntStringCommand).not.toHaveBeenCalled();
+    expect(s.sendRawLevel2Bytes).not.toHaveBeenCalled();
+    expect(s.listenerCount("rtspUrl")).toBe(0);
   });
 
-  it("leaves no listener behind on the success path either", async () => {
-    const { router, session } = setup();
-    const read = router.readReportedRtspUrl(DEVICE_SN);
-    await tick();
+  it("resolves undefined when the station session cannot be resolved", async () => {
+    const s = session(false);
+    const router = routerWithSession(s, { register: false }); // nothing registered → no session to open
 
-    session.emit("rtspUrl", { channel: 1, url: "rtsp://u:p@host/live0" });
-    await read;
-
-    expect(session.listenerCount("rtspUrl")).toBe(0);
+    await expect(router.readReportedRtspUrl(DEVICE_SN)).resolves.toBeUndefined();
+    expect(s.sendIntStringCommand).not.toHaveBeenCalled();
   });
 });

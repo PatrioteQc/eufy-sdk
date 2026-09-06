@@ -9,7 +9,6 @@
  * (the client gates them on device capabilities and emits typed events). This keeps transport free of
  * any `model/` import — the capability↔transport decorrelation invariant.
  */
-import { once } from "node:events";
 import type { MegaHttpClient } from "../http/mega-client.js";
 import type { EufyDevice } from "../../core/types.js";
 import type {
@@ -26,8 +25,9 @@ import type {
 import { StationBusyError } from "../../core/contracts.js";
 import { noopLogger, type Logger } from "../../core/logger.js";
 import { assertNever } from "../../core/util.js";
-import { P2PSession, CMD_NAS_SWITCH, type P2PFrame } from "./p2p-session.js";
+import { P2PSession, type P2PFrame } from "./p2p-session.js";
 import { buildDirectBinaryBody, buildDeviceNameBody } from "./write-commands.js";
+import { CommandType } from "./commands.js";
 import {
   buildFf09Frame,
   buildFf09QueryFrame,
@@ -196,13 +196,9 @@ export interface P2PRouterDeps {
   sessionIdle?: Pick<SessionManagerOpts, "batteryIdleMs" | "wiredIdleMs" | "commandKeepAliveMs">;
   /** LAN address overrides for direct P2P, keyed by parent-station serial (host or host:port). */
   localAddresses?: Record<string, string>;
-  /** Override for {@link RTSP_URL_READ_TIMEOUT_MS} — a construction-time test hook, not a policy a caller tunes. */
-  rtspUrlReadTimeoutMs?: number;
 }
 
-/** CMD_NAS_TEST (1146): starts the RTSP livestream; also elicits the URL push on some firmwares. */
-const CMD_NAS_TEST = 1146;
-/** Default for {@link P2PRouterDeps.rtspUrlReadTimeoutMs} — how long a station's URL push is awaited. */
+/** How long a station's live RTSP URL push is awaited — the connect wait and the URL wait together. */
 const RTSP_URL_READ_TIMEOUT_MS = 12_000;
 
 export class P2PCommandRouter {
@@ -1235,40 +1231,80 @@ export class P2PCommandRouter {
 
   /**
    * Read the camera's LIVE authoritative RTSP URL — host, path, and the credentials it enforces
-   * RIGHT NOW — by writing the publish switch `CMD_NAS_SWITCH` (idempotent when already on, and
-   * never touching the credentials themselves, so a NAS/NVR consuming the stream elsewhere is
-   * undisturbed) plus `CMD_NAS_TEST` to start the livestream, then awaiting the `rtspUrl` event
-   * `P2PSession` emits for a matching `CMD_NAS_SWITCH` push. This is the only source of the
-   * freshly-generated credentials: the vendor app regenerates them on every publish toggle and the
-   * cloud record lags a cycle.
+   * RIGHT NOW — by writing the publish switch `CMD_NAS_SWITCH` (idempotent when already on, and never
+   * touching the credentials themselves, so a NAS/NVR consuming the stream elsewhere is undisturbed)
+   * plus `CMD_NAS_TEST` to start the livestream, then awaiting the `rtspUrl` event `P2PSession` emits
+   * for a matching-channel `CMD_NAS_SWITCH` push. This is the only source of the freshly-generated
+   * credentials: the vendor app regenerates them on every publish toggle and the cloud record lags.
    *
-   * Bounded by {@link RTSP_URL_READ_TIMEOUT_MS} end to end, `resolveSession` included (which opens
-   * the station on demand) — a station being rebuilt, or battery and slow to wake, must not hang the
-   * caller. The bound is one `AbortSignal`, shared by `resolveSession` and the event wait, so aborting
-   * mid-resolve also tears down a listener that never got the chance to attach.
+   * Both provokes go through {@link resolveScalarParam} `"auto"` — the ONE level decision — not a
+   * pinned level-1 send: a keyed HomeBase publishes 1145 on its level-2 seal, and the level-1 form is
+   * silently ignored there (the likely cause of attached-camera reads never answering). The shared
+   * path also repeats the datagram for RF resilience, exactly as the normal publish does.
    *
-   * `session` is shared by every channel on the station (a HomeBase multiplexes its attached cameras
-   * over one session), so a push for another camera must not resolve this read — the loop re-arms the
-   * wait until either a matching push arrives or the deadline aborts it.
+   * A single channel-filtered listener is armed BEFORE the provokes and torn down on either outcome,
+   * so a fast push cannot fall in a re-arm gap and a station that never answers leaks nothing. The
+   * station is shared by every channel (a HomeBase multiplexes its attached cameras over one session),
+   * so a push for another camera is filtered out rather than resolving this read.
    *
-   * `undefined` on any failure: no route, level-2 not ready, or no matching push before the deadline.
+   * Bounded by {@link RTSP_URL_READ_TIMEOUT_MS}: the abort covers `resolveSession`'s connect wait and
+   * the URL wait. The device/station resolution ahead of them relies on its own HTTP timeouts.
+   *
+   * `undefined` on any failure: no route, no account id, or no matching push before the deadline.
    */
   async readReportedRtspUrl(sn: string): Promise<string | undefined> {
     const log = this.deps.logger ?? noopLogger;
-    const signal = AbortSignal.timeout(this.deps.rtspUrlReadTimeoutMs ?? RTSP_URL_READ_TIMEOUT_MS);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), RTSP_URL_READ_TIMEOUT_MS);
+    const { signal } = controller;
     try {
-      const { session, accountId, channel } = await this.resolveSession(sn, { waitLevel2: "soft", signal });
+      const { session, channel, accountId } = await this.resolveSession(sn, { waitLevel2: "soft", signal });
       if (!accountId) return undefined;
-      session.sendIntStringCommand(CMD_NAS_SWITCH, 1, channel, accountId, channel);
-      session.sendIntStringCommand(CMD_NAS_TEST, 1, channel, accountId, channel);
-      for (;;) {
-        const [ev] = (await once(session, "rtspUrl", { signal })) as [{ channel: number; url: string }];
-        if (ev.channel === channel) return ev.url;
-      }
+      // Arm the wait BEFORE provoking, so a push that arrives between the two writes is not lost.
+      const url = this.awaitRtspUrl(session, channel, signal);
+      // Provoke through the ONE level decision (and its RF-resilience repeat), but do not block the read
+      // on the retransmits finishing: the URL push can land after the first datagram, so the read
+      // returns as soon as it arrives (or the deadline aborts), while the repeats run to completion.
+      void this.resolveScalarParam(sn, CommandType.CMD_NAS_SWITCH, 1, "auto").catch((e) =>
+        log.debug(`[p2p] ${sn} RTSP publish-switch provoke failed`, e),
+      );
+      void this.resolveScalarParam(sn, CommandType.CMD_NAS_TEST, 1, "auto").catch((e) =>
+        log.debug(`[p2p] ${sn} RTSP livestream provoke failed`, e),
+      );
+      return await url;
     } catch (e) {
       log.debug(`[p2p] ${sn} live RTSP URL read ${signal.aborted ? "timed out" : "failed"}`, e);
       return undefined;
+    } finally {
+      clearTimeout(timer);
     }
+  }
+
+  /**
+   * One channel-filtered wait for the station's `rtspUrl` push: a single persistent listener, attached
+   * up front and removed on resolve or abort, so nothing leaks and no push falls in a re-arm gap. The
+   * station multiplexes every attached camera's channel over one session, so a push for another camera
+   * is ignored rather than resolving the wrong read.
+   */
+  private awaitRtspUrl(session: P2PSession, channel: number, signal: AbortSignal): Promise<string> {
+    return new Promise<string>((resolve, reject) => {
+      const onUrl = (ev: { channel: number; url: string }): void => {
+        if (ev.channel !== channel) return;
+        cleanup();
+        resolve(ev.url);
+      };
+      const onAbort = (): void => {
+        cleanup();
+        reject(signal.reason ?? new Error("aborted"));
+      };
+      const cleanup = (): void => {
+        session.off("rtspUrl", onUrl);
+        signal.removeEventListener("abort", onAbort);
+      };
+      if (signal.aborted) return reject(signal.reason ?? new Error("aborted"));
+      session.on("rtspUrl", onUrl);
+      signal.addEventListener("abort", onAbort, { once: true });
+    });
   }
 
   /** Send a level-1 int-plus-string frame with authenticated account identity injected by the transport. */
