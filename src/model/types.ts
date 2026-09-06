@@ -90,9 +90,11 @@ export type PropertyValueType = "bool" | "number" | "string" | "enum";
  * one as the other is wrong in a way no type check catches.
  *
  *  - `boolean` — an on/off state (always paired with `type: "bool"`).
- *  - `percent` / `celsius` / `dbm` / `seconds` / `megabytes` / `degrees` — a measured quantity in the
- *    unit the device reports it in; each pairs with the matching `unit`. Values are
- *    never converted on the way out — a converted reading is an invented one.
+ *  - `percent` / `celsius` / `dbm` / `seconds` / `hours` / `megabytes` / `degrees` — a measured quantity
+ *    in the unit the device reports it in; each pairs with the matching `unit`. Values are
+ *    never converted on the way out — a converted reading is an invented one. `seconds` and `hours`
+ *    are separate kinds for exactly that reason: a robot reports a run in seconds and a consumable's
+ *    wear in hours, and normalising one into the other would publish a number the device never sent.
  *  - `scalar` — a plain number in no unit at all: a step on a ladder, a mode index, a raw level, a
  *    segment count. Ordered and comparable, but its range and direction are the device's, so nothing
  *    but the device says what a given value means.
@@ -125,6 +127,7 @@ export const KNOWN_VALUE_KINDS = [
   "celsius",
   "dbm",
   "seconds",
+  "hours",
   "megabytes",
   "degrees",
   "scalar",
@@ -221,6 +224,21 @@ export interface PropertySpec {
    */
   decode?: (raw: string | number | boolean) => boolean | number | string;
   /**
+   * This param carries a STRUCTURED PAYLOAD rather than a scalar — a base64 protobuf that the
+   * capability's own getter reads a field out of, with the injected codec in scope.
+   *
+   * The stored value is that payload verbatim, and {@link type} describes what the getter ANSWERS
+   * rather than what arrives on the wire. Those are different for every Raw DP on the clean line: nine
+   * consumable counters are `"number"` over one base64 string, and reading the value as a number is
+   * exactly what must NOT happen at ingest.
+   *
+   * Storage already keeps such a value intact — a non-numeric string cannot be coerced to a number, so
+   * it is passed through. What this flag changes is that the pass-through stops being reported as a
+   * mistake: a robot reporting ten Raw DPs on every push logged ten warnings a time saying its
+   * properties were misdeclared, which is how a real warning goes unread.
+   */
+  raw?: true;
+  /**
    * Extra wire param ids that ALSO carry this property on some device families, with their own
    * polarity. The device's own `paramType` wins; otherwise the first alias the device reports wins.
    * Lets one property (e.g. `enabled`) read correctly across families that report it under
@@ -249,6 +267,39 @@ export interface PropertyValue {
   value: ParamValue;
   /** When the value was last observed (epoch ms). */
   ts: number;
+}
+
+/**
+ * One property whose value moved, as a host is told about it.
+ *
+ * Identified by property NAME and nothing else. The name is unique per device, is what `applyParams`
+ * already answers with, and is the key `Device.getProperty` takes — so a caller can re-read
+ * immediately. No wire id travels with it: resolving several ids to one property is the whole job the
+ * param → spec map does, and handing the id back out undoes it and gives a caller a second identifier
+ * to key on, which then breaks on the family where that property's read alias is promoted. The ids stay
+ * available through `inspectDevice` and `Device.describe()`.
+ *
+ * A caller that wants the capability accessor behind the name already has that mapping:
+ * `Device.describe()` publishes the `{ accessor, property }` pair, joined once at setup.
+ */
+export interface PropertyChange {
+  /** The property whose value moved — a key of this device's own schema. */
+  property: string;
+  /**
+   * What {@link Device.getProperty} now serves for this property, narrowed to its declared type the same
+   * way a capability getter narrows it.
+   *
+   * Read out of live state, never re-converted from the wire, so it cannot disagree with the getter
+   * beside it. Said as "what `getProperty` serves" rather than "what the getter answers" because a
+   * schema property does not always HAVE a typed getter: an `unexposed` member is reported and readable
+   * but has no confirmed meaning for its value, so promising the getter here would be a claim this SDK
+   * has not made anywhere else.
+   *
+   * Absent where no scalar can honestly be given: a property whose stored value is a PAYLOAD rather than
+   * the value (see {@link PropertySpec.raw}), and one whose stored value does not match its declared
+   * type. In both cases the honest answer is "this moved, re-read it".
+   */
+  value?: boolean | number | string;
 }
 
 /**

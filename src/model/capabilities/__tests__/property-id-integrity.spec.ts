@@ -2,6 +2,7 @@ import { CAPABILITY_MODULES } from "../index.js";
 import { SECURITY_PARAMS, CLEAN_PARAMS } from "../../param-dictionary.js";
 import { LIFE_PARAMS } from "../../life-params.js";
 import type { CapabilityModule } from "../types.js";
+import type { ValueMember } from "../members.js";
 
 /**
  * Cross-module property-id integrity — the general form of the guard the siren fix needed locally.
@@ -109,6 +110,77 @@ describe("property id integrity (cross-module)", () => {
       })
       .map(([key, v]) => `${key} claimed by ${v.join(", ")}`);
     expect(collisions).toEqual([]);
+  });
+
+  it("a `readsFrom` member borrows a real owner's payload, and never grows a write for it", () => {
+    // The counterpart to the one-owner rule above, and the reason that rule needs no exception: several
+    // members reading different fields of ONE payload are not two capabilities disagreeing about an id.
+    //
+    // A member with NO param of its own must publish no spec for the borrowed one — `Device` keys stored
+    // params by id and keeps the first spec that claims one, so a second spec would leave that getter
+    // reading a name nothing is ever stored under, `undefined` forever and silently. `propertiesOf`
+    // enforces that structurally by skipping any paramless member.
+    //
+    // A member WITH a param is a different case and is allowed one: it keeps its own wire and its own
+    // spec, and only reaches into the owner's payload on a device that did not report that wire. That is
+    // how one property spans both clean lines. What stays forbidden in both shapes is a WRITE — setting
+    // a field inside a shared message means re-encoding the whole thing, so the owner keeps that wire.
+    const offenders: string[] = [];
+    for (const [cap, m] of Object.entries(CAPABILITY_MODULES)) {
+      const members = (m as Mod).members;
+      if (!members) continue;
+      for (const [name, member] of Object.entries(members)) {
+        const v = member as ValueMember;
+        if (v.readsFrom === undefined) continue;
+        const where = `${cap}.${name}`;
+
+        let owner: ValueMember | undefined;
+        if (typeof v.readsFrom === "string") {
+          owner = members[v.readsFrom] as ValueMember | undefined;
+          if (!owner) offenders.push(`${where} → readsFrom "${v.readsFrom}", which is not a member here`);
+          else if (owner.param === undefined) offenders.push(`${where} → owner "${v.readsFrom}" declares no param`);
+          else if (owner.readsFrom !== undefined) offenders.push(`${where} → owner "${v.readsFrom}" is itself derived`);
+        } else {
+          // The cross-module form states a property name and the param carrying it, because the member
+          // cannot see the other module's table. Both halves are checked against the LINE's real owner:
+          // a rename or a repointed id on the far side must fail here rather than leave this member
+          // reading a name nothing is stored under — `undefined` forever and silently, which is the
+          // exact failure this whole guard exists to catch.
+          const { property, param } = v.readsFrom;
+          const line = (m as Mod).line ?? "security";
+          const real = Object.entries(CAPABILITY_MODULES)
+            .filter(([, o]) => ((o as Mod).line ?? "security") === line)
+            .flatMap(([oc, o]) => ((o as Mod).properties ?? []).map((sp) => [oc, sp] as const))
+            .filter(([, sp]) => sp.name === property);
+
+          if (real.length === 0)
+            offenders.push(`${where} → readsFrom property "${property}", owned by nothing in line "${line}"`);
+          else if (real.length > 1)
+            offenders.push(
+              `${where} → readsFrom property "${property}", claimed by ${real.map(([oc, sp]) => `${oc}.${sp.name}`).join(", ")}`,
+            );
+          else if (real[0]![1].paramType !== param) {
+            offenders.push(
+              `${where} → readsFrom { "${property}", ${param} } but ${real[0]![0]} owns it on ${real[0]![1].paramType}`,
+            );
+          } else if (real[0]![0] === cap) {
+            offenders.push(
+              `${where} → readsFrom "${property}" cross-module, but it is owned right here — name the sibling instead`,
+            );
+          }
+        }
+        // The borrowed value is a field of someone else's message; only a decode can reach it.
+        if (v.decode === undefined) offenders.push(`${where} → readsFrom without a decode`);
+        // Never a write, whichever shape: the owner keeps the wire the payload rides on.
+        if (v.write !== undefined) offenders.push(`${where} → readsFrom AND a write`);
+        // A member must not claim the OWNER's id as its own — that is the two-specs-one-param failure.
+        const ownerParam = owner?.param ?? (typeof v.readsFrom === "string" ? undefined : v.readsFrom.param);
+        if (ownerParam !== undefined && v.param === ownerParam) {
+          offenders.push(`${where} → readsFrom ${JSON.stringify(v.readsFrom)} AND claims its param ${v.param}`);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
   });
 
   it("the siren fix specifically holds: its ids are all dictionary-grounded, none quarantined", () => {

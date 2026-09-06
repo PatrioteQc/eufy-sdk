@@ -12,6 +12,7 @@
  */
 import mqtt from "mqtt";
 import { resolve4 } from "node:dns/promises";
+import { bareIpTlsOptions } from "./bare-ip-tls.js";
 
 export interface BrokerCredentials {
   /** Broker hostname — used as the TLS SNI + cert-CN check target, NOT the socket connect target. */
@@ -58,10 +59,9 @@ export function rankResults(results: ProbeResult[]): ProbeResult[] {
  * Probe ONE candidate IP: connect, SUBSCRIBE to `topic`, record whether it was granted, then
  * disconnect. Never publishes anything — this function cannot actuate a device.
  *
- * TLS shape for a bare-IP dial: `servername` keeps the real hostname, so the handshake behaves
- * identically to a DNS-resolved connect, and `rejectUnauthorized` is off because Node's hostname
- * verification can fail on which name ends up in the cert path it checks. The chain itself is still
- * verified — `creds.aws_root_ca1_pem` pins the exact CA — so only the hostname-match step is relaxed.
+ * The probe presents the account's client certificate, so it verifies the instance it dials: the TLS
+ * options come from `./bare-ip-tls.ts`, which checks the presented certificate against
+ * `creds.hostname` rather than the IP.
  */
 export function probeBrokerInstance(
   ip: string,
@@ -87,17 +87,18 @@ export function probeBrokerInstance(
       host: ip,
       port: creds.port ?? 8883,
       protocol: "mqtts",
-      servername: creds.hostname,
-      cert: creds.certificate_pem,
-      key: creds.private_key,
-      ca: creds.aws_root_ca1_pem,
+      ...bareIpTlsOptions({
+        hostname: creds.hostname,
+        cert: creds.certificate_pem,
+        key: creds.private_key,
+        ca: creds.aws_root_ca1_pem,
+      }),
       clientId: opts.clientId,
       protocolVersion: 4,
       keepalive: 60,
       clean: true,
       reconnectPeriod: 0,
       connectTimeout: timeoutMs,
-      rejectUnauthorized: false,
     });
     const timer = setTimeout(() => finish({ granted: false, error: "timeout" }), timeoutMs);
     client.on("connect", () => {

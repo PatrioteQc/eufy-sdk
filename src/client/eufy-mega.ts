@@ -19,12 +19,19 @@ import { SecureMqtt, type SecureMqttCredentials } from "../transport/mqtt/secure
 import { mqttAppName, mqttScopeFor, type MqttScope } from "../transport/mqtt/topics.js";
 import { parseStateInfoSignal } from "../transport/mqtt/availability.js";
 import { parseDpMessage, parseAiotDpReport } from "../transport/mqtt/dp-codec.js";
+import { parseBizMapFrame } from "../transport/mqtt/biz-stream.js";
+import type { BizMapFrame } from "../transport/mqtt/biz-stream.js";
+import { decodeMapFrame } from "./map-channels.js";
+import { VacuumMapStore } from "../model/index.js";
 import { type P2PSession, type P2PFrame } from "../transport/p2p/p2p-session.js";
 import { P2PCommandRouter } from "../transport/p2p/command-router.js";
+import { jpegGeometry } from "../transport/p2p/media.js";
+import type { PowerTier } from "../transport/p2p/session-manager.js";
 import { MqttCommandRouter } from "../transport/mqtt/command-router.js";
 import { TuyaCommandRouter } from "../transport/tuya/command-router.js";
 import { TuyaDpRouter, parseTuyaDpReport } from "../transport/tuya/dp-codec.js";
 import { rawDpCodec } from "../transport/raw-dp.js";
+import { parseCleanRecordDetail, type CleanRecordDetail } from "../model/clean-record-detail.js";
 import { resolveLightEffect as resolveLightEffectHttp } from "../transport/http/light-catalog.js";
 import {
   buildCommand as buildCapabilityCommand,
@@ -40,8 +47,11 @@ import type { DeviceEventMap } from "../model/capabilities/index.js";
 import type { CommandContext } from "../model/capabilities/types.js";
 import { CapabilityNotSupportedError } from "../model/capabilities/types.js";
 import { type DpCatalog, EMPTY_DP_CATALOG, parseDpCatalog } from "../model/capabilities/dp-catalog.js";
+import { type CleanRecordPage, EMPTY_CLEAN_RECORD_PAGE, parseCleanRecords } from "../model/clean-records.js";
 import {
   commandObservation,
+  LiveSnapshotUnavailableError,
+  StateConvergenceError,
   type Command,
   type CommandObservation,
   type CommandSink,
@@ -57,9 +67,16 @@ import { StoredImageCache } from "../transport/stored-image-cache.js";
 import type { PushEvent, RawPushMessage } from "../transport/push/types.js";
 import { type AvailabilityObservation, type EufyDevice, type RealtimeTransport } from "../core/types.js";
 import { Timer } from "../core/util.js";
-import { Device, resolveDevice, detectionName, type Capability, type DeviceInspection } from "../model/index.js";
+import {
+  Device,
+  resolveDevice,
+  detectionName,
+  type Capability,
+  type DeviceInspection,
+  type RawParams,
+} from "../model/index.js";
 import { isHomeBase } from "../model/device-family.js";
-import { DeviceRegistry } from "./device-registry.js";
+import { DeviceRegistry, type ParamChange } from "./device-registry.js";
 import type {
   EufyMegaOptions,
   EufyMegaEvent,
@@ -84,6 +101,7 @@ export type {
 
 type SemanticEventRefresh = Pick<CommandObservation, "param" | "property" | "resetStandaloneSession" | "timeoutMs"> & {
   expected?: CommandObservation["expected"];
+  observed?: CommandObservation["observed"];
 };
 
 /**
@@ -118,18 +136,22 @@ function tuyaDevIdFrom(raw: Record<string, unknown>): string | undefined {
 const DEFAULT_POLL_MS = 600_000;
 
 /**
- * Semantic events that speculatively pre-warm a camera's P2P session by default, so a tap-to-view /
- * talkback right after starts instantly: a doorbell ring plus the high-intent AI detections — human
- * (`personDetected`), animal (`petDetection`), object/package (`packageDelivered`). Raw `motion` is
- * deliberately excluded (a battery camera sees it constantly, which would defeat the idle-detach).
- * Overridable per client via {@link EufyMegaOptions.prewarmEvents}.
+ * Power tiers a speculative pre-warm may open a station on, when the caller states none. Both, because
+ * the opt-in that turns pre-warm on at all is {@link EufyMegaOptions.prewarmEvents}: a caller who listed
+ * an event asked for its session, and silently skipping the only tier a pre-warm can actually open would
+ * make that opt-in do nothing. {@link EufyMegaOptions.prewarmTiers} narrows it.
  */
-const DEFAULT_PREWARM_EVENTS: readonly (keyof DeviceEventMap)[] = [
-  "doorbellPress",
-  "personDetected",
-  "petDetection",
-  "packageDelivered",
-];
+const DEFAULT_PREWARM_TIERS: readonly PowerTier[] = ["wired", "battery"];
+
+/**
+ * How long a write waits for the session recycle it asked for before letting go of the wait.
+ *
+ * A recycle that nothing is holding completes in the time one session teardown takes, so this bound is
+ * never reached in the ordinary case. It exists for the case where a viewer is attached: the recycle
+ * then waits for that viewer to detach, which may be minutes or never, and the wait is what a following
+ * write to the same member queues behind. Letting go does not cancel the recycle.
+ */
+const SESSION_RECYCLE_WAIT_MS = 5_000;
 
 interface RealtimeGeneration {
   readonly epoch: number;
@@ -143,6 +165,15 @@ interface RealtimeGeneration {
 }
 
 class RealtimeStartupSupersededError extends Error {}
+
+/**
+ * The convergence window closed while waiting on a dependency, rather than the dependency failing.
+ *
+ * Distinguishing the two is what lets {@link EufyMega.refreshEventState} answer a write that was never applied
+ * with the member it was waiting for: without it the last poll's own deadline escapes first, and the caller is
+ * told only that something timed out somewhere.
+ */
+class RefreshWindowClosedError extends Error {}
 
 interface MutableRealtimePlaneReadiness {
   required: number;
@@ -248,8 +279,10 @@ export class EufyMega extends EventEmitter {
   private readonly boundParamIds = new Map<string, ReadonlySet<number>>();
   /** Per-SKU DP catalog cache — keyed on model/T-code, fetched lazily via `get_product_data_point`. */
   private readonly dpCatalogCache = new Map<string, DpCatalog>();
-  /** Semantic event names that speculatively pre-warm P2P (resolved once from the options). */
+  /** Semantic event names that speculatively pre-warm P2P (resolved once from the options; empty = off). */
   private readonly prewarmEvents: ReadonlySet<string>;
+  /** Station power tiers a pre-warm may open (resolved once from the options). */
+  private readonly prewarmTiers: ReadonlySet<PowerTier>;
   /** Transport-side owner of the P2P sessions + all wire senders. */
   private readonly p2p: P2PCommandRouter;
   /** Transport-side owner of the secure-MQTT ff09 lock/garage command path (sibling of {@link p2p}). */
@@ -265,13 +298,22 @@ export class EufyMega extends EventEmitter {
   private readonly lastStateAnnounced = new Map<string, unknown>();
   /** Latest authoritative availability observation per device; no heuristic path writes this map. */
   private readonly availabilityObservations = new Map<string, AvailabilityObservation>();
+  /**
+   * One map per clean-line device, assembled from the pieces its `biz/…/res` frames carry.
+   *
+   * Created on the first frame that decodes rather than per device: a store for a robot that has never
+   * sent a map would answer `undefined` to everything, which {@link EufyMega.mapFor} already does
+   * without allocating anything.
+   */
+  private readonly mapStores = new Map<string, VacuumMapStore>();
   /** Re-armed after each cloud-param poll; cancelled by {@link disconnect}. */
   private readonly pollTimer = new Timer();
 
   constructor(opts: EufyMegaOptions) {
     super();
     this.opts = opts;
-    this.prewarmEvents = new Set(opts.prewarmEvents ?? DEFAULT_PREWARM_EVENTS);
+    this.prewarmEvents = new Set(opts.prewarmEvents ?? []);
+    this.prewarmTiers = new Set(opts.prewarmTiers ?? DEFAULT_PREWARM_TIERS);
     this.mega = new MegaHttpClient(opts);
     if (opts.storedSnapshotCache !== false) {
       this.storedImages = new StoredImageCache(
@@ -290,11 +332,13 @@ export class EufyMega extends EventEmitter {
     this.registry = new DeviceRegistry({
       mega: this.mega,
       onError: (e) => this.reportError(e),
+      logger: opts.logger,
     });
     this.p2p = new P2PCommandRouter({
       mega: this.mega,
       logger: opts.logger,
       ffmpegLogLevel: opts.ffmpegLogLevel,
+      ffmpegPath: opts.ffmpegPath,
       poweredFor: (parentSn) => this.stationPower(parentSn),
       sessionIdle: { batteryIdleMs: opts.p2pIdleMs },
       localAddresses: opts.localAddresses,
@@ -373,16 +417,54 @@ export class EufyMega extends EventEmitter {
   }
 
   /**
-   * Surface a background failure without being able to kill the host.
+   * Reports what became of a command already acknowledged to its caller.
    *
-   * `error` on an `EventEmitter` THROWS when nothing is listening, and most of these failures reach us
-   * from a fire-and-forget path (a transport callback, an un-awaited re-bind) where that throw would
-   * land as an unhandled rejection and abort the process. A host that listens gets the event exactly as
-   * before; one that does not gets a log line instead of a crash, which is the correct trade for a
-   * failure it never asked to be told about.
+   * A write whose declared observation never converged is not a fault of this client, so it does not reach
+   * the generic error bus: it is the answer to a question `dispatch` deliberately does not wait for, and it
+   * gets its own channel for exactly the reason `commandAck` has one — a caller that wants convergence
+   * visibility should not have to pattern-match `error`, and the dispatch contract must not change shape to
+   * give it. Anything else that goes wrong after the acknowledgement is a genuine fault and is reported as one.
+   */
+  private reportUnacknowledged(e: unknown): void {
+    if (e instanceof StateConvergenceError) {
+      this.emit("commandUnconfirmed", {
+        sn: e.sn,
+        property: e.property,
+        param: e.param,
+        expected: e.expected,
+        observed: e.observed,
+        timeoutMs: e.timeoutMs,
+      });
+      return;
+    }
+    this.reportError(e);
+  }
+
+  /**
+   * Route an internal error to the host, without being able to kill it.
+   *
+   * A {@link SessionExpiredError} — a kicked/expired token, the transport having already cleared the
+   * session — is emitted as the dedicated `sessionExpired` event so a host can react to auth loss without
+   * pattern-matching the generic `error` bus; it is NOT also sent to `error`. Every other error goes to
+   * `error`.
+   *
+   * Either way it falls back to a logged warning when nothing listens, because `error` on an
+   * `EventEmitter` THROWS when it has no listener, and most of these failures reach us from a
+   * fire-and-forget path (a transport callback, an un-awaited re-bind) where that throw would land as an
+   * unhandled rejection and abort the process. A host that listens gets the event exactly as before; one
+   * that does not gets a log line instead of a crash, which is the correct trade for a failure it never
+   * asked to be told about.
+   *
+   * Only reported-error paths reach here — an error thrown straight out of a direct call is the caller's
+   * to handle.
    */
   private reportError(e: unknown): void {
     const err = e instanceof Error ? e : new Error(String(e));
+    if (err instanceof SessionExpiredError) {
+      if (this.listenerCount("sessionExpired")) this.emit("sessionExpired", err);
+      else this.opts.logger?.warn?.(`[eufy] ${err.message}`);
+      return;
+    }
     if (this.listenerCount("error")) this.emit("error", err);
     else this.opts.logger?.warn?.(`[eufy] ${err.message}`);
   }
@@ -456,20 +538,6 @@ export class EufyMega extends EventEmitter {
   }
 
   /**
-   * Land state a capability recovered from a realtime signal: into the registry (so the next
-   * {@link getDevice} sees it) AND into any `Device` already handed out (so a caller holding one sees
-   * the new value without re-fetching). Emits `deviceState` so a host can react without polling.
-   *
-   * Both writes matter: the registry alone would leave an existing `Device` stale until its freshness
-   * window expired, and that refresh re-reads the CLOUD record — which for a realtime-only line does
-   * not carry this state at all.
-   *
-   * The reported ids are recorded as evidence BEFORE the re-bind is fired, not after it lands. One
-   * report fans out to one call per capability that decoded it, and the re-bind is a cloud round-trip:
-   * advancing the set here is what stops the second call from firing a duplicate, and what stops a
-   * failed re-bind from re-triggering on every subsequent report.
-   */
-  /**
    * Land ONE report, however many capabilities recognised part of it.
    *
    * A robot's report carries data points several capabilities own a slice of, and each returns its own
@@ -477,11 +545,64 @@ export class EufyMega extends EventEmitter {
    * announce the same report once per capability and, when a report widens the evidence, fire one cloud
    * round-trip per slice for a re-bind that is identical either way.
    */
+  /**
+   * The map this device has sent so far, or `undefined` if it has sent none.
+   *
+   * The pieces arrive on five channels at their own pace, so this fills in over the first minute or so
+   * of a connection and every getter on it answers `undefined` until its own piece has arrived. Nothing
+   * here polls or requests: the robot publishes its map unasked, and a caller that has just connected
+   * has to wait for the next one rather than being handed a stale one.
+   */
+  mapFor(deviceSn: string): VacuumMapStore | undefined {
+    return this.mapStores.get(deviceSn);
+  }
+
+  /**
+   * Feed one map-stream frame to the device's map, and announce it if anything changed.
+   *
+   * Silent about a frame it cannot use. Most of them are: channels nothing reads yet, and fragments of
+   * a split message. Neither is a fault, and logging either would log on every frame of every clean.
+   */
+  private applyMapFrame(deviceSn: string, frame: BizMapFrame): void {
+    const piece = decodeMapFrame(frame, rawDpCodec);
+    if (!piece) return;
+
+    let store = this.mapStores.get(deviceSn);
+    if (!store) {
+      store = new VacuumMapStore();
+      this.mapStores.set(deviceSn, store);
+    }
+    // The device repeats its map while it cleans. Announcing an unchanged one on every repeat would
+    // wake every listener for nothing, so the store's own answer decides.
+    if (store.apply(piece)) this.emit("map", { deviceSn, map: store.snapshot });
+  }
+
   private applyRealtimeReport(sn: string | undefined, states: readonly { params: Record<number, string> }[]): void {
     if (!states.length) return;
     this.applyRealtimeState(sn, Object.assign({}, ...states.map((s) => s.params)));
   }
 
+  /**
+   * Land state a capability recovered from a realtime signal: into the registry (so the next
+   * {@link getDevice} sees it) AND into any `Device` already handed out (so a caller holding one sees
+   * the new value without re-fetching). Announces every property whose value moved, then `deviceState`,
+   * so a host can react without polling.
+   *
+   * Both writes matter: the registry alone would leave an existing `Device` stale until its freshness
+   * window expired, and that refresh re-reads the CLOUD record — which for a realtime-only line does
+   * not carry this state at all.
+   *
+   * This is three of the four inbound paths the security line has, and the ONLY one the clean and life
+   * lines have — a robot's cloud record carries none of its data points — so it is what brings those
+   * lines into scope for a property announcement at all. The announcement is edge-triggered for free:
+   * {@link Device.applyParams} names only the properties whose value actually moved, so a device
+   * re-reporting the same state is silent with no dedupe table to keep.
+   *
+   * The reported ids are recorded as evidence BEFORE the re-bind is fired, not after it lands. One
+   * report fans out to one call per capability that decoded it, and the re-bind is a cloud round-trip:
+   * advancing the set here is what stops the second call from firing a duplicate, and what stops a
+   * failed re-bind from re-triggering on every subsequent report.
+   */
   private applyRealtimeState(sn: string | undefined, params: Record<number, string>): void {
     if (!sn) return;
     const known = this.boundParamIds.get(sn);
@@ -489,7 +610,8 @@ export class EufyMega extends EventEmitter {
     const widens = known ? reported.some((id) => !known.has(id)) : false;
     if (widens && known) this.boundParamIds.set(sn, new Set([...known, ...reported]));
     this.registry.applyRealtimeParams(sn, params);
-    this.liveDevices.get(sn)?.deref()?.applyParams(params);
+    const device = this.liveDeviceToAnnounce(sn);
+    if (device) this.applyAndAnnounce(device, params);
     this.emit("deviceState", this.deviceState(sn));
     if (widens) void this.rebindReads(sn);
   }
@@ -585,7 +707,24 @@ export class EufyMega extends EventEmitter {
     emit.call(this, "event", { ...payload, eventName: event }); // the catch-all (eufy.on("event", …)); avoids colliding with payload.name
   }
 
-  /** Await one capability-declared reflected param before publishing its valueless transition event. */
+  /**
+   * Await one capability-declared reflected param before publishing its valueless transition event.
+   *
+   * The state already on hand is consulted BEFORE fetching, but only where the observation carries a concrete
+   * value to compare against: a device that reports the written param on its own session lands it through
+   * {@link applyRealtimeState} within seconds, and polling the account device list to learn what the device has
+   * already said costs a dozen requests to reach the same answer. Without an expectation, "converged" means
+   * only "differs from what was read before", which state already on hand can satisfy spuriously — and the
+   * caller that has no expectation is the push path, where the signal itself is the news that a re-read is owed.
+   *
+   * The cloud half is asked for through {@link DeviceRegistry.refreshedList}, never by fetching the account
+   * list outright. The fetch is account-wide — one house list plus one device list per house — so a param that
+   * never converges would otherwise spend a whole burst of those every iteration of this loop, and concurrent
+   * transitions would multiply it by however many are in flight. The registry's reuse window and its
+   * single in-flight fetch collapse all of that to one list per window, shared across every waiter. The loop
+   * still turns on its own cadence: each pass re-reads what is known, so a value the device volunteers over
+   * its own session settles the wait between two cloud reads rather than after them.
+   */
   private refreshEventState(sn: string, refresh: SemanticEventRefresh): Promise<boolean> {
     const epoch = this.realtimeEpoch;
     return (async (): Promise<boolean> => {
@@ -594,10 +733,12 @@ export class EufyMega extends EventEmitter {
       const before = initialDevice?.getProperty(refresh.property)?.value;
       const rawBefore = this.registry.require(sn).params?.[refresh.param];
       const deadline = Date.now() + refresh.timeoutMs;
-      while (Date.now() < deadline) {
-        const remaining = deadline - Date.now();
-        await this.beforeDeadline(this.registry.getDevices(), remaining);
-        if (epoch !== this.realtimeEpoch) return false;
+      /**
+       * Whether the state already on hand satisfies the observation, applying it to the live device when it
+       * does. Reads what is already known and fetches nothing, so a param the DEVICE volunteered over its own
+       * session settles the write for free.
+       */
+      const settled = (): boolean => {
         const device = this.liveDevices.get(sn)?.deref();
         const record = this.registry.require(sn);
         const rawValue = record.params?.[refresh.param];
@@ -607,16 +748,34 @@ export class EufyMega extends EventEmitter {
               ? String(rawValue) !== String(before)
               : rawValue !== rawBefore
             : String(rawValue) === String(refresh.expected);
-        if (converged && device) {
-          device.applyParams(record.params ?? {});
-          if (this.matchesObservation(device.getProperty(refresh.property)?.value, refresh, before)) return true;
-        } else if (converged) {
-          return true;
+        if (!converged) return false;
+        if (!device) return true;
+        device.applyParams(record.params ?? {});
+        return this.matchesObservation(device.getProperty(refresh.property)?.value, refresh, before);
+      };
+      if (refresh.expected !== undefined && settled()) return true;
+      while (Date.now() < deadline) {
+        const remaining = deadline - Date.now();
+        try {
+          await this.beforeDeadline(this.registry.refreshedList(sn), remaining);
+        } catch (error) {
+          if (!(error instanceof RefreshWindowClosedError)) throw error;
+          break;
         }
+        if (epoch !== this.realtimeEpoch) return false;
+        if (settled()) return true;
         const delay = Math.min(500, deadline - Date.now());
         if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
+        if (refresh.expected !== undefined && settled()) return true;
       }
-      throw new Error("device state did not converge before semantic event deadline");
+      throw new StateConvergenceError({
+        sn,
+        property: refresh.property,
+        param: refresh.param,
+        expected: refresh.expected,
+        observed: this.registry.require(sn).params?.[refresh.param],
+        timeoutMs: refresh.timeoutMs,
+      });
     })();
   }
 
@@ -638,12 +797,46 @@ export class EufyMega extends EventEmitter {
     return tracked;
   }
 
+  /**
+   * Recycle a standalone device's P2P session after a write that needs one, waiting only
+   * {@link SESSION_RECYCLE_WAIT_MS} for it.
+   *
+   * The recycle itself waits for every viewer to detach, so that a write does not drop a live stream.
+   * That wait is unbounded by design — a viewer may watch indefinitely — and it happens INSIDE the keyed
+   * transaction, so the next write to the same member queues behind it. Racing it decouples the two: the
+   * losing recycle stays pending and still runs when the station falls idle, it just stops gating an
+   * unrelated write.
+   *
+   * A failure reported before the bound propagates; one arriving after it survives only as the session
+   * manager's own log, since by then nothing is waiting to receive it.
+   */
+  private recycleStandaloneSession(sn: string): Promise<void> {
+    const releaseWrite = new Promise<void>((resolve) => void setTimeout(resolve, SESSION_RECYCLE_WAIT_MS).unref?.());
+    return Promise.race([
+      this.p2p.resetStandaloneSession(sn),
+      releaseWrite.then(() =>
+        this.opts.logger?.debug(
+          `[session ${sn}] recycle still waiting on an attached viewer — releasing the write that asked for it`,
+        ),
+      ),
+    ]);
+  }
+
+  /**
+   * Whether the DECODED property now reads what the write asked for.
+   *
+   * Compared against {@link CommandObservation.observed} where the property's decode is not the identity, and
+   * against the raw expectation only where the two coincide. A disable-bit param reports `0` for a property
+   * that reads `true`, so comparing the decoded value against the raw expectation would reject a write that
+   * had landed — the value converged and the transition event never fired.
+   */
   private matchesObservation(
     value: unknown,
-    refresh: SemanticEventRefresh & { expected?: boolean | number | string },
+    refresh: SemanticEventRefresh & { expected?: boolean | number | string; observed?: boolean | number | string },
     before: unknown,
   ): boolean {
-    return refresh.expected === undefined ? value !== before : String(value) === String(refresh.expected);
+    const want = refresh.observed ?? refresh.expected;
+    return want === undefined ? value !== before : String(value) === String(want);
   }
 
   private eventRefreshKey(sn: string, refresh: Pick<CommandObservation, "param">): string {
@@ -653,7 +846,10 @@ export class EufyMega extends EventEmitter {
   /** Limit waiting on an unabortable dependency operation to the remaining semantic-event refresh window. */
   private beforeDeadline<T>(operation: Promise<T>, timeoutMs: number): Promise<T> {
     return new Promise<T>((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error("semantic event refresh timed out")), Math.max(0, timeoutMs));
+      const timeout = setTimeout(
+        () => reject(new RefreshWindowClosedError("refresh window closed")),
+        Math.max(0, timeoutMs),
+      );
       operation.then(
         (value) => {
           clearTimeout(timeout);
@@ -870,17 +1066,17 @@ export class EufyMega extends EventEmitter {
             const refreshed = await this.refreshEventState(sn, observation);
             if (!refreshed || epoch !== this.realtimeEpoch) return;
             this.emitSemantic(observation.event, { deviceSn: sn });
-            if (observation.resetStandaloneSession) await this.p2p.resetStandaloneSession(sn);
+            if (observation.resetStandaloneSession) await this.recycleStandaloneSession(sn);
           } catch (error) {
             if (!acknowledged) reject(error);
-            else this.reportError(error);
+            else this.reportUnacknowledged(error);
           } finally {
             release();
           }
         });
         void transaction.catch((error) => {
           if (!acknowledged) reject(error);
-          else this.reportError(error);
+          else this.reportUnacknowledged(error);
           release();
         });
         return acknowledgement;
@@ -888,15 +1084,39 @@ export class EufyMega extends EventEmitter {
     };
   }
 
-  /** Combine explicit P2P media with the optional passive push-thumbnail provider. */
+  /**
+   * Combine explicit P2P media with the optional passive push-thumbnail provider.
+   *
+   * The retained still also becomes the answer for a live still that could not be captured. A station
+   * serves one camera at a time and a live view outranks a tile, so a still asked for while a sibling is
+   * being watched is refused at the transport. Answering the retained bytes keeps a caller's tile
+   * populated rather than failing it, marked {@link MediaProvider.snapshotLive} `retained` so the caller
+   * knows they are not current. With nothing retained the refusal stands.
+   */
   private mediaProviderFor(sn: string): MediaProvider {
     const media = this.p2p.mediaProviderFor(sn);
-    if (!this.storedImages) return media;
+    const cache = this.storedImages;
+    if (!cache) return media;
+    const retainedStill = () => {
+      if (!this.mega.loggedIn) return Promise.reject(new Error("login() first"));
+      return cache.snapshotStored(sn);
+    };
     return {
       ...media,
-      snapshotStored: () => {
-        if (!this.mega.loggedIn) return Promise.reject(new Error("login() first"));
-        return this.storedImages!.snapshotStored(sn);
+      snapshotStored: retainedStill,
+      snapshotLive: async (opts) => {
+        try {
+          return await media.snapshotLive(opts);
+        } catch (error) {
+          if (!(error instanceof LiveSnapshotUnavailableError)) throw error;
+          const retained = await retainedStill().catch(() => undefined);
+          const geometry = retained && jpegGeometry(retained);
+          if (!retained || !geometry) throw error;
+          (this.opts.logger ?? noopLogger).debug(
+            `[media] a live still was unavailable (${error.reason}) — answering the retained one instead`,
+          );
+          return { jpeg: retained, ...geometry, retained: true };
+        }
       },
     };
   }
@@ -940,6 +1160,10 @@ export class EufyMega extends EventEmitter {
    * the command dispatcher can resolve a eufy SN → Tuya devId without a separate lookup.
    * The Tuya id is extracted from the device's raw cloud record (`tuya_uuid`, `tuya_virtual_id`,
    * `tuya_device_id`, or `virtualId` fields — whichever is non-empty).
+   *
+   * A partial cloud outage still resolves, with the devices that answered plus the ones already known — but a
+   * session the cloud has rejected REJECTS, with {@link SessionExpiredError}. An empty list would be
+   * indistinguishable from an account with no devices, and a host acts on that by removing everything it had.
    */
   async getDevices(): Promise<EufyDevice[]> {
     const devices = await this.registry.getDevices();
@@ -969,6 +1193,57 @@ export class EufyMega extends EventEmitter {
    */
   getProductDataPoint<T = unknown>(code: string): Promise<T> {
     return this.mega.getProductDataPoint<T>(code);
+  }
+
+  /**
+   * One page of a robot vacuum's **cleaning history**, in whatever order the cloud returns it —
+   * newest first in practice, but that is the gateway's contract and the SDK does not re-sort.
+   *
+   * `pageSize` is how many records to return and `page` is 1-based; page through until the returned
+   * `total` is reached. Answers an empty page rather than throwing when the account has no history for
+   * the device or the response cannot be read.
+   *
+   * Each record carries a `downloadUrl` for the run's binary detail blob (map and per-run statistics).
+   * The SDK hands that URL over rather than fetching it — the host is unconfirmed and the blob's format
+   * is not evidenced yet.
+   */
+  async getCleanRecords(deviceSn: string, pageSize = 20, page = 1): Promise<CleanRecordPage> {
+    try {
+      return parseCleanRecords(await this.mega.getCleanRecords(deviceSn, pageSize, page));
+    } catch (err) {
+      this.opts.logger?.debug?.(`[clean] record list failed: ${(err as Error).message}`);
+      return EMPTY_CLEAN_RECORD_PAGE;
+    }
+  }
+
+  /**
+   * Decode one cleaning run's **detail blob** — the bytes behind a {@link CleanRecord}'s `downloadUrl`.
+   *
+   * The SDK does not fetch that URL: its host is unconfirmed, and this client's binary path is
+   * host-allowlisted with SSRF checks by design, so routing around it would defeat a control that
+   * exists for a reason. Fetch the bytes however your host prefers and hand them here.
+   *
+   * Answers `undefined` when the blob fails its own checksum or is not one of these at all.
+   */
+  parseCleanRecordDetail(blob: Uint8Array): CleanRecordDetail | undefined {
+    return parseCleanRecordDetail(blob, rawDpCodec);
+  }
+
+  /**
+   * One page of a device's stored **map data**, raw.
+   *
+   * Handed back exactly as the cloud sends it, `content` included and undecoded. The decoder for that
+   * content is the vendor's clean-native library, which is not in the app package — so this SDK can
+   * carry the bytes to you and no further. Walk `is_next_page` and `last_offset` to reassemble a map
+   * that spans several responses.
+   */
+  getDeviceMapList<T = unknown>(deviceSn: string, channelId = 0, num = 1, page = 1, lastOffset = 0): Promise<T> {
+    return this.mega.getDeviceMapList<T>(deviceSn, channelId, num, page, lastOffset);
+  }
+
+  /** Stored map content for several channels at once, raw and undecoded. See {@link getDeviceMapList}. */
+  getManyDeviceMapContent<T = unknown>(deviceSn: string, channelIds: readonly number[]): Promise<T> {
+    return this.mega.getManyDeviceMapContent<T>(deviceSn, channelIds);
   }
 
   /** Live param list for one owned device. See `MegaHttpClient.getDeviceParamList`. */
@@ -1009,6 +1284,17 @@ export class EufyMega extends EventEmitter {
    * {@link Device.setFreshnessPolicy}), so a host that reuses it (e.g. a periodic polling loop) serves
    * repeat reads from cache instead of re-fetching, and realtime updates keep values fresh.
    *
+   * That refresh ANNOUNCES what it lands, like the other two inbound paths. For a host that reads often it
+   * fires every `cacheTtlMs` where the poll fires every ten minutes, so it is where most fresh cloud values
+   * arrive — and each announcing path is edge-triggered on the same live state, so whichever sees a change
+   * first announces it and the others stay silent. Its timing says only when a caller happened to read; the
+   * value is the news. It applies what the device volunteered over realtime on top of the cloud half, which
+   * the registry keeps apart, so it can neither revert nor announce a revert of a report already landed.
+   *
+   * The `Device` returned is held WEAKLY: it is what the inbound paths announce against, so a caller that
+   * wants property changes for a serial keeps its own reference. Dropping it stops the announcements, not
+   * the device.
+   *
    * @example
    * ```ts
    * const dev = await eufy.getDevice(sn);
@@ -1035,7 +1321,8 @@ export class EufyMega extends EventEmitter {
       dev.setFreshnessPolicy({
         staleAfterMs: this.opts.cacheTtlMs ?? 15_000,
         refresh: async () => {
-          dev.applyParams((await this.registry.record(sn)).params);
+          const fresh = await this.registry.record(sn);
+          this.applyAndAnnounce(dev, { ...fresh.params, ...fresh.dpParams });
         },
       });
     }
@@ -1070,8 +1357,9 @@ export class EufyMega extends EventEmitter {
    * session after a successful login (unless `autoRealtime:false`). Starts the **always-on, battery-safe**
    * channels — FCM push (account-wide events) + secure MQTT (iff appliances present) — and eagerly warms
    * P2P **only for wired stations** (HomeBases / mains cameras, which don't drain). Battery cameras are
-   * left detached: their P2P opens on demand (command / stream / event pre-warm) and idle-detaches. All
-   * channels start concurrently; a single failure surfaces via `error` without aborting the rest.
+   * left detached: their P2P opens on demand (command / stream, or an opted-in event pre-warm) and
+   * idle-detaches. All channels start concurrently; a single failure surfaces via `error` without
+   * aborting the rest.
    */
   private ensureRealtime(): Promise<RealtimeReadiness> {
     return this.ensureRealtimeGeneration().promise;
@@ -1210,12 +1498,18 @@ export class EufyMega extends EventEmitter {
   }
 
   /**
-   * One poll pass: re-read the device list and emit a semantic event for every param that changed
-   * value since the last pass.
+   * One poll pass: re-read the device list, land what moved on the live devices, announce every property
+   * whose value changed, and emit a semantic event for every param that changed value since the last pass.
    *
-   * This is the producer behind the capabilities' `source:"poll"` event mappings — the channel for
-   * state that has no push of its own (`battery.ts` maps the battery level here; `contact.ts` maps the
-   * contact param as a second path alongside its push).
+   * `propertyChanged` is the generic channel this exists for: most readable members arrive only as a
+   * cloud param and no push carries them, so re-reading was the only way a caller could learn one had
+   * moved and re-reading cannot say WHEN. A capability's own `source:"poll"` mapping is beside it, for a
+   * state that carries something a bare property change cannot (`contact.ts` maps the contact param as a
+   * third transport for a state its push and its station notify also report).
+   *
+   * Each change is decoded against the reporting device's capabilities, the same argument the push path
+   * passes: a param id claimed by more than one capability cannot be resolved without it, so a poll
+   * event declared on a contested id would be declared and then silently never emitted.
    *
    * Also emits `deviceState` for each device the diff reports as having re-reported. That is tracked
    * apart from the param diff because the two are different facts: the cloud can re-stamp a param with
@@ -1228,14 +1522,115 @@ export class EufyMega extends EventEmitter {
       const diff = await this.registry.pollChanges();
       for (const dev of diff.added) this.emit("deviceAdded", dev);
       for (const dev of diff.removed) this.emit("deviceRemoved", dev);
+      this.applyPolledParams(diff.params);
       for (const change of diff.params)
-        for (const out of decodeCapabilityEvent({ source: "poll", ...change }))
+        for (const out of decodeCapabilityEvent({ source: "poll", ...change }, this.capsForEvent(change.deviceSn)))
           this.emitSemantic(out.event, out.payload, { refresh: out.refresh });
       for (const dev of diff.reported) this.emit("deviceState", this.stateOf(dev));
       for (const change of diff.params) await this.widenCapabilities(change.deviceSn);
     } catch (e) {
       this.reportError(e);
     }
+  }
+
+  /**
+   * Land a poll pass's CHANGES on every live {@link Device} and announce what moved, BEFORE anything
+   * else derived from them is emitted.
+   *
+   * Ordered that way because live state is the map every capability getter reads: a listener reading a
+   * getter inside a poll event handler has to see the value that event is about. The read-through
+   * freshness policy cannot stand in for this — it fires on a READ of a stale value and hands that read
+   * the stale one, so a value nothing happens to read is never refreshed by it.
+   *
+   * The CHANGES, not the whole post-change map {@link ParamChange} also carries. That map is there so an
+   * event decode can read sibling params; applying it would revert every id a realtime report made
+   * fresher, because {@link DeviceRegistry.applyRealtimeParams} keeps a report apart from the cloud
+   * record's params — the cloud list carries the pre-report value long after the device volunteered the
+   * new one, so an open door reads as closed on the next pass that sees anything on that device move.
+   *
+   * That precedence is the reason a moved id is also RETIRED from the report map
+   * ({@link DeviceRegistry.retireRealtimeParams}). The report outranks the cloud only while it is the
+   * fresher half, and a diff on that id is the cloud stating a transition of its own — so left in place
+   * the report would outrank it forever, and the next join of the two halves would revert this pass's
+   * value and announce the revert. Retired for EVERY device the diff touched, not only a live one: the
+   * join also feeds the `Device` a later {@link getDevice} builds, which no live entry exists for yet.
+   */
+  private applyPolledParams(changes: readonly ParamChange[]): void {
+    const byDevice = new Map<string, RawParams>();
+    for (const change of changes) {
+      const params = byDevice.get(change.deviceSn) ?? {};
+      params[change.paramType] = change.to;
+      byDevice.set(change.deviceSn, params);
+    }
+    for (const [sn, params] of byDevice) {
+      this.registry.retireRealtimeParams(sn, Object.keys(params).map(Number));
+      const device = this.liveDeviceToAnnounce(sn);
+      if (device) this.applyAndAnnounce(device, params);
+    }
+  }
+
+  /**
+   * The live {@link Device} for a serial, for a path that is about to ANNOUNCE against it — reporting
+   * once when one the caller asked for has since been collected.
+   *
+   * An announcement carries the value read out of that device's own live state, so a collected device
+   * cannot be announced for, and the caller is the only thing keeping one alive — {@link liveDevices} is
+   * weak by contract. Losing announcements that way fails in the three worst ways at once: it is
+   * non-deterministic (it turns on when the collector runs, so it holds in development and stops under
+   * memory pressure), silent (no error, the events simply cease), and non-local (the obligation is on
+   * {@link getDevice}, the symptom shows on `propertyChanged`).
+   *
+   * Neither alternative is available: re-deriving the value outside live state is two answers for one
+   * reading, which is the disagreement the announcement exists to remove, and keeping every device alive
+   * here reverses this map's own invariant. So it is LOUD — a host learns why its events stopped rather
+   * than investigating a silence.
+   *
+   * Reported only for a serial the caller DID ask for, since one never fetched has no object by definition
+   * and was never owed an announcement — reporting those would name most of the account on every pass. The
+   * dead entry is dropped as it is reported, which is what makes it once: a device let go on purpose must
+   * not narrate every inbound signal for the rest of the session, and a later {@link getDevice} re-registers
+   * the serial and resumes announcing.
+   *
+   * Deliberately not routed through {@link reportError}: nothing in this SDK failed, so it must not reach a
+   * host's `error` handling. It is a usage fact, at `warn` because a host does want to see it.
+   */
+  private liveDeviceToAnnounce(sn: string): Device | undefined {
+    const held = this.liveDevices.get(sn);
+    if (!held) return undefined;
+    const device = held.deref();
+    if (device) return device;
+    this.liveDevices.delete(sn);
+    this.opts.logger?.warn?.(
+      `[eufy] ${sn}: the Device handed to this caller has been garbage-collected, so its propertyChanged ` +
+        `announcements have stopped. Keep a reference to every Device you want them for; getDevice(sn) resumes them.`,
+    );
+    return undefined;
+  }
+
+  /**
+   * Apply a param map to one live {@link Device} and announce every property it moved, one
+   * `propertyChanged` each. The one place the two halves are joined, shared by all three inbound paths
+   * that reach live state.
+   *
+   * The device decides which of the changed names it will stand behind and what value each carries
+   * ({@link Device.announcements}), so this stays a fan-out: no capability name, no member id, and no
+   * second conversion of a wire value that could disagree with the getter beside it.
+   *
+   * Only a device a caller is HOLDING is announced for, because the announced value is read out of that
+   * device's own live state and a serial nobody asked for has none. Resolving one on demand could not
+   * help: a device built from the already-updated record has nothing to diff against, so the pass that
+   * created it could never be the pass it announces. Such a device's liveness still reaches a host as
+   * `deviceState`.
+   *
+   * Echoes of the SDK's own writes are announced rather than suppressed. An inbound path cannot tell a
+   * change it caused from one an external actor caused, and suppressing on that guess is unsound, not
+   * merely conservative: if a user also changes the value in the vendor app inside the window, the real
+   * external change is the one lost — a wrong state held indefinitely, against one redundant idempotent
+   * re-read.
+   */
+  private applyAndAnnounce(device: Device, params: RawParams): void {
+    for (const change of device.announcements(device.applyParams(params)))
+      this.emitSemantic("propertyChanged", { deviceSn: device.sn, ...change });
   }
 
   /**
@@ -1313,7 +1708,7 @@ export class EufyMega extends EventEmitter {
    * from the base's persistent session). Reads capabilities on the client side — no model type leaks to
    * transport (the router only ever sees the `"wired"|"battery"` string).
    */
-  private stationPower(parentSn: string): "wired" | "battery" {
+  private stationPower(parentSn: string): PowerTier {
     const d = this.registry.list().find((x) => x.sn === parentSn);
     if (!d) return "wired";
     if (d.deviceClass === "homebase") return "wired";
@@ -1325,6 +1720,35 @@ export class EufyMega extends EventEmitter {
       params: d.params ?? {},
     }).capabilities;
     return caps.includes("battery") ? "battery" : "wired";
+  }
+
+  /**
+   * Speculatively open the P2P session of the station behind `deviceSn`, if the caller opted this
+   * semantic event in — so a tap-to-view / talkback right after a doorbell ring or a detection starts
+   * warm instead of paying a cold open.
+   *
+   * Four gates. `autoRealtime: false` means the SDK opens nothing on its own initiative at all;
+   * {@link EufyMegaOptions.prewarmEvents} must name the event, and it names none by default, which is
+   * what makes pre-warm opt-in; the station must be one the account actually reports; and its power tier
+   * must be one {@link EufyMegaOptions.prewarmTiers} allows.
+   *
+   * The tier is resolved for the STATION whose session would open, which is why an attached camera is
+   * judged by its base — {@link P2PCommandRouter.stationKeyOf} is the single source of that mapping, and
+   * {@link stationPower} of the tier. A station with no record of its own is declined rather than
+   * pre-warmed: {@link stationPower} answers `"wired"` for one it cannot find, because the tier it feeds
+   * the session lifecycle must always be an answer — and taking that answer here is how a battery camera
+   * gets pre-warmed under a `"wired"`-only opt-in.
+   *
+   * Best-effort and unawaited: a pre-warm nobody uses must cost the caller nothing, so a failed open
+   * surfaces on `error` like any other background transport failure.
+   */
+  private prewarmForEvent(event: string, deviceSn: string): void {
+    if (this.opts.autoRealtime === false) return;
+    if (!this.prewarmEvents.has(event)) return;
+    const station = this.p2p.stationKeyOf(deviceSn);
+    if (!this.registry.list().some((device) => device.sn === station)) return;
+    if (!this.prewarmTiers.has(this.stationPower(station))) return;
+    void this.p2p.prewarm(station, this.opts.prewarmMs);
   }
 
   /**
@@ -1357,6 +1781,16 @@ export class EufyMega extends EventEmitter {
             this.tuyaDpRouter.deliver(m.deviceSn, dps);
             return;
           }
+        }
+      }
+      if (m.deviceSn) {
+        // The map stream. A protocol-41 message is nothing else, so it stops here rather than being
+        // walked by DP parsers that would each correctly decline it.
+        const frame = parseBizMapFrame(m.raw);
+        if (frame) {
+          this.emit("mapFrame", { deviceSn: m.deviceSn, frame });
+          this.applyMapFrame(m.deviceSn, frame);
+          return;
         }
       }
       if (m.topic) this.processAvailabilityMessage(m.topic, m.raw);
@@ -1421,8 +1855,9 @@ export class EufyMega extends EventEmitter {
 
   /**
    * Stations with a live P2P session. P2P is auto-managed: wired stations are warmed at login, battery
-   * stations open on demand (command / stream / doorbell pre-warm) and idle-detach — so this map grows
-   * and shrinks over time. `p2pConnect(stationSn)` / `p2pClose(stationSn)` events track the changes.
+   * stations open on demand (command / stream, or an opted-in event pre-warm) and idle-detach — so this
+   * map grows and shrinks over time. `p2pConnect(stationSn)` / `p2pClose(stationSn)` events track the
+   * changes.
    */
   getP2pSessions(): Map<string, P2PSession> {
     return this.p2p.getSessions();
@@ -1688,10 +2123,10 @@ export class EufyMega extends EventEmitter {
    *   - `pushRaw(raw)` — the raw `RawPushMessage`
    *   - `pushConnect` / `pushDisconnect`
    *
-   * Started automatically by {@link ensureRealtime} after login. A high-intent semantic event
-   * (default `doorbellPress`, per {@link EufyMegaOptions.prewarmEvents}) also speculatively pre-warms
-   * that camera's P2P session (`p2p.prewarm`) so a tap-to-view / talkback starts instantly; the facade
-   * maps the event → station, the router stays event-agnostic.
+   * Started automatically by {@link ensureRealtime} after login. A semantic event the caller opted into
+   * via {@link EufyMegaOptions.prewarmEvents} — none by default — also speculatively pre-warms that
+   * camera's P2P session, so a tap-to-view / talkback starts instantly; {@link prewarmForEvent} owns that
+   * decision, and the router stays event-agnostic.
    *
    * Returns the connected client rather than installing it. Registration can outlive a `disconnect()`,
    * and {@link ensureRealtime} owns the decision of whether a finished bring-up is still the current
@@ -1739,10 +2174,8 @@ export class EufyMega extends EventEmitter {
       };
       for (const out of decodeCapabilityEvent(signal, this.capsForEvent(ev.deviceSn))) {
         this.emitSemantic(out.event, out.payload, { edge: true, refresh: out.refresh });
-        if (this.opts.autoRealtime !== false && this.prewarmEvents.has(out.event)) {
-          const dsn = (out.payload.deviceSn as string | undefined) ?? ev.deviceSn;
-          if (dsn) void this.p2p.prewarm(this.p2p.stationKeyOf(dsn), this.opts.prewarmMs);
-        }
+        const dsn = (out.payload.deviceSn as string | undefined) ?? ev.deviceSn;
+        if (dsn) this.prewarmForEvent(out.event, dsn);
       }
       store.save({ creds: persistedCreds, persistentIds: client.getPersistentIds() });
     });

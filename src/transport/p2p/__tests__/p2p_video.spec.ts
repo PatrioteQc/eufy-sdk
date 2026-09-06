@@ -191,7 +191,8 @@ describe("parseVideoFrameHeader on a real captured keyframe header", () => {
     const buf = Buffer.from(HEADER_B64, "base64");
     const h = parseVideoFrameHeader(buf);
     expect(h).toBeDefined();
-    expect(h?.ciphertextLength).toBe(0x3b323);
+    // The header declares the payload THIS frame carries; this one carried a whole 242979-byte unit.
+    expect(h?.payloadLength).toBe(0x3b323);
     expect(h?.keyframe).toBe(true);
     expect(h?.width).toBe(2304);
     expect(h?.height).toBe(1296);

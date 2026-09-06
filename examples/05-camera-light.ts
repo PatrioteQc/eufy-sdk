@@ -41,6 +41,12 @@ async function main(): Promise<void> {
   console.log(`turning light ${state} …`);
   await setPower.call(light);
 
+  // `isOn` (the momentary lighting) and `spotlightEnabled` (the master switch) are two different facts,
+  // and both are readable. The lamp is lit only while something is streaming — the vendor app lights it
+  // for a live view and drops it on quitting — whereas the master switch is the SETTING a user changes
+  // and expects to stay changed. A change to either arrives as `propertyChanged`.
+  console.log({ lit: light.isOn, masterSwitch: light.spotlightEnabled, brightness: light.brightness });
+
   if (brightness !== undefined) {
     if (brightness < 1 || brightness > 100) throw new Error("brightness must be 1–100");
     // A light may be on/off-only (status-LED cams report no brightness param) — the typed read is

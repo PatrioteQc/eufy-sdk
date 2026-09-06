@@ -176,7 +176,7 @@ export type MotionActions = Surface<typeof MOTION_MEMBERS> & {
    */
   sensitivityStep(): number | undefined;
   /**
-   * Set the detection-sensitivity step, from 1 (least sensitive) up to {@link sensitivitySteps}.
+   * Set the detection-sensitivity step, from 1 (least sensitive) up to `sensitivitySteps`.
    *
    * A step, not a device value: the five device families this is captured on use four different
    * command ids, three frame shapes and two opposite numeric directions, so a raw number means the

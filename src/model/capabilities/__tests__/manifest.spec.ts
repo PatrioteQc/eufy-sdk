@@ -2,6 +2,7 @@ import { buildActions, CAPABILITY_MODULES, describeCapabilities } from "../index
 import { Device } from "../../device.js";
 import type { Capability } from "../../types.js";
 import type { CapabilityModule, CommandContext } from "../types.js";
+import { borrowedBy } from "../members.js";
 import type { ValueMember } from "../members.js";
 import type { Command, CommandSink, MediaProvider } from "../../../core/contracts.js";
 
@@ -63,11 +64,15 @@ const tableReads = (m: CapabilityModule, paramIds: Set<number>): string[] =>
       // A getter installs only where the member is available for this device — the same one
       // availability decision the manifest and setter apply (here the ctx is a plain camera).
       if (v.available && !v.available(ctxWith(paramIds))) return false;
-      return (
-        v.realtime === true ||
-        (v.param !== undefined && paramIds.has(v.param)) ||
-        v.readAliases?.some((a) => paramIds.has(a.paramType)) === true
-      );
+      // Either wire installs a `readsFrom` member: its own param where it has one, or the OWNER's
+      // payload that carries the same value on the other device family — exactly as `bindMembers`
+      // resolves it. Its own `available` above still applies.
+      const borrowed = borrowedBy(v, m.members ?? {});
+      const evident = (x: ValueMember): boolean =>
+        x.realtime === true ||
+        (x.param !== undefined && paramIds.has(x.param)) ||
+        x.readAliases?.some((a) => paramIds.has(a.paramType)) === true;
+      return evident(v) || (borrowed !== undefined && paramIds.has(borrowed.param));
     })
     .map(([name]) => name);
 
@@ -202,10 +207,7 @@ describe("describeCapabilities — enumeration of the live bound objects", () =>
   it("announces the events a capability emits, including the ones it decodes itself", () => {
     const described = describeAll(allParams());
     expect(described.find((d) => d.capability === "ptz")!.events).toEqual(["ptzNotify"]);
-    expect([...described.find((d) => d.capability === "battery")!.events].sort()).toEqual([
-      "batteryAlert",
-      "batteryLevel",
-    ]);
+    expect(described.find((d) => d.capability === "battery")!.events).toEqual(["batteryAlert"]);
   });
 
   /**

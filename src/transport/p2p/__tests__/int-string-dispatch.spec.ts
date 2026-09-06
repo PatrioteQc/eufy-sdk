@@ -1,21 +1,17 @@
-import { EventEmitter } from "node:events";
 import { describe, expect, it, vi } from "vitest";
 import { P2PCommandRouter, type P2PRouterDeps } from "../command-router.js";
+import { connectedSession, type FakeP2PSession } from "./session-fixtures.js";
 
 const DEVICE_SN = "T8114P0000000000";
 const STATION_SN = "T8010P0000000000";
 const ACCOUNT_ID = "0000000000000000000000000000000000000000";
 
-interface FakeSession extends EventEmitter {
-  isConnected: boolean;
-  hasLevel2Key: boolean;
+interface FakeSession extends FakeP2PSession {
   sendIntStringCommand: ReturnType<typeof vi.fn>;
 }
 
 function setup(accountId = ACCOUNT_ID, register = true) {
-  const session = new EventEmitter() as FakeSession;
-  session.isConnected = true;
-  session.hasLevel2Key = true;
+  const session = connectedSession() as FakeSession;
   session.sendIntStringCommand = vi.fn();
   const deps: P2PRouterDeps = {
     mega: {} as P2PRouterDeps["mega"],
@@ -25,6 +21,8 @@ function setup(accountId = ACCOUNT_ID, register = true) {
         stationSn: STATION_SN,
         raw: { parent_sn: STATION_SN, device_channel: 1, member: { admin_user_id: accountId } },
       } as never,
+      // Listed but endpoint-less, so a cold open fails at session resolution — what `register: false` tests.
+      { sn: STATION_SN, stationSn: STATION_SN, p2pDid: "", raw: { member: { admin_user_id: accountId } } } as never,
     ],
     ensureDevices: async () => {},
     onConnect: () => {},

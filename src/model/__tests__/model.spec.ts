@@ -437,14 +437,15 @@ describe("mergeProperties — shared props dedupe across capabilities", () => {
   });
 
   it("reresolve adopts a changed manifest even when no capability was gained", () => {
-    // A vacuum's AIoT-only members are gated on category, but the vacuum capabilities are the same
-    // either way — so switching category changes the manifest without changing the capability set.
-    const dev = Device.fromRecord("VAC", { model: "T2351", category: "eufy_home_tuya", params: {} });
-    expect(dev.properties.map((p) => p.name)).not.toContain("power");
+    // A Tuya vacuum's rssi read is gated on DP 134 being reported — absent until the device reports
+    // it. Switching from no-DP to DP-reported changes the manifest (rssi appears) without changing
+    // the capability set (vacuum_clean was already detected via codec).
+    const dev = Device.fromRecord("VAC", { model: "T2266", category: "eufy_home_tuya", params: {} });
+    expect(dev.properties.map((p) => p.name)).not.toContain("rssi");
 
-    const gained = dev.reresolve({ model: "T2351", category: "eufy_clean", params: {} });
+    const gained = dev.reresolve({ model: "T2266", category: "eufy_home_tuya", params: { 134: "-52" } });
 
     expect(gained).toEqual([]); // capability set unchanged…
-    expect(dev.properties.map((p) => p.name)).toContain("power"); // …but the manifest was still adopted
+    expect(dev.properties.map((p) => p.name)).toContain("rssi"); // …but the manifest was still adopted
   });
 });

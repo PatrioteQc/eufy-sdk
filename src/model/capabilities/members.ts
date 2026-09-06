@@ -65,7 +65,24 @@ export interface ValueMember {
   /** @internal Policy for confirming this write through bounded readback before emitting its transition event. */
   observation?: {
     event: string;
-    expected(value: boolean | number | string): boolean | number | string;
+    /**
+     * The param this write will be reflected under and the raw value to expect there, resolved together for
+     * THIS device — because on some members the family decides both at once.
+     *
+     * Both, not just the value, because the wire written and the wire reported are not always the same one:
+     * camera enablement is written on the enablement param on every family, while the standalone
+     * indoor/outdoor cameras report their state under a read alias and never the param that was written.
+     * Polling the written param there would never converge, so the readback has to name the param the device
+     * actually reports.
+     *
+     * `undefined` means this device offers no readback to confirm against — it reported no such param, or its
+     * write lands on a wire its read does not observe. The command is then dispatched unobserved rather than
+     * waiting out a timeout that could never be satisfied.
+     */
+    reflects(
+      value: boolean | number | string,
+      ctx: CommandContext,
+    ): { param: number; expected: boolean | number | string; observed?: boolean | number | string } | undefined;
     resetStandaloneSession?: boolean;
     timeoutMs: number;
   };
@@ -110,8 +127,9 @@ export interface ValueMember {
    * that declares this lands OPTIONAL on the surface, because whether it exists is a runtime fact.
    *
    * Takes an {@link AvailabilityContext} (not a full CommandContext): the manifest applies the same
-   * gate at resolve time, before a live session exists, so it must read only device facts a record
-   * carries — never `channel`/`paramIds`.
+   * gate at resolve time, before a live session exists. May read any field the {@link CloudRecord}
+   * can supply — `codec`, `model`, `category`, `deviceType`, `capabilities`, `paramIds` — but never
+   * transport-only fields (`channel`).
    */
   available?: (ctx: AvailabilityContext) => boolean;
   /**
@@ -157,6 +175,16 @@ export interface ValueMember {
    */
   realtime?: boolean;
   /**
+   * Whether this member's READ observes the same wire its write lands on, for a given device. Absent means
+   * yes — the ordinary case, where the setter's effect shows up in the getter.
+   *
+   * Declared only where a family routes the write elsewhere: the read then answers honestly about the param
+   * it observes while disagreeing with what the setter did, and a caller has no reason to distrust it. Such a
+   * member is named by {@link unreflectedMembers} for the devices where it applies, so the disagreement is
+   * something a caller can see rather than discover.
+   */
+  readReflectsWrite?: (ctx: CommandContext) => boolean;
+  /**
    * A setting the device ACCEPTS but never reports back.
    *
    * No getter (it could only ever answer `undefined`) and no entry in the property schema, which
@@ -194,6 +222,53 @@ export interface ValueMember {
    * knowing what its fields mean.
    */
   decode?: (raw: unknown, codec: RawDpCodec | undefined, ctx: CommandContext) => boolean | number | string | undefined;
+  /**
+   * This member's value is also a FIELD of another member's payload.
+   *
+   * Names the member KEY that owns that payload's `param`. The owner's stored property is what this
+   * member's {@link decode} is handed, and the owner's evidence installs this member — so a device that
+   * never reported the DP gets neither getter, and one that did gets both.
+   *
+   * The inverse of {@link readAliases}, which is one value across several wire ids. This is several
+   * values inside ONE wire id, which is how the clean line reports most of what it knows: nine
+   * consumable counters arrive as nine sub-messages of a single `ConsumableRuntime` on DP 168, and a
+   * `CleanParam` on DP 154 carries the carpet strategy and the clean type together.
+   *
+   * **Two shapes, by whether the member also declares a `param` of its own.**
+   *
+   * *Derived only* (no `param`): the member contributes NO {@link PropertySpec}. The schema describes
+   * what a device REPORTS and the device reports one DP, so a second spec for that id would give
+   * `Device` two names for one param — and it stores under only the first, leaving the extra getters
+   * answering `undefined` forever. That is exactly the failure the evidence gate exists to prevent.
+   *
+   * *Second source* (with a `param`): the member keeps its own wire and its own spec, and reaches into
+   * the owner's payload only on a device that did not report that wire. This is what lets ONE property
+   * span both clean lines when the two report it differently — the legacy Tuya line puts the lifetime
+   * cleaned area on its own DP, the AIoT line buries it inside `CleanStatistics` on DP 167. Without it,
+   * the same value would need two names and every host would branch on device family to ask for it.
+   * The `decode` sees whichever raw value the device actually has, so it discriminates on SHAPE, the way
+   * the clean line's cross-family decoders already do.
+   *
+   * **Watch what the owner was installed BY.** An owner with {@link readAliases} can be present because
+   * of an alias, and the value stored under its property is then the ALIAS's — a different wire carrying
+   * a different figure. A borrowing member that cannot come from that wire has to screen for it, either
+   * with its own {@link available} gate or in its `decode`; `lifetimeCleanCount` does both.
+   *
+   * Read-only either way. Setting a field inside a shared payload means re-encoding the whole message,
+   * which needs an encoder and a captured write this SDK does not have; the owner keeps that wire.
+   * Guarded by `property-id-integrity.spec.ts`.
+   *
+   * **Naming an owner in ANOTHER capability.** A string names a sibling in this table, which covers
+   * every payload whose readings all belong to one capability. Some do not: `DeviceInfo` on DP 169
+   * carries the robot's MAC, SSID and IP beside the DOCK's firmware version, and the one-owner rule is
+   * per product LINE — so one capability must own that id and the other's reading would otherwise have
+   * to hang off the wrong object. The `{ property, param }` form says "read the property another module
+   * owns, gated on the param that carries it", which works because `Device` keys state by NAME in one
+   * flat namespace shared across capabilities. Both halves are stated rather than looked up: a member
+   * declaring this cannot see the other module's table, and the guard checks the pair against the
+   * line's real owner so a rename cannot leave it pointing at nothing.
+   */
+  readsFrom?: string | { property: string; param: number };
   /** What the decoded value means, when it differs from the stored property's own {@link kind}. */
   decodedKind?: ValueKind;
   /**
@@ -265,6 +340,29 @@ export interface MethodMember<F> {
    * for code that reaches it deliberately.
    */
   answers?: true;
+}
+
+/**
+ * What a `readsFrom` member actually borrows: the property name holding the payload, and the param
+ * whose presence is the evidence for it.
+ *
+ * One resolution for both forms and for every reader of them — `bindMembers` and the three guards that
+ * check this mechanism all come through here, so a change to the declaration cannot leave one of them
+ * reading the old shape.
+ *
+ * Answers `undefined` when the member borrows nothing, and for a string that names no sibling: that
+ * fallback costs the borrowing member its getter rather than throwing at bind time, which is the
+ * failure a guard catches at build time anyway.
+ */
+export function borrowedBy(
+  m: Pick<ValueMember, "readsFrom">,
+  members: Members,
+): { property: string; param: number } | undefined {
+  if (m.readsFrom === undefined) return undefined;
+  if (typeof m.readsFrom !== "string") return m.readsFrom;
+  const owner = members[m.readsFrom] as ValueMember | undefined;
+  if (!owner || owner.param === undefined) return undefined;
+  return { property: owner.property ?? m.readsFrom, param: owner.param };
 }
 
 /**
@@ -522,6 +620,9 @@ export function propertiesOf(members: Members, ctx?: AvailabilityContext): Prope
         provenance: m.provenance,
         invert: promoted?.invert ?? m.invert,
         decode: m.coerce,
+        // A member with a getter-side `decode` reads a field out of a structured payload, so the
+        // stored value is that payload — see `PropertySpec.raw`.
+        raw: m.decode ? true : undefined,
         readAliases: aliases?.slice(promoted ? 1 : 0).map(({ paramType, invert }) => ({ paramType, invert })),
         writable: m.write !== undefined || m.writtenElsewhere === true,
         description: m.description,
@@ -551,11 +652,13 @@ export function memberWrite(
   if (!inDomain(m, value)) throw new Error(rejection(name, m, value));
   const cmd = m.write?.(value, ctx);
   if (!cmd) throw new Error(rejection(name, m, value));
-  return m.observation && m.param !== undefined
+  const reflected = m.observation?.reflects(value, ctx);
+  return m.observation && reflected
     ? observeCommand(cmd, {
         event: m.observation.event,
-        expected: m.observation.expected(value),
-        param: m.param,
+        expected: reflected.expected,
+        observed: reflected.observed,
+        param: reflected.param,
         property: m.property ?? name,
         resetStandaloneSession: m.observation.resetStandaloneSession,
         timeoutMs: m.observation.timeoutMs,
@@ -702,8 +805,13 @@ function reports(requires: readonly number[] | undefined, ctx: CommandContext): 
  * raw string so the mismatch is visible in the log, and a param the dictionary declares `json`-encoded
  * is stored as a decoded object. Handing either through a getter typed `number` is the one lie this
  * table exists to prevent.
+ *
+ * Exported so the ONE narrowing the getters use is also the one a property-change announcement carries.
+ * A second conversion of the wire value is precisely how a payload comes to disagree with the getter
+ * beside it, which would defeat the point of announcing the change at all.
+ * @internal
  */
-function narrow(
+export function narrow(
   type: PropertyValueType,
   read: CapabilityStateReader,
   prop: string,
@@ -782,6 +890,8 @@ export function bindMembers<M extends Members>(
   ff09Settings?: Ff09SettingsReader,
 ): Surface<M> {
   const out: Record<string, unknown> = {};
+  const unobservable: string[] = [];
+  const unreflected: string[] = [];
   const deps: MemberDeps = { ctx, sink, read, rawDp, media };
   for (const [name, m] of Object.entries(members)) {
     if ("provided" in m) {
@@ -802,16 +912,28 @@ export function bindMembers<M extends Members>(
       continue;
     }
     const prop = m.property ?? name;
+    // A `readsFrom` member reads a FIELD of another member's payload — a sibling's, or one owned by
+    // another capability in the same line. Borrowing nothing costs the getter rather than throwing at
+    // bind time; the guard catches that case at build time.
+    const from = borrowedBy(m, members);
+    const borrowed = from?.property;
     // One availability decision across getter, setter and manifest: a member gated off by `available`
     // for this device is not exposed as a getter either (the manifest already omits it).
     const available = !m.available || m.available(ctx);
-    const reported = available && reads(m, ctx);
+    // Either wire is evidence: the member's own param where it has one, or the owner's payload that
+    // carries the same value on the other device family.
+    const reported = available && (reads(m, ctx) || (from !== undefined && ctx.paramIds.has(from.param)));
     if (reported && !m.writeOnly && !m.unexposed) {
       const decode = m.decode;
-      const get = decode ? () => decode(read(prop)?.value, rawDp, ctx) : () => narrow(m.type, read, prop);
+      // The member's own wire wins; the owner's payload is the fallback for a device that does not
+      // speak it. One `decode` sees whichever arrived and discriminates on the value's shape.
+      const raw = (): unknown => read(prop)?.value ?? (borrowed === undefined ? undefined : read(borrowed)?.value);
+      const get = decode ? () => decode(raw(), rawDp, ctx) : () => narrow(m.type, read, prop);
       Object.defineProperty(out, name, { get, enumerable: true, configurable: true });
     }
     if (!m.write || m.unverified || !installs(m, ctx)) continue;
+    if (m.writeOnly) unobservable.push(name);
+    else if (m.readReflectsWrite && !m.readReflectsWrite(ctx)) unreflected.push(name);
     const setter = m.writeAs ?? `set${name[0].toUpperCase()}${name.slice(1)}`;
     out[setter] = describedAction(describeWrite(name, m, reported), (value: boolean | number | string) => {
       try {
@@ -821,5 +943,55 @@ export function bindMembers<M extends Members>(
       }
     });
   }
+  attachStatement(out, UNOBSERVABLE, unobservable);
+  attachStatement(out, UNREFLECTED, unreflected);
   return out as Surface<M>;
 }
+
+/**
+ * Two statements a caller needs and cannot derive from the shape, carried out of band so neither becomes a
+ * member of the capability it describes. Same device as `core/contracts`' command-observation symbol.
+ */
+const UNOBSERVABLE = Symbol("unobservable-members");
+const UNREFLECTED = Symbol("unreflected-members");
+
+/** Attach one frozen statement to a bound surface, keyed so it is not a member of it. */
+function attachStatement(surface: object, key: symbol, names: readonly string[]): void {
+  Object.defineProperty(surface, key, { value: Object.freeze([...names]), configurable: true });
+}
+
+/** Read one back. Any object that was never bound answers empty rather than undefined. */
+function statement(surface: object, key: symbol): readonly string[] {
+  return (surface as Record<symbol, readonly string[] | undefined>)[key] ?? [];
+}
+
+/**
+ * The members this device can be told to change but will never report back.
+ *
+ * `cam.privacy === undefined` reads identically for a device that reports the value as unset and one that
+ * never reports it, and guessing between them is what a caller must not do: refusing a working camera
+ * withdraws it, and allowing a dead one shows a viewer a stream that will never carry frames.
+ *
+ * Only members whose setter is actually installed for this device are listed. A member whose write is
+ * unverified has no setter and its intent path throws, so calling it something the device "accepts" would
+ * put exactly the guess the unverified-write rule excludes back into the typed story.
+ *
+ * `unexposed` members are deliberately absent: the device DOES report those — they are in the property schema
+ * and reachable through `getProperty` — what is missing is a confirmed meaning for the value.
+ *
+ * Empty for any object that is not a bound capability.
+ */
+export const unobservableMembers = (surface: object): readonly string[] => statement(surface, UNOBSERVABLE);
+
+/**
+ * The members this device reports, but whose value does NOT reflect what its own setter writes — because on
+ * this device family the write lands on a different wire than the read observes.
+ *
+ * A readable value that silently disagrees with the write is worse than an unreadable one: a caller has no
+ * reason to distrust it. Camera enablement is one on the families whose power rides the privacy envelope —
+ * the write goes there while the read still observes the on/off param, so a camera that has been turned off
+ * still reads as on. Naming it lets a caller decline to act on the value instead of acting on a wrong one.
+ *
+ * Empty for any object that is not a bound capability.
+ */
+export const unreflectedMembers = (surface: object): readonly string[] => statement(surface, UNREFLECTED);

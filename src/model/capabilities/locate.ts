@@ -1,19 +1,24 @@
+import { isAiotVacuum, isTuyaVacuum } from "../device-family.js";
+import { TUYA_VACUUM_DP } from "./vacuum-clean.js";
 import { pickDpParams, aiotDp } from "./access.js";
 import { method, propertiesOf, type Members, type Surface } from "./members.js";
 import type { CapabilityModule } from "./types.js";
-import { isAiotVacuum, isTuyaVacuum } from "../device-family.js";
 
 /** DP id for the locate (find-robot) toggle. */
 const LOCATE_DP = 160 as const;
-/** DP id for the locate (find-robot) toggle on the legacy Tuya clean line (G-series/X8). */
-const LEGACY_LOCATE_DP = 103 as const;
+/**
+ * DP id for the locate (find-robot) toggle on the Tuya clean line (G-series / X8) — the vendor's
+ * `look_for_sweeper`. Taken from the clean capability's own table rather than respelled here, so the
+ * Tuya line's ids have one home.
+ */
+const LEGACY_LOCATE_DP = TUYA_VACUUM_DP.LOOK_FOR_SWEEPER;
 
 /**
  * Every `locate` feature, declared once.
  *
  * `locate()` is a `method` rather than a derived setter because its argument is OPTIONAL — the
  * common call is a bare `locate()` meaning "start beeping" — and a derived setter always takes its
- * value. It is installed on any AIoT robot: dispatches DP 160.
+ * value. Dispatches DP 103 (legacy Tuya) or DP 160 (AIoT) based on which DP the device has reported.
  *
  * Exported so a caller can name the table its `*Actions` type is derived from, but NOT published:
  * each entry states its wire id and the evidence it was confirmed on, which the reference site
@@ -39,7 +44,9 @@ export const LOCATE_MEMBERS = {
       "cancel a beep but holds no durable state, so this may never be observed true in practice.",
   },
   /**
-   * Writes DP 160 (AIoT) — `true` starts the beep, `false` cancels one already sounding. The default
+   * Writes DP 160 (AIoT) — `true` starts the beep, `false` cancels one already sounding. AIoT only:
+   * the legacy Tuya DP 103 is read as an alias above, but its WRITE direction is unconfirmed, so no
+   * Tuya dispatch is offered. The default
    * argument is what makes this a `method`: a bare `locate()` is the call that matters, and a derived
    * setter always demands its value.
    *
@@ -53,7 +60,7 @@ export const LOCATE_MEMBERS = {
         (on = true): Promise<void> =>
           sink.dispatch(aiotDp(LOCATE_DP, on)),
       "Trigger the find-robot beep; pass false to cancel one in progress.",
-      (ctx) => isAiotVacuum(ctx),
+      isAiotVacuum,
     ),
     args: [{ name: "on", kind: "boolean", optional: true, description: "False cancels a beep in progress." }],
   },

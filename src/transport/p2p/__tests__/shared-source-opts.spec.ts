@@ -34,9 +34,23 @@ function routerWithSession(logger: { warn: ReturnType<typeof vi.fn> }) {
   return router;
 }
 
+/** Replace source construction with a recorder, so a spec reads the options an egress passed. */
+function interceptSourceOptions(router: P2PCommandRouter): Record<string, unknown>[] {
+  const seen: Record<string, unknown>[] = [];
+  (router as unknown as { sharedLiveSourceFor: unknown }).sharedLiveSourceFor = async (
+    _sn: string,
+    opts: Record<string, unknown>,
+  ) => {
+    seen.push(opts);
+    throw new Error("stop here — only the options matter");
+  };
+  return seen;
+}
+
 /**
- * The options the FIRST caller passes have to actually REACH the source it builds. A spec that only
- * asserts the warning passes even with the hint dropped on the floor, which is the defect itself.
+ * The options the FIRST caller passes have to actually REACH the source it builds. Construction and
+ * conflict reporting are separate contracts: a warning proves that later options were compared, not that
+ * the first options were applied to the source.
  */
 describe("shared live source construction", () => {
   it("builds the source with the power hint the first caller passed", async () => {
@@ -97,14 +111,7 @@ describe("shared live source construction", () => {
 describe("shared live source options from the snapshot egresses", () => {
   it("arms the budget when snapshotLive is what warmed the source", async () => {
     const router = routerWithSession({ warn: vi.fn() });
-    const seen: unknown[] = [];
-    (router as unknown as { sharedLiveSourceFor: unknown }).sharedLiveSourceFor = async (
-      _sn: string,
-      opts: unknown,
-    ) => {
-      seen.push(opts);
-      throw new Error("stop here — only the options matter");
-    };
+    const seen = interceptSourceOptions(router);
 
     await router
       .mediaProviderFor("T8000P0000000000")
@@ -112,6 +119,83 @@ describe("shared live source options from the snapshot egresses", () => {
       .catch(() => {});
 
     expect(seen).toEqual([{ powered: "battery" }]);
+  });
+});
+
+/**
+ * The pre-event window is fixed when a source is CONSTRUCTED — nothing can widen a pull that consumers
+ * are already attached to. So whichever egress opens the source decides whether a window exists at all,
+ * and an egress that cannot ask for one silently denies it to every egress that joins later: a still
+ * polled seconds before a recording leaves that recording nothing to drain, however much it asked for.
+ * Every egress therefore carries it, for exactly the reason every egress carries `powered`.
+ */
+describe("the pre-event window every egress may be the one to configure", () => {
+  it("configures the window when a live stream opens the source", async () => {
+    const router = routerWithSession({ warn: vi.fn() });
+    const seen = interceptSourceOptions(router);
+
+    await router
+      .mediaProviderFor("T8000P0000000000")
+      .live({ preBufferSeconds: 4 })
+      .catch(() => {});
+
+    expect(seen[0]).toMatchObject({ preBufferSeconds: 4 });
+  });
+
+  it("configures the window when a still opens the source", async () => {
+    const router = routerWithSession({ warn: vi.fn() });
+    const seen = interceptSourceOptions(router);
+
+    await router
+      .mediaProviderFor("T8000P0000000000")
+      .snapshotLive({ preBufferSeconds: 4 })
+      .catch(() => {});
+
+    expect(seen[0]).toMatchObject({ preBufferSeconds: 4 });
+  });
+
+  it("configures the window when a readable opens the source", async () => {
+    const router = routerWithSession({ warn: vi.fn() });
+    const seen = interceptSourceOptions(router);
+
+    await router.mediaProviderFor("T8000P0000000000").openReadable!({ preBufferSeconds: 4 }).catch(() => {});
+
+    expect(seen[0]).toMatchObject({ preBufferSeconds: 4 });
+  });
+
+  it("configures the window when talkback opens the source", async () => {
+    const router = routerWithSession({ warn: vi.fn() });
+    const seen = interceptSourceOptions(router);
+
+    await router.mediaProviderFor("T8000P0000000000").talkback!({ preBufferSeconds: 4 }).catch(() => {});
+
+    expect(seen[0]).toMatchObject({ preBufferSeconds: 4 });
+  });
+
+  it("configures the window when a fragment recording opens the source", async () => {
+    const router = routerWithSession({ warn: vi.fn() });
+    const seen = interceptSourceOptions(router);
+
+    router.mediaProviderFor("T8000P0000000000").recordFragments!({ preBufferSeconds: 4 });
+    await Promise.resolve();
+
+    expect(seen[0]).toMatchObject({ preBufferSeconds: 4 });
+  });
+
+  /**
+   * A window the caller did not ask for is not one to invent: retaining media costs memory on every
+   * frame, and only a caller knows whether anything will ever drain it.
+   */
+  it("configures no window when no egress asked for one", async () => {
+    const router = routerWithSession({ warn: vi.fn() });
+    const seen = interceptSourceOptions(router);
+
+    await router
+      .mediaProviderFor("T8000P0000000000")
+      .snapshotLive({})
+      .catch(() => {});
+
+    expect(seen[0].preBufferSeconds).toBeUndefined();
   });
 });
 

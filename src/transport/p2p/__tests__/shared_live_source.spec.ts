@@ -156,26 +156,70 @@ describe("SharedLiveSource", () => {
     expect(sg[sg.length - 2].keyframe).toBe(true);
   });
 
+  it("keeps the backlog queued when the sink re-pauses inside its own drain", () => {
+    const { source, last } = mk({ maxQueue: 10 });
+    const consumer = source.attach();
+    const got: LiveVideoFrame[] = [];
+    consumer.on("video", (f) => {
+      got.push(f);
+      consumer.pause();
+    });
+    consumer.pause();
+    last().video(frame(true));
+    for (let i = 0; i < 4; i++) last().video(frame(false));
+
+    consumer.resume();
+
+    expect(got).toHaveLength(1);
+    consumer.resume();
+    expect(got).toHaveLength(2);
+  });
+
+  it("drops a re-paused sink's stale backlog to the next keyframe instead of replaying it", () => {
+    const { source, last } = mk({ maxQueue: 3 });
+    const consumer = source.attach();
+    const got: LiveVideoFrame[] = [];
+    consumer.on("video", (f) => {
+      got.push(f);
+      consumer.pause();
+    });
+    consumer.pause();
+    last().video(frame(true));
+    for (let i = 0; i < 2; i++) last().video(frame(false));
+
+    consumer.resume();
+    expect(got).toHaveLength(1);
+    for (let i = 0; i < 3; i++) last().video(frame(false));
+    expect(consumer.awaitingKeyframe).toBe(true);
+
+    consumer.resume();
+    last().video(frame(false));
+    expect(got).toHaveLength(1);
+    last().video(frame(true));
+    expect(got).toHaveLength(2);
+    expect(got[1].keyframe).toBe(true);
+  });
+
   it("warm-retry nudges the stream until a frame arrives, then stops", () => {
     const { source, last } = mk({ warmRetryMs: 2000, warmTimeoutMs: 20000 });
     source.attach();
     expect(last().started).toBe(1);
     vi.advanceTimersByTime(2000);
-    expect(last().nudged).toBe(1); // no frame yet → re-issue start
+    expect(last().nudged).toBe(1);
     vi.advanceTimersByTime(2000);
     expect(last().nudged).toBe(2);
-    last().video(frame(true)); // first frame → warmed
+    last().video(frame(true));
     const at = last().nudged;
     vi.advanceTimersByTime(6000);
-    expect(last().nudged).toBe(at); // no more warm-retry nudges once streaming
+    expect(last().nudged).toBe(at);
   });
 
-  it("stalls: emits error to consumers and tears down when no frame arrives in the warm window", () => {
+  it("stalls: emits error to consumers and tears down when no keyframe arrives in the warm window", () => {
     const { source, last } = mk({ warmRetryMs: 2000, warmTimeoutMs: 6000 });
     const c = source.attach();
     let err: Error | undefined;
     c.on("error", (e) => (err = e));
-    vi.advanceTimersByTime(6000); // deadline with no frame
+    vi.advanceTimersByTime(6000);
     expect(err).toBeInstanceOf(Error);
     expect(err!.message).toMatch(/failed to start/);
     expect(last().stopped).toBe(1);
@@ -245,6 +289,7 @@ describe("SharedLiveSource", () => {
     const a = source.attach();
     let ended = false;
     a.on("stop", () => (ended = true));
+    last().video(frame(true));
     last().emit("stop");
     expect(ended).toBe(true);
     expect(source.state).toBe("stopped");

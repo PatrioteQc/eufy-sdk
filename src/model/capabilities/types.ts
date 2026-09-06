@@ -198,6 +198,12 @@ export interface AvailabilityContext {
    * its absence there changes nothing.
    */
   hasP2p?: boolean;
+  /**
+   * The param_type / DP ids this device has actually reported. Present at bind time (a real
+   * `CommandContext`); absent on the manifest path. DP-based availability gates should treat
+   * `undefined` as an empty set — `ctx.paramIds?.has(dp) ?? false`.
+   */
+  paramIds?: ReadonlySet<number>;
 }
 
 export interface CommandContext extends AvailabilityContext {
@@ -454,7 +460,7 @@ export interface CapabilityModule {
   /**
    * Resolve a semantic action into a transport-neutral {@link Command} for THIS device, or
    * `undefined` if this module doesn't handle `(action)`. `action` is a capability-local verb
-   * (e.g. `"on"`, `"off"`, `"setBrightness"`, `"rotate"`), NOT a param id. Uses {@link ctx} to
+   * (e.g. `"on"`, `"off"`, `"setBrightness"`, `"rotate"`), NOT a param id. Uses `ctx` to
    * pick the right variant. This is where per-device variance lives — once, in the module.
    */
   buildCommand?(action: string, value: boolean | number | string, ctx: CommandContext): Command | undefined;

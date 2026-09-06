@@ -30,6 +30,24 @@ Consequences a host should rely on:
 - **Linger, then stop.** When the last consumer detaches the source lingers briefly (so a quick
   re-attach reuses it) and then stops the pull. You don't manage the pull; you manage your consumer.
 
+## Several cameras behind one station
+
+A camera behind a HomeBase shares that station's session with every other camera on it, and every stream
+opened over it reads the same inbound feed. The station **tags each media frame with the camera it belongs
+to**, and the SDK matches on that — so each handle receives only its own camera's video and audio, and two
+or three cameras on one HomeBase can stream at the same time.
+
+Worth knowing:
+
+- Cameras that own their session (standalone, no HomeBase) number their stream for themselves, so nothing
+  is matched there — there is only one camera on that session.
+- If a station ever tags an attached camera's frames with something other than the channel that was
+  started, the SDK notices within about two seconds, logs a warning and stops matching rather than serving
+  a stream that never delivers. Two cameras warm on such a station would interleave, as they did before
+  this existed.
+- `record()` opens its own pull instead of joining the shared source, so it costs a second stream on a
+  camera that is already streaming. `recordFragments()` is a shared consumer like everything else.
+
 ## 1. Event stream (low-level)
 
 The direct escape hatch — raw frames as they arrive.
@@ -38,13 +56,17 @@ The direct escape hatch — raw frames as they arrive.
 const stream = await cam.live();
 
 stream.on("video", (frame) => {
-  // frame.data    Annex-B bytes (one or more start-code-prefixed NAL units)
+  // frame.data    Annex-B bytes (ONE whole access unit, start-code-prefixed NAL units)
   // frame.codec   "h264" | "h265" | "av1"
-  // frame.width, frame.height
+  // frame.width, frame.height  what the station's frame header reported (see below — these change
+  //                            within a session; `video-config` is the authority)
   // frame.keyframe  true on an IDR (a valid resync/segment boundary)
 });
 stream.on("audio", (frame) => {
   consumeAudio(frame.codec, frame.data);
+});
+stream.on("video-config", (config) => {
+  // config.codec, config.width, config.height — the coded configuration of the video that follows
 });
 stream.on("start", () => {});
 stream.on("stop", () => {}); // upstream ended, or you called stop()
@@ -57,6 +79,71 @@ stream.stop(); // detach this consumer
 `stream.stop()` detaches **this** consumer only. The shared pull stops when the _last_ consumer
 detaches (after the linger window).
 
+### The source reconfigures mid-session
+
+A camera changes the coded geometry of its live stream **within one session**, repeatedly. Measured on
+eight cameras and both codecs: four of them changed, 2 to 9 times per 25-60 s, oscillating up and down a
+ladder (`640x360`, `960x540`, `1280x720`, `1600x1200`, `1920x1080`, `2304x1296`, `2560x1440`, `2880x1616`)
+rather than only climbing it; the other four held one geometry throughout. The ladder is not fixed per
+model.
+
+Two things this does NOT establish. Whether the number of consumers influences it: a single-consumer
+session produced more changes than a two-consumer one, but on a different camera, so nothing here is a
+controlled comparison. And whether it can be pinned: no capability the SDK models sets a per-session cap —
+the camera's video-quality member is a persistent recording tier — but that is read off the modelled
+surface rather than measured against a device.
+
+An encoder cannot change input geometry mid-stream, so a caller adapting this source to a fixed output
+has to tear down and rebuild on every change. `video-config` is how it learns:
+
+```ts
+let encoder: Encoder | undefined;
+stream.on("video-config", (config) => {
+  encoder?.close(); // the frames that follow cannot go into the encoder opened for the last config
+  encoder = openEncoder(config);
+});
+stream.on("video", (frame) => encoder?.write(frame.data));
+```
+
+It fires once per change, immediately before the first frame carrying the new configuration, beginning
+with the first frame the consumer receives. `width` and `height` are the **coded** geometry — read out of
+the sequence parameter set and cropped by the offsets it declares, which is the size a decoder produces.
+A frame's own `width`/`height` are what the station's frame header reported; they agreed with the
+parameter sets in all but 28 of some 6000 measured frames, but only one of the two is a definition rather
+than a report. Where the parameter sets state no readable geometry — before the first keyframe has carried
+any — the header's report is carried instead, so there is always a configuration to act on. That means the
+first announcements of a session can move from the header's answer to the parameter sets' without the camera
+having reconfigured; a caller that rebuilds on a difference rebuilds once there.
+
+The announcement is per consumer, against what **that** consumer was last given. A consumer joining
+mid-session is primed with a cached keyframe it did not witness arriving, and one that crosses its queue
+bound resynchronises onto a later IDR having skipped the frame the change arrived on — so both are told,
+even though the shared source saw the change once.
+
+A change arriving on a keyframe carrying fresh parameter sets is what every run but one showed, and that
+run is not accounted for — so nothing here depends on it, and a change on a delta frame would simply be
+announced when it arrived. A recording made through
+`recordFragments()` needs nothing here: one init segment describes the whole recording and the samples
+carry their own parameter sets, which is how a decoder follows the change.
+
+A caller writing frames into a sink of its own paces the stream rather than buffering what the sink will
+not take:
+
+```ts
+stream.on("video", (frame) => {
+  if (!sink.write(frame.data)) {
+    stream.pause(); // frames now queue against a bound instead of piling up behind the sink
+    sink.once("drain", () => stream.resume());
+  }
+});
+```
+
+While paused, frames queue per consumer against a bound; crossing it drops the backlog and resynchronises
+at the next IDR, so a sink that stays slow resumes on decodable media rather than replaying stale media.
+`resume()` stops handing over the backlog the moment the sink pauses again, so the bound keeps applying to
+whatever is left. `stream.awaitingKeyframe` is true while such a resynchronisation is in progress. None of
+this touches the shared pull or any peer consumer.
+
 The two codecs reach you differently. **Video** `codec` is sniffed off the parameter sets on a keyframe
 and carried on the delta frames that follow, so every frame carries one even though only keyframes have
 config to sniff. **Audio** `codec` is declared by the station in each frame's header, so it is read
@@ -65,6 +152,12 @@ rather than inferred — and read on every frame, because the device is free to 
 Audio deliberately carries **no sample rate and no channel count**: neither is on the wire. The eufy app
 assumes 16 kHz mono for all three codecs, and a host that needs those numbers is making the same
 assumption — the SDK does not dress it up as a device fact.
+
+A `video` event is **one whole access unit**. A station serves a unit bigger than its own chunk size as
+several frames, and those are rejoined before you see them — so `keyframe` really does mean "you may
+begin decoding here", and counting `video` events counts frames. A unit the transport could not complete
+(a lost datagram costs all of it) is dropped rather than handed to you short, because bytes that stop
+mid-slice decode to nothing.
 
 ## 2. Node Readable (pipe it)
 
@@ -80,8 +173,9 @@ r.pipe(fs.createWriteStream("out.h264"));
 r.destroy(); // releases this consumer (and the pull if it was the last)
 ```
 
-Backpressure is handled per-consumer: a slow reader drops to the next keyframe rather than stalling
-the shared pull or any peer consumer. Destroying the Readable releases the consumer.
+Backpressure is handled per-consumer, on the same policy `live()` exposes: a slow reader drops to the next
+keyframe rather than stalling the shared pull or any peer consumer. The Readable pauses and resumes its
+consumer for you. Destroying the Readable releases the consumer.
 
 ## 3. fMP4 / CMAF fragments (for HLS / MSE)
 
@@ -106,9 +200,32 @@ AVCC length-prefixed NALs in the `mdat`. AAC-LC and AAC-ELD sources add an `mp4a
 with ADTS framing removed from each media sample. G.711 A-law remains available through `live()` and
 is not mislabeled as MPEG-4 AAC in the container.
 
+The loop paces itself: a fragment is a complete ordered unit, so a caller that falls far enough behind holds
+the recording's consumer rather than having fragments accumulate. The bound then applies to the frame queue
+behind it, which drops to the next IDR — so a sink that cannot keep up costs a gap in the recording, never
+unbounded memory. Nothing is required of the caller beyond consuming the iterator.
+
 `preBufferSeconds` drains retained audio/video before live frames, beginning at a video keyframe and
-preserving transport-arrival timing across the handoff. It can only return media already retained by a
-warm shared source; opening a cold recording cannot reconstruct time before the source started.
+preserving transport-arrival timing across the handoff. A drain opens on the newest keyframe at or before
+the window starts, so it covers the whole window and exceeds it by however far back that keyframe sits —
+one keyframe interval on a steady stream, more where delivery stalled, because retention is timed on
+arrival and a frame carries no device clock. Asking for `0` drains nothing.
+
+The window is a finite positive duration. Absent, negative, `NaN`, and infinite values disable retention
+and drain nothing rather than creating an unbounded buffer.
+
+It can only return media already retained by a warm shared source; opening a cold recording cannot
+reconstruct time before the source started. **Retention is fixed when the pull is opened, and every egress
+can set it**, because whichever call opens the pull is the one that decides:
+
+```ts
+await cam.snapshotLive!({ preBufferSeconds: 10 });
+const stream = await cam.live!({ preBufferSeconds: 10 });
+```
+
+An egress that omits it is not opting out — it leaves the choice to whoever got there first, so a still
+polled on an idle camera opens a pull retaining nothing and a recording seconds later has nothing to drain,
+however much it asks for. Pass the same window on every egress a device uses, or none of them.
 
 ## Snapshots
 
@@ -160,11 +277,16 @@ forward account authentication headers to the redirected host.
 const shot = await cam.snapshotLive?.(); // { jpeg, width, height }
 ```
 
+`width` and `height` describe the returned image — they are read back out of the JPEG, not taken from
+the stream's frame header, so they cannot disagree with the bytes. (Some cameras reconfigure resolution
+inside one short burst, which is exactly when the header and the encoded still part company.)
+
 If the shared source already has a cached keyframe (a live view or another consumer is warm),
 `snapshotLive` decodes that keyframe directly — **no second pull**. Only if nothing is warm does it
 briefly attach, wait for a clean keyframe, decode, and detach. (The JPEG decode itself uses ffmpeg as
-an optional convenience sink; the raw keyframe bytes are always available dependency-free via
-`openReadable` / the event stream.)
+an optional convenience sink — resolved on `PATH`, or set `ffmpegPath` on the client to name the binary
+you ship; the raw keyframe bytes are always available dependency-free via `openReadable` / the event
+stream.)
 
 ## Talkback — audio the other way
 
@@ -275,9 +397,46 @@ session idle-detaches so a battery device sleeps — see [Connectivity & battery
 
 ## Reliability
 
-- **No silent hang.** `live()` re-issues the media-start (`nudge`) until the first frame arrives; if
-  none arrives within the warm-up window the stream emits an `error` (a start stall) rather than
-  hanging forever. Handle `error`.
+- **UDP retransmissions.** Each data type is sequenced independently. Duplicate and stale datagrams are
+  acknowledged and ignored without discarding a different frame being assembled, and the numbering may wrap
+  without a false gap. A missing datagram still drops that incomplete frame so corrupt media is never
+  delivered. An unacknowledged own-session `START_LIVE` is repeated with identical bytes until the camera
+  acknowledges it, and abandoned after 3s — at which point that channel is no longer treated as started, so
+  the next keepalive tick issues a real start instead of nudging a stream that never began. A new connection
+  starts the numbering over, so its first datagrams are never read as stale — and so does a camera that
+  begins a fresh stream on a connection already up, which sequencing follows onto the restarted numbering
+  rather than waiting for it to climb back.
+- **No silent hang.** `live()` re-issues the media-start (`nudge`) until the first keyframe arrives; if
+  none arrives within the warm-up window the stream emits a `LiveStreamStartError` rather than hanging
+  forever. It carries everything needed to tell the failures apart without transport logs: `reason`
+  (deadline elapsed / source error / source ended), `stage` (`awaiting-first-frame` when the source
+  delivered nothing at all, `audio-only` when it was streaming audio and never sent a video frame,
+  `awaiting-keyframe` when video units arrived but none was decodable), `timeoutMs`, and `attempts` —
+  the media starts actually issued. Handle `error`.
+- **A camera that is switched off looks like a broken transport.** It keeps its session, accepts the media
+  start, and then sends audio and never a video frame — measured: 234 audio frames, no video, no
+  stream-status report and no lost datagrams across a 20s window, then 217 video access units with nothing
+  changed but its own on/off state. The signature is `stage: "audio-only"`. Since the refusal below landed, a
+  pull normally never gets that far: it is reached on a camera whose enablement reads `undefined`, and
+  otherwise only where a camera is switched off after its pull was admitted, which the warm-up window is long
+  enough to contain. `snapshotStored()` will also report `not-observed` on such a camera, because a camera that
+  has been off recorded no events and so banked no thumbnail.
+- **`cam.enabled` is trustworthy, and the SDK acts on it.** A write used to leave the reported value frozen —
+  `setEnabled(true)` succeeded, the camera streamed, and the reading stayed `false` indefinitely. An
+  enablement write is now confirmed by bounded readback on whichever param the device actually reports: the
+  value converges on its own (measured 2–6s on both wire families) and `cameraEnabledChanged` fires once when
+  it lands. A change made anywhere else — the vendor app, another client, a physical switch — arrives as
+  `propertyChanged` on whichever inbound path saw it, including the read-through re-read, so a long-lived
+  client is no longer left polling for one.
+- **A pull on a camera reading `enabled === false` is refused.** `live()`, `snapshotLive()`, `record()`,
+  `openReadable()` and `recordFragments()` answer `CameraDisabledError` rather than a stream that can only
+  deliver audio — rejecting on the four that answer with a promise, and throwing on `recordFragments()`, which
+  answers with a handle. `snapshotStored()` is exempt, because a retained push thumbnail is not a pull. A
+  reading of `undefined` refuses nothing: families reporting neither wire param leave the state unknown, and
+  unknown is not known-off, so such a camera pulls exactly as before. The reading is consulted when a pull is
+  opened and at no other point, so a camera switched off mid-stream keeps the pull it already has; a caller
+  that must end a live view for it acts on `propertyChanged` or on its own re-read. Presenting an off camera as
+  unavailable so nothing asks in the first place is still a caller's policy.
 - **Reconnect.** On a session close the source stops and consumers get `stop`/`error`; re-attach
   (`cam.live()` again) to rebuild the pull.
 
@@ -291,3 +450,18 @@ session idle-detaches so a battery device sleeps — see [Connectivity & battery
 | A single still                      | `cam.snapshotLive()` (fresh) or `cam.snapshotStored()` (retained push JPEG) |
 | Fixed-length clip buffer            | `cam.record(seconds)`                                                       |
 | Send audio TO the camera            | `cam.talkback()`                                                            |
+
+## Where the SDK stops
+
+The SDK owns verified device media truth and reusable media mechanics: typed inbound audio metadata,
+audio-aware container muxing, rolling prebuffer drainage, recording-budget extension, and correct
+readable-stream behaviour.
+
+Host-specific representation stays outside it — output codec negotiation, transcoding targets, bitrate
+and profile policy, packetization, and session keep-alives are the caller's. That boundary is what lets
+every host consume the same truthful primitives without coupling the SDK to one presentation protocol.
+
+So the APIs here do not claim negotiation or timing guarantees the device source cannot provide: a
+fragment duration is a keyframe-bounded **minimum**, prebuffer is available only from an already-warm
+retained source, and fragmented recordings are caller-owned evented async iterables — which is how a
+caller extends a shared battery budget without control notices mixing into media output.

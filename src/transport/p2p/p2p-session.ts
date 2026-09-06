@@ -56,13 +56,25 @@ import {
   readNullTerminatedString,
 } from "./codec.js";
 import { commandName } from "./commands.js";
+import { traceLiveStart, type LiveTrace } from "./live-trace.js";
 import { noopLogger, type Logger } from "../../core/logger.js";
 
 const LOCAL_LOOKUP_PORT = 32108;
 const HEARTBEAT_MS = 5_000;
+/**
+ * How long a path may go without answering a heartbeat before it stops being committed to.
+ *
+ * Three heartbeats. The station answers every PING, so one missed answer is a lost datagram and three is the
+ * path being gone.
+ */
+const PATH_SILENCE_MS = HEARTBEAT_MS * 3;
 const LOOKUP_RETRY_MS = 1_000;
 const CONNECT_TIMEOUT_MS = 15_000;
-const STATION_CHANNEL = 255;
+/**
+ * The channel a command addresses the station itself on, rather than one of its cameras, and the value a
+ * session's channel-taking methods resolve an omitted channel to.
+ */
+export const STATION_CHANNEL = 255;
 /** CMD_GATEWAYINFO — sent once on connect to prompt the station to start reporting. */
 const CMD_GATEWAYINFO = 1100;
 const CMD_START_REALTIME_MEDIA = 1003;
@@ -77,8 +89,15 @@ const CMD_CONTROL_PAYLOAD = 1700;
 const CMD_START_LIVE = 1000;
 const CMD_STREAM_KEEPALIVE = 1139;
 /**
- * `1700` START_LIVE frame-header `type` (streamId byte): 11 (0x0b) for the level-1 (AES-128-ECB)
- * variant, 10 (0x0a) for the level-2 (AES-256-GCM) variant.
+ * The `1700` START_LIVE frame-header `type` byte.
+ *
+ * The current app does not derive this from the encryption level: it was captured sending 10 to one
+ * own-session camera and 11 to another, both at signCode 8 (level-2 GCM), differing by model and firmware
+ * generation rather than by cipher. Measured against the camera the app sends 11 to, a start carrying either
+ * value is accepted and delivers a keyframe, so the byte does not gate the stream on that firmware.
+ *
+ * The values are kept split by level because that is the pairing each has been verified in — 10 with
+ * level-2, 11 with level-1 — not because the level is known to select them.
  */
 const START_LIVE_FRAME_TYPE_L1 = 11;
 const START_LIVE_FRAME_TYPE_L2 = 10;
@@ -100,7 +119,7 @@ const CMD_END_SPEAK = 1002;
 /** Bytes of header the device expects ahead of each outbound audio frame — see {@link P2PSession.sendAudioFrame}. */
 const AUDIO_SEND_HEADER_BYTES = 16;
 /**
- * The outbound audio channel is **reliable and ordered**, not fire-and-forget like the control path.
+ * The outbound audio channel is **reliable and ordered**, unlike the ordinary control path.
  * The device acknowledges each frame and stalls on a gap: one lost datagram blocks every later frame
  * behind it, so playback stops dead rather than glitching. Measured on a live capture of the app
  * talking to a camera: 20 of 53 frames needed a retransmit (38% loss), acknowledgement latency ran
@@ -125,10 +144,77 @@ const AUDIO_SEND_HEADER_BYTES = 16;
  */
 const AUDIO_RETRANSMIT_MS = 700;
 const AUDIO_MAX_SENDS = 2;
+/**
+ * An own-session live start is acknowledged like an audio frame, and a start the device never took leaves
+ * the camera silent with nothing to time out against but the warm-up deadline.
+ *
+ * So it is retained and repeated byte-identically until the device acknowledges it. Byte-identical is what
+ * makes repeating safe: the frame carries its sequence number and its ciphertext, and a device receiving the
+ * same sequence repeatedly starts the stream once — captured acknowledging one start's sequence seventeen
+ * times while streaming it once. A rebuilt start would instead read as a second, different start.
+ *
+ * Repeating until acknowledged is the app's own behaviour: it was captured sending the identical start 20
+ * times across 272 ms to a camera still waking, which acknowledged after 238 ms, and once to a camera that
+ * acknowledged in 9 ms. A count-bounded repeat cannot express that — the number of sends a start needs is
+ * whatever its acknowledgement latency demands, which measured 4–16 ms awake and 238 ms waking.
+ */
+const LIVE_START_RETRANSMIT_MS = 150;
+/**
+ * How long a live start is repeated before it is abandoned as unacknowledged.
+ *
+ * Two bounds sit either side of this. Below: the acknowledgement latencies actually measured — 4–37 ms from
+ * an awake own-session camera, 238 ms from one still waking — and this stays an order of magnitude above
+ * them, because abandoning early does not repair anything. A repeat is byte-identical and so is the same
+ * start; what follows an abandonment is a start under a NEW sequence, which is a second start rather than a
+ * repair, and the app never issues one. Above: the warm-up deadline a source gives the whole start (20s by
+ * default), so an abandoned start is reported while the warm-up is still running — the trace is then the
+ * reason the warm-up failed, not a footnote to it — and there is room for several fresh starts within it.
+ */
+const LIVE_START_ACK_DEADLINE_MS = 3000;
+/**
+ * Half the 16-bit sequence space: a datagram whose distance from the last one exceeds this is read as
+ * arriving from behind rather than as a near-full-space jump forward, which is how the numbering wraps
+ * without the datagram after the wrap looking like a huge gap.
+ */
+const SEQUENCE_LOOKBACK = 0x8000;
+/**
+ * How far back a datagram may be numbered and still be read as a retransmission of something already
+ * reassembled rather than as the device having restarted its numbering.
+ *
+ * Measured against the app's own captures of two own-session cameras: across 1758 video datagrams the
+ * deepest repeat arrived 120 numbers behind the high-water mark, so this bound sits an order of magnitude
+ * clear of a genuine repeat. The bound is what the classification needs to exist at all, because the two
+ * misreadings cost differently: a repeat mistaken for a restart discards one logical frame, while a restart
+ * mistaken for a repeat discards every datagram until the new numbering climbs back past the frozen mark —
+ * so the depth is what caps that second cost, at a bounded run of datagrams instead of half the space.
+ */
+const STALE_RETRANSMIT_DEPTH = 1024;
+/**
+ * Datagram gaps traced per live start. A lossy channel can drop hundreds of datagrams in one start, and the
+ * first few establish the pattern; the rest would only flood a host's log, so the trace stops there while
+ * reassembly carries on unchanged.
+ *
+ * The budget is re-armed where a start is actually issued, not on every `startLiveMedia` call: that call is
+ * also the keepalive tick, which arrives every few seconds for the whole life of a stream and would re-arm
+ * the budget often enough that it bounded a window rather than the log.
+ */
+const MAX_TRACED_DATAGRAM_GAPS = 8;
+/**
+ * A datagram retained for retransmission until the device acknowledges its sequence number: the exact bytes
+ * that were sent, when they first went out and when they last did, and how many times they have been sent.
+ */
+interface RetainedDatagram {
+  data: Buffer;
+  firstSentAt: number;
+  sentAt: number;
+  sends: number;
+}
 /** CMD_SET_PAYLOAD (1350) wraps a JSON command; CMD_DATABASE_IMAGE (1308) is the image reply. */
 const CMD_SET_PAYLOAD = 1350;
 /** CMD_NOTIFY_PAYLOAD (1351) — the station's unsolicited JSON notification. */
 const CMD_NOTIFY_PAYLOAD = 1351;
+/** CMD_CAMERA_INFO — a camera reporting its OWN params, as a root-level array. */
+const CMD_CAMERA_INFO = 1103;
 const CMD_DATABASE_IMAGE = 1308;
 /** CMD_DATABASE (1306) — P2P SQLite-ish query; reply carries `{cmd:10000,count,data:[…]}`. */
 const CMD_DATABASE = 1306;
@@ -172,9 +258,11 @@ export interface P2PSessionConfig {
  * those `param_type` ids are the cloud record's own — so this is a format unwrap, not an
  * interpretation. Entries missing an id or a value are skipped rather than stored as `"undefined"`.
  *
- * Only a notify frame is read this way. The caller lands these as the reporting device's params,
- * which widens the evidence its typed reads are gated on, so a reply that merely happens to nest an
- * array under `payload.params` must not be mistaken for a device reporting its own state.
+ * Two frames are read this way, each in ONE shape, because the caller lands these as the reporting device's
+ * params — which widens the evidence its typed reads are gated on, so a reply that merely happens to carry an
+ * array must not be mistaken for a device reporting its own state. A station's notify nests an attached
+ * device's array under `payload`; a camera's own `CMD_CAMERA_INFO` puts it at the root. Reading each only in
+ * its measured shape is what keeps the distinction.
  */
 function paramReport(payload: unknown): Record<number, string> | undefined {
   const list = (payload as { params?: unknown } | undefined)?.params;
@@ -216,6 +304,9 @@ export interface P2PFrame extends P2PDataFrameHeader {
   params?: Record<number, string>;
 }
 
+/** Per-process counter behind {@link P2PSession.traceId} — see it for why this is not a serial. */
+let traceSequence = 0;
+
 /**
  * A live PPCS session. Internal transport; a host drives cameras through the capability surface.
  * @internal
@@ -237,7 +328,7 @@ export class P2PSession extends EventEmitter {
    * the datagram (not just the payload) means a retransmit is byte-identical, which is what the
    * device's ordered channel expects.
    */
-  private unackedAudio = new Map<number, { data: Buffer; sentAt: number; sends: number }>();
+  private unackedAudio = new Map<number, RetainedDatagram>();
   /**
    * Whether the audio channel is currently in a stall — set when a frame is abandoned, cleared by the
    * next acknowledgement of any frame.
@@ -251,16 +342,21 @@ export class P2PSession extends EventEmitter {
   private audioStalled = false;
   private audioRetransmitTimer?: ReturnType<typeof setInterval>;
   private lastPongData?: Buffer;
+  /** When this connection last received a PONG — `undefined` until the first, see {@link pathSilentMs}. */
+  private lastPongAt?: number;
+  /** Whether the silence has already been stated, so it is traced once per connection rather than per read. */
+  private pathStaleTraced = false;
   private lookupTimer?: ReturnType<typeof setInterval>;
   private heartbeatTimer?: ReturnType<typeof setInterval>;
   private connectTimer?: ReturnType<typeof setTimeout>;
   /** Our own bound host:port, self-reported inside LOOKUP_WITH_KEY requests (see sendLookups). */
   private selfAddress?: Address;
-  /** In-flight multi-datagram frame being reassembled (see onData). */
-  private pending?: { header: P2PDataFrameHeader; buf: Buffer };
+  /** In-flight multi-datagram frame per data channel (see onData). */
+  private readonly pendingByDataType = new Map<number, { header: P2PDataFrameHeader; buf: Buffer }>();
   /** Last datagram sequence number seen per dataType — used to detect a lost/reordered datagram
    * mid-frame and drop the (now unrecoverable) partial frame instead of splicing wrong bytes. */
   private readonly lastSeqByType = new Map<number, number>();
+  private tracedDatagramGaps = 0;
   private readonly level1Key: Buffer;
   /** Negotiated 32-byte level-2/gateway key (AES-256-GCM). Set via setLevel2Key once known. */
   private level2Key?: Buffer;
@@ -270,11 +366,26 @@ export class P2PSession extends EventEmitter {
   /** Guards the one-shot level-2 key negotiation kicked off by the GATEWAYINFO reply. */
   private level2Negotiating = false;
   /**
+   * Whether waiting for a level-2 key can still change the answer: `false` once one has been negotiated,
+   * once the one-shot negotiation concluded without one, and from the start when nothing can negotiate one.
+   */
+  private level2Pending: boolean;
+  /** Waiters parked in {@link awaitLevel2Key}, woken the moment the negotiation settles either way. */
+  private readonly level2Waiters: Array<(outcome: "key" | "terminal" | "closed") => void> = [];
+  /** Whether this connection has already been asked a second time for its gateway info — see {@link repromptLevel2Key}. */
+  private level2Reprompted = false;
+  /** When this session connected — the instant the level-2 negotiation had its chance to start. */
+  private connectedAtMs?: number;
+  /** Connection generation that owns every asynchronous result derived from its gateway envelope. */
+  private connectionGeneration = 0;
+  /**
    * Own-session channels with an active live start → the encryption variant of the start frame we
    * last sent (`"l2"` GCM / `"l1"` ECB). A keepalive tick re-issues the start if the variant should
    * change (the level-2 key arrived after an initial level-1 start), otherwise sends the 1139 nudge.
    */
   private readonly liveStartedChannels = new Map<number, "l1" | "l2">();
+  private readonly unackedLiveStarts = new Map<number, RetainedDatagram & { channel: number }>();
+  private liveStartRetransmitTimer?: ReturnType<typeof setInterval>;
 
   private readonly logger: Logger;
 
@@ -282,12 +393,56 @@ export class P2PSession extends EventEmitter {
     super();
     this.level1Key = Buffer.from(p2pCommandEncryptionKey(cfg.stationSn, cfg.p2pDid));
     this.logger = cfg.logger ?? noopLogger;
+    this.level2Pending = cfg.resolveCipherKey !== undefined;
+  }
+
+  /**
+   * This session's opaque handle for tracing — `station-N` by order of construction in this process.
+   *
+   * Not the serial: a trace carrying one could not be retained by a host, which is the whole point of the
+   * phase vocabulary. It groups one station's records within a run and resolves to nothing outside it.
+   */
+  readonly traceId = `station-${++traceSequence}`;
+
+  /**
+   * How long this connection's path has been silent, or nothing where it has never answered.
+   *
+   * A PONG is the station stating that the path is alive. `undefined` is neither alive nor dead: it is a station
+   * that has said nothing either way.
+   */
+  get pathSilentMs(): number | undefined {
+    return this.lastPongAt === undefined ? undefined : Date.now() - this.lastPongAt;
+  }
+
+  /**
+   * Whether this path can still be committed to, on the evidence the heartbeat gives.
+   *
+   * False where a pong arrived and then stopped for {@link PATH_SILENCE_MS}. A station that has never ponged is
+   * not known to be dead, so it answers true.
+   *
+   * Traces the silence once per connection, on the read that first observes it.
+   */
+  get pathAnswering(): boolean {
+    const silentMs = this.pathSilentMs;
+    if (silentMs === undefined || silentMs < PATH_SILENCE_MS) return true;
+    if (!this.pathStaleTraced) {
+      this.pathStaleTraced = true;
+      this.logger.debug(`[p2p] ${this.cfg.stationSn} path silent for ${silentMs}ms — no heartbeat answer`);
+      this.trace({ phase: "path-stale", silentMs });
+    }
+    return false;
+  }
+
+  /** Emit a live trace under this session's handle. */
+  private trace(trace: LiveTrace): void {
+    traceLiveStart(this.logger, trace, this.traceId);
   }
 
   /** Provide the negotiated 32-byte session key so level-2 (signCode 2/8) frames can be decrypted. */
   setLevel2Key(key: Buffer): void {
     if (key.length !== 32) throw new Error(`level-2 key must be 32 bytes, got ${key.length}`);
     this.level2Key = key;
+    this.settleLevel2();
   }
 
   /** Whether the level-2 session key has been negotiated/set. */
@@ -296,30 +451,135 @@ export class P2PSession extends EventEmitter {
   }
 
   /**
+   * Resolve with whether a level-2 key is available, waiting only while waiting can still change that.
+   *
+   * A `"session"` grace is measured once, not restarted per call. Best-effort media uses it because every
+   * egress asks this same session and can proceed without the key on an own-session camera; a per-call
+   * budget there makes a station that offers no key charge its full budget on every later stream.
+   *
+   * A `"call"` grace gives the full wait to a command that cannot be framed without the key. Such a
+   * command may arrive on an old session before a delayed `CMD_GATEWAYINFO`, so session age says nothing
+   * about whether the key can still arrive during this command.
+   *
+   * The session grace runs from connect, when the station is prompted for `CMD_GATEWAYINFO`. A negotiation
+   * beginning later does not restart it: best-effort media can proceed without the key, and restarting
+   * would charge another grace to a source that may already be streaming. A session whose negotiation has
+   * settled answers without waiting at all, since being one-shot is what makes that answer final.
+   *
+   * An own-session camera whose grace expires here is NOT thereby a camera that will fail to stream. Measured
+   * on one account: own-session cameras of two device types negotiated a key, three others never did, and
+   * cameras from that second group streamed normally at level-1 — including one of the same firmware as an
+   * own-session camera that delivered no video at all for a reason of its own. An expired grace therefore
+   * separates nothing on this path, and a start failure on such a session is not evidence about it.
+   */
+  async awaitLevel2Key(graceMs: number, graceFrom: "call" | "session" = "call"): Promise<boolean> {
+    if (this.closed) return false;
+    if (this.level2Key) return true;
+    if (!this.level2Pending) return false;
+    const since = graceFrom === "call" ? Date.now() : (this.connectedAtMs ?? Date.now());
+    const remaining = graceMs - (Date.now() - since);
+    if (remaining <= 0) {
+      this.logger.debug(`[p2p] ${this.cfg.stationSn} no level-2 key and its ${graceMs}ms grace has elapsed`);
+      this.trace({ phase: "level2-absent", waitedMs: graceMs });
+      return false;
+    }
+    this.logger.debug(`[p2p] ${this.cfg.stationSn} waiting up to ${remaining}ms for the level-2 key`);
+    this.trace({ phase: "level2-wait", waitMs: remaining });
+    const waiters = this.level2Waiters;
+    const outcome = await new Promise<"key" | "terminal" | "closed" | "timeout">((resolve) => {
+      let deadline: ReturnType<typeof setTimeout> | undefined;
+      let settled = false;
+      const finish = (result: "key" | "terminal" | "closed" | "timeout"): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(deadline);
+        const at = waiters.indexOf(wake);
+        if (at >= 0) waiters.splice(at, 1);
+        resolve(result);
+      };
+      const wake = (result: "key" | "terminal" | "closed"): void => finish(result);
+      deadline = setTimeout(() => finish("timeout"), remaining);
+      deadline.unref?.();
+      waiters.push(wake);
+    });
+    if (outcome === "timeout") {
+      this.logger.debug(`[p2p] ${this.cfg.stationSn} level-2 key did not arrive within its grace`);
+    } else if (outcome === "terminal") {
+      this.logger.debug(`[p2p] ${this.cfg.stationSn} level-2 negotiation concluded without a key`);
+    } else if (outcome === "closed") {
+      this.logger.debug(`[p2p] ${this.cfg.stationSn} session closed before the level-2 key arrived`);
+    }
+    return outcome === "key";
+  }
+
+  /**
+   * Ask the station for its gateway info a second time, re-opening a negotiation that concluded without a key.
+   *
+   * The negotiation is one-shot per connection: the station is prompted once on connect, and a reply that
+   * never lands settles the wait so {@link awaitLevel2Key} answers `false` at once forever after. That is the
+   * right answer for best-effort media, which proceeds at level-1 — but an operation whose ONLY wire is
+   * level-2 is then refused for the whole life of that connection, while a fresh session over the same
+   * device negotiates a key normally. Measured: a session that had settled refused every such operation
+   * until it was rebuilt, at which point the station answered with a cipher id straight away.
+   *
+   * Bounded to one extra ask per connection, so a burst of such operations cannot turn a silent station into a
+   * flood, and answers whether it asked — `false` when a key is already held, when nothing can negotiate one,
+   * when the ask was already spent, or when there is nowhere to send it. Callers with a level-1 path must not
+   * use this: re-prompting on their behalf would be noise for an answer they do not need.
+   */
+  repromptLevel2Key(): boolean {
+    if (this.closed || this.level2Key || this.level2Reprompted) return false;
+    if (!this.cfg.resolveCipherKey || !this.connectAddress) return false;
+    this.level2Reprompted = true;
+    this.level2Pending = true;
+    this.logger.debug(`[p2p] ${this.cfg.stationSn} asking again for the level-2 key`);
+    this.sendCommand(CMD_GATEWAYINFO);
+    return true;
+  }
+
+  /** Record that the level-2 negotiation has finished, with or without a key, and wake every waiter. */
+  private settleLevel2(reason: "terminal" | "closed" = "terminal"): void {
+    this.level2Pending = false;
+    const outcome = this.level2Key ? "key" : reason;
+    for (const wake of this.level2Waiters.splice(0)) wake(outcome);
+  }
+
+  /**
    * Negotiate the level-2 session key from the decrypted CMD_GATEWAYINFO payload: read its
    * `cipher_id`, resolve that cipher's ECC private key (cloud `get_ciphers`, via the configured
    * `resolveCipherKey`), run the ECIES unwrap, and `setLevel2Key()`. One-shot; emits `level2Ready`
    * on success and `error` on failure (non-fatal — level-1 traffic keeps working regardless).
+   *
+   * Every outcome settles the wait in {@link awaitLevel2Key}, because being one-shot is what makes a
+   * failure final for this connection generation: nothing will retry it there, so a later command must be
+   * told at once rather than left to time out against a key that is not coming.
    */
   private negotiateLevel2Key(gwPayload: Buffer): void {
     this.level2Negotiating = true;
+    const generation = this.connectionGeneration;
     const cipherId = gatewayInfoCipherId(gwPayload);
     void (async () => {
       try {
         const eccPrivHex = await this.cfg.resolveCipherKey?.(cipherId);
+        if (this.closed || generation !== this.connectionGeneration) return;
         if (!eccPrivHex) {
           this.logger.debug(`[p2p] ${this.cfg.stationSn} no ECC key for cipher_id ${cipherId}`);
+          this.settleLevel2();
           return;
         }
         const key = deriveLevel2KeyFromGatewayInfo(gwPayload, eccPrivHex);
         if (!key) {
+          this.settleLevel2();
           this.emit("error", new Error(`level-2 key derivation failed (cipher_id ${cipherId})`));
           return;
         }
         this.setLevel2Key(key);
         this.logger.debug(`[p2p] ${this.cfg.stationSn} level-2 key negotiated (cipher_id ${cipherId})`);
+        this.trace({ phase: "level2-ready", cipherId });
         this.emit("level2Ready", { cipherId });
       } catch (e) {
+        if (this.closed || generation !== this.connectionGeneration) return;
+        this.settleLevel2();
         this.emit("error", e instanceof Error ? e : new Error(String(e)));
       }
     })();
@@ -363,6 +623,13 @@ export class P2PSession extends EventEmitter {
     if (this.connecting || this.connected) return;
     this.connecting = true;
     this.closed = false;
+    this.connectionGeneration += 1;
+    this.resetInboundSequencing();
+    if (!this.level2Key) {
+      this.level2Pending = this.cfg.resolveCipherKey !== undefined;
+      this.level2Negotiating = false;
+      this.level2Reprompted = false;
+    }
 
     const socket = dgram.createSocket("udp4");
     this.socket = socket;
@@ -498,10 +765,23 @@ export class P2PSession extends EventEmitter {
     }
   }
 
+  /**
+   * Route one inbound UDP datagram by its message type, tracing every non-DATA one and any type this session
+   * does not model.
+   *
+   * An unmodelled type is not by itself evidence about a session that is failing. `0xf169` — a relay-pool
+   * listing answering a cloud lookup, which a connected session has no use for — reaches the UNHANDLED branch
+   * on the sessions of cameras that stream and cameras that do not alike. `0xf121` has been observed
+   * straddling a level-2 wait on a camera whose failure to deliver video had a separate cause, and did not
+   * recur across later probes of it. Correlate an unmodelled type against a WORKING session before reading it
+   * as a cause.
+   */
   private onMessage(msg: Buffer, rinfo: dgram.RemoteInfo): void {
-    this.logger.debug(
-      `[p2p] ${this.cfg.stationSn} <<< ${rinfo.address}:${rinfo.port} header=${msg.subarray(0, 2).toString("hex")} len=${msg.length}`,
-    );
+    if (!hasHeader(msg, ResponseMessageType.DATA)) {
+      this.logger.debug(
+        `[p2p] ${this.cfg.stationSn} <<< ${rinfo.address}:${rinfo.port} header=${msg.subarray(0, 2).toString("hex")} len=${msg.length}`,
+      );
+    }
     if (hasHeader(msg, ResponseMessageType.LOCAL_LOOKUP_RESP)) {
       // LOCAL_LOOKUP_RESP shares 0xf141 with CAM_ID; treat a pre-connect response
       // from the lookup as "device here, hole-punch it".
@@ -516,6 +796,8 @@ export class P2PSession extends EventEmitter {
       this.onConnected({ host: rinfo.address, port: rinfo.port });
     } else if (hasHeader(msg, ResponseMessageType.PONG)) {
       this.lastPongData = msg.length > 4 ? msg.subarray(4) : undefined;
+      this.lastPongAt = Date.now();
+      this.pathStaleTraced = false;
     } else if (hasHeader(msg, ResponseMessageType.PING)) {
       this.send({ host: rinfo.address, port: rinfo.port }, RequestMessageType.PONG); // echo
     } else if (hasHeader(msg, ResponseMessageType.ACK)) {
@@ -539,6 +821,7 @@ export class P2PSession extends EventEmitter {
   private onConnected(addr: Address): void {
     if (this.connected) return;
     this.connected = true;
+    this.connectedAtMs = Date.now();
     this.connecting = false;
     this.connectAddress = addr;
     if (this.lookupTimer) clearInterval(this.lookupTimer);
@@ -562,29 +845,70 @@ export class P2PSession extends EventEmitter {
    *  - `homeBaseAttached` (the camera rides a HomeBase's session): `CMD_SET_PAYLOAD` (1350) wrapping
    *    `{cmd:1003, mChannel:channel}` at level-2, where `mChannel` picks the camera on the base.
    *  - own-session (the session is the camera itself): `CMD_CONTROL_PAYLOAD` (1700) / inner cmd 1000
-   *    START_LIVE (see the private `sendStartLiveOwnSession`).
-   * Use the `LiveStream` helper for a managed feed with keepalive.
+   *    START_LIVE, then the 1139 keepalive to hold the stream. A bare 1003 is read as a status query
+   *    there, not a stream.
+   *
+   * An own-session start's encryption follows the session key, not the device family: level-2 GCM once a
+   * key is negotiated, level-1 ECB before that. A key that arrives after a level-1 start makes the next
+   * keepalive tick re-issue the start at level-2, so a camera that only accepts level-2 recovers from a
+   * `live()` that raced ahead of key negotiation.
+   *
+   * Each start is retained until its DATA acknowledgement and repeated every `LIVE_START_RETRANSMIT_MS` until
+   * the device acknowledges one, bounded by `LIVE_START_ACK_DEADLINE_MS` rather than by a send count. Both are
+   * internal to this module, so they are named as code: a public comment cannot link to what the reference does
+   * not carry. Use the `LiveStream` helper for a managed feed with keepalive.
+   *
+   * `opts.force` sends a real start on a channel this session already counts as started, and yields to a
+   * start still awaiting acknowledgement — that one is already being repeated byte-identically and is
+   * abandoned at its own deadline.
    */
-  startLiveMedia(channel: number = STATION_CHANNEL, accountId = "", homeBaseAttached = false): void {
+  startLiveMedia(
+    channel: number = STATION_CHANNEL,
+    accountId = "",
+    homeBaseAttached = false,
+    opts?: { force?: boolean },
+  ): void {
     if (homeBaseAttached) {
+      this.tracedDatagramGaps = 0;
+      this.trace({
+        phase: "media-command",
+        topology: "attached",
+        action: "start",
+        level2: !!this.level2Key,
+      });
       this.sendMediaPayloadLevel2(CMD_START_REALTIME_MEDIA, channel, accountId, {});
       return;
     }
-    // Own-session camera: send the START_LIVE frame, then hold the stream with a 1139 keepalive. The
-    // start encryption is chosen by the session key (GCM if negotiated, else ECB). If the key arrives
-    // AFTER an initial level-1 start, the next keepalive tick re-issues the start as level-2 — so a
-    // camera that requires level-2 recovers even when `live()` raced ahead of key negotiation. (A bare
-    // 1003 here is read as a status query, not a stream.)
     const want: "l1" | "l2" = this.level2Key ? "l2" : "l1";
+    if (opts?.force) {
+      for (const pending of this.unackedLiveStarts.values()) if (pending.channel === channel) return;
+      this.liveStartedChannels.delete(channel);
+    }
     if (this.liveStartedChannels.get(channel) === want) {
+      this.trace({
+        phase: "media-command",
+        topology: "own",
+        action: "keepalive",
+        level2: want === "l2",
+      });
       this.sendCommand(CMD_STREAM_KEEPALIVE, channel);
     } else {
+      this.trace({ phase: "media-command", topology: "own", action: "start", level2: want === "l2" });
+      this.tracedDatagramGaps = 0;
       this.sendStartLiveOwnSession(channel, accountId);
       this.liveStartedChannels.set(channel, want);
     }
   }
 
-  /** The `{commandType:1000, data:{…encryptkey…}}` START_LIVE wrapper JSON (own-session cameras). */
+  /**
+   * The own-session START_LIVE wrapper JSON (`{commandType: 1000, data: {…}}`).
+   *
+   * Every field is byte-verified against the current app's own start for an own-session camera, decrypted
+   * from a level-2 capture: `msg_id` is 1, `extValue` repeats the inner command id 1000, `streamtype` is 2,
+   * `video_type` is 12, and `transaction` is the millisecond timestamp as a string. The device answers a
+   * start carrying these values with a keyframe; `encryptkey` is the modulus it RSA-wraps each keyframe's
+   * AES media key with (unwrapped by {@link decodeVideoFrame}).
+   */
   private startLiveJson(channel: number, accountId: string): Buffer {
     const now = Date.now();
     return Buffer.from(
@@ -598,9 +922,10 @@ export class P2PSession extends EventEmitter {
           mChannel: channel,
           mValue3: 0,
           mValue5: 0,
-          msg_id: 5,
+          msg_id: 1,
           camera_type: 0,
           entrytype: 0,
+          extValue: CMD_START_LIVE,
           ivalue: 1,
           restore: 0,
           streamtype: 2,
@@ -640,12 +965,57 @@ export class P2PSession extends EventEmitter {
       magic = [0x01, 0x00];
       frameType = START_LIVE_FRAME_TYPE_L1;
     }
+    const sequence = this.seqNumber;
     const data = Buffer.concat([
-      buildCommandHeader(this.seqNumber, CMD_CONTROL_PAYLOAD),
+      buildCommandHeader(sequence, CMD_CONTROL_PAYLOAD),
       buildRawCommandPayload(payload, channel, signCode, magic, frameType),
     ]);
     this.seqNumber = (this.seqNumber + 1) & 0xffff;
+    for (const [pendingSequence, pending] of this.unackedLiveStarts) {
+      if (pending.channel === channel) this.unackedLiveStarts.delete(pendingSequence);
+    }
+    const sentAt = Date.now();
+    this.unackedLiveStarts.set(sequence, { channel, data, firstSentAt: sentAt, sentAt, sends: 1 });
+    this.armLiveStartRetransmit();
     this.send(this.connectAddress, RequestMessageType.DATA, data);
+  }
+
+  /**
+   * Repeat unacknowledged own-session live starts until the device takes one. Runs only while a start is
+   * outstanding.
+   *
+   * A start abandoned at {@link LIVE_START_ACK_DEADLINE_MS} is traced as `media-command-unacknowledged` and
+   * the channel's started state is forgotten. Both halves matter: the camera was never told to stream, so
+   * the warm-up that follows can only ever time out, and the trace is what separates that from a camera that
+   * got the start and stayed silent. Forgetting the state is what lets the next keepalive tick issue a real
+   * start under a fresh sequence — while the channel still counts as started, every tick sends only the 1139
+   * nudge, which holds a stream that was never started and cannot begin one.
+   *
+   * The abandonment emits `liveStartUnacknowledged` carrying the RESOLVED channel, so a listener matches it
+   * against {@link STATION_CHANNEL} where it started one without naming a channel.
+   */
+  private armLiveStartRetransmit(): void {
+    if (this.liveStartRetransmitTimer) return;
+    this.liveStartRetransmitTimer = setInterval(() => {
+      const outstanding = this.retransmitUnacked(this.unackedLiveStarts, {
+        retransmitMs: LIVE_START_RETRANSMIT_MS,
+        spent: (held) => Date.now() - held.firstSentAt >= LIVE_START_ACK_DEADLINE_MS,
+        onResent: () => this.trace({ phase: "media-command-retry", action: "start" }),
+        onAbandoned: (_sequence, held) => {
+          this.liveStartedChannels.delete(held.channel);
+          this.trace({ phase: "media-command-unacknowledged", action: "start" });
+          this.emit("liveStartUnacknowledged", held.channel);
+        },
+      });
+      if (!outstanding) this.clearLiveStartRetransmit();
+    }, LIVE_START_RETRANSMIT_MS / 2);
+    this.liveStartRetransmitTimer.unref?.();
+  }
+
+  private clearLiveStartRetransmit(): void {
+    if (!this.liveStartRetransmitTimer) return;
+    clearInterval(this.liveStartRetransmitTimer);
+    this.liveStartRetransmitTimer = undefined;
   }
 
   /**
@@ -748,6 +1118,13 @@ export class P2PSession extends EventEmitter {
   /** Stop the realtime media stream (`CMD_STOP_REALTIME_MEDIA`, 1004) on a camera `channel`. */
   stopLiveMedia(channel: number = STATION_CHANNEL, accountId = ""): void {
     this.liveStartedChannels.delete(channel);
+    for (const [sequence, pending] of this.unackedLiveStarts) {
+      if (pending.channel === channel) this.unackedLiveStarts.delete(sequence);
+    }
+    if (!this.unackedLiveStarts.size && this.liveStartRetransmitTimer) {
+      clearInterval(this.liveStartRetransmitTimer);
+      this.liveStartRetransmitTimer = undefined;
+    }
     if (this.level2Key) {
       this.sendMediaPayloadLevel2(CMD_STOP_REALTIME_MEDIA, channel, accountId, {});
     } else {
@@ -821,7 +1198,8 @@ export class P2PSession extends EventEmitter {
       buildRawCommandPayload(Buffer.concat([header, frame]), channel, 0),
     ]);
     this.videoSeqNumber = (this.videoSeqNumber + 1) & 0xffff;
-    this.unackedAudio.set(seq, { data, sentAt: Date.now(), sends: 1 });
+    const sentAt = Date.now();
+    this.unackedAudio.set(seq, { data, firstSentAt: sentAt, sentAt, sends: 1 });
     this.armAudioRetransmit();
     this.send(this.connectAddress, RequestMessageType.DATA, data);
   }
@@ -847,40 +1225,82 @@ export class P2PSession extends EventEmitter {
   private armAudioRetransmit(): void {
     if (this.audioRetransmitTimer) return;
     this.audioRetransmitTimer = setInterval(() => {
-      if (!this.unackedAudio.size || !this.connectAddress) {
+      const outstanding = this.retransmitUnacked(this.unackedAudio, {
+        retransmitMs: AUDIO_RETRANSMIT_MS,
+        spent: (held) => held.sends >= AUDIO_MAX_SENDS,
+        onAbandoned: (sequence) => {
+          if (this.audioStalled) return;
+          this.audioStalled = true;
+          this.emit("audioGap", sequence);
+        },
+      });
+      if (!outstanding) {
         clearInterval(this.audioRetransmitTimer);
         this.audioRetransmitTimer = undefined;
-        return;
-      }
-      const now = Date.now();
-      for (const [seq, held] of this.unackedAudio) {
-        if (now - held.sentAt < AUDIO_RETRANSMIT_MS) continue;
-        this.unackedAudio.delete(seq);
-        if (held.sends >= AUDIO_MAX_SENDS) {
-          if (!this.audioStalled) {
-            this.audioStalled = true;
-            this.emit("audioGap", seq);
-          }
-          continue;
-        }
-        held.sends++;
-        held.sentAt = now;
-        this.unackedAudio.set(seq, held);
-        this.send(this.connectAddress, RequestMessageType.DATA, held.data);
       }
     }, AUDIO_RETRANSMIT_MS / 2);
   }
 
   /**
-   * Clear acknowledged audio frames. The device's acknowledgement lists the sequence numbers it has
+   * One retransmission sweep over an acknowledged channel's retained datagrams: resend those past
+   * `retransmitMs` byte-identically, abandon those the caller reports spent, and answer whether any datagram
+   * is still outstanding — a caller stops its ticker once nothing is.
+   *
+   * Both acknowledged directions — outbound audio and the own-session live start — repeat on these terms, so
+   * the sweep has one implementation. What "spent" means is the caller's, because the two are bounded by
+   * different things: audio by a send count, since repeating it more amplifies the loss it is repairing; a
+   * live start by elapsed time, since the sends it needs are however many its acknowledgement latency
+   * demands. Datagrams are only ever retained by a send, and a send needs a connect address, so the
+   * no-address case has nothing retained to sweep and simply reports idle.
+   */
+  private retransmitUnacked<T extends RetainedDatagram>(
+    retained: Map<number, T>,
+    policy: {
+      retransmitMs: number;
+      spent: (held: T) => boolean;
+      onAbandoned: (sequence: number, held: T) => void;
+      onResent?: (sequence: number, held: T) => void;
+    },
+  ): boolean {
+    if (!this.connectAddress) return false;
+    const now = Date.now();
+    for (const [sequence, held] of retained) {
+      if (now - held.sentAt < policy.retransmitMs) continue;
+      retained.delete(sequence);
+      if (policy.spent(held)) {
+        policy.onAbandoned(sequence, held);
+        continue;
+      }
+      held.sends++;
+      held.sentAt = now;
+      retained.set(sequence, held);
+      policy.onResent?.(sequence, held);
+      this.send(this.connectAddress, RequestMessageType.DATA, held.data);
+    }
+    return retained.size > 0;
+  }
+
+  /**
+   * Clear acknowledged live starts and audio frames. The device's acknowledgement lists the sequence numbers it has
    * taken on a given data-type channel: `[dataTypeHeader:2][count:2 BE][seq:2 BE]×count`.
    *
-   * Only the audio channel acts on these. Every other outbound path is fire-and-forget, but audio is
-   * ordered and stalls on a gap, so it is the one direction where knowing what arrived matters.
+   * DATA acknowledgements release retained own-session starts. The video data-type acknowledgements release
+   * outbound talkback frames, whose ordered channel stalls on a gap.
    */
   private onAck(msg: Buffer): void {
-    if (msg.length < 8 || msg[4] !== 0xd1 || msg[5] !== P2PDataType.VIDEO) return;
+    if (msg.length < 8 || msg[4] !== 0xd1) return;
     const count = msg.readUInt16BE(6);
+    if (msg[5] === P2PDataType.DATA) {
+      for (let i = 0; i < count && 10 + 2 * i <= msg.length; i++) {
+        const sequence = msg.readUInt16BE(8 + 2 * i);
+        if (this.unackedLiveStarts.delete(sequence)) {
+          this.trace({ phase: "media-command-ack", action: "start" });
+        }
+      }
+      if (!this.unackedLiveStarts.size) this.clearLiveStartRetransmit();
+      return;
+    }
+    if (msg[5] !== P2PDataType.VIDEO) return;
     for (let i = 0; i < count && 10 + 2 * i <= msg.length; i++) {
       this.unackedAudio.delete(msg.readUInt16BE(8 + 2 * i));
     }
@@ -898,7 +1318,13 @@ export class P2PSession extends EventEmitter {
     accountId: string,
     payload: Record<string, unknown>,
   ): void {
-    if (!this.connectAddress || !this.level2Key) return;
+    if (!this.connectAddress || !this.level2Key) {
+      this.trace({
+        phase: "media-command-unsent",
+        reason: this.connectAddress ? "level2-key" : "address",
+      });
+      return;
+    }
     const isStart = subCmd === CMD_START_REALTIME_MEDIA;
     // HomeBase-controlled camera path (the V6 app's media-start envelope): mChannel = device_channel,
     // an extra accountId inside payload, an RSA public modulus for the media-key handshake, and the
@@ -1193,35 +1619,53 @@ export class P2PSession extends EventEmitter {
     this.sendSetPayload(opts.candidate ? 1195 : 1194, {}, opts);
   }
 
+  /**
+   * Acknowledge and reassemble one DATA datagram, sequenced independently per data type.
+   *
+   * The device numbers each data type's datagrams in its own 16-bit space and repeats what it thinks was
+   * lost, so a datagram that does not advance the sequence — a duplicate, or one already superseded — is a
+   * retransmission of something already reassembled: it is acknowledged, then ignored. Distance is measured
+   * modulo the sequence space and read as backwards beyond {@link SEQUENCE_LOOKBACK}, which is what lets the
+   * numbering wrap without the next datagram looking like a jump of nearly a full space.
+   *
+   * A datagram numbered further back than {@link STALE_RETRANSMIT_DEPTH} is not a repeat the device could
+   * still be making: the numbering itself has restarted, which a device does when it begins a fresh stream
+   * on a connection that is already up. That resynchronizes — the high-water mark moves to the restarted
+   * numbering and the half-assembled frame goes — because ignoring it would freeze the mark, and every
+   * datagram of the new numbering would then be read as behind it too, for as long as it took to climb back.
+   *
+   * Only a forward gap means a datagram is genuinely missing. A logical frame's payload spans datagrams that
+   * carry no header of their own, so the bytes cannot be reassembled around the hole: whatever was pending
+   * for that data type is discarded, and the frame is rebuilt from the next header.
+   */
   private onData(msg: Buffer, addr: Address): void {
     const dataTypeBuffer = msg.subarray(4, 6);
     const seqNo = msg.subarray(6, 8).readUInt16BE();
     const dataType = dataTypeBuffer[1]; // 0=DATA 1=VIDEO 2=CONTROL 3=BINARY
-    // ACK every DATA frame so the station keeps streaming notifications.
     this.send(addr, RequestMessageType.ACK, buildAckPayload(this.ackTypeHeader(dataType), seqNo));
 
-    // Detect a lost/reordered datagram: sequence numbers are per-dataType and increment by 1. If
-    // this datagram isn't the expected successor and we're mid-reassembly, the in-flight frame is
-    // unrecoverable — drop it rather than splice the wrong bytes in (which corrupts the bottom of a
-    // big keyframe → green/garbled blocks). We resync at the next XZYH frame boundary.
     const prevSeq = this.lastSeqByType.get(dataType);
-    const gap = prevSeq !== undefined && seqNo !== ((prevSeq + 1) & 0xffff);
+    const advance = prevSeq === undefined ? 1 : (seqNo - prevSeq) & 0xffff;
+    if (advance === 0) return;
+    const restarted = advance > SEQUENCE_LOOKBACK && 0x10000 - advance > STALE_RETRANSMIT_DEPTH;
+    if (advance > SEQUENCE_LOOKBACK && !restarted) return;
     this.lastSeqByType.set(dataType, seqNo);
-    if (gap && this.pending) this.pending = undefined;
+    if ((advance > 1 || restarted) && this.pendingByDataType.has(dataType)) {
+      if (this.tracedDatagramGaps++ < MAX_TRACED_DATAGRAM_GAPS) {
+        this.trace({ phase: restarted ? "sequence-restart" : "datagram-gap", dataType });
+      }
+      this.pendingByDataType.delete(dataType);
+    }
 
-    // A logical frame's payload (bytesToRead) can exceed one datagram and continue
-    // across the next datagrams (which carry NO new XZYH header). We reassemble:
-    // a frame whose payload is incomplete becomes `pending`; following datagrams
-    // append to it until `bytesToRead` is reached, then it's dispatched whole.
-    // (Big responses like the edge-AI face DB are ~150 KB across dozens of datagrams.)
-    let body = this.pending ? Buffer.concat([this.pending.buf, msg.subarray(8)]) : msg.subarray(8);
-    const carryHeader = this.pending?.header;
-    this.pending = undefined;
+    const pending = this.pendingByDataType.get(dataType);
+    let body = pending ? Buffer.concat([pending.buf, msg.subarray(8)]) : msg.subarray(8);
+    const carryHeader = pending?.header;
+    this.pendingByDataType.delete(dataType);
 
     if (carryHeader) {
       // continuing a frame: we have header already; body is the accumulated payload
       if (body.length < carryHeader.bytesToRead) {
-        this.pending = { header: carryHeader, buf: body };
+        this.pendingByDataType.set(dataType, { header: carryHeader, buf: body });
         return;
       }
       this.handleFrame(carryHeader, body.subarray(0, carryHeader.bytesToRead), dataType);
@@ -1233,12 +1677,26 @@ export class P2PSession extends EventEmitter {
       const payload = body.subarray(P2P_DATA_HEADER_BYTES);
       if (payload.length < header.bytesToRead) {
         // frame spans into following datagram(s) — stash and wait
-        this.pending = { header, buf: payload };
+        this.pendingByDataType.set(dataType, { header, buf: payload });
         return;
       }
       this.handleFrame(header, payload.subarray(0, header.bytesToRead), dataType);
       body = body.subarray(P2P_DATA_HEADER_BYTES + header.bytesToRead);
     }
+  }
+
+  /**
+   * Forget where each data type's sequence numbering had reached, and drop any half-reassembled frame.
+   *
+   * A device numbers datagrams per connection and starts over on the next one, so carrying the previous
+   * connection's high-water mark across would make the new connection's first datagrams look like
+   * retransmissions from behind and drop them all. Half a frame from a connection that is gone can never be
+   * completed either.
+   */
+  private resetInboundSequencing(): void {
+    this.lastSeqByType.clear();
+    this.pendingByDataType.clear();
+    this.tracedDatagramGaps = 0;
   }
 
   private ackTypeHeader(dataType: number): Buffer {
@@ -1318,10 +1776,13 @@ export class P2PSession extends EventEmitter {
       } catch {
         /* not JSON */
       }
-      if (header.commandId === CMD_NOTIFY_PAYLOAD) {
-        const reported = paramReport(frame.json?.payload);
-        if (reported) frame.params = reported;
-      }
+      const reported =
+        header.commandId === CMD_NOTIFY_PAYLOAD
+          ? paramReport(frame.json?.payload)
+          : header.commandId === CMD_CAMERA_INFO
+            ? paramReport(frame.json)
+            : undefined;
+      if (reported) frame.params = reported;
     }
     // CMD_DATABASE_IMAGE reply: { file, content:<base64 image> } → emit decoded bytes.
     if (header.commandId === CMD_DATABASE_IMAGE && frame.json && typeof frame.json.content === "string") {
@@ -1351,6 +1812,10 @@ export class P2PSession extends EventEmitter {
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
+    this.connectionGeneration += 1;
+    this.level2Key = undefined;
+    this.level2Seq = 0;
+    this.settleLevel2("closed");
     this.connected = false;
     this.connecting = false;
     if (this.lookupTimer) clearInterval(this.lookupTimer);
@@ -1360,6 +1825,10 @@ export class P2PSession extends EventEmitter {
     this.audioRetransmitTimer = undefined;
     this.unackedAudio.clear();
     this.audioStalled = false;
+    if (this.liveStartRetransmitTimer) clearInterval(this.liveStartRetransmitTimer);
+    this.liveStartRetransmitTimer = undefined;
+    this.unackedLiveStarts.clear();
+    this.resetInboundSequencing();
     if (this.connectAddress) this.send(this.connectAddress, RequestMessageType.END);
     await new Promise<void>((resolve) => {
       if (!this.socket) return resolve();

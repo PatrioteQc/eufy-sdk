@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import type { LiveAudioFrame, LiveStreamHandle, LiveVideoFrame } from "../../../core/contracts.js";
+import type { LiveAudioFrame, LiveStreamHandle, LiveVideoFrame, MediaFragment } from "../../../core/contracts.js";
 import { FragmentRecording } from "../fragment-recording.js";
 import { SharedLiveSource } from "../shared-live-source.js";
 
@@ -111,5 +111,26 @@ describe("FragmentRecording", () => {
     expect(stream().stopped).toBe(0);
     recording.stop();
     expect(shared.consumerCount).toBe(0);
+  });
+
+  it("holds its consumer instead of muxing fragments its owner is not taking", async () => {
+    const { shared, stream } = source({ makeStream: () => new FakeStream(), maxQueue: 20 });
+    const recording = new FragmentRecording(Promise.resolve(shared), { fragmentSeconds: 0 });
+    await Promise.resolve();
+
+    let at = 1000;
+    for (let index = 0; index < 400; index++) {
+      vi.setSystemTime((at += 64));
+      stream().video(video(true));
+    }
+
+    recording.stop();
+    const fragments: MediaFragment[] = [];
+    for await (const fragment of recording) {
+      fragments.push(fragment);
+    }
+
+    expect(fragments.length).toBeGreaterThan(0);
+    expect(fragments.length).toBeLessThan(20);
   });
 });

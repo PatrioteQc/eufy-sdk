@@ -286,7 +286,7 @@ export const ARMING_MEMBERS = {
       "so they are refused rather than guessed; see ARMING_MODE_WIRE in arming.ts for the breakdown.",
     observation: {
       event: "armingModeChanged",
-      expected: (value) => ARMING_MODE_WIRE[armingModeOf(value)!],
+      reflects: (value) => ({ param: ARMING_CMD.SET_ARMING, expected: ARMING_MODE_WIRE[armingModeOf(value)!] }),
       resetStandaloneSession: true,
       timeoutMs: 20_000,
     },

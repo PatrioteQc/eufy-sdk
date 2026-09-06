@@ -78,4 +78,28 @@ describe("P2P frame — the param report is scoped to a notify", () => {
     expect(withCommandId(1350, report)?.params).toBeUndefined();
     expect(withCommandId(1103, report)?.params).toBeUndefined();
   });
+
+  /**
+   * A camera reports its OWN state under `CMD_CAMERA_INFO`, and puts the array at the ROOT rather than under
+   * `payload` — measured on two own-session cameras, each reporting the enablement param with its new value
+   * within seconds of a write, on a session that was already open. Reading it is what lets a write be
+   * confirmed by the device instead of by polling the account device list.
+   *
+   * The two shapes are what keep this honest: the notify's array is nested, this one is not, so a reply that
+   * merely happens to nest an array under `payload` is still refused under this command id.
+   */
+  const cameraInfo = { params: [{ dev_type: 1000, param_type: 1035, param_value: "0" }] };
+
+  it("reads a camera-info frame's own params, which sit at the root", () => {
+    expect(withCommandId(1103, cameraInfo)?.params).toEqual({ 1035: "0" });
+  });
+
+  it("still refuses a nested array under camera-info, which is a reply and not a report", () => {
+    expect(withCommandId(1103, report)?.params).toBeUndefined();
+  });
+
+  it("does not read a root-level array under an unrelated command", () => {
+    expect(withCommandId(1350, cameraInfo)?.params).toBeUndefined();
+    expect(withCommandId(1351, cameraInfo)?.params).toBeUndefined();
+  });
 });

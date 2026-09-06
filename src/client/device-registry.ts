@@ -1,4 +1,20 @@
 /**
+ * The station a device's traffic belongs to, from its cloud record and its own serial.
+ *
+ * `parent_sn` carries the parent on a HomeBase-attached device. `station_sn` is frequently absent there —
+ * empty on every attached sensor of a T8010 — and serves only as a fallback. An empty string states no
+ * station.
+ *
+ * A device naming no parent answers its own serial, so every device has a station.
+ */
+export function resolvedStationSn(raw: Record<string, unknown>, sn: string): string {
+  const parent = typeof raw.parent_sn === "string" && raw.parent_sn ? raw.parent_sn : undefined;
+  if (parent && parent !== sn) return parent;
+  const station = typeof raw.station_sn === "string" && raw.station_sn ? raw.station_sn : undefined;
+  return station ?? sn;
+}
+
+/**
  * DeviceRegistry — the device list/record/capability-resolution collaborator behind {@link EufyMega}.
  *
  * The facade owns orchestration + event fan-out; this owns the resolution logic: fetching + merging
@@ -7,7 +23,8 @@
  * tricky bits are unit-testable with a fake `mega` — the facade stays pure wiring. It never names a
  * capability or a wire; it maps records to the model's `resolveDevice`/`inspectParams`.
  */
-import { MegaHttpClient } from "../transport/http/mega-client.js";
+import { MegaApiError, MegaHttpClient, OWNER_ONLY_CODE, SessionExpiredError } from "../transport/http/mega-client.js";
+import { noopLogger, type Logger } from "../core/logger.js";
 import { classifyDevice, type DeviceClass, type EufyDevice, type RealtimeKind } from "../core/types.js";
 import { inspectParams, resolveDevice, type Capability, type Codec, type DeviceInspection } from "../model/index.js";
 
@@ -62,6 +79,18 @@ export interface PollDiff {
    * the first time is absent here: first sight is discovery, not a transition.
    */
   reported: EufyDevice[];
+}
+
+/**
+ * One device as the previous poll pass SAW it — the values the next diff compares against, copied out of the
+ * record rather than referencing it.
+ *
+ * The record travels along only so a departed device can still be reported whole; nothing reads its params.
+ */
+interface PolledState {
+  device: EufyDevice;
+  lastSeenMs?: number;
+  params: Record<number, string>;
 }
 
 /** One `{param_type, param_value, update_time}` entry as the cloud delivers it, in either param list. */
@@ -144,14 +173,39 @@ export interface DeviceRegistryDeps {
   mega: MegaHttpClient;
   /** Surface a non-fatal fetch error (a house/body query that failed) without aborting the merge. */
   onError: (e: unknown) => void;
+  /** Diagnostics sink for facts that are NOT errors — see the owner-gated overlay note on {@link DeviceRegistry.record}. */
+  logger?: Logger;
 }
+
+/**
+ * How long a fetched device list is reused for a per-device read that needs a fresher one.
+ *
+ * The list is account-wide (`get_house_list` plus one `get_devs_list` per house), so a caller resolving a
+ * fleet must not trigger one fetch per device — measured on a 14-device account that turned 6 list requests
+ * into 90 and a 2 s resolve into 25 s. Short enough that a read-through refresh still observes a change
+ * (the default staleness window is longer than this), long enough that resolving a whole fleet costs one list.
+ */
+const LIST_REUSE_MS = 5_000;
 
 export class DeviceRegistry {
   private readonly mega: MegaHttpClient;
   private readonly onError: (e: unknown) => void;
+  private readonly logger: Logger;
   private devices: EufyDevice[] = [];
   /** Per-(station, channel) capability cache for {@link capabilitiesForFrame}; `null` = negative hit. */
   private readonly frameCapsCache = new Map<string, ReadonlySet<Capability> | null>();
+  /**
+   * Serials whose per-device param overlay has been refused. The call is owner-gated, so on a shared or
+   * member account it fails for the whole life of the client — retrying it every refresh spends a request
+   * to learn the same thing, and the answer is reported once rather than on every read.
+   */
+  private readonly overlayRefused = new Set<string>();
+  /** One in-flight device-list fetch shared by every caller that wants a fresher list. See {@link refreshedList}. */
+  private listInFlight?: Promise<EufyDevice[]>;
+  /** When the device list was last fetched, so a burst of per-device reads shares one. See {@link refreshedList}. */
+  private listFetchedAtMs = 0;
+  /** Whether the owner-gated refusal has been reported. It is one fact about the account, so it is said once. */
+  private overlayRefusalReported = false;
   /** Per-serial capability cache for {@link capabilitiesForDevice}; `null` = negative hit. */
   private readonly deviceCapsCache = new Map<string, ReadonlySet<Capability> | null>();
   /** Per-serial realtime state, keyed by param id in the device's own namespace (see {@link DeviceRecord.dpParams}). */
@@ -171,12 +225,24 @@ export class DeviceRegistry {
    * device — a host's own `getDevices()`, a command sink resolving a serial before an on-demand P2P
    * open. Diffing the shared cache in place would let any of those silently absorb the delta, and the
    * next poll would then see an unchanged account and emit nothing. `undefined` = never polled.
+   *
+   * It holds the VALUES the diff reads, never the records themselves. Sharing the records lets anything that
+   * updates one in place rewrite the baseline before the next pass can diff against it — and the realtime
+   * path does exactly that to `lastSeenMs`: a station's report stamps the record the baseline is holding, so
+   * the next pass compares the cloud's older timestamp against a baseline already advanced to now and
+   * reports nothing. Every device that reports over realtime loses its poll liveness signal that way.
+   *
+   * The params are copied for the same reason, against a mutation no current path performs: nothing writes
+   * into a record's param map in place today (a realtime report lands in its own map, and a refetch rebuilds
+   * the record), so that half is a latent hazard rather than an observed one — copied because the diff
+   * cannot tell the difference and the cost is one shallow copy per device per pass.
    */
-  private pollSnapshot?: { devices: Map<string, EufyDevice>; complete: boolean };
+  private pollSnapshot?: { devices: Map<string, PolledState>; complete: boolean };
 
   constructor(deps: DeviceRegistryDeps) {
     this.mega = deps.mega;
     this.onError = deps.onError;
+    this.logger = deps.logger ?? noopLogger;
   }
 
   /** The current device cache (last {@link getDevices} result). */
@@ -194,6 +260,13 @@ export class DeviceRegistry {
    * Replacing wholesale would empty the cache during an outage, breaking every serial lookup the
    * command sink and event fan-out depend on, and would then present the whole account as newly
    * discovered once the next refresh succeeded. {@link lastRefreshPartial} records that this happened.
+   *
+   * A **rejected session** is the one failure not tolerated that way, because it is not a subset of
+   * anything: every query fails identically, so what is left to return is nothing on a fresh client — an
+   * empty account that reads exactly like an account with no devices, which a host acts on by tearing down
+   * everything it had. The transport has already tried to replace the token by logging in again, so
+   * reaching here means it could not, and the caller is the one who has to know. It rejects; the devices it
+   * already knew stay known.
    */
   async getDevices(): Promise<EufyDevice[]> {
     // get_devs_list is quirkily house-scoped: the bare {} call returns a set
@@ -208,6 +281,7 @@ export class DeviceRegistry {
       );
       for (const h of houses.house_infos ?? []) bodies.push({ house_id: h.house_id });
     } catch (e) {
+      if (e instanceof SessionExpiredError) throw e;
       partial = true;
       this.onError(e);
     }
@@ -218,6 +292,7 @@ export class DeviceRegistry {
       try {
         res = await this.mega.post<{ devices?: any[] }>("house", "/app/house/get_devs_list", body);
       } catch (e) {
+        if (e instanceof SessionExpiredError) throw e;
         partial = true;
         this.onError(e);
         continue;
@@ -238,7 +313,7 @@ export class DeviceRegistry {
           sn: raw.device_sn,
           name: raw.device_name ?? raw.device_alias_name ?? raw.alias_name,
           model: raw.device_model,
-          stationSn: raw.station_sn,
+          stationSn: resolvedStationSn(raw, raw.device_sn),
           p2pDid: raw.p2p_did,
           params,
           paramUpdatedAt,
@@ -306,8 +381,13 @@ export class DeviceRegistry {
     }
     const present = new Set(devices.map((d) => d.sn));
     const removed =
-      this.lastRefreshPartial || !base ? [] : [...base.devices.values()].filter((d) => !present.has(d.sn));
-    this.pollSnapshot = { devices: new Map(devices.map((d) => [d.sn, d])), complete: !this.lastRefreshPartial };
+      this.lastRefreshPartial || !base
+        ? []
+        : [...base.devices.entries()].filter(([sn]) => !present.has(sn)).map(([, state]) => state.device);
+    this.pollSnapshot = {
+      devices: new Map(devices.map((d) => [d.sn, { device: d, lastSeenMs: d.lastSeenMs, params: { ...d.params } }])),
+      complete: !this.lastRefreshPartial,
+    };
     return { params, added, removed, reported };
   }
 
@@ -339,22 +419,62 @@ export class DeviceRegistry {
   }
 
   /**
-   * Resolve a serial to a {@link DeviceRecord} with current params: starts from the device-list
-   * params, then overlays a fresh `get_device_param_list` when reachable. Shared by
-   * {@link EufyMega.getDevice} / {@link EufyMega.inspectDevice} / `commandContext`.
+   * Resolve a serial to a {@link DeviceRecord} with current params: starts from the device-list params, then
+   * overlays a fresh `get_device_param_list` when that call is available to this account.
+   *
+   * The overlay is **owner-gated** — a shared or member account is refused it for every device, permanently,
+   * which {@link OWNER_ONLY_CODE} identifies — so when it is unavailable the device list is the source
+   * instead. Any OTHER failure is treated as transient: it falls back for that call but is retried next
+   * time, because latching on a timeout would cost an entitled account its freshest source of params.
+   *
+   * A dead session is the exception: it is not a statement about the overlay's availability, and the fallback
+   * runs over the same session, so it propagates rather than degrading to the params this call already held.
+   * Serving those as current would report an expired token as a device that simply has not changed.
+   *
+   * The refusal is **logged, never surfaced as an error**. It is a normal property of a shared or member
+   * account, not a fault: nothing failed that the SDK did not immediately handle, and the account holder
+   * cannot grant themselves ownership. A host cannot tell "non-fatal degradation" from "something went
+   * wrong" on an untyped error event, and one that treats an error during discovery as evidence of an
+   * incomplete inventory would abandon a perfectly good fleet — so this says it where someone diagnosing
+   * freshness will find it, and says nothing where it would be mistaken for a failure.
+   *
+   * The list is account-wide, so a re-fetch is NOT per device: resolving a fleet calls this once per device,
+   * and each one re-fetching would multiply one burst into N. {@link refreshedList} reuses a list younger
+   * than {@link LIST_REUSE_MS} and coalesces concurrent fetches, which keeps resolving N devices at the cost
+   * of one list while still letting a later refresh see a new value. That list is not owner-gated and carries the same
+   * `{param_type, param_value, update_time}`, which makes it the fallback the overlay's own contract names.
+   * Without it this method answered from a cached list it only ever loaded once, so a read-through refresh
+   * re-applied the same values with a fresh timestamp and no observation could change for the life of the
+   * client — indistinguishable, to a caller, from a device that simply never changed.
+   *
+   * Shared by {@link EufyMega.getDevice} / {@link EufyMega.inspectDevice} / `commandContext`.
    */
   async record(sn: string): Promise<DeviceRecord> {
-    if (!this.devices.length) await this.getDevices();
-    const dev = this.devices.find((d) => d.sn === sn);
+    if (!this.devices.length || this.overlayRefused.has(sn)) await this.refreshedList(sn);
+    let dev = this.devices.find((d) => d.sn === sn);
     if (!dev) throw new Error(`device ${sn} not found (have: ${this.devices.map((d) => d.sn).join(", ")})`);
 
     const params: Record<number, string> = { ...(dev.params ?? {}) };
     const paramUpdatedAt: Record<number, number> = { ...(dev.paramUpdatedAt ?? {}) };
-    try {
-      const live = await this.mega.getDeviceParamList<{ params?: RawParam[] }>(sn);
-      mergeParams(live.params, params, paramUpdatedAt);
-    } catch {
-      /* fall back to device-list params */
+    if (!this.overlayRefused.has(sn)) {
+      try {
+        const live = await this.mega.getDeviceParamList<{ params?: RawParam[] }>(sn);
+        mergeParams(live.params, params, paramUpdatedAt);
+      } catch (error) {
+        if (error instanceof SessionExpiredError) throw error;
+        if (error instanceof MegaApiError && error.code === OWNER_ONLY_CODE) {
+          this.overlayRefused.add(sn);
+          if (!this.overlayRefusalReported) {
+            this.overlayRefusalReported = true;
+            this.logger.debug(
+              "[registry] per-device params are owner-gated for this account — reading params from the device list instead",
+            );
+          }
+        }
+        dev = (await this.refreshedList(sn)) ?? dev;
+        Object.assign(params, dev.params ?? {});
+        Object.assign(paramUpdatedAt, dev.paramUpdatedAt ?? {});
+      }
     }
 
     const raw = dev.raw as Record<string, unknown> | undefined;
@@ -373,11 +493,50 @@ export class DeviceRegistry {
   }
 
   /**
+   * Re-fetch the device list, coalescing concurrent callers onto one in-flight fetch and reusing one
+   * younger than {@link LIST_REUSE_MS}. Answers with this serial's record from that list, or `undefined`.
+   *
+   * The list is account-wide (`get_house_list` plus one `get_devs_list` per house), so without this a refresh
+   * cycle over N devices would multiply into N of those bursts — and every fetch clears the capability caches,
+   * so they would stop working. One fetch serves every device that wants the same answer.
+   *
+   * This is the ONLY way a caller in a loop should ask for a fresher list. A convergence wait that polls
+   * {@link getDevices} directly bypasses both the window and the coalescing, so one write whose param never
+   * lands spends a whole account-wide burst per iteration, and concurrent transitions multiply that again.
+   *
+   * Only a fetch that RESOLVED opens the reuse window. {@link getDevices} tolerates a failing house/body
+   * query as a partial and answers anyway, so an outage still holds the window on purpose — retrying per
+   * device is how one outage becomes N bursts. What must not hold it is the one failure that rejects: a dead
+   * session, which also propagates rather than degrading to `undefined`, because answering "no such device"
+   * for an expired token is the same lie {@link getDevices} stopped telling, one level down.
+   */
+  async refreshedList(sn: string): Promise<EufyDevice | undefined> {
+    if (Date.now() - this.listFetchedAtMs < LIST_REUSE_MS) return this.devices.find((d) => d.sn === sn);
+    this.listInFlight ??= this.getDevices()
+      .then((devices) => {
+        this.listFetchedAtMs = Date.now();
+        return devices;
+      })
+      .finally(() => {
+        this.listInFlight = undefined;
+      });
+    try {
+      return (await this.listInFlight).find((d) => d.sn === sn);
+    } catch (e) {
+      if (e instanceof SessionExpiredError) throw e;
+      return undefined;
+    }
+  }
+
+  /**
    * Record state a device reported over its realtime wire, merging into whatever it last reported.
    *
    * Merged rather than replaced because a report can be partial — a status frame that omits a field is
    * silent about it, not asserting it went away. Marks the device seen and drops its capability cache,
    * since a newly-reported id can widen the evidence-gated read surface.
+   *
+   * What lands here outranks the cloud half in {@link record}, and stays there until
+   * {@link retireRealtimeParams} says the cloud has moved that id itself.
    */
   applyRealtimeParams(sn: string, params: Record<number, string>): void {
     if (!Object.keys(params).length) return;
@@ -390,6 +549,33 @@ export class DeviceRegistry {
       this.stateWaiters.delete(sn);
       for (const resolve of waiters) resolve();
     }
+  }
+
+  /**
+   * Drop this device's reported value for these param ids, because the CLOUD has since been observed to
+   * move them — {@link EufyMega} calls this with the ids of a poll diff.
+   *
+   * {@link record} joins the two halves by letting the report win, which is right only while the report
+   * is the fresher of the two: the cloud list carries a pre-report value long after the device
+   * volunteered the new one, so without that precedence an open door reads as closed. A poll diff on the
+   * same id is the cloud stating a transition it observed, which ends the lag the report was standing in
+   * for. Leaving the report in place would make it outrank the cloud permanently, and every later join
+   * would revert that id to a value the cloud has already superseded.
+   *
+   * Ids alone, never a value: this says the report is out of date, not what replaced it. The replacement
+   * is already in the cloud half, and writing it in here would put one value in two maps for the next
+   * change to disagree about.
+   *
+   * The capability cache is deliberately NOT dropped: an id stops being remembered here, but the device
+   * did report it, and evidence-gated reads are granted on having reported — retracting that would take
+   * a getter away from a `Device` that legitimately earned it. The map itself stays for the same reason
+   * even once emptied, since its presence is what {@link hasRealtimeState} answers "this device has
+   * reported" from, and a device does not become one that never reported.
+   */
+  retireRealtimeParams(sn: string, paramTypes: readonly number[]): void {
+    const reported = this.dpParams.get(sn);
+    if (!reported) return;
+    for (const paramType of paramTypes) delete reported[paramType];
   }
 
   /** Whether this device has reported any realtime state yet. */
@@ -463,8 +649,7 @@ export class DeviceRegistry {
    * means, so this is also the topology signal `record()`/`capsOf` hand the resolver.
    */
   private stationOf(dev: EufyDevice): string {
-    const raw = (dev.raw ?? {}) as Record<string, any>;
-    return raw.parent_sn && raw.parent_sn !== dev.sn ? (raw.parent_sn as string) : (dev.stationSn ?? dev.sn);
+    return dev.stationSn ?? resolvedStationSn((dev.raw ?? {}) as Record<string, unknown>, dev.sn);
   }
 
   /**

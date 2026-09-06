@@ -1,25 +1,297 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { MegaHttpClient, SessionExpiredError } from "../mega-client.js";
+import type { PersistedSession, SessionStore } from "../../../core/store.js";
+import {
+  EufyCloudErrorCode,
+  LoginStatus,
+  MegaHttpClient,
+  SessionExpiredError,
+  type LoginResult,
+} from "../mega-client.js";
+
+/**
+ * What a client does when the cloud rejects the token it is holding.
+ *
+ * A rejected token is the one failure a client can act on by itself: it holds the credentials that produced
+ * the session, so it can log in again and carry on. Everything here drives {@link MegaHttpClient.postSigned}
+ * with `httpPost` and `ensureSessionKey` stubbed, so no test touches a network or a real account.
+ */
+type Response = { status: number; data: unknown };
+
+/** A 401 the client must read as "this token is finished", by vendor code alone. */
+const KICKED: Response = {
+  status: 401,
+  data: { code: EufyCloudErrorCode.SESSION_KICKED, msg: "synthetic wording that carries no keywords" },
+};
+/**
+ * The same rejection as the gateway actually words it when a stored token has been displaced — carrying the
+ * generic 401 code, and echoing the rejected token back at us. Observed live; the token here is synthetic.
+ */
+const TOKEN_NOT_EXIST: Response = {
+  status: 401,
+  data: { code: 401, msg: "token not exist, token = 0123456789abcdef0123" },
+};
+const OK: Response = { status: 200, data: { code: 0, data: { ok: true } } };
+
+/**
+ * A client whose transport answers from `answers` in order (the last one repeating), and whose login state
+ * machine answers `loginResult` — the seam that matters here is "was the login state machine re-run and the
+ * call retried", not how a login itself works.
+ */
+function client(
+  answers: Response[],
+  loginResult: LoginResult | Error = { status: LoginStatus.Ok, session: {} as never },
+) {
+  const mega = new MegaHttpClient({ email: "synthetic@example.invalid", password: "synthetic" });
+  const internals = mega as unknown as {
+    ensureSessionKey: (host: string) => Promise<{ shareKey: string; keyIdent: string }>;
+    httpPost: (url: string) => Promise<Response>;
+    login: () => Promise<LoginResult>;
+    clearSession: () => void;
+  };
+  internals.ensureSessionKey = vi.fn(async () => ({ shareKey: "00".repeat(32), keyIdent: "00".repeat(16) }));
+  const posts: string[] = [];
+  internals.httpPost = vi.fn(async (url: string) => {
+    posts.push(url);
+    return answers[Math.min(posts.length - 1, answers.length - 1)];
+  });
+  const login = vi.fn(async () => {
+    if (loginResult instanceof Error) throw loginResult;
+    return loginResult;
+  });
+  internals.login = login;
+  return { mega, login, posts, clearSession: vi.spyOn(internals, "clearSession") };
+}
+
+const call = (mega: MegaHttpClient, path = "/synthetic") => mega.postSigned("app-mega-us-pr.eufy.com", path, {}, true);
+
+/** A persisted session, as a store hands one back. Synthetic throughout. */
+function storedSession(authToken: string): PersistedSession {
+  return {
+    userId: "synthetic-user",
+    authToken,
+    region: "us-pr",
+    openudid: "0".repeat(16),
+    shareKey: "00".repeat(32),
+    keyIdent: "00".repeat(16),
+    tokenExpiresAt: 0,
+    savedAt: Date.now(),
+  } as PersistedSession;
+}
+
+/** A store two clients can share, so one can see what the other persisted. */
+function sharedStore(initial: string): SessionStore & { held: PersistedSession | null } {
+  return {
+    held: storedSession(initial),
+    load() {
+      return this.held;
+    },
+    save(session: PersistedSession) {
+      this.held = session;
+    },
+    clear() {
+      this.held = null;
+    },
+  };
+}
 
 describe("mega authenticated session rejection", () => {
+  afterEach(() => vi.useRealTimers());
+
   it("classifies vendor code 26084 as an expired session without message parsing", async () => {
-    const client = new MegaHttpClient({ email: "synthetic@example.invalid", password: "synthetic" });
-    const internals = client as unknown as {
-      ensureSessionKey: (host: string) => Promise<{ shareKey: string; keyIdent: string }>;
-      httpPost: () => Promise<{ status: number; data: unknown }>;
-      clearSession: () => void;
+    const { mega, clearSession } = client([KICKED], new Error("synthetic: re-login unavailable"));
+
+    await expect(call(mega)).rejects.toBeInstanceOf(SessionExpiredError);
+    expect(clearSession).toHaveBeenCalled();
+  });
+
+  /**
+   * The vendor words this rejection more than one way, and only one of them carries a distinctive code. A
+   * client that recognises the code alone treats "token not exist" as an ordinary API error and never
+   * recovers — which is what a displaced stored token actually produces.
+   */
+  it("classifies the gateway's own 'token not exist' wording as an expired session", async () => {
+    const { mega, clearSession } = client([TOKEN_NOT_EXIST], new Error("synthetic: re-login unavailable"));
+
+    await expect(call(mega)).rejects.toBeInstanceOf(SessionExpiredError);
+    expect(clearSession).toHaveBeenCalled();
+  });
+
+  it("recovers from that wording too, rather than only from the coded one", async () => {
+    const { mega, login } = client([TOKEN_NOT_EXIST, OK]);
+
+    await expect(call(mega)).resolves.toEqual({ ok: true });
+    expect(login).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * The gateway echoes the token it just rejected into its message, and that message travels into the error a
+   * host logs and pastes into a bug report. A credential is not diagnostics.
+   */
+  it("does not carry the rejected token into the error it throws", async () => {
+    const { mega } = client([TOKEN_NOT_EXIST], new Error("synthetic: re-login unavailable"));
+
+    const error: Error = await call(mega).then(
+      () => new Error("expected a rejection"),
+      (e: Error) => e,
+    );
+
+    expect(error.message).not.toContain("0123456789abcdef0123");
+    expect(error.message).toContain("<redacted>");
+  });
+
+  /**
+   * The recovery the rejection exists to enable: log in again with the credentials already held, then finish
+   * the call the caller made. Without it a client holding a displaced token answers every later call the same
+   * way for the rest of its life, and a caller that asked for its devices is told the account has none.
+   */
+  it("logs in again and completes the call the caller made", async () => {
+    const { mega, login, posts } = client([KICKED, OK]);
+
+    await expect(call(mega)).resolves.toEqual({ ok: true });
+    expect(login).toHaveBeenCalledTimes(1);
+    expect(posts).toHaveLength(2);
+  });
+
+  /** One attempt. A token the cloud rejects twice is not a token a third login will fix. */
+  it("gives up after one re-login rather than looping", async () => {
+    const { mega, login, posts } = client([KICKED]);
+
+    await expect(call(mega)).rejects.toBeInstanceOf(SessionExpiredError);
+    expect(login).toHaveBeenCalledTimes(1);
+    expect(posts).toHaveLength(2);
+  });
+
+  /**
+   * A re-login that needs a human cannot be completed silently, and pretending otherwise would either loop or
+   * strand the caller. The rejection is surfaced so the host can drive the captcha/2FA flow it already owns.
+   */
+  it("surfaces the rejection when the re-login needs a human", async () => {
+    const { mega, login, posts } = client([KICKED], { status: LoginStatus.Captcha, image: "data:,", retry: false });
+
+    await expect(call(mega)).rejects.toBeInstanceOf(SessionExpiredError);
+    expect(login).toHaveBeenCalledTimes(1);
+    expect(posts).toHaveLength(1); // the call is not retried against a session that was never restored
+  });
+
+  /** A login that fails outright (offline, wrong password) leaves the caller with the honest reason. */
+  it("surfaces the rejection when the re-login itself fails", async () => {
+    const { mega, login } = client([KICKED], new Error("synthetic login failure"));
+
+    await expect(call(mega)).rejects.toBeInstanceOf(SessionExpiredError);
+    expect(login).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * A device-list refresh fires several calls at once, and every one of them holds the same dead token. Each
+   * triggering its own login would spend N logins to learn one thing — and on an account that limits
+   * concurrent sessions, later logins displace the token the earlier ones just obtained.
+   */
+  it("collapses concurrent rejections into one login", async () => {
+    const { mega, login } = client([KICKED, KICKED, OK]);
+
+    const [first, second] = await Promise.all([call(mega, "/a"), call(mega, "/b")]);
+
+    expect(first).toEqual({ ok: true });
+    expect(second).toEqual({ ok: true });
+    expect(login).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * The login round trip is itself an authenticated call while a limited token is held, so a client that
+   * re-logged in from inside one would recurse. The guard is structural — "a login is in flight" — rather than
+   * a list of paths that would have to be maintained alongside the login flow.
+   */
+  it("never re-logs in from inside a login attempt", async () => {
+    const { mega, login } = client([KICKED]);
+    (mega as unknown as { loggingIn: boolean }).loggingIn = true;
+
+    await expect(call(mega, "/passport/login")).rejects.toBeInstanceOf(SessionExpiredError);
+    expect(login).not.toHaveBeenCalled();
+  });
+
+  /** A pending 2FA code is a login a human is mid-way through; restarting it silently would discard it. */
+  it("never re-logs in while a 2FA code is outstanding", async () => {
+    const { mega, login } = client([KICKED]);
+    (mega as unknown as { pending2fa: boolean }).pending2fa = true;
+
+    await expect(call(mega)).rejects.toBeInstanceOf(SessionExpiredError);
+    expect(login).not.toHaveBeenCalled();
+  });
+
+  /** With no credentials to log in with — a host running purely off a restored session — there is nothing to try. */
+  it("does not attempt a re-login it has no credentials for", async () => {
+    const mega = new MegaHttpClient({ email: "", password: "" });
+    const internals = mega as unknown as {
+      ensureSessionKey: () => Promise<{ shareKey: string; keyIdent: string }>;
+      httpPost: () => Promise<Response>;
+      login: () => Promise<LoginResult>;
     };
     internals.ensureSessionKey = vi.fn(async () => ({ shareKey: "00".repeat(32), keyIdent: "00".repeat(16) }));
-    internals.httpPost = vi.fn(async () => ({
-      status: 401,
-      data: { code: 26084, msg: "synthetic wording that carries no token keywords" },
-    }));
-    const clearSession = vi.spyOn(internals, "clearSession");
+    internals.httpPost = vi.fn(async () => KICKED);
+    const login = vi.fn(async () => ({ status: LoginStatus.Ok, session: {} as never }) as LoginResult);
+    internals.login = login;
 
-    await expect(client.postSigned("app-mega-us-pr.eufy.com", "/synthetic", {}, true)).rejects.toBeInstanceOf(
+    await expect(call(mega)).rejects.toBeInstanceOf(SessionExpiredError);
+    expect(login).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Two clients on one account, and the hazard this recovery introduces if it is not bounded.
+   *
+   * A client's device identity defaults to one derived from its credentials, so two of them look like the SAME
+   * device to the cloud — which keeps one session per device and evicts the other. Each then finds its token
+   * rejected, replaces it, and evicts the first: a silent login war, and repeated logins are exactly what makes
+   * the account start demanding captchas.
+   */
+  describe("two clients on one account", () => {
+    /** The cheap way out: if the other client shares this one's store, its token is already there to use. */
+    it("adopts a token another client persisted instead of spending a login", async () => {
+      const store = sharedStore("token-a");
+      const { mega, login } = client([KICKED, OK]);
+      (mega as unknown as { store: SessionStore }).store = store;
+      (mega as unknown as { auth_: { userId: string; authToken: string } }).auth_ = {
+        userId: "synthetic-user",
+        authToken: "token-a",
+      };
+      store.held = storedSession("token-b"); // the other client logged in and persisted its own
+
+      await expect(call(mega)).resolves.toEqual({ ok: true });
+      expect(login).not.toHaveBeenCalled();
+      expect(store.held?.authToken).toBe("token-b"); // and the other client's session was not wiped
+    });
+
+    /** With separate stores there is nothing to adopt, so the rate is what has to be bounded. */
+    it("replaces a token once, then holds off rather than trading logins", async () => {
+      const { mega, login } = client([KICKED], { status: LoginStatus.Ok, session: {} as never });
+
+      await expect(call(mega)).rejects.toBeInstanceOf(SessionExpiredError); // recovered, then rejected again
+      const held = await call(mega).catch((e: Error) => e);
+
+      expect(login).toHaveBeenCalledTimes(1);
+      expect((held as Error).message).toMatch(/same account and device identity|openudid/);
+    });
+
+    /** A token that has been working for a while earns the right to be replaced quickly again. */
+    it("forgets the hold-off once a replaced token has been working", async () => {
+      vi.useFakeTimers();
+      const { mega, login } = client([KICKED, OK, KICKED, OK]);
+
+      await expect(call(mega)).resolves.toEqual({ ok: true }); // first recovery
+      await vi.advanceTimersByTimeAsync(20 * 60_000); // the replacement keeps working for 20 minutes
+      await expect(call(mega)).resolves.toEqual({ ok: true }); // proves it, then a later rejection recovers
+
+      expect(login).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  /** An unauthenticated call has no session to recover — nothing about it says the token is dead. */
+  it("leaves an unauthenticated call alone", async () => {
+    const { mega, login } = client([KICKED]);
+
+    await expect(mega.postSigned("app-mega-us-pr.eufy.com", "/synthetic", {}, false)).rejects.not.toBeInstanceOf(
       SessionExpiredError,
     );
-    expect(clearSession).toHaveBeenCalledOnce();
+    expect(login).not.toHaveBeenCalled();
   });
 });

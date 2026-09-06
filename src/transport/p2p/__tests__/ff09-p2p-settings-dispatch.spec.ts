@@ -1,16 +1,16 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { EventEmitter } from "node:events";
 import { createCipheriv } from "node:crypto";
 import { P2PCommandRouter, type P2PRouterDeps } from "../command-router.js";
 import { CMD_TRANSFER_PAYLOAD, LOCK_API_COMMAND } from "../../ff09.js";
 import type { EufyDevice } from "../../../core/types.js";
 import { u16le, u32be } from "../../../core/util.js";
+import { connectedSession, type FakeP2PSession } from "./session-fixtures.js";
 
 /**
  * `sendFf09Autolock` (the `ff09-autolock` intent handler behind `dev.lock()?.setAutoLock`
  * for a P2P video lock) — the P2P sibling of `transport/mqtt/__tests__/ff09-mqtt-settings-dispatch.spec.ts`,
- * mocked the same way `p2p_level2.spec.ts` mocks a session: a bare `EventEmitter` standing in for
- * `P2PSession`, with `isConnected`/`hasLevel2Key` pre-set and `sendControlLevel2` mocked to inspect
+ * mocked the same way `p2p_level2.spec.ts` mocks a session: the shared `connectedSession` fixture standing
+ * in for `P2PSession`, with `sendControlLevel2` mocked to inspect
  * each outbound envelope and, for the GET, synchronously emit a `data` event carrying a
  * correctly-encrypted device reply built with the SAME cipher `transport/ff09.ts` documents — so the
  * whole GET→decrypt→SET flow runs for real against a fake session, no live P2P connection.
@@ -54,9 +54,7 @@ function buildResponsePlain(delaySeconds: number, a7: number, a8: number): Buffe
   ]);
 }
 
-interface FakeSession extends EventEmitter {
-  isConnected: boolean;
-  hasLevel2Key: boolean;
+interface FakeSession extends FakeP2PSession {
   sendControlLevel2: (cmd: number, channel: number, accountId: string, payload: unknown, mValue3?: number) => boolean;
 }
 
@@ -77,9 +75,7 @@ function makeRouter(opts: {
   noReply?: boolean;
 }) {
   const calls: Call[] = [];
-  const session = new EventEmitter() as FakeSession;
-  session.isConnected = true;
-  session.hasLevel2Key = true;
+  const session = connectedSession() as FakeSession;
   session.sendControlLevel2 = vi.fn((cmd, channel, _accountId, payload) => {
     const p = payload as Call["payload"];
     calls.push({ cmd, channel, payload: p });

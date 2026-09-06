@@ -18,7 +18,7 @@ describe("freshestLanIp — newest heartbeat wins over stale top-level fields", 
 
   it("filters out a public WAN ip_addr, using the LAN heartbeat param (HomeBase)", () => {
     const rec = {
-      ip_addr: "90.105.172.128", // public WAN — must never be returned
+      ip_addr: "203.0.113.128", // public WAN — must never be returned
       params: [{ param_type: 1176, param_value: "192.168.99.73", update_time: 1782948594 }],
     };
     expect(freshestLanIp(rec)).toBe("192.168.99.73");

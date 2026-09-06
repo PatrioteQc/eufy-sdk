@@ -51,6 +51,12 @@ export interface EufyDevice {
   api: ApiBackend;
   /** Which realtime transport carries its live state/commands. */
   realtime: RealtimeKind;
+  /**
+   * The station this device's traffic belongs to: its parent HomeBase, or its own serial when it has none.
+   *
+   * `parent_sn` carries the parent on an attached device. `station_sn` is frequently absent there — empty on
+   * every attached sensor of a T8010 — and serves only as a fallback for a device naming no parent.
+   */
   stationSn?: string;
   /** Present (and non-empty) for P2P devices. */
   p2pDid?: string;

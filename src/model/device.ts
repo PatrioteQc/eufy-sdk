@@ -19,6 +19,7 @@ import type {
   CommandContext,
   ParamEncoding,
   ParamValue,
+  PropertyChange,
   PropertyValueType,
   PropertySpec,
   PropertyValue,
@@ -36,6 +37,9 @@ import {
   type CapabilityAccessors,
   type DeviceManifest,
 } from "./capabilities/index.js";
+// By direct path, not the barrel: `narrow` is internal to `capabilities/` and must not join the
+// barrel's published surface. Its own JSDoc states why it is shared.
+import { narrow } from "./capabilities/members.js";
 import { paramDef, namespaceForCodec, type ParamNamespace } from "./param-namespace.js";
 
 /**
@@ -101,7 +105,10 @@ function coerce(
 ): boolean | number | string {
   // A custom decode (e.g. a bitfield the app reinterprets) fully owns the value — no type-coerce/invert.
   if (spec.decode) return spec.decode(raw);
-  const v = coerceByType(spec.type, raw, spec.name, logger);
+  // A structured payload is stored verbatim and read by the capability's getter, so its declared type
+  // describes the ANSWER and not the wire. Coercion still runs — a base64 string is not a number, so it
+  // passes through unchanged — but it is not a mistake worth logging. See `PropertySpec.raw`.
+  const v = coerceByType(spec.type, raw, spec.name, spec.raw ? noopLogger : logger);
   // A `bool` param that is a disable flag reads inverted ("0"/false ⇒ TRUE). `invert` comes from
   // the spec (its own paramType) or the matched read-alias — see specByParam construction.
   return spec.type === "bool" && invert ? !v : v;
@@ -126,6 +133,14 @@ function sameManifest(a: readonly PropertySpec[], b: readonly PropertySpec[]): b
 export class Device {
   /** Serial number (station/device SN). */
   readonly sn: string;
+  /**
+   * The station this device's traffic belongs to: its parent HomeBase, or its own {@link sn} when it has none.
+   *
+   * Set from the record's `parentSn`, which is present only for a device that hangs off a base. A record that
+   * states none leaves the last known value, as every other identity field here does, so it starts at this
+   * device's own serial and every device therefore has a station.
+   */
+  stationSn: string;
   /** Resolved command-codec family. */
   codec!: ResolvedDevice["codec"];
   /** Resolved capability set. Widens if the device later reports evidence for more. */
@@ -194,6 +209,7 @@ export class Device {
 
   constructor(sn: string, resolved: ResolvedDevice, logger: Logger = noopLogger) {
     this.sn = sn;
+    this.stationSn = sn;
     this.logger = logger;
     this.resolveInto(resolved);
   }
@@ -319,6 +335,7 @@ export class Device {
     this.model = rec.model ?? this.model;
     this.deviceName = rec.name ?? this.deviceName;
     this.name = this.deviceName ?? this.modelName;
+    this.stationSn = rec.parentSn ?? this.stationSn;
   }
 
   /** Does this device have the given capability? */
@@ -431,6 +448,46 @@ export class Device {
       if (changedVal) changed.push(name);
     }
     return changed;
+  }
+
+  /**
+   * Which of these changed property names are worth ANNOUNCING, each with the value
+   * {@link getProperty} now serves for it — the second half of an {@link applyParams} call, and the input
+   * a facade turns into a property-change event.
+   *
+   * Only a name in this device's own schema survives, and EVERY name in it does. The schema is what the
+   * SDK published and {@link getProperty} serves every entry of, so announcing one is honest; a
+   * dictionary-named param and an `unknown_<paramType>` passthrough are things the SDK makes no claim
+   * about, and announcing either would promise a value it never agreed to serve. Diagnostics reach those
+   * through `inspectParams`.
+   *
+   * Nothing is withheld for being uninteresting, here or in a capability's own table. Which of a device's
+   * truths a host acts on is the host's call: a value judged too chatty to mention — a sensor's own
+   * check-in, a robot's session counter ticking through a clean — is exactly the one some caller is
+   * building a progress display out of, and a withheld value cannot be recovered, where an unwanted one
+   * costs a caller one comparison on the name.
+   *
+   * The value comes out of live state — written microseconds earlier by the same call that produced
+   * `changed` — through the same `narrow` the capability getters use, which is what makes an announcement
+   * and the getter beside it one answer rather than two. Not from the raw wire value: that is a second
+   * conversion and a second answer, which is exactly how a payload comes to disagree with its getter. And
+   * not by invoking the installed getter, which has read side effects (a scheduled background refresh, a
+   * codec call) an announcement must not trigger — and which an `unexposed` schema property does not have
+   * at all.
+   *
+   * Kept beside the state and the schema rather than in a caller, because both are here; a caller doing
+   * the join would be re-deriving what this object already holds. Says nothing about the previous value:
+   * a caller that needs the delta already holds it, because it was told last time.
+   */
+  announcements(changed: readonly string[]): PropertyChange[] {
+    const out: PropertyChange[] = [];
+    for (const name of changed) {
+      const spec = this.specByName.get(name);
+      if (!spec) continue;
+      const value = spec.raw ? undefined : narrow(spec.type, (n) => this.state.get(n), name);
+      out.push(value === undefined ? { property: name } : { property: name, value });
+    }
+    return out;
   }
 
   /**

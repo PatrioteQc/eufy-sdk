@@ -249,3 +249,91 @@ describe("Fmp4Muxer audio", () => {
     expect(decodeTimes[1].readBigUInt64BE(12)).toBe(4800n);
   });
 });
+
+/** ISO/IEC 14496-12 boxes that carry child boxes rather than a payload. */
+const CONTAINERS = new Set(["moov", "trak", "mdia", "minf", "stbl", "mvex", "edts", "moof", "traf", "dinf"]);
+
+/**
+ * Every structural defect a parser would reject, found by walking the tree the way a parser does:
+ * a child that runs past its parent, a box that does not fill its parent exactly, and a `trun` whose
+ * declared size disagrees with the per-sample fields its own `tr_flags` promise.
+ *
+ * A sample table is sized from `tr_flags` alone, so a flag the body never writes is unrecoverable: the
+ * parser reads 4 bytes per sample past the end of the run and loses the whole fragment.
+ */
+function structuralDefects(buf: Buffer, start = 0, end = buf.length, path = ""): string[] {
+  const defects: string[] = [];
+  let offset = start;
+  while (offset + 8 <= end) {
+    const size = buf.readUInt32BE(offset);
+    const type = buf.toString("ascii", offset + 4, offset + 8);
+    const at = `${path}/${type}`;
+    if (size < 8) {
+      defects.push(`${at} declares size ${size}`);
+      return defects;
+    }
+    if (offset + size > end) {
+      defects.push(`${at} runs ${offset + size - end} bytes past its parent`);
+      return defects;
+    }
+    if (type === "trun") {
+      const flags = buf.readUIntBE(offset + 9, 3);
+      const sampleCount = buf.readUInt32BE(offset + 12);
+      const perSample =
+        (flags & 0x000100 ? 4 : 0) +
+        (flags & 0x000200 ? 4 : 0) +
+        (flags & 0x000400 ? 4 : 0) +
+        (flags & 0x000800 ? 4 : 0);
+      const required = 16 + (flags & 0x000001 ? 4 : 0) + (flags & 0x000004 ? 4 : 0) + sampleCount * perSample;
+      if (size !== required) {
+        defects.push(
+          `${at} declares size ${size} but tr_flags 0x${flags.toString(16).padStart(6, "0")} over ` +
+            `${sampleCount} samples require ${required}`,
+        );
+      }
+    }
+    if (CONTAINERS.has(type)) {
+      defects.push(...structuralDefects(buf, offset + 8, offset + size, at));
+    }
+    offset += size;
+  }
+  if (offset !== end) {
+    defects.push(`${path} leaves ${end - offset} trailing bytes its children do not cover`);
+  }
+  return defects;
+}
+
+describe("Fmp4Muxer box structure", () => {
+  it("declares a trun size that matches the per-sample fields its own flags promise", () => {
+    const mux = new Fmp4Muxer({ audio: true, fragmentSeconds: 0 });
+    mux.push(kf("h264"), 1000);
+    mux.pushAudio(audio("aac-lc", Buffer.from([1, 2, 3])), 1000);
+    mux.push(delta("h264"), 1100);
+    const fragment = mux.push(kf("h264"), 1200)!;
+    const runs = boxesOfType(fragment.data, "trun");
+    expect(runs.length).toBe(2);
+    for (const run of runs) {
+      const flags = run.readUIntBE(9, 3);
+      expect(flags & 0x000800).toBe(0);
+      expect(run.readUInt32BE(0)).toBe(20 + run.readUInt32BE(12) * 12);
+    }
+  });
+
+  it("nests every box inside its parent with no overread and no trailing bytes", () => {
+    const mux = new Fmp4Muxer({ audio: true, fragmentSeconds: 0 });
+    mux.push(kf("h264"), 1000);
+    const init = mux.pushAudio(audio("aac-lc", Buffer.from([1, 2, 3])), 1000)!;
+    mux.push(delta("h264"), 1100);
+    const fragment = mux.push(kf("h264"), 1200)!;
+    expect(structuralDefects(init.init!)).toEqual([]);
+    expect(structuralDefects(fragment.data)).toEqual([]);
+  });
+
+  it("keeps an H.265 fragment structurally valid", () => {
+    const mux = new Fmp4Muxer({ fragmentSeconds: 0 });
+    const init = mux.push(kf("h265"), 1000)!;
+    const fragment = mux.push(kf("h265"), 1100)!;
+    expect(structuralDefects(init.init!)).toEqual([]);
+    expect(structuralDefects(fragment.data)).toEqual([]);
+  });
+});

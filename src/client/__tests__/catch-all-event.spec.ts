@@ -93,7 +93,13 @@ describe("catch-all event tag", () => {
     expect(device.applyParams).toHaveBeenCalledExactlyOnceWith({ 1224: "63" });
   });
 
-  it("applies a converged cloud record once after unchanged refresh attempts", async () => {
+  /**
+   * The convergence wait polls the CLOUD through the registry's coalesced list, so an unconverged param
+   * costs one account-wide list per reuse window rather than one per pass. The loop still runs at its own
+   * ~500ms cadence — that is what lets state the device volunteers settle the wait between two cloud reads —
+   * so the two cannot be conflated: this pins the fetch count as well as the eventual convergence.
+   */
+  it("applies a converged cloud record once, polling the account list once per reuse window", async () => {
     vi.useFakeTimers();
     const eufy = client();
     let mode = 1;
@@ -120,14 +126,16 @@ describe("catch-all event tag", () => {
       { deviceSn: "T8000P0000000000" },
       { refresh: { param: 1224, property: "armingMode", timeoutMs: 20_000 } },
     );
-    await vi.advanceTimersByTimeAsync(1000);
+    await vi.advanceTimersByTimeAsync(11_000);
 
     expect(seen).toEqual([63]);
+    expect(polls, "one account-wide list per 5s reuse window, not one per 500ms pass").toBe(3);
     expect(device.applyParams).toHaveBeenCalledExactlyOnceWith({ 1224: "63" });
     vi.useRealTimers();
   });
 
   it("serializes consecutive valueless transitions so each event observes its own state", async () => {
+    vi.useFakeTimers();
     const eufy = client();
     let mode = 1;
     let cloudMode = "1";
@@ -149,8 +157,10 @@ describe("catch-all event tag", () => {
 
     (eufy as any).emitSemantic("armingModeChanged", { deviceSn: "T8000P0000000000" }, options);
     (eufy as any).emitSemantic("armingModeChanged", { deviceSn: "T8000P0000000000" }, options);
+    await vi.advanceTimersByTimeAsync(11_000);
 
-    await vi.waitFor(() => expect(seen).toEqual([63, 1]));
+    expect(seen).toEqual([63, 1]);
+    vi.useRealTimers();
   });
 
   it("refreshes and emits after an observed command even when no push event arrives", async () => {
@@ -193,6 +203,109 @@ describe("catch-all event tag", () => {
     await vi.waitFor(() => expect(seen).toEqual([63]));
     expect(order).toEqual(["event", "reset"]);
     expect(reset).toHaveBeenCalledExactlyOnceWith("T8000P0000000000");
+  });
+
+  it("reports an acknowledged write whose observation never converges, naming what it waited for", async () => {
+    vi.useFakeTimers();
+    const eufy = client();
+    const device = {
+      getProperty: () => ({ value: 1 }),
+      applyParams: () => undefined,
+    };
+    (eufy as any).liveDevices.set("T8000P0000000000", new WeakRef(device));
+    /** A device that acknowledges the write on the wire and never reports the value it asked for. */
+    vi.spyOn((eufy as any).registry, "require").mockReturnValue({ params: { 1224: "1" } });
+    vi.spyOn((eufy as any).registry, "getDevices").mockResolvedValue([]);
+    vi.spyOn(eufy as any, "routeCommand").mockResolvedValue(undefined);
+    const faults: unknown[] = [];
+    const unconfirmed: unknown[] = [];
+    eufy.on("error", (error) => faults.push(error));
+    eufy.on("commandUnconfirmed", (info) => unconfirmed.push(info));
+    const command = observeCommand(
+      { kind: "set-param", param: 1224, value: 63, form: "auto", channel: 0 },
+      { event: "armingModeChanged", expected: 63, param: 1224, property: "armingMode", timeoutMs: 20_000 },
+    );
+
+    await (eufy as any).commandSinkFor("T8000P0000000000").dispatch(command);
+    await vi.advanceTimersByTimeAsync(21_000);
+
+    expect(unconfirmed).toEqual([
+      {
+        sn: "T8000P0000000000",
+        property: "armingMode",
+        param: 1224,
+        expected: 63,
+        observed: "1",
+        timeoutMs: 20_000,
+      },
+    ]);
+    expect(faults, "an outcome dispatch never waited for is not a fault of this client").toEqual([]);
+    vi.useRealTimers();
+  });
+
+  it("names the unconfirmed member even when the last poll outlives the window", async () => {
+    vi.useFakeTimers();
+    const eufy = client();
+    (eufy as any).liveDevices.set(
+      "T8000P0000000000",
+      new WeakRef({ getProperty: () => ({ value: 1 }), applyParams: () => undefined }),
+    );
+    vi.spyOn((eufy as any).registry, "require").mockReturnValue({ params: { 1224: "1" } });
+    /**
+     * The device list never answers, which is what happens live: the window closes on the poll rather than
+     * on the loop, and that rejection used to escape unattributed as "semantic event refresh timed out".
+     */
+    vi.spyOn((eufy as any).registry, "getDevices").mockImplementation(() => new Promise(() => undefined));
+    vi.spyOn(eufy as any, "routeCommand").mockResolvedValue(undefined);
+    const faults: Error[] = [];
+    const unconfirmed: unknown[] = [];
+    eufy.on("error", (error) => faults.push(error));
+    eufy.on("commandUnconfirmed", (info) => unconfirmed.push(info));
+    const command = observeCommand(
+      { kind: "set-param", param: 1224, value: 63, form: "auto", channel: 0 },
+      { event: "armingModeChanged", expected: 63, param: 1224, property: "armingMode", timeoutMs: 20_000 },
+    );
+
+    await (eufy as any).commandSinkFor("T8000P0000000000").dispatch(command);
+    await vi.advanceTimersByTimeAsync(21_000);
+
+    expect(unconfirmed).toEqual([
+      {
+        sn: "T8000P0000000000",
+        property: "armingMode",
+        param: 1224,
+        expected: 63,
+        observed: "1",
+        timeoutMs: 20_000,
+      },
+    ]);
+    expect(faults.map((error) => error.message)).toEqual([]);
+    vi.useRealTimers();
+  });
+
+  it("keeps a genuine fault after the acknowledgement on the error bus", async () => {
+    const eufy = client();
+    (eufy as any).liveDevices.set(
+      "T8000P0000000000",
+      new WeakRef({ getProperty: () => undefined, applyParams: () => undefined }),
+    );
+    vi.spyOn((eufy as any).registry, "require").mockImplementation(() => {
+      throw new Error("synthetic registry fault");
+    });
+    vi.spyOn(eufy as any, "routeCommand").mockResolvedValue(undefined);
+    const faults: Error[] = [];
+    const unconfirmed: unknown[] = [];
+    eufy.on("error", (error) => faults.push(error));
+    eufy.on("commandUnconfirmed", (info) => unconfirmed.push(info));
+    const command = observeCommand(
+      { kind: "set-param", param: 1224, value: 63, form: "auto", channel: 0 },
+      { event: "armingModeChanged", expected: 63, param: 1224, property: "armingMode", timeoutMs: 20_000 },
+    );
+
+    await (eufy as any).commandSinkFor("T8000P0000000000").dispatch(command);
+
+    await vi.waitFor(() => expect(faults.map((error) => error.message)).toEqual(["synthetic registry fault"]));
+    expect(unconfirmed).toEqual([]);
   });
 
   it("completes convergence and standalone reset before dispatching the next observed command", async () => {
@@ -290,6 +403,8 @@ describe("catch-all event tag", () => {
     vi.spyOn((eufy as any).registry, "getDevices").mockResolvedValue([]);
     vi.spyOn(eufy as any, "routeCommand").mockResolvedValue(undefined);
     const reportError = vi.spyOn(eufy as any, "reportError").mockImplementation(() => undefined);
+    const unconfirmed: unknown[] = [];
+    eufy.on("commandUnconfirmed", (info) => unconfirmed.push(info));
     const command = observeCommand(
       { kind: "set-param", param: 1224, value: 63, form: "auto", channel: 0 },
       { event: "armingModeChanged", expected: 63, param: 1224, property: "armingMode", timeoutMs: 20_000 },
@@ -298,7 +413,50 @@ describe("catch-all event tag", () => {
     await expect((eufy as any).commandSinkFor("T8000P0000000000").dispatch(command)).resolves.toBeUndefined();
     await vi.advanceTimersByTimeAsync(20_000);
 
-    expect(reportError).toHaveBeenCalledOnce();
+    expect(unconfirmed, "the caller is answered on its own channel and never failed").toHaveLength(1);
+    expect(reportError, "a write the device ignored is an outcome, not a fault of this client").not.toHaveBeenCalled();
+    vi.useRealTimers();
+  });
+
+  it("releases a following write when the session recycle is still waiting on an attached viewer", async () => {
+    vi.useFakeTimers();
+    const eufy = client();
+    let mode = 1;
+    let cloudMode = "1";
+    const device = {
+      getProperty: () => ({ value: mode }),
+      applyParams: (params: Record<number, string>) => {
+        mode = Number(params[1224]);
+      },
+    };
+    (eufy as any).liveDevices.set("T8000P0000000000", new WeakRef(device));
+    vi.spyOn((eufy as any).registry, "require").mockImplementation(() => ({ params: { 1224: cloudMode } }));
+    vi.spyOn((eufy as any).registry, "getDevices").mockResolvedValue([]);
+    const route = vi.spyOn(eufy as any, "routeCommand").mockImplementation(async (...args: unknown[]) => {
+      cloudMode = String(commandObservation(args[1] as never)!.expected);
+    });
+    // A viewer never detaches, so the recycle this write asks for never settles.
+    vi.spyOn((eufy as any).p2p, "resetStandaloneSession").mockReturnValue(new Promise<void>(() => {}));
+    const command = (expected: number) =>
+      observeCommand(
+        { kind: "set-param", param: 1224, value: expected, form: "auto", channel: 0 },
+        {
+          event: "armingModeChanged",
+          expected,
+          param: 1224,
+          property: "armingMode",
+          resetStandaloneSession: true,
+          timeoutMs: 20_000,
+        },
+      );
+    const sink = (eufy as any).commandSinkFor("T8000P0000000000");
+
+    await sink.dispatch(command(63));
+    const queued = sink.dispatch(command(1));
+
+    await vi.advanceTimersByTimeAsync(5_000);
+    await expect(queued).resolves.toBeUndefined();
+    expect(route, "the queued write reached the wire rather than waiting on the viewer").toHaveBeenCalledTimes(2);
     vi.useRealTimers();
   });
 

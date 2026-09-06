@@ -39,6 +39,16 @@ stream?.on("error", (err) => console.error("stream", err));
 stream?.on("stop", () => console.log("source ended — re-attach to rebuild"));
 ```
 
+**Auth loss is a separate signal.** A kicked/expired cloud session (another client logged into the
+account, or the token lapsed) does **not** come through `error` — it fires `sessionExpired`. The SDK
+has already cleared the session, so handle it by re-driving `login()` (usually a fresh 2FA):
+
+```ts
+eufy.on("sessionExpired", async () => {
+  await eufy.login(); // then submit the 2FA code
+});
+```
+
 ## 3. Common symptoms
 
 | Symptom / error                                                                   | Likely cause                                                                                                                                                                                                                         | What to do                                                                                                                                                                                                |
@@ -52,7 +62,8 @@ stream?.on("stop", () => console.log("source ended — re-attach to rebuild"));
 | A command fails only on a standalone camera                                       | some controls need a HomeBase-attached device and aren't available standalone                                                                                                                                                        | expected — drive that control on a HomeBase-attached device, or use the property that adapts automatically                                                                                                |
 | `live stream failed to start (no frames within warm-up window)`                   | the source never produced a frame in time                                                                                                                                                                                            | handle the stream `error`, then call `cam.live()` again to rebuild                                                                                                                                        |
 | `timeout waiting for a clean keyframe`                                            | a snapshot/record couldn't get a keyframe in the window                                                                                                                                                                              | retry, or widen the timeout via the call's options                                                                                                                                                        |
-| `ffmpeg not runnable` / snapshot or record fails                                  | `ffmpeg` isn't on `PATH` (needed for JPEG snapshot / mp4 record / WebRTC container)                                                                                                                                                  | install `ffmpeg`, or use the ffmpeg-free paths (`openReadable()`, `recordFragments()`); see [§5](#_5-media-snapshot-record-ffmpeg)                                                                        |
+| `the P2P session closed … into the clip` / `the stream failed during the clip`    | `record()`'s own pull went away before the clip's window elapsed                                                                                                                                                                     | retry once the session is back; a clip shorter than requested is returned rather than failed when the camera simply goes quiet                                                                            |
+| `ffmpeg not runnable` / snapshot or record fails                                  | no runnable `ffmpeg` (needed for JPEG snapshot / mp4 record / WebRTC container)                                                                                                                                                      | point the SDK at the binary you ship with `ffmpegPath`, install `ffmpeg`, or use the ffmpeg-free paths (`openReadable()`, `recordFragments()`); see [§5](#_5-media-snapshot-record-ffmpeg)                |
 | `p2p down` / `smqtt reconnecting` on `error`                                      | a transient transport drop                                                                                                                                                                                                           | the channels reconnect on their own; re-attach live streams when a consumer gets `stop`                                                                                                                   |
 
 ## 4. Streams that hang or stop
@@ -65,11 +76,42 @@ stream?.on("stop", () => console.log("source ended — re-attach to rebuild"));
 - **Trace the lifecycle.** With a logger attached (§1), `[live …]` lines trace a stream warming, going
   live, a warm-up timeout, an upstream drop, and the linger-before-teardown — the detail you want when
   a live view won't start or drops unexpectedly.
+- **Match startup traces on the published vocabulary, not on strings.** Every startup trace is logged
+  under `LIVE_TRACE_MESSAGE` with a `LiveTrace` payload, and **both are exported from the package root**:
+
+  ```ts
+  import { LIVE_TRACE_MESSAGE, type LiveTrace } from "@mega-yfue/eufy-sdk";
+  ```
+
+  A host that bounds or redacts what it retains should key its phase allowlist off the union, so a phase
+  added here fails to compile rather than being discarded:
+
+  ```ts
+  } satisfies Record<LiveTrace["phase"], true>;
+  ```
+
+  Copying the message literal or the phase names by hand is the one thing that cannot survive a new phase
+  being added — the SDK widens that union without needing any coordination from you.
 
 ## 5. Media (snapshot / record / ffmpeg)
 
 The JPEG snapshot (`snapshotLive`), one-shot `record`, and WebRTC-container paths shell out to
-`ffmpeg`. When one of them fails, surface ffmpeg's **own** diagnostics through your logger: raise
+`ffmpeg`.
+
+**No `ffmpeg` on `PATH`?** That is ordinary on a managed host, and it does not mean these paths are
+unavailable — name the binary you ship instead of editing the process `PATH`:
+
+```ts
+const eufy = new EufyMega({ email, password, ffmpegPath: "/opt/your-host/bin/ffmpeg" });
+```
+
+An absolute path is spawned directly, with no `PATH` lookup. It is not probed at construction, so a
+wrong path surfaces as the media call's own `ffmpeg not runnable` rejection; check it up front with
+`ffmpegAvailable(path)`, which resolves the same executable the media paths will run.
+`createWebRtcPeer` takes its own `ffmpegPath` for the container mux — and uses it for the availability
+check that selects the mux, so a host-supplied build no longer falls back to a raw stream.
+
+When one of them fails, surface ffmpeg's **own** diagnostics through your logger: raise
 `ffmpegLogLevel` on the client and the SDK forwards ffmpeg's stderr as `[ffmpeg]`-prefixed **debug**
 lines.
 

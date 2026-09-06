@@ -21,6 +21,9 @@ export interface PersistedSession {
   geoKey?: string;
   region: RegionShard;
   openudid: string;
+  /** This install's reported device model + media user-agent, generated once and reused. */
+  phoneModel?: string;
+  mediaUserAgent?: string;
   /** ECDH session: shareKey hex (32 chars) + the bound key-ident. */
   shareKey: string;
   keyIdent: string;
