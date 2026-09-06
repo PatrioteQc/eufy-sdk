@@ -61,8 +61,7 @@ interface SessionEntry {
   session?: P2PSession;
   retained: number;
   holdTimers: Set<ReturnType<typeof setTimeout>>;
-  resetPending: boolean;
-  resetWaiters: Array<{ resolve: () => void; reject: (error: unknown) => void }>;
+  reset?: PromiseWithResolvers<void>;
   idle: Timer;
   connecting?: Promise<P2PSession>;
 }
@@ -123,7 +122,7 @@ export class SessionManager {
   private entry(parentSn: string): SessionEntry {
     let e = this.entries.get(parentSn);
     if (!e) {
-      e = { retained: 0, holdTimers: new Set(), resetPending: false, resetWaiters: [], idle: new Timer() };
+      e = { retained: 0, holdTimers: new Set(), idle: new Timer() };
       this.entries.set(parentSn, e);
     }
     return e;
@@ -191,7 +190,7 @@ export class SessionManager {
       return;
     }
     e.retained -= 1;
-    if (e.resetPending && e.retained <= e.holdTimers.size) {
+    if (e.reset && e.retained <= e.holdTimers.size) {
       void this.close(parentSn).catch((error) =>
         this.logger.error(`[session ${parentSn}] deferred reset failed`, error),
       );
@@ -259,7 +258,7 @@ export class SessionManager {
   /** Drop a station's entry + timer (called from the session's `close` handler). Idempotent. */
   remove(parentSn: string): void {
     const entry = this.discard(parentSn);
-    if (entry) this.settleResetWaiters(entry);
+    if (entry) this.settleReset(entry);
   }
 
   /** Close one station now and discard its lifecycle entry. */
@@ -268,34 +267,37 @@ export class SessionManager {
     if (entry) await this.closeEntry(entry);
   }
 
-  /** Reset once every viewer detaches, ignoring only expiring holds. */
-  async resetWhenUnused(parentSn: string): Promise<void> {
+  /**
+   * Reset once every viewer detaches, ignoring only expiring holds.
+   *
+   * Every caller that arrives while one is already pending gets the SAME promise: the outcome is a
+   * property of the station's teardown, not of who asked, so one deferred per entry is the whole
+   * mechanism — and it cannot grow with the number of callers.
+   */
+  resetWhenUnused(parentSn: string): Promise<void> {
     const entry = this.entries.get(parentSn);
-    if (!entry) return;
-    if (entry.retained <= entry.holdTimers.size) {
-      await this.close(parentSn);
-      return;
-    }
-    entry.resetPending = true;
-    return new Promise<void>((resolve, reject) => entry.resetWaiters.push({ resolve, reject }));
+    if (!entry) return Promise.resolve();
+    if (entry.retained <= entry.holdTimers.size) return this.close(parentSn);
+    entry.reset ??= Promise.withResolvers<void>();
+    return entry.reset.promise;
   }
 
   /** Settle a discarded entry's reset callers with the same outcome as its session close. */
-  private settleResetWaiters(entry: SessionEntry, failure?: { error: unknown }): void {
-    const waiters = entry.resetWaiters.splice(0);
-    for (const waiter of waiters) {
-      if (failure) waiter.reject(failure.error);
-      else waiter.resolve();
-    }
+  private settleReset(entry: SessionEntry, failure?: { error: unknown }): void {
+    const reset = entry.reset;
+    if (!reset) return;
+    entry.reset = undefined;
+    if (failure) reset.reject(failure.error);
+    else reset.resolve();
   }
 
   /** Close one discarded entry and settle only its own reset callers before preserving any failure. */
   private async closeEntry(entry: SessionEntry): Promise<void> {
     try {
       await entry.session?.close();
-      this.settleResetWaiters(entry);
+      this.settleReset(entry);
     } catch (error) {
-      this.settleResetWaiters(entry, { error });
+      this.settleReset(entry, { error });
       throw error;
     }
   }

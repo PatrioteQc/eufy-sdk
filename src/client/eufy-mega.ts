@@ -143,6 +143,16 @@ const DEFAULT_POLL_MS = 600_000;
  */
 const DEFAULT_PREWARM_TIERS: readonly PowerTier[] = ["wired", "battery"];
 
+/**
+ * How long a write waits for the session recycle it asked for before letting go of the wait.
+ *
+ * A recycle that nothing is holding completes in the time one session teardown takes, so this bound is
+ * never reached in the ordinary case. It exists for the case where a viewer is attached: the recycle
+ * then waits for that viewer to detach, which may be minutes or never, and the wait is what a following
+ * write to the same member queues behind. Letting go does not cancel the recycle.
+ */
+const SESSION_RECYCLE_WAIT_MS = 5_000;
+
 interface RealtimeGeneration {
   readonly epoch: number;
   readonly readiness: MutableRealtimeReadiness;
@@ -788,6 +798,31 @@ export class EufyMega extends EventEmitter {
   }
 
   /**
+   * Recycle a standalone device's P2P session after a write that needs one, waiting only
+   * {@link SESSION_RECYCLE_WAIT_MS} for it.
+   *
+   * The recycle itself waits for every viewer to detach, so that a write does not drop a live stream.
+   * That wait is unbounded by design — a viewer may watch indefinitely — and it happens INSIDE the keyed
+   * transaction, so the next write to the same member queues behind it. Racing it decouples the two: the
+   * losing recycle stays pending and still runs when the station falls idle, it just stops gating an
+   * unrelated write.
+   *
+   * A failure reported before the bound propagates; one arriving after it survives only as the session
+   * manager's own log, since by then nothing is waiting to receive it.
+   */
+  private recycleStandaloneSession(sn: string): Promise<void> {
+    const releaseWrite = new Promise<void>((resolve) => void setTimeout(resolve, SESSION_RECYCLE_WAIT_MS).unref?.());
+    return Promise.race([
+      this.p2p.resetStandaloneSession(sn),
+      releaseWrite.then(() =>
+        this.opts.logger?.debug(
+          `[session ${sn}] recycle still waiting on an attached viewer — releasing the write that asked for it`,
+        ),
+      ),
+    ]);
+  }
+
+  /**
    * Whether the DECODED property now reads what the write asked for.
    *
    * Compared against {@link CommandObservation.observed} where the property's decode is not the identity, and
@@ -1031,7 +1066,7 @@ export class EufyMega extends EventEmitter {
             const refreshed = await this.refreshEventState(sn, observation);
             if (!refreshed || epoch !== this.realtimeEpoch) return;
             this.emitSemantic(observation.event, { deviceSn: sn });
-            if (observation.resetStandaloneSession) await this.p2p.resetStandaloneSession(sn);
+            if (observation.resetStandaloneSession) await this.recycleStandaloneSession(sn);
           } catch (error) {
             if (!acknowledged) reject(error);
             else this.reportUnacknowledged(error);
