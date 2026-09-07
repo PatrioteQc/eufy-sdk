@@ -15,6 +15,17 @@
  *  - Newer standalone cameras use the Tuya/Thingclips WebRTC stack instead and do
  *    NOT use these ids — this catalog is for the eufy_security PPCS path only.
  *
+ * SPELLINGS ARE VERBATIM — do not "fix" them. A name here is the vendor's own
+ * identifier, so it is the only string that matches a dump, a decompile or another
+ * client. Correcting one silently breaks that match and costs the next person the
+ * same reverse-engineering twice. The misspellings the app itself ships, all
+ * deliberate here: `BROADCASE` (broadcast), `SYCN` (sync), `DELLETE` (delete),
+ * `NEWVESION` (new version), `LOGIG` (log), `STORGE` (storage), `TRIGER`
+ * (trigger), `CANCLE` (cancel), `PASSWOR` (password), `NOTFACE` (not face),
+ * `AUDDE_CSTATUS` (auddec status — the underscore lands one char early), and
+ * `SMARKLOCK` (smartlock). The same rule holds for the app's parameter names
+ * elsewhere in the SDK — e.g. `NAS_STREAM_SWITHC`, the RTSP publish switch.
+ *
  * Generated file — do not edit by hand.
  */
 

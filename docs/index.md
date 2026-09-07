@@ -2,8 +2,8 @@
 layout: home
 hero:
   name: eufy-sdk
-  text: One client for every eufy device
-  tagline: One typed client for the whole eufy ecosystem — devices, realtime events, and live media.
+  text: One client for every Anker eufy device
+  tagline: One typed client for the whole Anker eufy ecosystem — devices, realtime events, and live media.
   # The suffix names the MODE, not the ink: logo-dark.svg is the white glyph, for a dark
   # background. Same mapping as themeConfig.logo in .vitepress/config.ts — they must agree.
   image:
@@ -47,11 +47,16 @@ Building that integration yourself? Then you're in the right place — start wit
 ## Independent project
 
 eufy-sdk is an independent, unofficial SDK. It is **not affiliated with, endorsed by, or sponsored
-by Anker Innovations or eufy**, and it is not a product of either company — no support, warranty, or
-service commitment here comes from them.
+by Anker Innovations, Anker eufy, or eufy**, and it is not a product of either company — no support,
+warranty, or service commitment here comes from them.
 
-"eufy", "Anker", and the device names and model codes used across these guides are trademarks of
-their respective owners. They appear here only to identify the hardware this SDK talks to.
+"Anker eufy", "eufy", "Anker", and the device names and model codes used across these guides are
+trademarks of their respective owners. They appear here only to identify the hardware this SDK talks
+to.
+
+The vendor now brands the line **Anker eufy**; these guides introduce it that way and then use "eufy"
+as the short form, which is also what the wire and the product names still say — `eufy_security`,
+`eufy_life`, eufyCam, eufy Clean. Protocol vocabulary follows the device, not the marketing.
 
 Use it with devices on your own account. Rapid or failed logins can trigger a captcha or a temporary
 cooldown — see [Troubleshooting](/troubleshooting).

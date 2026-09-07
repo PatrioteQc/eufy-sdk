@@ -110,9 +110,9 @@ export default defineConfig({
     footer: {
       message:
         "Independent and unofficial. Not affiliated with, endorsed by, or sponsored by " +
-        "Anker Innovations or eufy. &quot;eufy&quot; and &quot;Anker&quot; are trademarks of their " +
-        "respective owners. Use responsibly — rapid or failed logins can trigger captcha or " +
-        "temporary cooldowns.",
+        "Anker Innovations, Anker eufy, or eufy. &quot;Anker eufy&quot;, &quot;eufy&quot; and " +
+        "&quot;Anker&quot; are trademarks of their respective owners. Use responsibly — rapid or " +
+        "failed logins can trigger captcha or temporary cooldowns.",
     },
   },
 });

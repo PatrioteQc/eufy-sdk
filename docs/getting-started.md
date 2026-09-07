@@ -3,8 +3,9 @@
 Install, build, log in, list devices.
 
 ::: info Independent and unofficial
-eufy-sdk is not affiliated with, endorsed by, or sponsored by Anker Innovations or eufy. "eufy" and
-"Anker" are trademarks of their respective owners. Use it with devices on your own account.
+eufy-sdk is not affiliated with, endorsed by, or sponsored by Anker Innovations, Anker eufy, or eufy.
+"Anker eufy", "eufy" and "Anker" are trademarks of their respective owners. Use it with devices on
+your own account.
 :::
 
 ## Requirements
@@ -34,7 +35,7 @@ npm run build
 
 ## Connect
 
-The client logs into the eufy "mega" (v6) cloud, keeps a **persistent session**, and models every
+The client logs into the Anker eufy "mega" (v6) cloud, keeps a **persistent session**, and models every
 device as a capability-driven `Device`. `login()` returns a discriminated result — no exceptions for
 the expected captcha / 2FA flow; step through it until authenticated. A restored session resolves
 straight to `LoginStatus.Ok` with no network.
