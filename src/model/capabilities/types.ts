@@ -274,7 +274,7 @@ export interface CommandContext extends AvailabilityContext {
    * Parsed `get_product_data_point` catalog for this device's SKU — present for vacuum/mower devices,
    * absent for all other codecs. Capabilities use it for per-model feature-availability and value-range
    * data (e.g. which suction levels DP 158 admits). Absent means "catalog not fetched" — fall back to
-   * static defaults rather than treating the device as uncapable.
+   * static defaults rather than treating the device as incapable.
    */
   dpCatalog?: DpCatalog;
 }
