@@ -138,7 +138,7 @@ function lastSeenMsOf(paramUpdatedAt: Record<number, number>): number | undefine
  *
  * Derived rather than listed: `codecForType` already owns the DeviceType space and treats camera as the
  * residual bucket, so a newly-released SKU classifies correctly with no edit here. `lock`, `keypad` and
- * `light` collapse to `"other"` because `DeviceClass` is intentionally coarse — a host that needs
+ * `display` collapse to `"other"` because `DeviceClass` is intentionally coarse — a host that needs
  * the precise kind reads the capabilities.
  */
 const CLASS_BY_CODEC: Record<Codec, DeviceClass> = {
@@ -151,6 +151,7 @@ const CLASS_BY_CODEC: Record<Codec, DeviceClass> = {
   keypad: "other",
   light: "light",
   printer: "printer",
+  display: "other",
 };
 
 /**

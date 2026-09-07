@@ -22,6 +22,7 @@ const EXPECTED_LINE: Record<Codec, string> = {
   mower: "clean",
   light: "life",
   printer: "print",
+  display: "security",
 };
 
 /** A name stuffed with trigger words from every line at once — the adversarial case. */
@@ -44,6 +45,20 @@ describe("product-line partition", () => {
       return line !== "any" && line !== EXPECTED_LINE[codec];
     });
     expect(crossed).toEqual([]);
+  });
+
+  it("pins the display codec's actual exposure to a poisoned name, now that its line is security", () => {
+    // The generic it.each above can't catch this: display's line IS security, so a poisoned-name match
+    // against a security capability is no longer a "cross" by that test's own definition. This is the
+    // real, current consequence of that grouping (a maintainer decision, not wire evidence — see
+    // namespaceForCodec's doc comment): six security-line capabilities attach on adversarial name text
+    // alone, none of them reachable (no P2P path exists for this device at all). The real device name
+    // ("Eufy Smart Display" / "Smart Display E10") doesn't trigger any of this — see model.spec.ts's
+    // display test — so it isn't a live problem today. Pinned so the day this SET changes (a security
+    // module's modelHints starts matching different text, or a new one is added) is visible in CI
+    // instead of silently passing, since `crossed` is `[]` either way.
+    const caps = detectCapabilities({ model: "T87A0", category: "eufy_mega", name: POISONED } as never, "display");
+    expect(caps).toEqual(["light", "doorbell", "leak", "smoke", "co", "lock", "info"]);
   });
 
   it("keeps a smart light off the camera-spotlight capability while granting its own", () => {

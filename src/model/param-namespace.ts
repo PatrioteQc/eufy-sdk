@@ -42,6 +42,18 @@ export function paramDef(ns: ParamNamespace, paramType: number): ParamDef | unde
  *
  * `mower` shares the **clean** namespace: it's a Clean-line Tuya-DP device (the app's `TuyaP2PMower`
  * family), so its DPs live in the same `~150-180` space as the vacuums.
+ *
+ * `display` (the T87Ax Smart Display line) is placed in **`security`** by maintainer decision, not wire
+ * evidence — the confirmed transport is secure MQTT with no `p2p_did`, never P2P, and its own params
+ * (8001-8006) don't presently exist in `SECURITY_PARAMS`. Grouping it here means (a) a future security
+ * param assigned in that id range would silently misdecode against this device, and (b) any security
+ * capability whose `modelHints` regex matches this device's reported name/model text becomes
+ * inference-attachable — the exact `T8L20`-as-"Outdoor Spotlights" collision this partition otherwise
+ * guards against, now possible for `display` too. Measured, not hypothetical: with an adversarial name
+ * (see `line-partition.spec.ts`'s `POISONED` case) six security capabilities currently attach this way;
+ * the real device's actual reported name doesn't trigger any of them today (see `model.spec.ts`'s
+ * display test), so this isn't a live problem, only an open door — flagged here so a future reader
+ * doesn't mistake either the grouping or its current quiet outcome for evidence that it's safe.
  */
 const NAMESPACE_BY_CODEC: Record<Codec, ParamNamespace> = {
   station: "security",
@@ -53,6 +65,7 @@ const NAMESPACE_BY_CODEC: Record<Codec, ParamNamespace> = {
   mower: "clean",
   light: "life",
   printer: "print",
+  display: "security",
 };
 
 /** The param namespace a device's ids live in, from its codec, via the module-local `NAMESPACE_BY_CODEC` table. */

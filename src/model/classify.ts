@@ -226,6 +226,13 @@ export function codecFromModel(model: string | undefined): Codec | undefined {
   // precede the generic T8 camera residual below.
   if (/^T8L/.test(m)) return "light";
 
+  // eufy_mega Smart Display line — the T87Ax model prefix (only T87A0 observed so far). The model
+  // code, not the cloud `category` ("eufy_mega"), is the one thing genuinely specific to this
+  // product: `category` is echoed verbatim by `classifyDevice()` in core/types.ts as the residual
+  // bucket for anything that isn't `eufy_security` and has no `p2p_did`, so it may be a broader
+  // Anker-side grouping shared with other, unrelated appliance types this SDK hasn't seen yet.
+  if (/^T87A/.test(m)) return "display";
+
   // Any remaining eufy security T-code is a camera/doorbell/floodlight/etc.
   if (/^T8/.test(m)) return "camera";
 
@@ -248,6 +255,11 @@ export function codecFromModel(model: string | undefined): Codec | undefined {
  * @returns the resolved codec (never `undefined`).
  */
 export function classify(rec: CloudRecord): Codec {
+  // Computed once, referenced by every branch below (`codecFromModel` is a pure function of one
+  // argument) — mower/vacuum/light/display all decide off it before device_type gets a say, and the
+  // final fallback reuses the same value rather than recomputing it.
+  const byModel = codecFromModel(rec.model);
+
   // Vacuum/clean is a SEPARATE ecosystem (Tuya DP, not the security DeviceType space). Decide it
   // FIRST from category/model — otherwise `codecForType`'s camera-residual bucket could swallow a
   // RoboVac whose `device_type` happens to fall in the security range. (`device_type` is not a
@@ -260,21 +272,24 @@ export function classify(rec: CloudRecord): Codec {
   if (rec.category && PRINTER_CATEGORY_RE.test(rec.category)) return "printer";
 
   // Mowers are their own family — decide from the (globally-unique) model code first, before the
-  // clean/vacuum category rules below could claim them.
-  if (codecFromModel(rec.model) === "mower") return "mower";
+  // clean/vacuum category rule right after it could claim them. Can't join the light/display set below:
+  // the category rule has to run between this and the model-based vacuum check.
+  if (byModel === "mower") return "mower";
   if (rec.category && /clean|vacuum|robovac/i.test(rec.category)) return "vacuum";
-  if (codecFromModel(rec.model) === "vacuum") return "vacuum";
+  if (byModel === "vacuum") return "vacuum";
 
-  // eufy_life smart lighting is likewise a separate ecosystem: its `device_type` is namespaced per
-  // product line and can collide with a security type, so decide it from the globally-unique model
-  // code FIRST — otherwise `codecForType`'s camera bucket could swallow a T8L light below.
-  if (codecFromModel(rec.model) === "light") return "light";
+  // eufy_life smart lighting (its `device_type` is namespaced per product line and can collide with a
+  // security type) and the Smart Display (T87A0 — confirmed live 2026-09-04 to connect over secure
+  // MQTT with no `p2p_did`, never P2P, yet its `device_type` 1 falls inside `isKnownSecurityType`'s
+  // residual range) are each decided from the globally-unique model code, not the cloud `category` —
+  // otherwise `codecForType`'s camera bucket could swallow either below. Nothing sits between them
+  // (unlike mower/vacuum above), so one check covers both.
+  if (byModel === "light" || byModel === "display") return byModel;
 
   if (rec.deviceType !== undefined) {
     const byType = codecForType(rec.deviceType);
     if (byType !== undefined) return byType;
   }
-  const byModel = codecFromModel(rec.model);
   if (byModel !== undefined) return byModel;
   return "camera";
 }

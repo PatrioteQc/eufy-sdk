@@ -44,6 +44,35 @@ describe("classify (device_type → codec)", () => {
     expect(classify({ model: "T8L99", deviceType: 9 })).toBe("light");
     expect(resolveDevice({ model: "T8L77" }).capabilities).toContain("smart_light");
   });
+
+  it("maps the T87Ax Smart Display line to display — model wins over a colliding security device_type", () => {
+    // device_type 1 (confirmed live on a T87A0) falls inside the security residual range — the model
+    // code must be checked first, or this would silently resolve to "camera" and pick up capabilities
+    // (camera, person_detection) the device has no P2P path to ever answer for. Decided from the model,
+    // not the cloud `category` ("eufy_mega") — see classify.ts's `T87A` arm for why.
+    expect(classify({ model: "T87A0", deviceType: 1 })).toBe("display");
+    // Shaped like the real captured record (2026-09-04, redacted): `name` matters here because it's
+    // the one field `hintHaystack` feeds into inference — a security capability whose `modelHints`
+    // regex happened to match this text is exactly the risk `display`'s security-line grouping opens
+    // (see `namespaceForCodec`'s doc comment). It doesn't, so the only capability is `info`.
+    const r = resolveDevice({
+      category: "eufy_mega",
+      model: "T87A0",
+      deviceType: 1,
+      name: "Eufy Smart Display",
+      params: {
+        8001: "100",
+        8002: "1",
+        8003: "2.9.05",
+        8004: "T8000P0000000000",
+        8005: "Smart Display E10",
+        8006: "T87A0",
+      },
+    } as never);
+    expect(r.codec).toBe("display");
+    expect(r.name).toBe("Smart Display E10"); // curated registry row
+    expect(r.capabilities).toEqual(["info"]); // no camera-line (or other security-line) capability leaks in
+  });
 });
 
 describe("resolveDevice — 3-tier composition", () => {
