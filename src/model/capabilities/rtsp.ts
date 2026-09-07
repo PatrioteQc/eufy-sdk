@@ -21,7 +21,12 @@ export const RTSP_PARAM = {
    * A SYNTHETIC id: the wire supplies no second id — the URL rides the same 1145 as the publish bool,
    * and {@link STREAM_SWITCH} already owns that — so the string gets its own id here, keeping the two as
    * distinct properties rather than one id read two ways. Never in the cloud record (P2P-notify only), so
-   * it is quarantined in `property-id-integrity`'s `KNOWN_UNLISTED` alongside the other P2P-only reads.
+   * it is quarantined in `property-id-integrity`'s `KNOWN_UNLISTED` — which otherwise holds real-but-unlisted
+   * ids (1612), so its entry for this one says it is not a wire id at all.
+   *
+   * `1145 * 10` is a readable, currently-free number, NOT a reserved allocation — height buys nothing,
+   * the dictionary already holds real ids past 100000. It is the only synthetic id today; if a second is
+   * ever needed, reserve a stated band for them rather than copying this per-site choice.
    */
   STREAM_URL: 11450,
   /**
@@ -130,6 +135,11 @@ function credentialsCommand(mode: number, username: string, password: string, ct
  */
 export const RTSP_MEMBERS = {
   /**
+   * This is DEVICE STATE — "whether the stream is published over RTSP" — not a record of who turned it
+   * on. So it reads true from more than a caller's own `publish()`: {@link RTSP.decodeState} sets it from
+   * the station's URL push (which proves the stream is up) and the cloud poll reports it too. A caller
+   * that needs "did *I* turn it on" tracks its own `publish()` call rather than reading this back.
+   *
    * `provenance` is name-trust: the name is the app's own typo'd constant (`NAS_STREAM_SWITHC`), so it
    * is "apk". The verified live WRITE — both directions, HomeBase and standalone — is in the description.
    */
@@ -152,15 +162,31 @@ export const RTSP_MEMBERS = {
    * regenerate on every publish toggle and the cloud record lags a cycle, so a host adopting a running
    * stream reads its URL from here rather than assembling one or imposing its own.
    *
-   * Arrives ONLY over the P2P notify wire — the station pushes the 1145 frame as a string once the
-   * publish switch is on ({@link publish} is what provokes it) — and never in the cloud record, so it is
-   * absent until a push lands and then reads back like any other state. Read-only: the device reports
-   * it, a caller does not set it. Lifted from the frame by {@link RTSP.decodeState}.
+   * The flat property name is `rtspUrl`, not `url`: property names are a FLAT namespace shared across
+   * every capability (`getProperty`/`setProperty`/`propertyChanged` key on the bare string), so the
+   * generic `url` would claim that word SDK-wide. The fluent read stays `dev.rtsp()?.url` — the member
+   * key qualifies it there.
+   *
+   * **Two evidence bars, split on purpose.** The FRAME SHAPE — 1145 returning as a NUL-terminated
+   * `rtsp://user:pass@host/path` string — was OBSERVED live, so `decodeState` is grounded. The PROVOKE
+   * — that {@link publish} (1145=1) ALONE elicits that push — is INFERRED: the only live capture also
+   * sent `CMD_NAS_TEST` (1146, since removed), so the switch has not been seen to elicit the URL on its
+   * own. If it turns out not to, the URL never populates and the answer is a `MediaProvider` pull, not
+   * this read. Confirming it needs a real device, which this environment does not have.
+   *
+   * `provenance` below is `verified` for the VALUE and its frame — not for the id: {@link STREAM_URL}
+   * is synthetic and the wire never reports it, so no capture could have "verified" the id itself.
+   *
+   * Arrives ONLY over the P2P notify wire and never in the cloud record, so it is absent until a push
+   * lands and then reads back like any other state. Read-only: the device reports it, a caller does not
+   * set it. Lifted from the frame by {@link RTSP.decodeState}.
    */
   url: {
     param: RTSP_PARAM.STREAM_URL,
+    property: "rtspUrl",
     type: "string",
     kind: "text",
+    // `verified` describes the value and its frame (observed live), not the synthetic id — see the note above.
     provenance: "verified",
     description:
       "The device-reported rtsp://user:pass@host/path, with the credentials the device currently " +
@@ -291,8 +317,12 @@ export const RTSP: CapabilityModule = {
    * whose string payload is the full `rtsp://user:pass@host/path`. That is a bare string rather than the
    * `params` array the transport unwraps generically, so without this the URL is announced on the wire
    * and never reaches the {@link RTSP_MEMBERS.url} getter. It is surfaced under {@link RTSP_PARAM.STREAM_URL}
-   * — its own synthetic id — and NOT under 1145: the bool `published` owns that, and re-reporting it here
-   * would make a consumer's "did I turn this on?" bookkeeping read true off a URL push it did not send.
+   * — its own synthetic id, since 1145 is the publish bool's.
+   *
+   * The push ALSO proves the stream is published, so 1145 is set true from it — the device stating its
+   * own state, which is the best evidence of `published` the wire offers and reaches the getter a poll
+   * sooner. See {@link RTSP_MEMBERS.published}: it is device state, not "did I turn it on" — a caller
+   * that needs the latter tracks its own `publish()` call.
    *
    * The channel demux and the capability gate are the caller's (`capabilitiesForFrame` /
    * `serialForFrame`): this runs only for a device that has the `rtsp` capability, on its own channel.
@@ -302,6 +332,8 @@ export const RTSP: CapabilityModule = {
     const text = signal.data.toString("latin1");
     const end = text.indexOf("\0");
     const url = end >= 0 ? text.slice(0, end) : text;
-    return url.startsWith("rtsp://") ? { params: { [RTSP_PARAM.STREAM_URL]: url } } : null;
+    return url.startsWith("rtsp://")
+      ? { params: { [RTSP_PARAM.STREAM_SWITCH]: "1", [RTSP_PARAM.STREAM_URL]: url } }
+      : null;
   },
 };

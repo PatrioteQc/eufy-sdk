@@ -14,7 +14,7 @@ const ctx = {
 describe("rtsp capability module", () => {
   it("declares the capability + schema", () => {
     expect(RTSP.capability).toBe("rtsp");
-    expect(RTSP.properties.map((p) => p.name)).toEqual(["rtspStream", "url", "recordingMode"]);
+    expect(RTSP.properties.map((p) => p.name)).toEqual(["rtspStream", "rtspUrl", "recordingMode"]);
   });
 
   it("owns the publish switch and marks it writable, grounded in a live write", () => {
@@ -131,11 +131,12 @@ describe("rtsp capability module", () => {
     const nulTerminated = (s: string) => Buffer.concat([Buffer.from(s, "latin1"), Buffer.from([0])]);
     const URL = "rtsp://freshuser:freshpass@10.0.0.5/live0";
 
-    it("lifts the pushed rtsp:// string into state under its own synthetic id, not the publish bool", () => {
-      expect(RTSP.decodeState!(frame(nulTerminated(URL)))).toEqual({ params: { [RTSP_PARAM.STREAM_URL]: URL } });
-      // Never re-reports 1145: a URL push the consumer did not send must not flip `published` true and
-      // corrupt its "did I turn this on?" bookkeeping.
-      expect(RTSP.decodeState!(frame(nulTerminated(URL)))!.params[RTSP_PARAM.STREAM_SWITCH]).toBeUndefined();
+    it("lifts the pushed rtsp:// string into state under its synthetic id, and proves published from it", () => {
+      // The push is the device stating it is publishing, so `published` (1145) reads true from it too —
+      // device state, not the consumer's "did I turn it on" (which the consumer tracks itself).
+      expect(RTSP.decodeState!(frame(nulTerminated(URL)))).toEqual({
+        params: { [RTSP_PARAM.STREAM_SWITCH]: "1", [RTSP_PARAM.STREAM_URL]: URL },
+      });
     });
 
     it("reads back through the typed getter once the push has been applied", () => {

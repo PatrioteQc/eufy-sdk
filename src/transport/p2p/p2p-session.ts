@@ -1784,9 +1784,6 @@ export class P2PSession extends EventEmitter {
             : undefined;
       if (reported) frame.params = reported;
     }
-    // The station pushes the RTSP publish switch (1145) BACK as a data frame whose string payload is the
-    // camera's authoritative rtsp://user:pass@host/path. Transport does not name it: the frame flows on
-    // as `data`, and the `rtsp` capability's decodeState lifts the URL into state model-side.
     // CMD_DATABASE_IMAGE reply: { file, content:<base64 image> } → emit decoded bytes.
     if (header.commandId === CMD_DATABASE_IMAGE && frame.json && typeof frame.json.content === "string") {
       try {
