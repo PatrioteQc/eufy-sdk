@@ -1270,19 +1270,6 @@ export class EufyMega extends EventEmitter {
     return this.registry.inspectDevice(sn);
   }
 
-  /**
-   * The device's LIVE, authoritative `rtsp://` URL — host, path, and the credentials it is
-   * enforcing right now — or `undefined` when none is pushed within the read window.
-   *
-   * A thin public door onto the P2P transport (which stays internal otherwise): opens the
-   * station's session on demand, so a viewer adopting a tile can call this directly without one
-   * already existing, and bounds + swallows every failure itself (no route, level-2 not ready, no
-   * push in time) into `undefined` — nothing for this facade method to add.
-   */
-  async reportedRtspUrl(sn: string): Promise<string | undefined> {
-    return this.p2p.readReportedRtspUrl(sn);
-  }
-
   /** Inspect every owned device (the bulk enrichment export). */
   async inspectAllDevices(): Promise<DeviceInspection[]> {
     return this.registry.inspectAllDevices();

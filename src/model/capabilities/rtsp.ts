@@ -2,7 +2,7 @@ import type { Command } from "../../core/contracts.js";
 import { asBool, enumLabels } from "../../core/util.js";
 import { setJson, setPayload, setScalar } from "./access.js";
 import { method, propertiesOf, type Members, type Surface } from "./members.js";
-import type { CapabilityModule, CommandContext } from "./types.js";
+import type { CapabilityModule, CommandContext, DecodedState, InboundSignal } from "./types.js";
 
 /** The state params this capability owns — its OWN vocabulary, used by no other capability. */
 export const RTSP_PARAM = {
@@ -13,6 +13,17 @@ export const RTSP_PARAM = {
    * stream appearing and disappearing on the serving device's RTSP port.
    */
   STREAM_SWITCH: 1145,
+  /**
+   * The camera's authoritative RTSP URL — `rtsp://user:pass@host/path`, with the credentials it is
+   * enforcing right now. The station pushes this back on the 1145 wire as a string data frame after the
+   * publish switch flips; {@link RTSP.decodeState} lifts it into state, read as `dev.rtsp()?.url`.
+   *
+   * A SYNTHETIC id: the wire supplies no second id — the URL rides the same 1145 as the publish bool,
+   * and {@link STREAM_SWITCH} already owns that — so the string gets its own id here, keeping the two as
+   * distinct properties rather than one id read two ways. Never in the cloud record (P2P-notify only), so
+   * it is quarantined in `property-id-integrity`'s `KNOWN_UNLISTED` alongside the other P2P-only reads.
+   */
+  STREAM_URL: 11450,
   /**
    * RTSP credentials + the authentication switch (app `NAS_SEND_SECURITY_PASSWD`). A `SET_PAYLOAD`
    * (1350) envelope: `{cmd:1287, mChannel:<deviceCh>, mValue3:0, payload:{mode, passwd, username}}`.
@@ -136,6 +147,26 @@ export const RTSP_MEMBERS = {
     aliases: { publish: true, withdraw: false },
   },
   /**
+   * The device-reported RTSP URL — the full `rtsp://user:pass@host/path`, carrying the credentials the
+   * device enforces RIGHT NOW. This is the only source of the freshly-generated pair: the credentials
+   * regenerate on every publish toggle and the cloud record lags a cycle, so a host adopting a running
+   * stream reads its URL from here rather than assembling one or imposing its own.
+   *
+   * Arrives ONLY over the P2P notify wire — the station pushes the 1145 frame as a string once the
+   * publish switch is on ({@link publish} is what provokes it) — and never in the cloud record, so it is
+   * absent until a push lands and then reads back like any other state. Read-only: the device reports
+   * it, a caller does not set it. Lifted from the frame by {@link RTSP.decodeState}.
+   */
+  url: {
+    param: RTSP_PARAM.STREAM_URL,
+    type: "string",
+    kind: "text",
+    provenance: "verified",
+    description:
+      "The device-reported rtsp://user:pass@host/path, with the credentials the device currently " +
+      "enforces. P2P-notify only (pushed on the 1145 wire once published); absent until a push lands.",
+  },
+  /**
    * The READ half of a control written by `setRecordingMode` below, hence `writtenElsewhere` — one UI
    * change is TWO frames on the wire (6050 then 6010) and a member's `write` returns a single command,
    * so the pair cannot be a derived setter. 6050 is the half the device reports back, which is why the
@@ -253,4 +284,24 @@ export const RTSP: CapabilityModule = {
   members: RTSP_MEMBERS,
   properties: propertiesOf(RTSP_MEMBERS),
   detection: { evidenceParams: [RTSP_PARAM.STREAM_SWITCH] },
+  /**
+   * Lift the camera's authoritative RTSP URL out of the station's push into state.
+   *
+   * The station answers the publish switch (1145) by pushing the same command id BACK as a data frame
+   * whose string payload is the full `rtsp://user:pass@host/path`. That is a bare string rather than the
+   * `params` array the transport unwraps generically, so without this the URL is announced on the wire
+   * and never reaches the {@link RTSP_MEMBERS.url} getter. It is surfaced under {@link RTSP_PARAM.STREAM_URL}
+   * — its own synthetic id — and NOT under 1145: the bool `published` owns that, and re-reporting it here
+   * would make a consumer's "did I turn this on?" bookkeeping read true off a URL push it did not send.
+   *
+   * The channel demux and the capability gate are the caller's (`capabilitiesForFrame` /
+   * `serialForFrame`): this runs only for a device that has the `rtsp` capability, on its own channel.
+   */
+  decodeState(signal: InboundSignal): DecodedState | null {
+    if (signal.source !== "p2p-frame" || signal.commandId !== RTSP_PARAM.STREAM_SWITCH || !signal.data) return null;
+    const text = signal.data.toString("latin1");
+    const end = text.indexOf("\0");
+    const url = end >= 0 ? text.slice(0, end) : text;
+    return url.startsWith("rtsp://") ? { params: { [RTSP_PARAM.STREAM_URL]: url } } : null;
+  },
 };

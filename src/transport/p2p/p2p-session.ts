@@ -55,7 +55,7 @@ import {
   parseLookupAddr,
   readNullTerminatedString,
 } from "./codec.js";
-import { commandName, CommandType } from "./commands.js";
+import { commandName } from "./commands.js";
 import { traceLiveStart, type LiveTrace } from "./live-trace.js";
 import { noopLogger, type Logger } from "../../core/logger.js";
 
@@ -1784,13 +1784,9 @@ export class P2PSession extends EventEmitter {
             : undefined;
       if (reported) frame.params = reported;
     }
-    // CMD_NAS_SWITCH (1145) is the RTSP publish switch, but the station also pushes it BACK as a data
-    // frame whose string payload is the camera's full authoritative rtsp://user:pass@ip/path — the
-    // credentials it enforces right now, regenerated on every publish toggle (the cloud record lags a
-    // cycle). A host adopting a running stream reads the URL from here; the command router provokes it.
-    if (header.commandId === CommandType.CMD_NAS_SWITCH && text.startsWith("rtsp://")) {
-      this.emit("rtspUrl", { channel: header.channel, url: text });
-    }
+    // The station pushes the RTSP publish switch (1145) BACK as a data frame whose string payload is the
+    // camera's authoritative rtsp://user:pass@host/path. Transport does not name it: the frame flows on
+    // as `data`, and the `rtsp` capability's decodeState lifts the URL into state model-side.
     // CMD_DATABASE_IMAGE reply: { file, content:<base64 image> } → emit decoded bytes.
     if (header.commandId === CMD_DATABASE_IMAGE && frame.json && typeof frame.json.content === "string") {
       try {
