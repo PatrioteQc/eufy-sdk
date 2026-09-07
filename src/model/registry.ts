@@ -172,8 +172,10 @@ export const MODEL_REGISTRY: Readonly<Record<string, RegistryEntry>> = {
   // no printer has been observed on a code yet (rows would guess; the category path already resolves one).
 
   // eufy_mega category — its own `display` codec (classify.ts). Confirmed live (2026-09-04): the
-  // cloud `device_name` self-reports "Smart Display E10" (param 8005 echoes the same string). No
-  // capabilities are curated — no screen/audio/assistant param has been observed yet.
+  // cloud record's top-level `device_name` field held the generic "Eufy Smart Display", while its own
+  // param 8005 separately reported the model's retail name, "Smart Display E10" — curated here since
+  // it's the more specific of the two, not because the two fields agreed. No capabilities are curated —
+  // no screen/audio/assistant param has been observed yet.
   T87A0: { codec: "display", name: "Smart Display E10" },
 };
 
