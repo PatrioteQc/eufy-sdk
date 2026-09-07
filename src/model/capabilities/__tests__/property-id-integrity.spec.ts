@@ -38,6 +38,10 @@ const KNOWN_IDS = new Set<number>([
  */
 const KNOWN_UNLISTED = new Map<number, string>([
   [1612, "motion.testMode — verified on the P2P path only, absent from the cloud record"],
+  [
+    11450,
+    "rtsp.url — the device-reported RTSP URL, a synthetic id (the string rides 1145 inbound, which the publish bool owns); P2P-notify only, never in the cloud record",
+  ],
   // Not the same debt as the guessed ids below. This one is verified — replayed live, and the station
   // reports it back — but it rides the P2P notify path and never appears in the cloud record. The
   // dictionary's `observed` means "seen on a real owned device in the sweep" and the sweep reads that

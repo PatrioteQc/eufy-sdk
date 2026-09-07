@@ -57,6 +57,36 @@ withdraw a publication that another process or the vendor app still expects to r
 After an observed withdrawal, `DESCRIBE` returns 404 until the stream is published again; a consumer
 retry does not ask the SDK to publish it.
 
+### The device-reported URL
+
+Once publication is on, the device reports its own RTSP URL — host, path, and the credentials it is
+enforcing right now:
+
+```ts
+rtsp?.url; // string | undefined — "rtsp://user:pass@host/path", as the device reports it
+```
+
+Point your recorder at that URL unchanged. The credentials in it are regenerated every time
+publication is toggled and the cloud record trails a cycle behind, so an address you assemble
+yourself — or one kept from an earlier cycle — can fail to authenticate against a stream that is
+serving perfectly well.
+
+It arrives on the device's realtime wire and never in the cloud record, which shapes how it reads
+back:
+
+- **Absent until the device pushes it.** `publish()` is what provokes the push, and the read appears
+  shortly after the write resolves rather than with it. Wait for the property; don't read it on the
+  next line.
+- **Announced as a property change** named `rtspUrl` when the value moves. A device re-reporting a
+  byte-identical URL is silent, as every property is — so treat the announcement as "it changed",
+  not as "it was reported".
+- **Not retracted by `withdraw()`.** The last reported URL keeps reading until the cloud is observed
+  to move the publication state, so a URL read after a withdrawal can name credentials the device no
+  longer accepts. `published` is reported on the same wire and goes stale with it.
+- **It carries a live secret.** The password is in the string, so it is also in `deviceState`, in a
+  `propertyChanged` payload, and in anything a host logs from either. Redact it as you would any
+  credential.
+
 ## Three constraints worth knowing up front
 
 **One camera at a time per HomeBase.** A station publishes for a single attached camera. Calling

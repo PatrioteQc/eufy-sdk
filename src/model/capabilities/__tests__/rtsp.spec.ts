@@ -1,7 +1,8 @@
-import type { Command } from "../../../core/contracts.js";
+import type { Command, CommandSink } from "../../../core/contracts.js";
 import { RTSP, RTSP_PARAM, RtspRecordingMode, type RtspActions } from "../rtsp.js";
 import { bind } from "./bind.js";
-import type { CommandContext } from "../types.js";
+import { Device } from "../../device.js";
+import type { CommandContext, InboundSignal } from "../types.js";
 
 const ctx = {
   channel: 2,
@@ -13,7 +14,7 @@ const ctx = {
 describe("rtsp capability module", () => {
   it("declares the capability + schema", () => {
     expect(RTSP.capability).toBe("rtsp");
-    expect(RTSP.properties.map((p) => p.name)).toEqual(["rtspStream", "recordingMode"]);
+    expect(RTSP.properties.map((p) => p.name)).toEqual(["rtspStream", "rtspUrl", "recordingMode"]);
   });
 
   it("owns the publish switch and marks it writable, grounded in a live write", () => {
@@ -122,6 +123,46 @@ describe("rtsp capability module", () => {
 
     const modes = (sent as unknown as { payload: { mode: number } }[]).map((c) => c.payload.mode);
     expect(modes).toEqual([2, 1, 2]);
+  });
+
+  describe("device-reported url (inbound state)", () => {
+    const frame = (data: Buffer, commandId: number = RTSP_PARAM.STREAM_SWITCH) =>
+      ({ source: "p2p-frame", stationSn: "T8000P0000000000", commandId, channel: 2, data }) as InboundSignal;
+    const nulTerminated = (s: string) => Buffer.concat([Buffer.from(s, "latin1"), Buffer.from([0])]);
+    const URL = "rtsp://freshuser:freshpass@10.0.0.5/live0";
+
+    it("lifts the pushed rtsp:// string into state under its synthetic id, and proves published from it", () => {
+      // The push is the device stating it is publishing, so `published` (1145) reads true from it too —
+      // device state, not the consumer's "did I turn it on" (which the consumer tracks itself).
+      expect(RTSP.decodeState!(frame(nulTerminated(URL)))).toEqual({
+        params: { [RTSP_PARAM.STREAM_SWITCH]: "1", [RTSP_PARAM.STREAM_URL]: URL },
+      });
+    });
+
+    it("reads back through the typed getter once the push has been applied", () => {
+      const dev = Device.fromRecord("T8000P0000000000", {
+        deviceType: 0,
+        model: "T8410",
+        category: "eufy_security",
+        params: { [RTSP_PARAM.STREAM_SWITCH]: "0" },
+      });
+      const noopSink: CommandSink = { dispatch: async () => undefined };
+      // Evidence includes the URL's synthetic id, as the inbound push provides it.
+      dev.bindActions(
+        { channel: 2, codec: "camera", paramIds: new Set([RTSP_PARAM.STREAM_SWITCH, RTSP_PARAM.STREAM_URL]) },
+        noopSink,
+      );
+      dev.applyParams(RTSP.decodeState!(frame(nulTerminated(URL)))!.params);
+      expect(dev.rtsp?.()?.url).toBe(URL);
+    });
+
+    it("ignores a 1145 frame that carries no rtsp:// string, and any non-1145 or non-p2p frame", () => {
+      expect(RTSP.decodeState!(frame(nulTerminated("ok")))).toBeNull();
+      expect(RTSP.decodeState!(frame(nulTerminated(URL), 6050))).toBeNull();
+      expect(
+        RTSP.decodeState!({ source: "poll", deviceSn: "x", paramType: 1145, params: {} } as InboundSignal),
+      ).toBeNull();
+    });
   });
 
   describe("recording mode", () => {

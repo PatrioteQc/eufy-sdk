@@ -1,5 +1,11 @@
 import { EventEmitter } from "node:events";
 import { vi } from "vitest";
+import { P2PCommandRouter, type P2PRouterDeps } from "../command-router.js";
+
+/** Synthetic ids shared by the command-router specs — never a real device. */
+export const DEVICE_SN = "T8114P0000000000";
+export const STATION_SN = "T8010P0000000000";
+export const ACCOUNT_ID = "0000000000000000000000000000000000000000";
 
 /**
  * A fake connected `P2PSession`, for the specs that drive `P2PCommandRouter` without a wire.
@@ -40,4 +46,45 @@ export function connectedSession(hasLevel2Key = true): FakeP2PSession {
     return true;
   });
   return session;
+}
+
+/**
+ * A `P2PCommandRouter` wired to one fake station session — the shared harness every command-router
+ * spec needs: the same deps, the same `DEVICE_SN`/`STATION_SN`/`ACCOUNT_ID` device record, and the
+ * manager registration. A spec overrides only what it exercises (a blank account id, a caller that
+ * skips registration to hit the no-session path, or extra deps).
+ */
+export function routerWithSession(
+  session: FakeP2PSession,
+  opts: { accountId?: string; register?: boolean; deps?: Partial<P2PRouterDeps> } = {},
+): P2PCommandRouter {
+  const accountId = opts.accountId ?? ACCOUNT_ID;
+  const deps: P2PRouterDeps = {
+    mega: {} as P2PRouterDeps["mega"],
+    listDevices: () => [
+      {
+        sn: DEVICE_SN,
+        stationSn: STATION_SN,
+        raw: { parent_sn: STATION_SN, device_channel: 1, member: { admin_user_id: accountId } },
+      } as never,
+      // The parent station, listed but endpoint-less: with nothing registered, a cold open fails at
+      // session resolution rather than hanging — which is what `register: false` exercises.
+      { sn: STATION_SN, stationSn: STATION_SN, p2pDid: "", raw: { member: { admin_user_id: accountId } } } as never,
+    ],
+    ensureDevices: async () => {},
+    onConnect: () => {},
+    onClose: () => {},
+    onError: () => {},
+    onLevel2Ready: () => {},
+    onFrame: () => {},
+    ...opts.deps,
+  };
+  const router = new P2PCommandRouter(deps);
+  if (opts.register ?? true) {
+    (router as unknown as { manager: { register(sn: string, value: unknown): void } }).manager.register(
+      STATION_SN,
+      session,
+    );
+  }
+  return router;
 }
