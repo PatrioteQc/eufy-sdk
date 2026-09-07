@@ -3,7 +3,7 @@ import { DeviceType } from "../device-types.js";
 import { WALL_LIGHT_TYPES } from "../device-family.js";
 import { setScalar, setJson, setPayload, describeDevice } from "./access.js";
 import type { CapabilityModule, CapabilityActions, CommandContext } from "./types.js";
-import { propertiesOf, type Members, type Surface } from "./members.js";
+import { propertiesOf, type Members, type Surface, type MemberDeps } from "./members.js";
 import type { Command, CommandSink } from "../../core/contracts.js";
 
 /**
@@ -339,7 +339,7 @@ export const LIGHT: CapabilityModule = {
    * controls. `async` is what turns `switchFrame`'s throw into the rejection a `Promise<void>`
    * caller expects, the same shape the derived setter gets from `bindMembers`.
    */
-  actions(ctx: CommandContext, sink: CommandSink): CapabilityActions {
+  actions({ ctx, sink }: MemberDeps): CapabilityActions {
     const dispatchSwitch = async (on: boolean): Promise<void> => sink.dispatch(switchFrame(on, ctx));
     return {
       on: () => dispatchSwitch(true),

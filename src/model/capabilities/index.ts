@@ -7,7 +7,14 @@
  */
 
 import type { Capability, CloudRecord, Codec, PropertyChange, PropertySpec } from "../types.js";
-import { bindMembers, hasRequiredCapabilities, installs, memberWrite, propertiesOf } from "./members.js";
+import {
+  bindMembers,
+  hasRequiredCapabilities,
+  installs,
+  memberWrite,
+  propertiesOf,
+  type MemberDeps,
+} from "./members.js";
 import { camelCase } from "./access.js";
 import { describeBound, type CapabilityDescriptor } from "./manifest.js";
 import type {
@@ -99,13 +106,11 @@ import type { LeakActions } from "./leak.js";
 import type { SmokeActions } from "./smoke.js";
 import type { CoActions } from "./co.js";
 import type { KeypadActions } from "./keypad.js";
-import type { StorageActions } from "./storage.js";
 import type { RtspActions } from "./rtsp.js";
 import type { VacuumCleanActions } from "./vacuum-clean.js";
 import type { VacuumDockActions } from "./vacuum-dock.js";
 import type { SuctionActions } from "./suction.js";
 import type { LocateActions } from "./locate.js";
-import type { PersonDetectionActions } from "./person-detection.js";
 import type { DeviceInfo } from "./info.js";
 
 /** Every capability module, in a stable order (governs `mergeProperties`/`buildCommand` precedence). */
@@ -766,8 +771,6 @@ export interface DeviceActionMap {
   co: CoActions;
   /** Security-keypad reads (read-only): `rssi`. */
   keypad: KeypadActions;
-  /** Local-storage reads (read-only): `sdCard`, `free`, `total`. */
-  storage: StorageActions;
   /** RTSP publish for a NAS/NVR: `publish`/`withdraw` + `published`, `requireAuth`/`allowAnonymous`, `recordingMode`/`setRecordingMode`. One camera at a time per station. */
   rtsp: RtspActions;
   /** RoboVac core state and controls: `power`, `activity` (WorkStatus), `volume`, `battery`, `cleanType`; `setPower`, `startCleaning`, `returnToDock`, `pauseCleaning`. */
@@ -778,8 +781,6 @@ export interface DeviceActionMap {
   suction: SuctionActions;
   /** RoboVac locate (find-robot beep): `locating`; `locate(on?)`. */
   locate: LocateActions;
-  /** Person-detection reads (read-only): `detectionEnabled`, `detected`. */
-  personDetection: PersonDetectionActions;
   /** Identity metadata (read-only): `{ manufacturer, model, serialNumber, name, deviceType?, firmwareVersion?, hardwareVersion? }` for a host's device registry / device-info surface. */
   info: DeviceInfo;
 }
@@ -844,27 +845,14 @@ export function hasProvidedAction(capabilities: ReadonlySet<Capability>, action:
  * {@link CapabilityModule.actions}'s doc before adding another.
  * @internal
  */
-export function buildActions(
-  caps: readonly Capability[],
-  ctx: CommandContext,
-  sink: CommandSink,
-  media?: MediaProvider,
-  ff09Settings?: Ff09SettingsReader,
-  rawDp?: RawDpCodec,
-  read?: CapabilityStateReader,
-): Partial<DeviceActionMap> {
+export function buildActions(caps: readonly Capability[], deps: MemberDeps): Partial<DeviceActionMap> {
   const out: Record<string, CapabilityActions> = {};
   const capSet = new Set(caps);
   for (const m of MODULES) {
     if ((!m.actions && !m.members) || !capSet.has(m.capability)) continue;
-    const acts = (m.actions ? m.actions(ctx, sink, media, ff09Settings, read) : {}) as CapabilityActions;
+    const acts = (m.actions ? m.actions(deps) : {}) as CapabilityActions;
     if (m.members) {
-      Object.defineProperties(
-        acts,
-        Object.getOwnPropertyDescriptors(
-          bindMembers(m.members, ctx, sink, (name) => read?.(name), media, rawDp, ff09Settings),
-        ),
-      );
+      Object.defineProperties(acts, Object.getOwnPropertyDescriptors(bindMembers(m.members, deps)));
     }
     out[camelCase(m.capability)] = acts;
   }
@@ -1014,12 +1002,10 @@ export type {
   SmokeActions,
   CoActions,
   KeypadActions,
-  StorageActions,
   RtspActions,
   VacuumCleanActions,
   SuctionActions,
   LocateActions,
-  PersonDetectionActions,
 };
 /**
  * The member table each `*Actions` type is DERIVED from (`LockActions = Surface<typeof LOCK_MEMBERS>`),
@@ -1043,13 +1029,11 @@ export { LIGHT_MEMBERS } from "./light.js";
 export { LOCATE_MEMBERS } from "./locate.js";
 export { LOCK_MEMBERS } from "./lock.js";
 export { MOTION_MEMBERS } from "./motion.js";
-export { PERSON_DETECTION_MEMBERS } from "./person-detection.js";
 export { PTZ_MEMBERS } from "./ptz.js";
 export { RTSP_MEMBERS } from "./rtsp.js";
 export { SIREN_MEMBERS } from "./siren.js";
 export { SMART_LIGHT_MEMBERS } from "./smart-light.js";
 export { SMOKE_MEMBERS } from "./smoke.js";
-export { STORAGE_MEMBERS } from "./storage.js";
 export { SUCTION_MEMBERS } from "./suction.js";
 export { VACUUM_CLEAN_MEMBERS } from "./vacuum-clean.js";
 // The read-only identity metadata object returned by `dev.info()` — a public consumer type.

@@ -3,7 +3,7 @@ import { DeviceType } from "../device-types.js";
 import { isIndoorCamera, isIndoorCamMini, isIndoorPanTiltS350, isOutdoorPanTilt } from "../device-family.js";
 import { setScalar, setPayload, hasCapability } from "./access.js";
 import { AUDIO_CMD } from "./audio.js";
-import { accepts, propertiesOf, provided, type Members, type Surface } from "./members.js";
+import { accepts, propertiesOf, provided, type Members, type Surface, type MemberDeps } from "./members.js";
 import type { CapabilityModule, CapabilityActions, CommandContext } from "./types.js";
 import { CameraDisabledError, type Command, type CommandSink, type MediaProvider } from "../../core/contracts.js";
 
@@ -613,7 +613,7 @@ export const CAMERA: CapabilityModule = {
   /** Every camera-codec device has the power/privacy surface. */
   detection: { codecs: ["camera"] },
   /** Only the no-argument power verbs, which carry no value for a member to hold. */
-  actions(ctx: CommandContext, sink: CommandSink): CapabilityActions {
+  actions({ ctx, sink }: MemberDeps): CapabilityActions {
     return {
       on: () => sink.dispatch(powerCommand(true, ctx)),
       off: () => sink.dispatch(powerCommand(false, ctx)),

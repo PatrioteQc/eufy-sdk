@@ -17,7 +17,7 @@ import type { DpCatalog } from "./dp-catalog.js";
  */
 
 import type { Capability, Codec, CloudRecord, ParamValue, PropertySpec, PropertyValue, ValueKind } from "../types.js";
-import type { Members } from "./members.js";
+import type { Members, MemberDeps } from "./members.js";
 // The transport boundary contract lives in core/ — imported by BOTH the capability layer (which
 // produces intent) and the transport layer (which consumes it), so neither imports the other.
 // Capability modules import Command/CommandSink/MediaProvider/ScalarForm straight from core/contracts.
@@ -482,13 +482,7 @@ export interface CapabilityModule {
    * needing a live read is one more method on {@link Ff09SettingsReader}; a genuinely different wire
    * family is its own provider, not another parameter bolted on next to this one.
    */
-  actions?(
-    ctx: CommandContext,
-    sink: CommandSink,
-    media?: MediaProvider,
-    ff09Settings?: Ff09SettingsReader,
-    read?: CapabilityStateReader,
-  ): CapabilityActions;
+  actions?(deps: MemberDeps): CapabilityActions;
   /**
    * The capability's surface, one entry per feature — the schema, the getters, the setters, the intent
    * routes and the descriptions all derived from it. See `./members.ts`.

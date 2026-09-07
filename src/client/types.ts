@@ -155,8 +155,8 @@ export interface EufyMegaOptions extends MegaClientConfig {
    */
   prewarmTiers?: PowerTier[];
   /**
-   * ffmpeg's own `-loglevel` for the media paths that shell out to it (live snapshot / record / WebRTC
-   * container). Default `"error"` (quiet). Raise it (e.g. `"trace"`) to diagnose a failing decode/mux;
+   * ffmpeg's own `-loglevel` for the media paths that shell out to it (live snapshot / record).
+   * Default `"error"` (quiet). Raise it (e.g. `"trace"`) to diagnose a failing decode/mux;
    * ffmpeg's stderr is then forwarded to the {@link EufyMegaOptions.logger} as `[ffmpeg]` debug lines
    * — so you also need a `logger` that shows `debug`. Independent of the SDK's own log level.
    */
@@ -171,8 +171,8 @@ export interface EufyMegaOptions extends MegaClientConfig {
    */
   tuyaAllowUnverified?: boolean;
   /**
-   * The `ffmpeg` executable the media paths that shell out should run (live snapshot / record / WebRTC
-   * container). Default: the bare name `"ffmpeg"`, looked up on `PATH`.
+   * The `ffmpeg` executable the media paths that shell out should run (live snapshot / record).
+   * Default: the bare name `"ffmpeg"`, looked up on `PATH`.
    *
    * Set it when the host ships or manages its own build — an absolute path is resolved without any
    * `PATH` lookup, so those paths work on a host that has no system ffmpeg at all. The SDK never

@@ -98,11 +98,6 @@ export function decryptBody(b64: string, shareKeyHex: string): Buffer {
   return Buffer.concat([decipher.update(raw.subarray(16)), decipher.final()]);
 }
 
-/** {@link decryptBody} + `JSON.parse` — decrypt an algo_ecdh body and parse it as JSON. */
-export function decryptJson<T = unknown>(b64: string, shareKeyHex: string): T {
-  return JSON.parse(decryptBody(b64, shareKeyHex).toString("utf-8")) as T;
-}
-
 /**
  * x-signature = HMAC-SHA256(signKey(shareKey), [ts, once, encBody?].join("+")).
  * `encBody` is the ENCRYPTED body actually sent; omit for empty-body requests.

@@ -11,7 +11,7 @@ Setup, the dev workflow and the PR process are in [CONTRIBUTING.md](./CONTRIBUTI
 - **TypeScript** (strict), `module`/`moduleResolution` **nodenext**, `"type": "module"` → **ESM emit**
   (explicit `.js` import specifiers), target ES2024, `dist/` output. No framework.
 - **Node.js ≥ 24.5.0** required (see `.nvmrc`), not just recommended.
-- Runtime deps: **mqtt, protobufjs, werift, jpeg-js** — that's all. HTTP is native `fetch`, hashing and ciphers
+- Runtime deps: **mqtt, protobufjs, jpeg-js** — that's all. HTTP is native `fetch`, hashing and ciphers
   are `node:crypto`, 64-bit integers are `BigInt`.
 - Tests: **Vitest** (esbuild type-strip, specs run as real ESM). Type safety is `tsc`'s job via
   `npm run typecheck`, not the test runner's. Formatting: Prettier. No linter.
@@ -27,7 +27,7 @@ one above it.
    boundary vocabulary (`Command`, `CommandSink`, `MediaProvider`, …) — the one thing genuinely shared
    across layers, which is why it lives here. Plus crypto, value types, session store, utilities. **No
    wire-identifier constants:** model and transport use disjoint id subsets, so each owns its own.
-2. **`transport/{http,mqtt,p2p,push,webrtc}/`** — every byte-on-a-wire module, one folder and barrel
+2. **`transport/{http,mqtt,p2p,push,tuya}/`** — every byte-on-a-wire module, one folder and barrel
    each. Owns sessions, frame codecs, encryption, and the wire ids it issues. A new transport goes
    here. Imports `core/` only.
 3. **`model/`** — the device domain: `Device`, classification, and one self-contained module per

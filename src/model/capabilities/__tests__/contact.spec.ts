@@ -23,13 +23,6 @@ describe("contact capability module", () => {
     ]);
   });
 
-  it("every property has a string name + numeric paramType", () => {
-    for (const p of CONTACT.properties) {
-      expect(typeof p.name).toBe("string");
-      expect(typeof p.paramType).toBe("number");
-    }
-  });
-
   it("proves contact via the entry-sensor contact param 1550", () => {
     expect(CONTACT.detection?.evidenceParams).toContain(1550);
   });

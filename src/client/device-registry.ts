@@ -618,14 +618,6 @@ export class DeviceRegistry {
     return inspectParams(await this.record(sn), sn);
   }
 
-  /** Inspect every owned device (the bulk enrichment export). */
-  async inspectAllDevices(): Promise<DeviceInspection[]> {
-    if (!this.devices.length) await this.getDevices();
-    const out: DeviceInspection[] = [];
-    for (const d of this.devices) out.push(await this.inspectDevice(d.sn));
-    return out;
-  }
-
   /**
    * The serial of the device a P2P frame belongs to, resolved by the same `(station, channel)` pair
    * as {@link capabilitiesForFrame} — the identity half of the same question.

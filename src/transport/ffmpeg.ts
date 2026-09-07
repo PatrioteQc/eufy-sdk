@@ -2,7 +2,7 @@
  * Shared `ffmpeg` spawn helper — the ONE place that shells out to ffmpeg. It decides ffmpeg's own
  * verbosity, prepends the common flags, and routes stderr into the SDK's {@link Logger}, so no caller
  * touches `spawn("ffmpeg", …)` directly. Used by the media paths that mux via ffmpeg (`p2p/media.ts`
- * snapshot/record, `webrtc/peer.ts` container). Not byte-on-a-wire, so it sits at the transport root
+ * snapshot/record). Not byte-on-a-wire, so it sits at the transport root
  * rather than in a wire subfolder.
  *
  * Two independent dials:

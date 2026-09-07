@@ -292,9 +292,14 @@ export class Device {
     ff09Settings?: Ff09SettingsReader,
     rawDp?: RawDpCodec,
   ): void {
-    this.actionMap = buildActions(this.capabilities, ctx, sink, media, ff09Settings, rawDp, (name) =>
-      this.getProperty(name),
-    );
+    this.actionMap = buildActions(this.capabilities, {
+      ctx,
+      sink,
+      read: (name) => this.getProperty(name),
+      media,
+      ff09Settings,
+      rawDp,
+    });
     this.bound = true;
   }
 

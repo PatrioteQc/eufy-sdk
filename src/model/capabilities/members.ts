@@ -306,6 +306,11 @@ export interface MemberDeps {
    * already-open stream with no provider at all, and only needs one to open a stream itself.
    */
   media?: MediaProvider;
+  /**
+   * The `ff09` settings reader, when the device is bound to one. Named for the frame family it reads,
+   * so any device driven by that frame can use it — see {@link Ff09SettingsReader}.
+   */
+  ff09Settings?: Ff09SettingsReader;
 }
 
 /**
@@ -880,23 +885,15 @@ export function installs(
  * A getter is skipped for a `writeOnly` or `unexposed` member, and a setter for an `unverified` one —
  * declared so the capability documents the device, never installed.
  */
-export function bindMembers<M extends Members>(
-  members: M,
-  ctx: CommandContext,
-  sink: CommandSink,
-  read: CapabilityStateReader,
-  media?: MediaProvider,
-  rawDp?: RawDpCodec,
-  ff09Settings?: Ff09SettingsReader,
-): Surface<M> {
+export function bindMembers<M extends Members>(members: M, deps: MemberDeps): Surface<M> {
+  const { ctx, sink, read, rawDp } = deps;
   const out: Record<string, unknown> = {};
   const unobservable: string[] = [];
   const unreflected: string[] = [];
-  const deps: MemberDeps = { ctx, sink, read, rawDp, media };
   for (const [name, m] of Object.entries(members)) {
     if ("provided" in m) {
       if (!hasRequiredCapabilities(m, ctx.capabilities)) continue;
-      const provider = m.needs === "media" ? media : ff09Settings;
+      const provider = deps[m.needs];
       if (!provider) continue;
       const built = (m.provided as (p: unknown, d: MemberDeps) => unknown)(provider, deps);
       if (typeof built === "function") out[name] = describe(m.description, built, m);

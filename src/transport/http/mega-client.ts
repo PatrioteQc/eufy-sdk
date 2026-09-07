@@ -774,9 +774,9 @@ export class MegaHttpClient {
   }
 
   /**
-   * Generic authed escape hatch for scripts/experiments: a signed POST to
-   * `app-{service}-{region}.eufy.com{path}` with an arbitrary body. Use the typed wrappers
-   * above in SDK code; this exists so tooling can probe endpoints / body shapes live.
+   * Generic authed signed POST to `app-{service}-{region}.eufy.com{path}` with an arbitrary body.
+   * Prefer the typed wrappers above; this is what a caller reaches for on an endpoint that has none
+   * yet — {@link fetchLightCatalog} drives the `things` service through it.
    */
   request<T = unknown>(service: string, path: string, body: unknown = {}): Promise<T> {
     return this.post<T>(service, path, body);
@@ -852,32 +852,11 @@ export class MegaHttpClient {
    * The `*.eufylife.com` gateway uses a SEPARATE ecdh key from the mega `*.eufy.com` gateway
    * (own bootstrap localKey `118c12c8…`, own `/v3/openapi/oauth/key/exchange` path, and data
    * calls want `Content-Type: text/plain`). {@link ensureSessionKey} now keeps a PER-HOST key
-   * for eufylife hosts and exchanges against the eufylife host, so `getFaces()`/`getCiphers()`
-   * work (the old HTTP 463 is fixed). Note `getFaces` returns an empty roster for accounts whose
-   * faces live on the HomeBase — use the P2P path for the real roster.
+   * for eufylife hosts and exchanges against the eufylife host, so `getCiphers()`
+   * works (the old HTTP 463 is fixed).
    */
-  async securityAppPost<T = any>(path: string, body: Record<string, unknown> = {}): Promise<T> {
+  private async securityAppPost<T = any>(path: string, body: Record<string, unknown> = {}): Promise<T> {
     return this.postSigned<T>(this.securityAppHost(), path, body, true);
-  }
-
-  /**
-   * List the account's enrolled AI faces (the recognition roster). Each entry is
-   * keyed by `ai_user_id` — the id that shows up as `person_id` on an
-   * `IDENTITY_PERSON_DETECTION` push, so this is the lookup table for naming a
-   * recognised person. Endpoint: `/v3/aiassis/get_faces` on the security-app host.
-   */
-  async getFaces(opts: { aiGroupId?: number; num?: number; page?: number } = {}): Promise<any> {
-    return this.securityAppPost("/v3/aiassis/get_faces", {
-      ai_group_id: opts.aiGroupId ?? 0,
-      num: opts.num ?? 2000,
-      page: opts.page ?? 0,
-      orderby: "-ai_user_id",
-    });
-  }
-
-  /** Resolve specific AI face ids (e.g. a push `person_id`) → face records. */
-  async getFacesByIds(aiUserIds: number[]): Promise<any> {
-    return this.securityAppPost("/v3/aiassis/get_faces_by_ids", { ai_user_ids: aiUserIds });
   }
 
   /**

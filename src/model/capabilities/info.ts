@@ -1,4 +1,5 @@
 import type { CapabilityActions, CapabilityModule, CommandContext } from "./types.js";
+import type { MemberDeps } from "./members.js";
 
 /**
  * `info` — per-device identity metadata for a host's device registry / device-info surface.
@@ -78,7 +79,7 @@ export const INFO: CapabilityModule = {
   // the returned value IS a `DeviceInfo` at runtime. The shared `CapabilityActions` base models
   // method-bags (control capabilities), not data objects — so we assert here, in the one data
   // capability, rather than widen that base (and lose call-safety) for every control module.
-  actions(ctx: CommandContext): CapabilityActions {
+  actions({ ctx }: MemberDeps): CapabilityActions {
     return buildDeviceInfo(ctx) as unknown as CapabilityActions;
   },
 };

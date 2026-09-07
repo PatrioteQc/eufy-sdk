@@ -7,7 +7,7 @@ import type {
   CapabilityActions,
 } from "./types.js";
 import type { Command, CommandSink } from "../../core/contracts.js";
-import { method, propertiesOf, type Members, type Surface } from "./members.js";
+import { method, propertiesOf, type Members, type Surface, type MemberDeps } from "./members.js";
 import { asBool, clamp } from "../../core/util.js";
 
 /**
@@ -503,7 +503,7 @@ export const SMART_LIGHT: CapabilityModule = {
     };
   },
   /** Only the no-argument power verbs, which carry no value for a member to hold. */
-  actions(_ctx: CommandContext, sink: CommandSink): CapabilityActions {
+  actions({ sink }: MemberDeps): CapabilityActions {
     return {
       on: () => sink.dispatch(deviceInfoCommand({ isOn: true })),
       off: () => sink.dispatch(deviceInfoCommand({ isOn: false })),

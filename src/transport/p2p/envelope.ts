@@ -5,8 +5,8 @@
  * capability never names an envelope, and the router never names a feature (it forwards `cmd.param`
  * opaquely), so `model/` and `transport/` share no command vocabulary and neither imports the other.
  *
- * The full 541-entry id→name catalog + `commandName()` lookup live in the generated
- * `./commands.ts`; only the handful the router drives directly are named here.
+ * The full id→name catalog ({@link CommandType}) + `commandName()` lookup live in `./commands.ts`;
+ * only the handful the router drives directly are named here.
  */
 export const P2P_ENVELOPE = {
   /** SET_PAYLOAD wrapper — `{account_id,cmd,mChannel,mValue3,payload}` envelope. */

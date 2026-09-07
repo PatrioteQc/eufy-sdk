@@ -301,26 +301,6 @@ export function buildCommandHeader(
   return Buffer.concat([dataTypeHeader, seq, Buffer.from(MAGIC_WORD), cmd]);
 }
 
-/**
- * 14-byte **int** command body — the legacy P2P `buildIntCommandPayload`. Carries a `value` (uint32 LE)
- * AND a `channel` byte. For `CMD_START_REALTIME_MEDIA` (1003) the **value IS the channel**, which is
- * the camera selector on a multi-camera HomeBase (a void/zero value makes the station default to
- * channel 0). `encType` 0 = plaintext (1003). Layout:
- * `len=4(u16) ‖ 0000 ‖ magic 0100 ‖ [channel, encType] ‖ 0000 ‖ value(u32 LE)`.
- */
-export function buildIntCommandPayload(value: number, channel = 255, encType = 0): Buffer {
-  const v = Buffer.allocUnsafe(4);
-  v.writeUInt32LE(value >>> 0, 0);
-  return Buffer.concat([
-    Buffer.from([0x04, 0x00]),
-    Buffer.from([0x00, 0x00]),
-    Buffer.from([0x01, 0x00]),
-    Buffer.from([channel & 0xff, encType & 0xff]),
-    Buffer.from([0x00, 0x00]),
-    v,
-  ]);
-}
-
 /** 10-byte empty command body for the given channel (used by CMD_GATEWAYINFO etc.). */
 export function buildVoidCommandPayload(channel = 255): Buffer {
   return Buffer.concat([

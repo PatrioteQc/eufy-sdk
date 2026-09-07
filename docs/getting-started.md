@@ -12,7 +12,7 @@ your own account.
 
 - **Node.js ≥ 24.5.0** — the client uses `node --env-file` and native fetch-era APIs, and needs the
   OpenSSL 3.5.1 that 24.5.0 bundles to decode E2E camera video. See `.nvmrc`.
-- **Runtime dependencies — four:** `mqtt`, `protobufjs`, `werift`, and `jpeg-js` (a pure-JS,
+- **Runtime dependencies — three:** `mqtt`, `protobufjs`, and `jpeg-js` (a pure-JS,
   zero-transitive-dependency, BSD-3-Clause baseline JPEG codec — required to reconstruct v2 push
   thumbnails, which must be decoded and re-encoded; there is no Node built-in JPEG codec). Everything
   else is Node built-ins (`fetch`, `node:crypto`, `BigInt`). `jpeg-js` is synchronous: reconstructing a
@@ -20,8 +20,7 @@ your own account.
   finishes. The synthetic 176×144 and 264×200 fixtures each took about one second on one Node 24 test
   host; timing varies by image and hardware.
 - **`ffmpeg` — optional.** Needed only for the convenience decode/mux sinks: JPEG
-  `snapshotLive()`, the one-shot `record(seconds)` buffer, and WebRTC container output (`.mp4`/`.mkv`;
-  falls back to raw when absent). The core paths — `live()`, `openReadable()`, `recordFragments()`
+  `snapshotLive()` and the one-shot `record(seconds)` buffer. The core paths — `live()`, `openReadable()`, `recordFragments()`
   (CMAF fMP4), and the passive stored `snapshotStored()` — need no ffmpeg. Resolved on `PATH` by
   default; a host that ships or manages its own build names it with `new EufyMega({ ffmpegPath })`
   instead of editing `PATH`, and `ffmpegAvailable(ffmpegPath)` answers whether that one is runnable.

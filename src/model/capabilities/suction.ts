@@ -1,7 +1,7 @@
 import type { AvailabilityContext, CapabilityModule, CapabilityActions, CommandContext } from "./types.js";
 import { asBool, enumLabels } from "../../core/util.js";
 import { pickDpParams, aiotDp } from "./access.js";
-import { propertiesOf, type Members, type Surface } from "./members.js";
+import { propertiesOf, type Members, type Surface, type MemberDeps } from "./members.js";
 import { isAiotVacuum } from "../device-family.js";
 
 /**
@@ -147,7 +147,7 @@ export const SUCTION: CapabilityModule = {
    * installed on AIoT devices (gated by `available: isAiotVacuum` on the `level` entry), so
    * `supportedLevels` is harmless data on a non-AIoT device.
    */
-  actions(ctx: CommandContext): CapabilityActions {
+  actions({ ctx }: MemberDeps): CapabilityActions {
     const catalogRange = ctx.dpCatalog?.enumRanges.get(SUCTION_DP.SUCTION);
     const supportedLevels = catalogRange?.filter((v): v is SuctionLevelValue => v in SUCTION_LABEL);
     return { supportedLevels } as unknown as CapabilityActions;

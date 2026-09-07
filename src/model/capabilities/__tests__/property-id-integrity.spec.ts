@@ -81,6 +81,18 @@ const KNOWN_CROSS_OWNER = new Set<number>([1207]);
 type Mod = CapabilityModule & { line?: string };
 
 describe("property id integrity (cross-module)", () => {
+  it("every property of every module has a string name + numeric paramType", () => {
+    const offenders: string[] = [];
+    for (const [cap, m] of Object.entries(CAPABILITY_MODULES)) {
+      for (const p of (m as Mod).properties ?? []) {
+        if (typeof p.name !== "string" || typeof p.paramType !== "number") {
+          offenders.push(`${cap}.${String(p.name)} → ${String(p.paramType)}`);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
   it("every property paramType is in a param dictionary (or explicitly quarantined as debt)", () => {
     const offenders: string[] = [];
     for (const [cap, m] of Object.entries(CAPABILITY_MODULES)) {

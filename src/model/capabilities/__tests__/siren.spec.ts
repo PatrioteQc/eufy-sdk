@@ -29,13 +29,6 @@ describe("siren capability module", () => {
     ]);
   });
 
-  it("every property has a string name + numeric paramType", () => {
-    for (const p of SIREN.properties) {
-      expect(typeof p.name).toBe("string");
-      expect(typeof p.paramType).toBe("number");
-    }
-  });
-
   it("pins the exact ids a real siren reports — a fabricated id must fail here", () => {
     const ids = SIREN.properties.map((p) => p.paramType);
     expect(ids).toEqual([61008, 1825, 61006, 1828, 1281]);
@@ -440,20 +433,16 @@ describe("siren capability module", () => {
     },
   ])("propagates transport rejection without fabricating active state", async (context) => {
     const attempted: Command[] = [];
-    const actions = buildActions(
-      ["siren"],
-      context,
-      {
+    const actions = buildActions(["siren"], {
+      ctx: context,
+      sink: {
         dispatch: async (command) => {
           attempted.push(command);
           throw new Error("transport failed");
         },
       },
-      undefined,
-      undefined,
-      undefined,
-      () => undefined,
-    ).siren as SirenActions;
+      read: () => undefined,
+    }).siren as SirenActions;
 
     await expect(actions.trigger!(10)).rejects.toThrow(/transport failed/);
     await expect(actions.stop!()).rejects.toThrow(/transport failed/);

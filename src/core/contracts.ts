@@ -655,47 +655,6 @@ export interface LiveStreamConsumer extends LiveStreamHandle {
   on(event: "unacknowledged", listener: () => void): this;
 }
 
-/** An SDP session description crossing the WebRTC signaling boundary (JSEP shape). */
-export interface WebRTCSessionDescription {
-  type: "offer" | "answer";
-  sdp: string;
-}
-
-/** A trickle-ICE candidate crossing the WebRTC signaling boundary (JSEP shape). */
-export interface WebRTCIceCandidate {
-  /** The `candidate:` attribute value (without the `a=` prefix). */
-  candidate: string;
-  /** Media-stream identification tag of the m-section this candidate belongs to. */
-  sdpMid?: string;
-  /** Index of the m-section this candidate belongs to. */
-  sdpMLineIndex?: number;
-}
-
-/**
- * Engine-free structural surface of a WebRTC peer — a STRUCTURAL subset of the concrete
- * `transport/webrtc` peer, so the WebRTC boundary lives in core WITHOUT dragging the engine
- * (`werift`) type surface (`RTCPeerConnection`, `MediaStreamTrack`, `RtpPacket`, …) into the public
- * `.d.ts`. Signaling in / media out (to a file / a plain callback); no engine handle is exposed.
- * The engine is lazy-loaded only when a concrete peer is constructed, so a host that never opens a
- * WebRTC stream never pays the WebRTC engine's import cost.
- */
-export interface WebRTCPeerHandle {
-  /** Build the SDP offer (app-as-offerer flow: recv-only video + audio). */
-  createOffer(): Promise<WebRTCSessionDescription>;
-  /** Apply the remote description (the camera's answer, or its offer in the camera-as-offerer flow). */
-  setRemoteDescription(sdp: string, type: "offer" | "answer"): Promise<void>;
-  /** Build the SDP answer (camera-as-offerer flow). */
-  createAnswer(): Promise<WebRTCSessionDescription>;
-  /** Add a remote trickle-ICE candidate. */
-  addRemoteCandidate(candidate: WebRTCIceCandidate): Promise<void>;
-  /** Tear down the peer and flush any file/muxer sink. */
-  close(): Promise<void>;
-  /** Called for each locally-gathered ICE candidate (trickle) — wire to your signaling layer. */
-  onLocalCandidate?: (candidate: WebRTCIceCandidate) => void;
-  /** Called when the peer-connection state changes (plain string, no engine type). */
-  onConnectionStateChange?: (state: string) => void;
-}
-
 /**
  * What a media call tells the shared pull it may be the one to OPEN.
  *

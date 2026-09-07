@@ -248,13 +248,8 @@ export class PushClient extends EventEmitter {
       payload: data.payload ?? data,
     };
     this.emit("message", raw);
-    const event = this.normalize(raw);
+    const event = normalizePushEvent(raw);
     if (event) this.emit("push", event);
-  }
-
-  /** Flatten the eufy envelope (whose inner `payload` is often a JSON string). */
-  private normalize(raw: RawPushMessage): PushEvent | undefined {
-    return normalizePushEvent(raw);
   }
 
   private startHeartbeat(): void {

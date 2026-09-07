@@ -1,3 +1,4 @@
+import { setTimeout as sleep } from "node:timers/promises";
 import { asBool, coerceEnumValue, enumLabels } from "../../core/util.js";
 import { DoorbellPushEvent } from "../push-events.js";
 import { setPayload, setScalar } from "./access.js";
@@ -136,8 +137,6 @@ export function parseQuickResponses(
     };
   });
 }
-
-const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 /**
  * `doorbell` — chime / ringtone configuration. CONFIRMED against a real Video Doorbell (T8214):

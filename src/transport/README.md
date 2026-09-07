@@ -1,7 +1,7 @@
 # transport/ — wire layer
 
 **Owns:** every cloud/realtime transport — HTTP (mega algo_ecdh), secure MQTT, P2P (PPCS),
-FCM push, WebRTC. All frame encoding/decoding, encryption levels, sockets, sessions. THE only
+FCM push, Tuya. All frame encoding/decoding, encryption levels, sockets, sessions. THE only
 place that builds bytes on a wire.
 
 **Invariant:** transports emit/accept transport-neutral data (a `Command`, a raw frame, a
@@ -42,8 +42,8 @@ barrel. Full pattern: root `CLAUDE.md`, "How the two layers DO talk".
 **Imports:** `../core` only (the shared `contracts` boundary). NEVER `../model` or `../client` (would
 invert the layering) — enforced in CI, no exceptions.
 
-**Surface:** each subfolder's `index.ts` barrel; the `transport/index.ts` aggregate (webrtc +
-p2pCodec namespaced for generic names). This layer owns the wire ids it actually issues: the P2P
+**Surface:** each subfolder's `index.ts` barrel; the `transport/index.ts` aggregate (tuya namespaced
+for generic names). This layer owns the wire ids it actually issues: the P2P
 router's envelope/routing ids (`P2P_ENVELOPE` in `p2p/envelope.ts`) and the MCS framing tags
 (`MessageTag` in `push/message-tags.ts`). The capability layer's feature ids (per-capability
 `CAMERA_CMD` / `LIGHT_CMD` / …), state param ids (`BATTERY_PARAM`), and push-event _semantics_ live in

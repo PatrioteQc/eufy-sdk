@@ -1,7 +1,7 @@
 import { asBool } from "../../core/util.js";
 import { CusPushEvent, DoorbellPushEvent, HB3PairedDevicePushEvent, IndoorPushEvent } from "../push-events.js";
 import { describeDevice, setJson, setJsonRaw, setPayload, setScalar } from "./access.js";
-import { propertiesOf, type Members, type Surface } from "./members.js";
+import { propertiesOf, type Members, type Surface, type MemberDeps } from "./members.js";
 import { DeviceType } from "../device-types.js";
 import type {
   CapabilityActions,
@@ -674,13 +674,7 @@ export const MOTION: CapabilityModule = {
    * `requireFamily`, in the one place the wire is now declared — so the property path and the
    * fluent setter are guarded by the same check instead of two copies of it.
    */
-  actions(
-    ctx: CommandContext,
-    sink: CommandSink,
-    _media?: unknown,
-    _ff09?: unknown,
-    read?: CapabilityStateReader,
-  ): CapabilityActions {
+  actions({ ctx, sink, read }: MemberDeps): CapabilityActions {
     return {
       sensitivitySteps: () => scaleFor(ctx, read)?.ladder.length,
       sensitivityStep: () => {

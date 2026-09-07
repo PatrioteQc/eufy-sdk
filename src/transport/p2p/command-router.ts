@@ -25,6 +25,7 @@ import type {
 import { StationBusyError } from "../../core/contracts.js";
 import { noopLogger, type Logger } from "../../core/logger.js";
 import { assertNever } from "../../core/util.js";
+import { setTimeout as sleep } from "node:timers/promises";
 import { P2PSession, type P2PFrame } from "./p2p-session.js";
 import { buildDirectBinaryBody, buildDeviceNameBody } from "./write-commands.js";
 import {
@@ -515,19 +516,6 @@ export class P2PCommandRouter {
   }
 
   /**
-   * Rename a device (or station) — a pure-P2P command (the HomeBase propagates the new name to the
-   * cloud). Fire-and-forget over level-2 (`SET_DEVICE_NAME` 1217 for a device / `SET_HUB_NAME` 1216
-   * for a station, on the station channel 255, body {@link buildDeviceNameBody}). `isStation` comes
-   * from the resolved codec.
-   */
-  async renameDevice(sn: string, name: string, isStation: boolean): Promise<void> {
-    const cmd = isStation ? P2P_ENVELOPE.SET_HUB_NAME : P2P_ENVELOPE.SET_DEVICE_NAME;
-    await this.replayLevel2Send(sn, `rename ${sn} → "${name}"`, ({ session, channel, accountId }) =>
-      session.sendRawLevel2Bytes(buildDeviceNameBody(channel, name, accountId), 255, cmd, 8),
-    );
-  }
-
-  /**
    * Restart a HomeBase. `RESTART_HUB` (1034) is a station-scalar on the broadcast channel 255: a
    * level-2 frame whose body is `[u32 value][account_id padded]` — the same shape as the hub
    * alarm-volume control. ✅ Wire-confirmed byte-exact from a capture of the app's own Restart
@@ -539,16 +527,6 @@ export class P2PCommandRouter {
     await this.replayLevel2Send(sn, `reboot ${sn}`, ({ session, accountId }) =>
       session.sendRawLevel2Bytes(buildDirectBinaryBody(0, accountId), 255, P2P_ENVELOPE.RESTART_HUB, 8),
     );
-  }
-
-  /**
-   * Send a raw control command (`{commandType, data}`) under an outer wrapper (default `1700`) to a
-   * device over P2P. Escape hatch for tooling / reversing new commands before they get a typed
-   * helper. Same routing/encryption as a capability write.
-   */
-  async routeControlRaw(sn: string, outerCmd: number, inner: { commandType: number; data: unknown }): Promise<void> {
-    await this.deviceFor(sn);
-    await this.routeControl(sn, outerCmd, inner);
   }
 
   /**
@@ -1196,7 +1174,7 @@ export class P2PCommandRouter {
     const t0 = Date.now();
     while (!session.isConnected && Date.now() - t0 < CONNECT_WAIT_MS) {
       opts.signal?.throwIfAborted();
-      await new Promise((r) => setTimeout(r, 200));
+      await sleep(200);
     }
     opts.signal?.throwIfAborted();
     if (!session.isConnected) throw new Error(`P2P session for ${parentSn} did not connect`);
@@ -1238,7 +1216,7 @@ export class P2PCommandRouter {
     let sent = false;
     for (let i = 0; i < DIRECT_CMD_SENDS; i++) {
       if (send(resolved)) sent = true;
-      await new Promise((r) => setTimeout(r, 200));
+      await sleep(200);
     }
     if (!sent) {
       throw new Error(`${describe} for ${sn} was never sent (no level-2 key / session not connected)`);
@@ -1575,7 +1553,7 @@ export class P2PCommandRouter {
     const { session, channel, accountId } = await this.resolveSession(sn);
     for (let i = 0; i < DIRECT_CMD_SENDS; i++) {
       session.sendIntStringCommand(outerCmd, value, channel, accountId, channel);
-      await new Promise((r) => setTimeout(r, 200));
+      await sleep(200);
     }
   }
 
@@ -1600,7 +1578,7 @@ export class P2PCommandRouter {
       "utf-8",
     );
     const camInfoPre = Buffer.from("ff00000087030000", "hex"); // 1103 GET_CAMERA_INFO precursor
-    const gap = () => new Promise((r) => setTimeout(r, 150));
+    const gap = () => sleep(150);
 
     session.sendRawLevel2Bytes(camInfoPre, 255, P2P_ENVELOPE.GET_CAMERA_INFO, 8); // precursor on the station channel
     await gap();

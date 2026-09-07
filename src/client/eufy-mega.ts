@@ -538,26 +538,6 @@ export class EufyMega extends EventEmitter {
   }
 
   /**
-   * Land ONE report, however many capabilities recognised part of it.
-   *
-   * A robot's report carries data points several capabilities own a slice of, and each returns its own
-   * slice — over disjoint id sets, so merging them loses nothing. Applying the slices separately would
-   * announce the same report once per capability and, when a report widens the evidence, fire one cloud
-   * round-trip per slice for a re-bind that is identical either way.
-   */
-  /**
-   * The map this device has sent so far, or `undefined` if it has sent none.
-   *
-   * The pieces arrive on five channels at their own pace, so this fills in over the first minute or so
-   * of a connection and every getter on it answers `undefined` until its own piece has arrived. Nothing
-   * here polls or requests: the robot publishes its map unasked, and a caller that has just connected
-   * has to wait for the next one rather than being handed a stale one.
-   */
-  mapFor(deviceSn: string): VacuumMapStore | undefined {
-    return this.mapStores.get(deviceSn);
-  }
-
-  /**
    * Feed one map-stream frame to the device's map, and announce it if anything changed.
    *
    * Silent about a frame it cannot use. Most of them are: channels nothing reads yet, and fragments of
@@ -1181,20 +1161,6 @@ export class EufyMega extends EventEmitter {
     return this.registry.mqttDevices();
   }
 
-  /** Devices that require P2P (cameras/HomeBases). */
-  getP2pDevices(): EufyDevice[] {
-    return this.registry.p2pDevices();
-  }
-
-  /**
-   * Per-SKU data-point (param) schema from the mega `things` service — the authoritative
-   * param_type catalogue for a product code (the same call the v6 app uses). Works for ANY
-   * SKU, not just owned devices. See `MegaHttpClient.getProductDataPoint`.
-   */
-  getProductDataPoint<T = unknown>(code: string): Promise<T> {
-    return this.mega.getProductDataPoint<T>(code);
-  }
-
   /**
    * One page of a robot vacuum's **cleaning history**, in whatever order the cloud returns it —
    * newest first in practice, but that is the gateway's contract and the SDK does not re-sort.
@@ -1217,49 +1183,6 @@ export class EufyMega extends EventEmitter {
   }
 
   /**
-   * Decode one cleaning run's **detail blob** — the bytes behind a {@link CleanRecord}'s `downloadUrl`.
-   *
-   * The SDK does not fetch that URL: its host is unconfirmed, and this client's binary path is
-   * host-allowlisted with SSRF checks by design, so routing around it would defeat a control that
-   * exists for a reason. Fetch the bytes however your host prefers and hand them here.
-   *
-   * Answers `undefined` when the blob fails its own checksum or is not one of these at all.
-   */
-  parseCleanRecordDetail(blob: Uint8Array): CleanRecordDetail | undefined {
-    return parseCleanRecordDetail(blob, rawDpCodec);
-  }
-
-  /**
-   * One page of a device's stored **map data**, raw.
-   *
-   * Handed back exactly as the cloud sends it, `content` included and undecoded. The decoder for that
-   * content is the vendor's clean-native library, which is not in the app package — so this SDK can
-   * carry the bytes to you and no further. Walk `is_next_page` and `last_offset` to reassemble a map
-   * that spans several responses.
-   */
-  getDeviceMapList<T = unknown>(deviceSn: string, channelId = 0, num = 1, page = 1, lastOffset = 0): Promise<T> {
-    return this.mega.getDeviceMapList<T>(deviceSn, channelId, num, page, lastOffset);
-  }
-
-  /** Stored map content for several channels at once, raw and undecoded. See {@link getDeviceMapList}. */
-  getManyDeviceMapContent<T = unknown>(deviceSn: string, channelIds: readonly number[]): Promise<T> {
-    return this.mega.getManyDeviceMapContent<T>(deviceSn, channelIds);
-  }
-
-  /** Live param list for one owned device. See `MegaHttpClient.getDeviceParamList`. */
-  getDeviceParamList<T = unknown>(deviceSn: string): Promise<T> {
-    return this.mega.getDeviceParamList<T>(deviceSn);
-  }
-
-  /**
-   * Generic authed mega POST — escape hatch for tooling probing endpoints/body shapes.
-   * @internal
-   */
-  megaRequest<T = unknown>(service: string, path: string, body: unknown = {}): Promise<T> {
-    return this.mega.request<T>(service, path, body);
-  }
-
-  /**
    * Inspect one device by serial: resolve its codec/capabilities, cross-reference every reported
    * `param_type` against the param dictionary, and emit a paste-ready `registry.ts` row plus
    * dictionary snippets for anything unknown. The enrichment tool — run it on a new/unconfirmed
@@ -1268,11 +1191,6 @@ export class EufyMega extends EventEmitter {
    */
   async inspectDevice(sn: string): Promise<DeviceInspection> {
     return this.registry.inspectDevice(sn);
-  }
-
-  /** Inspect every owned device (the bulk enrichment export). */
-  async inspectAllDevices(): Promise<DeviceInspection[]> {
-    return this.registry.inspectAllDevices();
   }
 
   /**
@@ -1987,20 +1905,6 @@ export class EufyMega extends EventEmitter {
   }
 
   /**
-   * Rename a device (or station). The new name propagates to the eufy cloud automatically, so no
-   * separate HTTP update is needed. Fire-and-forget; re-read with {@link getDevice} to confirm the
-   * new name. ASCII names only for now.
-   */
-  async renameDevice(sn: string, name: string): Promise<void> {
-    // Pure-P2P command over level-2: SET_DEVICE_NAME 1217 (device) / SET_HUB_NAME 1216 (station), on
-    // the station channel 255, body buildDeviceNameBody. Verified live on both paths — 1217 on a
-    // T8425 camera, 1216 on a T8030 HomeBase (2026-07-12, "<old>"→"<new>", propagated in ~3s). The
-    // HomeBase relays the new name to the cloud, so no update_device_info HTTP call is needed.
-    const ctx = await this.commandContext(sn);
-    await this.p2p.renameDevice(sn, name, ctx.codec === "station");
-  }
-
-  /**
    * Restart a HomeBase.
    *
    * **HomeBases only** — restart is a hub operation, so a non-HomeBase serial (a camera, an NVR)
@@ -2101,16 +2005,6 @@ export class EufyMega extends EventEmitter {
    */
   p2pQuery(sn: string, subCmd: number, opts: { timeoutMs?: number } = {}): Promise<Record<string, unknown>> {
     return this.p2p.p2pQuery(sn, subCmd, opts);
-  }
-
-  /**
-   * Send a raw control command (`{commandType, data}`) under an outer wrapper (default `1700`) over
-   * P2P. Escape hatch for tooling / reversing new commands before they get a typed helper. Same
-   * routing/encryption as {@link setProperty}.
-   * @internal
-   */
-  routeControlRaw(sn: string, outerCmd: number, inner: { commandType: number; data: unknown }): Promise<void> {
-    return this.p2p.routeControlRaw(sn, outerCmd, inner);
   }
 
   /**
