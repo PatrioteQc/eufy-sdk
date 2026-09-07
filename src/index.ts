@@ -1,5 +1,5 @@
 /**
- * eufy-sdk — one typed client for every eufy device.
+ * eufy-sdk — one typed client for every Anker eufy device.
  *
  * Log in, model devices as capability-driven objects with a fluent typed API,
  * and subscribe to typed semantic events. Transport is internal.

@@ -216,7 +216,7 @@ export interface EufyMega {
 }
 
 /**
- * The package entry point — one client per eufy account. Handles the {@link login} state machine
+ * The package entry point — one client per Anker eufy account. Handles the {@link login} state machine
  * (captcha/2FA/persistence), resolves the account's devices ({@link getDevices}/{@link getDevice}
  * → capability-driven {@link Device}s), **auto-manages** the realtime channels (FCM push + secure MQTT
  * start on login; P2P opens on demand per station and idle-detaches battery cameras), and fans every

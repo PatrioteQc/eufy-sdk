@@ -34,12 +34,13 @@ watch(q, apply);
 
 # Devices
 
-One SDK for the entire eufy ecosystem — **Security**, **Clean** (RoboVac), **Robot Mowers**,
+One SDK for the entire Anker eufy ecosystem — **Security**, **Clean** (RoboVac), **Robot Mowers**,
 **Mum & Baby**, and **Life**.
 
 ::: info Independent and unofficial
 Device names, model codes, and product imagery on this page identify the hardware this SDK talks to.
-eufy-sdk is not affiliated with, endorsed by, or sponsored by Anker Innovations or eufy, and this
+eufy-sdk is not affiliated with, endorsed by, or sponsored by Anker Innovations, Anker eufy, or eufy,
+and this
 page is a visual reference — not a support or compatibility list published by either company.
 :::
 

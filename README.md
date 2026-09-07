@@ -10,7 +10,7 @@
   <img src="https://raw.githubusercontent.com/mega-yfue/eufy-sdk/main/docs/public/logo.svg" alt="eufy-sdk" height="72">
 </picture>
 
-**One typed client for the whole eufy ecosystem — devices, realtime events, and live media.**
+**One typed client for the whole Anker eufy ecosystem — devices, realtime events, and live media.**
 
 [![npm](https://img.shields.io/npm/v/@mega-yfue/eufy-sdk?logo=npm&color=cb3837)](https://www.npmjs.com/package/@mega-yfue/eufy-sdk)
 [![CI](https://github.com/mega-yfue/eufy-sdk/actions/workflows/ci.yml/badge.svg)](https://github.com/mega-yfue/eufy-sdk/actions/workflows/ci.yml)
@@ -30,7 +30,7 @@
 
 ## What it is
 
-A TypeScript SDK for the eufy cloud that the current eufy app speaks. It logs in (captcha and 2FA
+A TypeScript SDK for the Anker eufy cloud that the current eufy app speaks. It logs in (captcha and 2FA
 included), keeps a **persistent session**, and models every device as a capability-driven `Device`
 you drive through a **typed, fluent API**:
 
@@ -127,7 +127,12 @@ Security issues go through [SECURITY.md](./SECURITY.md), never a public issue.
 
 ## Disclaimer
 
-Independent and unofficial, built for interoperability with eufy devices you own. **Not affiliated
-with, endorsed by, or sponsored by Anker Innovations or eufy.** "eufy" and "Anker" are trademarks of
-their respective owners and appear here only to identify the hardware this SDK talks to. Use
-responsibly — rapid or failed logins can trigger a captcha or a temporary cooldown.
+Independent and unofficial, built for interoperability with Anker eufy devices you own. **Not
+affiliated with, endorsed by, or sponsored by Anker Innovations, Anker eufy, or eufy.** "Anker eufy",
+"eufy" and "Anker" are trademarks of their respective owners and appear here only to identify the
+hardware this SDK talks to. Use responsibly — rapid or failed logins can trigger a captcha or a
+temporary cooldown.
+
+The vendor now brands the line **Anker eufy**; "eufy" alone is the short form and still the name on
+the wire (`eufy_security`, `eufy_life`, `eufy_mega`) and in every product name (eufyCam, eufy Clean,
+eufy Life). Protocol vocabulary follows the device, not the marketing, so those are not renamed here.
