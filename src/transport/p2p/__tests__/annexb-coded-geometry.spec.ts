@@ -19,12 +19,19 @@ describe("codedGeometry — H.264", () => {
     expect(codedGeometry(setsOf(h264Sps({ widthMbs: 80, heightMapUnits: 45 }), H264.pps))).toEqual({
       width: 1280,
       height: 720,
+      coded: { width: 1280, height: 720 },
+      crop: { left: 0, right: 0, top: 0, bottom: 0 },
     });
   });
 
   it("crops the coded height back to the 1080 a decoder produces", () => {
     const sps = h264Sps({ widthMbs: 120, heightMapUnits: 68, crop: { bottom: 4 } });
-    expect(codedGeometry(setsOf(sps, H264.pps))).toEqual({ width: 1920, height: 1080 });
+    expect(codedGeometry(setsOf(sps, H264.pps))).toEqual({
+      width: 1920,
+      height: 1080,
+      coded: { width: 1920, height: 1088 },
+      crop: { left: 0, right: 0, top: 0, bottom: 8 },
+    });
   });
 
   it("reads the rungs of an adaptive ladder as distinct geometries", () => {
@@ -33,14 +40,19 @@ describe("codedGeometry — H.264", () => {
       { shape: { widthMbs: 60, heightMapUnits: 34, crop: { bottom: 2 } }, expected: { width: 960, height: 540 } },
       { shape: { widthMbs: 120, heightMapUnits: 68, crop: { bottom: 4 } }, expected: { width: 1920, height: 1080 } },
     ];
-    expect(rungs.map(({ shape }) => codedGeometry(setsOf(h264Sps(shape), H264.pps)))).toEqual(
+    expect(rungs.map(({ shape }) => codedGeometry(setsOf(h264Sps(shape), H264.pps)))).toMatchObject(
       rungs.map(({ expected }) => expected),
     );
   });
 
   it("scales a horizontal crop by the chroma format", () => {
     const sps = h264Sps({ widthMbs: 80, heightMapUnits: 45, profileIdc: 100, crop: { left: 1, right: 2 } });
-    expect(codedGeometry(setsOf(sps, H264.pps))).toEqual({ width: 1274, height: 720 });
+    expect(codedGeometry(setsOf(sps, H264.pps))).toEqual({
+      width: 1274,
+      height: 720,
+      coded: { width: 1280, height: 720 },
+      crop: { left: 2, right: 4, top: 0, bottom: 0 },
+    });
   });
 
   it("takes a 4:4:4 crop offset in whole samples", () => {
@@ -51,12 +63,17 @@ describe("codedGeometry — H.264", () => {
       chromaFormatIdc: 3,
       crop: { left: 1, right: 2 },
     });
-    expect(codedGeometry(setsOf(sps, H264.pps))).toEqual({ width: 1277, height: 720 });
+    expect(codedGeometry(setsOf(sps, H264.pps))).toMatchObject({ width: 1277, height: 720 });
   });
 
   it("doubles the coded height of an interlaced set and its vertical crop unit", () => {
     const sps = h264Sps({ widthMbs: 80, heightMapUnits: 22, frameMbsOnly: false, crop: { bottom: 1 } });
-    expect(codedGeometry(setsOf(sps, H264.pps))).toEqual({ width: 1280, height: 700 });
+    expect(codedGeometry(setsOf(sps, H264.pps))).toEqual({
+      width: 1280,
+      height: 700,
+      coded: { width: 1280, height: 704 },
+      crop: { left: 0, right: 0, top: 0, bottom: 4 },
+    });
   });
 
   it("skips signalled scaling lists to reach the geometry behind them", () => {
@@ -67,7 +84,7 @@ describe("codedGeometry — H.264", () => {
       scalingMatrix: true,
       crop: { bottom: 4 },
     });
-    expect(codedGeometry(setsOf(sps, H264.pps))).toEqual({ width: 1920, height: 1080 });
+    expect(codedGeometry(setsOf(sps, H264.pps))).toMatchObject({ width: 1920, height: 1080 });
   });
 
   /**
@@ -79,13 +96,13 @@ describe("codedGeometry — H.264", () => {
     const read = CHROMA_BRANCH_PROFILES.map((profileIdc) =>
       codedGeometry(setsOf(h264Sps({ widthMbs: 80, heightMapUnits: 45, profileIdc }), H264.pps)),
     );
-    expect(read).toEqual(CHROMA_BRANCH_PROFILES.map(() => ({ width: 1280, height: 720 })));
+    expect(read).toMatchObject(CHROMA_BRANCH_PROFILES.map(() => ({ width: 1280, height: 720 })));
   });
 });
 
 describe("codedGeometry — H.265", () => {
   it("reads the luma dimensions directly", () => {
-    expect(codedGeometry(setsOf(H265.vps, h265Sps({ widthLuma: 1920, heightLuma: 1080 }), H265.pps))).toEqual({
+    expect(codedGeometry(setsOf(H265.vps, h265Sps({ widthLuma: 1920, heightLuma: 1080 }), H265.pps))).toMatchObject({
       width: 1920,
       height: 1080,
     });
@@ -93,12 +110,17 @@ describe("codedGeometry — H.265", () => {
 
   it("applies the conformance window, scaled by the chroma format", () => {
     const sps = h265Sps({ widthLuma: 1920, heightLuma: 1088, window: { bottom: 4 } });
-    expect(codedGeometry(setsOf(H265.vps, sps, H265.pps))).toEqual({ width: 1920, height: 1080 });
+    expect(codedGeometry(setsOf(H265.vps, sps, H265.pps))).toEqual({
+      width: 1920,
+      height: 1080,
+      coded: { width: 1920, height: 1088 },
+      crop: { left: 0, right: 0, top: 0, bottom: 8 },
+    });
   });
 
   it("skips the per-sub-layer profile and level records", () => {
     const sps = h265Sps({ widthLuma: 1280, heightLuma: 720, maxSubLayersMinus1: 2 });
-    expect(codedGeometry(setsOf(H265.vps, sps, H265.pps))).toEqual({ width: 1280, height: 720 });
+    expect(codedGeometry(setsOf(H265.vps, sps, H265.pps))).toMatchObject({ width: 1280, height: 720 });
   });
 });
 
@@ -153,7 +175,7 @@ describe("codedGeometry — what it refuses to answer", () => {
   it("reads through emulation-prevention bytes rather than over them", () => {
     const escaped = Buffer.from(h265Sps({ widthLuma: 1920, heightLuma: 1088, window: { bottom: 4 } }));
     expect(escaped.includes(Buffer.from([0x00, 0x00, 0x03]))).toBe(true);
-    expect(codedGeometry({ codec: "h265", sps: [escaped], pps: [], vps: [] })).toEqual({
+    expect(codedGeometry({ codec: "h265", sps: [escaped], pps: [], vps: [] })).toMatchObject({
       width: 1920,
       height: 1080,
     });
@@ -162,7 +184,7 @@ describe("codedGeometry — what it refuses to answer", () => {
   it("answers from the last SPS in force when a set carries several", () => {
     const first = Buffer.from(h264Sps({ widthMbs: 80, heightMapUnits: 45 }));
     const second = Buffer.from(h264Sps({ widthMbs: 60, heightMapUnits: 34, crop: { bottom: 2 } }));
-    expect(codedGeometry({ codec: "h264", sps: [first, second], pps: [], vps: [] })).toEqual({
+    expect(codedGeometry({ codec: "h264", sps: [first, second], pps: [], vps: [] })).toMatchObject({
       width: 960,
       height: 540,
     });

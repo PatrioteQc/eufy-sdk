@@ -790,8 +790,15 @@ export class SharedLiveSource {
       this.configuredFrom = this.lastParamSets;
       this.declaredGeometry = this.lastParamSets ? codedGeometry(this.lastParamSets) : undefined;
     }
+    // The DISPLAY size only: a config announces the picture a consumer should show, not the
+    // macroblock-aligned size it is coded at (which `CodedGeometry` also carries, for a consumer that
+    // decodes frames itself and has to crop).
     return this.declaredGeometry
-      ? { codec: this.lastParamSets!.codec, ...this.declaredGeometry }
+      ? {
+          codec: this.lastParamSets!.codec,
+          width: this.declaredGeometry.width,
+          height: this.declaredGeometry.height,
+        }
       : { codec: frame.codec, width: frame.width, height: frame.height };
   }
 

@@ -166,10 +166,31 @@ export function hasIdr(buf: Buffer, codec: VideoCodec): boolean {
   return false;
 }
 
-/** The picture size a decoder produces, after the crop or conformance offsets its parameter set declares. */
-export interface CodedGeometry {
+/** A width/height pair in luma samples. */
+export interface Size {
   width: number;
   height: number;
+}
+
+/**
+ * What a parameter set says a picture's dimensions are — both of them.
+ *
+ * A stream states TWO sizes and a consumer needs whichever matches what it holds. {@link CodedGeometry.width}
+ * and `height` are the DISPLAY size, the picture as a viewer should see it. {@link CodedGeometry.coded} is the
+ * size it is actually coded at, rounded up to the macroblock (H.264) or CTU (H.265) grid, and
+ * {@link CodedGeometry.crop} is the window between them, already scaled from the chroma units the syntax
+ * states them in into luma samples.
+ *
+ * The distinction is not a refinement: 1080 is not a multiple of 16, so the commonest geometry there is codes
+ * 1088 rows and crops 8 away. A caller that muxes or measures wants the display size; a caller DECODING frames
+ * itself gets the coded size back from its decoder and needs the window to crop with — one that assumes the two
+ * are the same emits eight rows of encoder padding and calls the result 1088 tall.
+ */
+export interface CodedGeometry extends Size {
+  /** The size the picture is coded at — macroblock- or CTU-aligned, and never smaller than the display size. */
+  coded: Size;
+  /** The crop (H.264) or conformance (H.265) window, in LUMA samples. */
+  crop: { left: number; top: number; right: number; bottom: number };
 }
 
 /**
@@ -191,7 +212,7 @@ const MAX_CODED_DIMENSION = 32768;
 export const H264_CHROMA_PROFILES = new Set([100, 110, 122, 244, 44, 83, 86, 118, 128, 138, 139, 134, 135, 144]);
 
 /** Chroma subsampling per `chroma_format_idc`, which is what scales a crop offset into samples. */
-const CHROMA_SUBSAMPLING: Record<number, CodedGeometry> = {
+const CHROMA_SUBSAMPLING: Record<number, Size> = {
   0: { width: 1, height: 1 },
   1: { width: 2, height: 2 },
   2: { width: 2, height: 1 },
@@ -308,7 +329,7 @@ export function codedGeometry(sets: ParamSets): CodedGeometry | undefined {
     height > 0 &&
     width <= MAX_CODED_DIMENSION &&
     height <= MAX_CODED_DIMENSION;
-  return plausible ? { width, height } : undefined;
+  return plausible ? geometry : undefined;
 }
 
 /**
@@ -378,9 +399,18 @@ function h264Geometry(sps: Buffer): CodedGeometry | undefined {
   const subsampling = CHROMA_SUBSAMPLING[chromaArrayType];
   if (!subsampling) return undefined;
   const fieldFactor = frameMbsOnly ? 1 : 2;
+  const coded = { width: widthMbs * 16, height: fieldFactor * heightMapUnits * 16 };
+  const luma = {
+    left: subsampling.width * crop.left,
+    right: subsampling.width * crop.right,
+    top: subsampling.height * fieldFactor * crop.top,
+    bottom: subsampling.height * fieldFactor * crop.bottom,
+  };
   return {
-    width: widthMbs * 16 - subsampling.width * (crop.left + crop.right),
-    height: fieldFactor * heightMapUnits * 16 - subsampling.height * fieldFactor * (crop.top + crop.bottom),
+    width: coded.width - luma.left - luma.right,
+    height: coded.height - luma.top - luma.bottom,
+    coded,
+    crop: luma,
   };
 }
 
@@ -425,8 +455,17 @@ function h265Geometry(sps: Buffer): CodedGeometry | undefined {
   if (r.failed) return undefined;
   const subsampling = CHROMA_SUBSAMPLING[chromaFormatIdc];
   if (!subsampling) return undefined;
+  const coded = { width, height };
+  const luma = {
+    left: subsampling.width * window.left,
+    right: subsampling.width * window.right,
+    top: subsampling.height * window.top,
+    bottom: subsampling.height * window.bottom,
+  };
   return {
-    width: width - subsampling.width * (window.left + window.right),
-    height: height - subsampling.height * (window.top + window.bottom),
+    width: coded.width - luma.left - luma.right,
+    height: coded.height - luma.top - luma.bottom,
+    coded,
+    crop: luma,
   };
 }

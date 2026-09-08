@@ -202,6 +202,8 @@ export interface P2PRouterDeps {
   sessionIdle?: Pick<SessionManagerOpts, "batteryIdleMs">;
   /** LAN address overrides for direct P2P, keyed by parent-station serial (host or host:port). */
   localAddresses?: Record<string, string>;
+  /** Suppress the `255.255.255.255` local-lookup broadcast; cloud lookup and a known LAN address still run. */
+  noBroadcast?: boolean;
 }
 
 export class P2PCommandRouter {
@@ -382,6 +384,7 @@ export class P2PCommandRouter {
       cloudAddresses: conn ? decodeP2PCloudIPs(conn) : undefined,
       localAddress,
       dskKey,
+      noBroadcast: this.deps.noBroadcast,
       resolveCipherKey: async (cipherId: number) => {
         if (this.cipherKeyCache.has(cipherId)) return this.cipherKeyCache.get(cipherId);
         let ecc: string | undefined;
