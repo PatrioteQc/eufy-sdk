@@ -1670,6 +1670,24 @@ export class EufyMega extends EventEmitter {
     }
   }
 
+  /**
+   * Open the P2P session for ONE device's station, and nothing else.
+   *
+   * Auto-realtime warms every wired station on the account, which is what a host driving a
+   * fleet wants. A caller that needs exactly one station does not: an unreachable station broadcasts a
+   * local lookup to `255.255.255.255` **once a second for the full connect timeout** and sends a PPCS
+   * lookup to every cloud address in the same tick, so warming a fleet to talk to one camera is a
+   * burst of broadcast and NAT churn on the user's network for stations nobody asked about. Pair this
+   * with `autoRealtime: false` to open only what is being used.
+   *
+   * Resolves when the station is connected; rejects on its connect timeout. Best-effort and idempotent
+   * — an already-open session resolves immediately.
+   */
+  async connectStation(deviceSn: string, signal?: AbortSignal): Promise<void> {
+    if (!this.registry.list().length) await this.getDevices();
+    await this.p2p.ensureStation(this.p2p.stationKeyOf(deviceSn), signal);
+  }
+
   /** Eagerly open P2P sessions for WIRED stations only (persistent — they don't drain). Battery
    *  stations stay closed until an on-demand open. Best-effort per station. */
   private async warmWiredP2P(
