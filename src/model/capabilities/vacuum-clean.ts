@@ -32,8 +32,7 @@ import {
  *
  * The single most useful thing the catalogue gives that a DP number alone does not: a DP is Raw, and
  * knowing WHICH message it frames is what makes it decodable. Recorded here rather than rediscovered,
- * and deliberately as data rather than as code — nothing dispatches on it. It is the map a reader
- * needs when they reach a DP this SDK does not decode yet.
+ * and deliberately as data rather than as code — nothing dispatches on it.
  *
  * Two entries are the vendor's own dead ends: DP 150 is marked "预留。不使用。" — reserved, NOT used —
  * and 165/175 are reserved with no message at all. Do not build on them.
@@ -109,18 +108,16 @@ export const VACUUM_DP = {
  * `thing.m.device.dp.get` call are included here. Write direction for all DPs is unverified —
  * no live publishDps capture has been made yet.
  *
- * **The one table for this line.** A second, older one listed four of these ids again — the same
- * numbers with the same meanings, grounded more weakly — and three entries here carried a note saying
- * which of its keys they duplicated. That is one line spelled twice, which is how two tables come to
- * disagree while each stays individually plausible. DP 103 was a third spelling: named privately by the
- * `locate` capability, absent from any DP table.
+ * **The one table for this line.** Every id the Tuya clean line uses is spelled here and nowhere else,
+ * including DP 103, which the `locate` capability reads and writes. One line spelled twice is how two
+ * tables come to disagree while each stays individually plausible.
  *
  * **Checked against `jeppesens/eufy-clean`'s `LEGACY_DPS_MAP`** and nothing came back to port. Its nine
  * ids — 2, 3, 5, 15, 101, 102, 103, 104, 106 — are all here, all live-confirmed on a real X8 Pro, and
- * all carry their enum value sets, which that map does not. The comparison is recorded so the next
- * reader does not repeat it. Its `SCALAR_DPS` table is a different matter and deliberately untouched:
- * that is a separate device class reusing these numbers for unrelated things (153 is a brush-detangle
- * trigger there and the work status here), so it must be told apart by value SHAPE, never by DP number.
+ * all carry their enum value sets, which that map does not. Its `SCALAR_DPS` table is a different
+ * matter and deliberately untouched: that is a separate device class reusing these numbers for
+ * unrelated things (153 is a brush-detangle trigger there and the work status here), so it must be told
+ * apart by value SHAPE, never by DP number.
  * @internal
  */
 export const TUYA_VACUUM_DP = {
@@ -176,7 +173,7 @@ export const TUYA_VACUUM_DP = {
 /**
  * `thing.m.device.ref.info.list` v5.4 `schemaInfo.schema` confirmed values for DP 15 (status).
  *
- * Exported so a caller can offer the set as data; not published — `VacuumActivity` is the
+ * Exported but not published — `VacuumActivity` is the
  * union that matters externally.
  * @internal
  */
@@ -285,7 +282,7 @@ export const ModeCtrlMethod = {
  *
  * Method 0 (START_AUTO_CLEAN) is omitted rather than written as an explicit zero, per the proto3
  * default-field rule and confirmed on that same capture. The writer deliberately does not apply that
- * rule for the caller: whether an explicit zero and an absent field mean the same thing is the
+ * rule itself: whether an explicit zero and an absent field mean the same thing is the
  * message's business, not the encoder's.
  * @internal
  */
@@ -295,8 +292,7 @@ export const ModeCtrlMethod = {
  * Kept apart from {@link ModeCtrlMethod} because these are a different kind of thing: a parameterless
  * verb is complete on its own, whereas each of these is meaningless without an argument the caller has
  * to supply. Sending one with an empty payload is a well-formed frame that means something nobody
- * intended, which is exactly why the numbers do not sit beside the others where a caller might reach
- * for them by accident.
+ * intended, which is exactly why the numbers do not sit beside the others.
  */
 export const ModeCtrlParamMethod = {
   /** `START_SELECT_ROOMS_CLEAN` — clean the named rooms of a named map. */
@@ -440,8 +436,6 @@ export function encodeSceneClean(sceneId: number): string {
  * and 127 — a single sequence advancing across four different verbs, not a counter per verb. That is
  * what `seq` is for, since it identifies a request so its response can be matched to it; per-verb
  * counters would hand two outstanding requests the same number.
- *
- * Each verb used to keep its own `let seq = 111` inside its closure. They now share this.
  */
 let modeCtrlSeq = 111;
 function nextModeCtrlSeq(): number {
@@ -459,7 +453,7 @@ export function encodeModeCtrl(method: number, seq: number): string {
  * Every value {@link VacuumActivity} can take, as data — the read's declared domain, so the schema a
  * caller reads and the type it compiles against are the same list rather than two that can drift.
  *
- * Exported so a caller can offer the set as data; not published — `VacuumActivity` is the union a
+ * Exported but not published — `VacuumActivity` is the union a
  * reader of the reference needs, and it states the same members.
  * @internal
  */
@@ -518,11 +512,10 @@ export function decodeTuyaWorkStatus(raw: ParamValue | undefined): VacuumActivit
  * The vendor's remaining names are narrower than this union can express, so several collapse onto
  * `"cleaning"` — the closest true answer for a robot that is off the dock and driving:
  * `FAST_MAPPING`(4) is mapping a floor, `REMOTE_CTRL`(6) is being driven by hand, `CRUISIING`(8) is
- * patrolling. A caller that needs to tell those apart cannot use this read to do it.
+ * patrolling. This read cannot tell them apart.
  *
- * The enumeration ends at `8`. An earlier revision carried a `15 → "paused"` entry, which no device
- * can report — pause is a **sub-state** of `5`, resolved by {@link resolveCleaningState} rather than by
- * a state of its own.
+ * The enumeration ends at `8`; there is no `15 → "paused"` state, which no device can report — pause
+ * is a **sub-state** of `5`, resolved by {@link resolveCleaningState} rather than by a state of its own.
  */
 const WORK_STATE_ACTIVITY: Record<number, VacuumActivity> = {
   0: "idle", // STANDBY — also every paused-* state; the sub-state carries which
@@ -651,7 +644,7 @@ function subValue(codec: RawDpCodec, body: Buffer, field: number): number {
  * (`NAVIGATION`) is deliberately NOT docked — it is still en route.
  *
  * Falls through to `"cleaning"` whenever no sub-message claims it, so a frame this does not recognise
- * degrades to the previous behaviour rather than to a worse one.
+ * degrades to the state's own coarse answer rather than to a worse one.
  *
  * **The station branch is the softest read here, and the one to confirm on-device first.** It takes the
  * PRESENCE of `washing_drying_system` as washing-or-drying and does not read its value, where `go_wash`
@@ -681,7 +674,7 @@ function resolveCleaningState(fields: readonly RawDpField[], codec: RawDpCodec):
 /**
  * Every value {@link VacuumCleanType} can take — the read's declared domain, see `VACUUM_ACTIVITIES`.
  *
- * Exported so a caller can offer the set as data; not published, like `VACUUM_ACTIVITIES`.
+ * Exported but not published, like `VACUUM_ACTIVITIES`.
  * @internal
  */
 export const VACUUM_CLEAN_TYPES = ["sweep", "mop", "sweepAndMop", "sweepThenMop"] as const;
@@ -692,8 +685,8 @@ export const VACUUM_CLEAN_TYPES = ["sweep", "mop", "sweepAndMop", "sweepThenMop"
  *
  * `mop` and `sweepAndMop` are verified on a real robot. `sweepThenMop` comes from the vendor's own
  * enumeration and has not been observed on a device yet. `"sweep"` also covers **"no type stated"** —
- * a robot that states none is indistinguishable from one set to sweep-only, so a host that needs to
- * tell those apart cannot use this read to do it.
+ * a robot that states none is indistinguishable from one set to sweep-only, and this read cannot tell
+ * them apart.
  */
 export type VacuumCleanType = (typeof VACUUM_CLEAN_TYPES)[number];
 
@@ -736,7 +729,7 @@ const CLEAN_PARAM_FIELD = {
    * Deliberately not surfaced as its own read. A live capture showed the two moving together: DP 158
    * went 2 then 0 while `clean_param.fan` went `{value:2}` then absent-for-zero. `suction.level`
    * already publishes that value from DP 158, and a second name for it here would be one feature
-   * spelled twice. Named so a reader knows what field 6 is, not so anything reads it.
+   * spelled twice. Named to document what field 6 is, not so anything reads it.
    */
   FAN: 6,
   /** `clean_times` — how many passes one job makes. */
@@ -762,9 +755,9 @@ const CARPET_STRATEGY: Record<number, CarpetStrategy> = { 0: "autoRaise", 1: "av
 /**
  * `clean_extent.value` — how far past the mapped edge a job reaches.
  *
- * **Not the app's display order.** The app lists these differently, so a host that renders the index
- * rather than the name will disagree with the phone; the names here follow the wire, which is the only
- * order this SDK can vouch for.
+ * **Not the app's display order.** The app lists these differently, so the raw index and the app's own
+ * position for it disagree; the names here follow the wire, which is the only order this SDK can vouch
+ * for.
  */
 export const CLEAN_EXTENTS = ["normal", "narrow", "quick"] as const;
 export type CleanExtent = (typeof CLEAN_EXTENTS)[number];
@@ -946,8 +939,8 @@ const UNDISTURBED_FIELD = {
 /**
  * Decode one end of the do-not-disturb window as `"HH:MM"`, or `undefined`.
  *
- * One string rather than two numbers per end: four properties for one window is four things a host has
- * to reassemble, and the pieces are meaningless apart. `undefined` means no window is configured at
+ * One string rather than two numbers per end: four properties for one window is four pieces to
+ * reassemble, and they are meaningless apart. `undefined` means no window is configured at
  * all — distinct from `"00:00"`, which is midnight and a real setting.
  *
  * The times are the ROBOT's own clock, with no zone attached. The vendor sends none here, unlike a
@@ -1224,9 +1217,9 @@ export function decodeRobotHardware(raw: ParamValue | undefined, codec: RawDpCod
 /**
  * Field numbers inside `LanguageResponse` (DP 162).
  *
- * The DP the plan's §2 called out: it is a voice-pack descriptor, not a locale. Nothing here is a
- * language tag — `current_id` names one of the vendor's numbered voice packs, and what that pack
- * SOUNDS like is a table the vendor ships and this SDK does not have.
+ * A voice-pack descriptor, not a locale. Nothing here is a language tag — `current_id` names one of the
+ * vendor's numbered voice packs, and what that pack SOUNDS like is a table the vendor ships and this
+ * SDK does not have.
  */
 const LANGUAGE_FIELD = { DEFAULT_ID: 1, CURRENT_ID: 2, VERSION: 3, SET_ID: 4, STATE: 5 } as const;
 
@@ -1260,9 +1253,9 @@ export function decodeLanguageField(
  * Read a `Numerical`-wrapped value out of a `UnisettingResponse` (DP 176) as the NUMBER it is.
  *
  * `Numerical { uint32 value = 1 }` and `Switch { bool value = 1 }` are the same two bytes on the wire.
- * That is why `dust_full_remind` read as a boolean for as long as it did: {@link decodeUnisetting}
- * accepted it without complaint and reported "30 minutes" as `true`. Nothing errored, nothing looked
- * wrong, and the number was gone.
+ * So a `Numerical` read through {@link decodeUnisetting} is accepted without complaint and reports
+ * "30 minutes" as `true`: nothing errors, nothing looks wrong, and the number is gone.
+ * `dust_full_remind` is one of these.
  *
  * A present-but-empty wrapper reads as `0`, which for a duration means the feature is off.
  * @internal
@@ -1308,8 +1301,8 @@ const UNISTATE_FIELD = {
  * Which layers the robot's live map carries, by bit position — the vendor's `LiveMap.StateBit`.
  *
  * A bitmask rather than an enum: the vendor's own comment says the values combine, so a map with a
- * base layer and room outlines reports both bits at once. Published so a caller can name a bit rather
- * than hard-coding a shift.
+ * base layer and room outlines reports both bits at once. Published as named bit positions rather than
+ * as raw shifts.
  */
 export const LIVE_MAP_BITS = { base: 0, rooms: 1, kitchen: 2, pet: 3 } as const;
 
@@ -1390,14 +1383,14 @@ export function decodeUnisettingTopLevel(
  *
  * Each part is a `Duration { uint32 duration = 1 }` carrying HOURS USED, counting up. The vendor does
  * not send a percentage remaining and this does not invent one — a life expectancy per part is a
- * calibration, not something the device reports, so a host that wants a percentage owns that choice.
+ * calibration, not something the device reports.
  */
 const CONSUMABLE_FIELD = {
   /**
    * The `ConsumableRuntime` block, which the report WRAPS at field 1 rather than sending bare.
    *
-   * Confirmed against a live T2351 report. Reading the parts at the top level — as this decode first
-   * did — finds the wrapper where a part should be and answers `undefined` for every counter.
+   * Confirmed against a live T2351 report. Reading the parts at the top level finds the wrapper where a
+   * part should be and answers `undefined` for every counter.
    */
   RUNTIME: 1,
   SIDE_BRUSH: 1,
@@ -1422,7 +1415,7 @@ const CONSUMABLE_FIELD = {
  * message pair — the same trap `UNISETTING_FIELD` carries, and the reason a reader's table is never a
  * writer's.
  */
-/** The replaceable parts a caller can ask the robot to treat as new. */
+/** The replaceable parts whose hours-used counter can be reset. */
 export const CONSUMABLE_PARTS = [
   "sideBrush",
   "rollingBrush",
@@ -1549,9 +1542,8 @@ export type VacuumCleanActions = Surface<typeof VACUUM_CLEAN_MEMBERS>;
  * installed only when the device has reported those DPs. The `locate` action (DP 160) is owned by the
  * `locate` capability module.
  *
- * Exported so a caller can name the table its `*Actions` type is derived from, but NOT published:
- * each entry states its wire id and the evidence it was confirmed on, which the reference site
- * does not carry.
+ * Exported but NOT published: each entry states its wire id and the evidence it was confirmed on,
+ * which the reference site does not carry.
  * @internal
  */
 export const VACUUM_CLEAN_MEMBERS = {
@@ -1614,16 +1606,14 @@ export const VACUUM_CLEAN_MEMBERS = {
   /**
    * Which voice pack the robot is speaking — the vendor's own numbered id, not a locale.
    *
-   * Replaces a `language` read that answered a locale code. It never could: DP 162 carries a
-   * `LanguageResponse`, so what that property published was the base64 of a protobuf message typed as
-   * text. The plan's §2 called this out from the schema and the product catalogue confirmed it — the DP
-   * is Raw in both directions.
+   * DP 162 carries a `LanguageResponse`, not a locale code — a base64 protobuf message rather than a
+   * language tag. The DP is Raw in both directions, confirmed against the schema and the product
+   * catalogue.
    *
    * The id alone is what the device reports; which voice it corresponds to is a vendor table keyed by
-   * firmware, and this SDK does not carry one. A host that wants names owns that mapping — which is
-   * also why there is no setter here: selecting a pack means sending a `LanguageRequest.Desc` carrying
-   * a CDN url and an md5 the device verifies, and a descriptor is not something a caller can be asked
-   * to invent.
+   * firmware, and this SDK does not carry one. There is no setter either: selecting a pack means
+   * sending a `LanguageRequest.Desc` carrying a CDN url and an md5 the device verifies, which is not a
+   * descriptor this SDK can construct.
    */
   voicePack: {
     param: VACUUM_DP.LANGUAGE,
@@ -1665,8 +1655,8 @@ export const VACUUM_CLEAN_MEMBERS = {
     description: "Voice-pack download state — LanguageResponse.state (DP 162, Raw protobuf).",
   },
   /**
-   * The installed voice pack's version, as the device counts it. Useful only against the vendor's own
-   * catalogue for the same pack id; on its own it is a number that changes when a pack is updated.
+   * The installed voice pack's version, as the device counts it. Meaningful only against the vendor's
+   * own catalogue for the same pack id; on its own it is a number that changes when a pack is updated.
    */
   voicePackVersion: {
     readsFrom: "voicePack",
@@ -1716,8 +1706,8 @@ export const VACUUM_CLEAN_MEMBERS = {
   /**
    * How far past the mapped edge a job reaches.
    *
-   * The index order is the WIRE's, not the app's display order — a host that shows the raw number will
-   * disagree with the phone. Surface the name.
+   * The index order is the WIRE's, not the app's display order, so a raw index disagrees with the app's
+   * own position for it. This read answers the NAME.
    */
   cleanExtent: {
     readsFrom: "cleanType",
@@ -1752,8 +1742,7 @@ export const VACUUM_CLEAN_MEMBERS = {
    *
    * Distinct from `mopWater`, which is the Tuya line's DP 105 and reports `Dry`/`Low`/`Mid`/`High`.
    * The two are NOT merged under one name: this scale has three members and that one has four, so any
-   * mapping between them would be invented rather than read. A host that wants one field checks
-   * whichever its device reports.
+   * mapping between them would be invented rather than read.
    */
   mopLevel: {
     readsFrom: "cleanType",
@@ -1815,8 +1804,7 @@ export const VACUUM_CLEAN_MEMBERS = {
    * list of faults and a list of warnings, and the legacy Tuya line reports a plain integer on DP 106.
    * {@link decodeVacuumFault} answers the first fault, or the first warning when there is no fault.
    *
-   * The code's MEANING is the vendor's own table and is not interpreted here — a host that wants text
-   * maps the number itself.
+   * The code's MEANING is the vendor's own table and is not interpreted here.
    *
    * The DP 106 alias is DELIBERATELY ungated, unlike `battery` and `cleanType` which gate their
    * legacy aliases on `isTuyaVacuum`. A fault is the one reading worth surfacing even when the
@@ -2133,10 +2121,9 @@ export const VACUUM_CLEAN_MEMBERS = {
   /**
    * How long the robot waits before warning that its dust bag is full, in MINUTES.
    *
-   * Read as a boolean until this revision, and wrongly: `dust_full_remind` is a `Numerical`, not a
-   * `Switch`, and the two are the same two bytes on the wire — `{ value = 1 }` either way. So a
-   * thirty-minute setting reported as `true`, nothing errored, and the number was gone. `0` means the
-   * reminder is off, which is the only part the boolean ever got right.
+   * `dust_full_remind` is a `Numerical`, not a `Switch`, and the two are the same two bytes on the
+   * wire — `{ value = 1 }` either way — so reading it as a boolean reports a thirty-minute setting as
+   * `true` with nothing to show anything went wrong. `0` means the reminder is off.
    */
   dustFullRemindMinutes: {
     readsFrom: "childLock",
@@ -2210,7 +2197,7 @@ export const VACUUM_CLEAN_MEMBERS = {
   },
   /**
    * The cleaning-strategy version the robot is running. A bare number the vendor gives no scale for —
-   * diagnostic, and useful only against another reading of the same robot.
+   * diagnostic, and meaningful only against another reading of the same robot.
    */
   cleanStrategyVersion: {
     readsFrom: "childLock",
@@ -2226,8 +2213,8 @@ export const VACUUM_CLEAN_MEMBERS = {
   /**
    * WiFi signal strength as a PERCENTAGE, 0-100 — the AIoT line's own reading.
    *
-   * Distinct from `rssi`, which is the Tuya line's DP 134 in dBm and absent on this hardware, so until
-   * now an X10 reported no signal at all. Reported as the vendor states it: eufy-clean converts this to
+   * Distinct from `rssi`, which is the Tuya line's DP 134 in dBm and absent on this hardware. Reported
+   * as the vendor states it: eufy-clean converts this to
    * a dBm-looking number with `(value / 2) - 100`, which is a plausible-looking figure with no basis in
    * anything the device sends.
    */
@@ -2271,8 +2258,8 @@ export const VACUUM_CLEAN_MEMBERS = {
    *
    * The owner of DP 168 — the other eight counters read their own field out of this same payload, which
    * is why they declare `readsFrom` rather than a wire of their own. Hours USED, counting up: the
-   * vendor sends no life expectancy, so a percentage remaining is the host's calibration to make, not
-   * a number this SDK can invent.
+   * vendor sends no life expectancy, so a percentage remaining is a calibration rather than a number
+   * this SDK can invent.
    */
   sideBrushHours: {
     param: VACUUM_DP.CONSUMABLES,
@@ -2416,8 +2403,8 @@ export const VACUUM_CLEAN_MEMBERS = {
   /**
    * Whether the do-not-disturb window is open RIGHT NOW — the live flag, not the switch beside it.
    *
-   * A caller showing "quiet hours" as a schedule wants `doNotDisturb`; one
-   * asking why the robot just declined to speak wants this. The two disagree for most of the day.
+   * `doNotDisturb` answers whether the feature is switched on; this answers whether the quiet window is
+   * in force. The two disagree for most of the day.
    *
    * Reads its sibling's payload rather than a wire of its own: `active` and `sw` are two fields of the
    * one `UndisturbedResponse` the device reports on DP 157, so there is one param and two readings of
@@ -2437,8 +2424,7 @@ export const VACUUM_CLEAN_MEMBERS = {
    * When quiet hours start, as `"HH:MM"` on the robot's own clock.
    *
    * The window itself, which neither `doNotDisturb` (the switch) nor `doNotDisturbActive` (the live
-   * flag) states — so a host could say quiet hours were ON and in force without ever being able to
-   * show when they run. `undefined` means no window is configured; `"00:00"` is midnight and real.
+   * flag) states. `undefined` means no window is configured; `"00:00"` is midnight and real.
    */
   doNotDisturbStart: {
     readsFrom: "doNotDisturb",
@@ -2520,8 +2506,7 @@ export const VACUUM_CLEAN_MEMBERS = {
    * exists.
    *
    * A timer whose scene or map was deleted is kept and reported `valid: false` rather than removed, so
-   * "three schedules" and "three schedules that work" are genuinely different numbers, and a host
-   * showing the first without the second explains nothing when a run does not happen.
+   * "three schedules" and "three schedules that work" are genuinely different numbers.
    */
   activeScheduleCount: {
     readsFrom: "scheduleCount",
@@ -2567,8 +2552,8 @@ export const VACUUM_CLEAN_MEMBERS = {
   },
   /**
    * How many of those scenes can still run. A scene whose map was deleted or no longer matches is kept
-   * and reported invalid rather than removed, so the two counts differ for a real reason a host can
-   * show — and `scenes()` says which reason, per scene.
+   * and reported invalid rather than removed, so the two counts differ for a real reason — and
+   * `scenes()` says which reason, per scene.
    */
   usableSceneCount: {
     readsFrom: "sceneCount",
@@ -2585,9 +2570,9 @@ export const VACUUM_CLEAN_MEMBERS = {
    * Answers from state already received, like `schedules` — the robot pushes its whole scene list on
    * boot and after any change, so this sends nothing.
    *
-   * **Where a caller gets a real map id.** Each scene names the map its rooms belong to, and so does a
-   * scheduled rooms-clean. The plan expected that from B3, multi-map management on DP 172; the vendor's
-   * own `multi_maps.proto` rules it out, sending a map list over p2p rather than the data point.
+   * **Where a real map id comes from.** Each scene names the map its rooms belong to, and so does a
+   * scheduled rooms-clean. Not from multi-map management on DP 172: the vendor's own `multi_maps.proto`
+   * sends a map list over p2p rather than the data point.
    */
   scenes: {
     ...method(
@@ -2641,7 +2626,7 @@ export const VACUUM_CLEAN_MEMBERS = {
   },
   /**
    * The robot's hardware revision — `DeviceInfo.hardware` (DP 169). A bare integer the vendor gives no
-   * scale for; useful for telling two builds of one model apart, not for comparing models.
+   * scale for; it distinguishes two builds of one model, not one model from another.
    */
   hardwareVersion: {
     readsFrom: VACUUM_DOCK_INFO_SOURCE,
@@ -2654,7 +2639,7 @@ export const VACUUM_CLEAN_MEMBERS = {
   },
   /**
    * WiFi RSSI in dBm (DP 134, Value ro). Schema-confirmed from `thing.m.device.ref.info.list` v5.4.
-   * Negative integer; closer to zero is stronger. Useful for diagnostics.
+   * Negative integer; closer to zero is stronger.
    */
   rssi: {
     param: TUYA_VACUUM_DP.RSSI,
@@ -2673,15 +2658,12 @@ export const VACUUM_CLEAN_MEMBERS = {
    * number is a different command arriving at real hardware, and an AIoT DP write is fire-and-forget,
    * so a mistake looks exactly like success. They are declared so the capability documents what the
    * robot accepts, and one capture per verb is all that stands between them and a working setter.
-   *
-   * `stopCleaning` and `resumeCleaning` are the pair users notice missing first: today a paused robot
-   * can only be resumed by starting a fresh run.
    */
   /**
    * Tell the robot a replaceable part is new, clearing its hours.
    *
-   * The other half of the consumables feature: nine counters are read, and until now nothing could
-   * reset one, so a host could show "side brush: 180 hours" forever after the brush was changed.
+   * The other half of the consumables feature: nine counters are read, and this is the write that
+   * clears one.
    *
    * **Unverified, so no setter is installed.** The message, the field and the enum are the vendor's
    * own, and the app has the feature — `resetAccessory(deviceId, accessory, callback)` calling
@@ -2718,8 +2700,8 @@ export const VACUUM_CLEAN_MEMBERS = {
       "Stop the current job (ModeCtrlRequest method 12 over DP 152). Method number not captured — unverified.",
   },
   /**
-   * Carry on with a paused job rather than starting a new one — the counterpart the pause verb has
-   * been missing.
+   * Carry on with a paused job rather than starting a new one — the counterpart to
+   * {@link VACUUM_CLEAN_MEMBERS.pauseCleaning}.
    */
   resumeCleaning: method(
     ({ sink }) =>
@@ -2835,7 +2817,7 @@ export const VACUUM_CLEAN_MEMBERS = {
    * **Uses `STOP_TASK`, not `STOP_RC_CLEAN`.** The product catalogue's own note on DP 155 spells the
    * flow out: enter with `START_RC_CLEAN` or any direction, leave with
    * `ModeCtrlRequest.method.STOP_TASK`. `STOP_RC_CLEAN`(16) exists in the enum but is not what the app
-   * sends to exit — an earlier revision of this member assumed it was, on nothing but the name.
+   * sends to exit.
    */
   stopRemoteControl: {
     type: "bool",
@@ -2857,7 +2839,7 @@ export const VACUUM_CLEAN_MEMBERS = {
    * the app sends it on key-release. Leaving the mode entirely is
    * {@link VACUUM_CLEAN_MEMBERS.stopRemoteControl}.
    *
-   * Sending any direction also ENTERS remote control, so a caller does not have to start it first.
+   * Sending any direction also ENTERS remote control, so no separate start is needed.
    */
   remoteControlDirection: {
     param: VACUUM_DP.REMOTE_CTRL,

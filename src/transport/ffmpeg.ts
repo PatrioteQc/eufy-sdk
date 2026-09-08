@@ -14,8 +14,8 @@
  * trace at `[ffmpeg]` debug lines; the default level + no logger stays silent.
  *
  * WHICH binary runs is a third, orthogonal dial: `new EufyMega({ ffmpegPath })`. See
- * {@link ffmpegExecutable} — a host that ships its own build must be able to name it, because the SDK
- * has no business editing the process `PATH` to reach a binary the caller already knows the path of.
+ * {@link ffmpegExecutable} — the SDK never edits the process `PATH`, so an explicit path is what names
+ * a binary that is not on it.
  *
  * @module transport/ffmpeg
  */
@@ -25,8 +25,7 @@ import { noopLogger, type Logger } from "../core/logger.js";
 /**
  * ffmpeg's `-loglevel` values, quiet → loud. `trace` is the firehose.
  *
- * Exported so a caller can offer the set as data; not published — `FfmpegLevel` is the union a reader
- * of the reference needs, and it states the same members.
+ * Exported as the set in data form; not published — `FfmpegLevel` states the same members.
  * @internal
  */
 export const FFMPEG_LEVELS = [
@@ -60,9 +59,8 @@ export function ffmpegLogLevel(level?: FfmpegLevel): FfmpegLevel {
  * Resolve WHICH ffmpeg to run from the SDK config a host passes (`new EufyMega({ ffmpegPath })`),
  * defaulting to the bare name `"ffmpeg"` so it is looked up on `PATH`.
  *
- * A host that ships its own build resolves and validates that binary itself, and an environment where
- * no `ffmpeg` is on `PATH` is ordinary — so the alternative to this option is the caller mutating
- * `process.env.PATH` process-wide to reach a file it already holds the absolute path to.
+ * An environment where no `ffmpeg` is on `PATH` is ordinary, and the SDK never mutates
+ * `process.env.PATH` process-wide to reach one — this option is how such a binary is named.
  *
  * A **blank** value counts as absent: an unset host config commonly arrives as `""` or as whitespace
  * from a config file, and neither can name a binary, so spawning it would fail as an `ENOENT` on the
@@ -72,7 +70,7 @@ export function ffmpegLogLevel(level?: FfmpegLevel): FfmpegLevel {
  *
  * The value is NOT probed here. Spawn failure surfaces to the caller as the media path's own "not
  * runnable" rejection, which is the same signal a missing `PATH` entry gives, so there is nothing for
- * an extra `stat` to add. {@link ffmpegAvailable} is the probe for a caller that wants to ask first.
+ * an extra `stat` to add. {@link ffmpegAvailable} is the probe.
  */
 export function ffmpegExecutable(path?: string): string {
   return path === undefined || path.trim() === "" ? "ffmpeg" : path;
@@ -111,12 +109,8 @@ export function spawnFfmpeg(args: string[], opts: FfmpegSpawnOptions = {}): Chil
 }
 
 /**
- * Whether the ffmpeg a caller would actually get is runnable, by running `-version` on it. Resolves the
- * executable exactly as the media paths do, so the answer is about the SAME binary they will launch — a probe
- * of the bare name reports "missing" on a host that ships its own build, and an egress gated on that answer
- * would silently take a degraded path instead.
- *
- * Synchronous, because it answers a branch a caller has to take before opening anything.
+ * Whether the resolved ffmpeg is runnable, by running `-version` on it. Resolves the executable exactly
+ * as the media paths do, so the answer is about the SAME binary they will launch.
  */
 export function ffmpegAvailable(executable?: string): boolean {
   try {
@@ -127,8 +121,8 @@ export function ffmpegAvailable(executable?: string): boolean {
 }
 
 /**
- * Whether `ffprobe` is on `PATH`. The SDK never spawns it — this answers the question for a caller
- * doing its own media work, which is why it takes no executable: no SDK path would use one.
+ * Whether `ffprobe` is on `PATH`. The SDK never spawns it, so there is no executable to resolve and
+ * none is taken.
  */
 export function ffprobeAvailable(): boolean {
   try {

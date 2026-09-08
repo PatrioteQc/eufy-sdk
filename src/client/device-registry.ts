@@ -134,12 +134,12 @@ function lastSeenMsOf(paramUpdatedAt: Record<number, number>): number | undefine
 }
 
 /**
- * A resolved {@link Codec} → the coarse {@link DeviceClass} a host groups by.
+ * A resolved {@link Codec} → the coarse {@link DeviceClass}.
  *
  * Derived rather than listed: `codecForType` already owns the DeviceType space and treats camera as the
  * residual bucket, so a newly-released SKU classifies correctly with no edit here. `lock`, `keypad` and
- * `display` collapse to `"other"` because `DeviceClass` is intentionally coarse — a host that needs
- * the precise kind reads the capabilities.
+ * `display` collapse to `"other"` because `DeviceClass` is intentionally coarse — the precise kind is
+ * named by the capabilities.
  */
 const CLASS_BY_CODEC: Record<Codec, DeviceClass> = {
   station: "homebase",
@@ -162,7 +162,7 @@ const CLASS_BY_CODEC: Record<Codec, DeviceClass> = {
  * for a P2P device (the security ecosystem really is overwhelmingly cameras) and wrong for anything
  * else: a home appliance on secure MQTT that reaches the fallback is unclassified, not a camera. Those
  * report `"other"` rather than a confident wrong answer, on the same grounds as never shipping a
- * guessed param — a host can tell "we don't know" from "we know it's a camera".
+ * guessed param.
  */
 function deviceClassOf(codec: Codec, realtime: RealtimeKind): DeviceClass {
   const cls = CLASS_BY_CODEC[codec];
@@ -215,7 +215,7 @@ export class DeviceRegistry {
   /**
    * Whether the last {@link getDevices} lost at least one query. The house-scoped fetch tolerates a
    * failing house/body call so a partial outage still yields devices — but the result is then a
-   * SUBSET, and treating a missing device as removed would tell a host to delete a live one.
+   * SUBSET, so a missing device is not a removal.
    */
   private lastRefreshPartial = false;
   /**
@@ -263,10 +263,9 @@ export class DeviceRegistry {
    *
    * A **rejected session** is the one failure not tolerated that way, because it is not a subset of
    * anything: every query fails identically, so what is left to return is nothing on a fresh client — an
-   * empty account that reads exactly like an account with no devices, which a host acts on by tearing down
-   * everything it had. The transport has already tried to replace the token by logging in again, so
-   * reaching here means it could not, and the caller is the one who has to know. It rejects; the devices it
-   * already knew stay known.
+   * empty account that reads exactly like an account with no devices. The transport has already tried to
+   * replace the token by logging in again, so reaching here means it could not, and the caller is the one
+   * who has to know. It rejects; the devices it already knew stay known.
    */
   async getDevices(): Promise<EufyDevice[]> {
     // get_devs_list is quirkily house-scoped: the bare {} call returns a set
@@ -349,13 +348,13 @@ export class DeviceRegistry {
    *
    * Both halves of the roster diff are gated on the baseline being trustworthy, in opposite directions.
    * `removed` is suppressed when THIS refresh was {@link lastRefreshPartial} — a failed house query
-   * yields a subset of the account, and reporting those absences as removals would tell a host to
-   * delete devices that are simply unqueried. `added` is suppressed when the PREVIOUS snapshot was
+   * yields a subset of the account, and reporting those absences as removals would report a device that
+   * is simply unqueried as gone. `added` is suppressed when the PREVIOUS snapshot was
    * incomplete, for the mirror-image reason: a device missing from a partial baseline is not new, and
    * announcing it would present a chunk of an existing account as freshly discovered.
    *
    * The very first pass reports no additions at all — the whole account is the baseline, not a
-   * pairing burst. A host enumerating what exists calls {@link getDevices}.
+   * pairing burst. {@link getDevices} enumerates what exists.
    */
   async pollChanges(): Promise<PollDiff> {
     const base = this.pollSnapshot;
@@ -433,19 +432,13 @@ export class DeviceRegistry {
    *
    * The refusal is **logged, never surfaced as an error**. It is a normal property of a shared or member
    * account, not a fault: nothing failed that the SDK did not immediately handle, and the account holder
-   * cannot grant themselves ownership. A host cannot tell "non-fatal degradation" from "something went
-   * wrong" on an untyped error event, and one that treats an error during discovery as evidence of an
-   * incomplete inventory would abandon a perfectly good fleet — so this says it where someone diagnosing
-   * freshness will find it, and says nothing where it would be mistaken for a failure.
+   * cannot grant themselves ownership.
    *
    * The list is account-wide, so a re-fetch is NOT per device: resolving a fleet calls this once per device,
    * and each one re-fetching would multiply one burst into N. {@link refreshedList} reuses a list younger
    * than {@link LIST_REUSE_MS} and coalesces concurrent fetches, which keeps resolving N devices at the cost
    * of one list while still letting a later refresh see a new value. That list is not owner-gated and carries the same
    * `{param_type, param_value, update_time}`, which makes it the fallback the overlay's own contract names.
-   * Without it this method answered from a cached list it only ever loaded once, so a read-through refresh
-   * re-applied the same values with a fresh timestamp and no observation could change for the life of the
-   * client — indistinguishable, to a caller, from a device that simply never changed.
    *
    * Shared by {@link EufyMega.getDevice} / {@link EufyMega.inspectDevice} / `commandContext`.
    */
@@ -611,8 +604,7 @@ export class DeviceRegistry {
   /**
    * Inspect one device by serial: resolve its codec/capabilities, cross-reference every reported
    * `param_type` against the param dictionary, and emit a paste-ready `registry.ts` row plus
-   * dictionary snippets for anything unknown. The enrichment tool — run it on a new/unconfirmed
-   * device and send back the export to grow the device catalog.
+   * dictionary snippets for anything unknown.
    */
   async inspectDevice(sn: string): Promise<DeviceInspection> {
     return inspectParams(await this.record(sn), sn);

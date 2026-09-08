@@ -42,7 +42,7 @@ export const LIGHT_CMD = {
  * Tunables for the "motion-activated light" (auto-spotlight): the spotlight lights up when the camera
  * detects motion. The device takes the WHOLE config on every write — there's no isolated on/off — so
  * these carry the scheduling knobs alongside the enable flag. Defaults mirror the app's; the current
- * values can't be read back, so pass what you want to keep.
+ * values can't be read back, so any field left unset is written as its default rather than preserved.
  */
 export type AutoSpotlightOptions = {
   /** Spotlight brightness 1..100 when it triggers (default 50). */
@@ -225,9 +225,8 @@ function switchFrame(on: boolean, ctx: CommandContext): Command {
  * clobber whatever the user set. It stays the explicit `setAutoSpotlight(on, opts)` method, where the
  * composite is visible at the call site.
  *
- * Exported so a caller can name the table its `*Actions` type is derived from, but NOT published:
- * each entry states its wire id and the evidence it was confirmed on, which the reference site
- * does not carry.
+ * Exported but NOT published: each entry states its wire id and the evidence it was confirmed on,
+ * which the reference site does not carry.
  * @internal
  */
 export const LIGHT_MEMBERS = {
@@ -237,8 +236,8 @@ export const LIGHT_MEMBERS = {
    * tracks whoever is streaming rather than a preference anyone set. The vendor app lights the lamp for a
    * live view and drops it on quitting.
    *
-   * A caller offering this as a switch should know that: it will read on whenever any client is watching.
-   * The setting a user changes and expects to persist is {@link spotlightEnabled}.
+   * So it reads on whenever any client is watching. The setting a user changes and expects to persist
+   * is {@link spotlightEnabled}.
    *
    * The switch refuses for a reason a value check cannot give — this model's frame SHAPE is unconfirmed —
    * so `switchFrame` throws that reason and `bindMembers` turns it into the rejection, rather than
@@ -277,7 +276,7 @@ export const LIGHT_MEMBERS = {
   /**
    * Warm-to-cool on a 0-100 scale — a `scalar`, not a percentage or a mired value, since 0 is one end
    * of a range rather than "none". `writeOnly`, so there is a setter and no getter at all: the device
-   * accepts the setting and never reports it back, which also means a caller cannot show its position.
+   * accepts the setting and never reports it back.
    * Only tunable-white spotlights respond; a white-only model accepts the frame and does nothing.
    */
   colorTemp: {
@@ -303,8 +302,8 @@ export const LIGHT_MEMBERS = {
    * the record rather than newly appearing. The param dictionary names it `floodlightTotalSwitch`
    * (`app:FLOODLIGHT_TOTAL_SWITCH`) and lists the T8170 among its models.
    *
-   * This is the switch a user changes and expects to STAY changed, which is why it is the one a host has to
-   * be told about. {@link isOn} is a different fact: the lamp being lit right now, driven by whichever
+   * This is the switch a user changes and expects to STAY changed. {@link isOn} is a different fact:
+   * the lamp being lit right now, driven by whichever
    * client is streaming — the vendor app lights it for a live view and drops it on quitting.
    */
   spotlightEnabled: {

@@ -61,11 +61,9 @@ const RETRYABLE_LIVE_SNAPSHOT_REASONS: readonly LiveSnapshotUnavailableReason[] 
 /**
  * Thrown by {@link MediaProvider.snapshotLive} when no still could be produced.
  *
- * {@link retryable} is the distinction the reason exists for. A caller that rate-limits acquisition has
- * to spend its budget on attempts that can succeed: a burst the decoder refused is per-attempt framing
- * and another try is worthwhile, while an unrunnable decoder is host configuration that no number of
- * retries will change. Without it every failure looks alike, and a caller either retries a permanent
- * fault forever or gives up on a camera that would have answered on the next attempt.
+ * {@link retryable} is the distinction the reason exists for: a burst the decoder refused is per-attempt
+ * framing and another try is worthwhile, while an unrunnable decoder is host configuration that no number
+ * of retries will change. Without it every failure looks alike.
  *
  * It is derived from {@link reason} rather than passed in, so the two can never disagree, and every
  * caller reads one answer instead of re-deriving the mapping and drifting from it.
@@ -94,9 +92,8 @@ export class LiveSnapshotUnavailableError extends Error {
  * A disabled camera serves no live media, video or audio.
  *
  * Raised by every media pull on the camera surface. The pulls that answer with a promise REJECT with it;
- * fragment recording answers with a handle and therefore THROWS it, so a caller that builds a recording
- * outside a `try` block sees it there rather than on the handle. A retained push thumbnail is exempt — it
- * is not a pull.
+ * fragment recording answers with a handle and therefore THROWS it at the call site rather than reporting
+ * it on the handle. A retained push thumbnail is exempt — it is not a pull.
  */
 export class CameraDisabledError extends Error {
   constructor(
@@ -119,7 +116,7 @@ export class CameraDisabledError extends Error {
  * the constraint and a caller watching every picture stutter.
  *
  * Which camera deserves the station is the caller's decision, not the SDK's, so nothing is queued or
- * pre-empted here. Stop the stream you no longer need and open the one you do.
+ * pre-empted here.
  *
  * A still is not refused: it yields the station instead, and answers with the retained image where one is
  * held. Only pulls that deliver continuous media contend for a viewer's place.
@@ -129,7 +126,7 @@ export class StationBusyError extends Error {
   readonly retryable = true;
 
   constructor(
-    /** The channel the station is already serving, so a caller can say which camera holds it. */
+    /** The channel the station is already serving. */
     readonly servingChannel: number,
     options?: { cause?: unknown },
   ) {
@@ -218,7 +215,7 @@ export interface StateConvergenceFailure {
  * the observation a member declares is what decides the second question. Where that observation times out
  * the write was accepted by the wire and never applied by the device — measured on a battery camera whose
  * power write is acknowledged and simply ignored — so this is a distinct outcome from a transport fault and
- * carries the attribution a caller needs to name which member on which device is unconfirmed.
+ * carries the attribution that names which member on which device is unconfirmed.
  */
 export class StateConvergenceError extends Error {
   readonly sn: string;
@@ -495,8 +492,7 @@ export interface LiveVideoFrame {
  *
  * A consequence worth knowing: the first announcements of a session can move from a header-derived
  * configuration to a parameter-set-derived one without the camera having reconfigured, because the sets
- * arrive with the first keyframe and the frames before it have only their headers. A caller that rebuilds on
- * a difference rebuilds once there, which is the same cost as a real first configuration.
+ * arrive with the first keyframe and the frames before it have only their headers.
  */
 export interface LiveVideoConfig {
   codec: VideoCodec;
@@ -517,7 +513,7 @@ export type AudioCodec = "aac-lc" | "aac-eld" | "g711a";
  *
  * Sample rate and channel count are deliberately absent: they are not on the wire. The v6 app assumes
  * 16 kHz mono for every audio type rather than reading them, so the SDK does not invent fields the
- * device never sent — a host needing them applies that assumption knowingly.
+ * device never sent.
  */
 export interface LiveAudioFrame {
   /** Codec declared in the frame header. */
@@ -541,9 +537,8 @@ export interface MediaFragment {
 }
 
 /**
- * A fragmented-MP4 recording owned by the caller. It remains an async iterable for direct `for await`
- * consumption, while exposing the shared source's battery budget and an explicit stop for callers
- * whose recording lifetime is not naturally scoped by an iterator.
+ * A fragmented-MP4 recording owned by the caller. It is an async iterable for direct `for await`
+ * consumption, and exposes the shared source's battery budget plus an explicit stop.
  */
 export interface FragmentRecordingHandle extends AsyncIterable<MediaFragment> {
   /** Battery budget elapsed; call `notice.extend()` to keep the shared media session alive. */
@@ -668,9 +663,7 @@ export interface LiveStreamConsumer extends LiveStreamHandle {
  *
  * Acquiring media can wait a long time before it can succeed or fail: a station has to connect, a level-2
  * key has to be negotiated or given up on, and a camera has to produce a keyframe. Measured at twenty
- * seconds and more on a battery camera. A caller that has changed its mind in that window, because the
- * operator navigated away or something more important needs the station, has no way to say so and must
- * wait for a result it will discard.
+ * seconds and more on a battery camera.
  *
  * Aborting settles the call with an `AbortError` and gives back whatever it had taken, so a pull nothing
  * else holds is released rather than left running for a caller that has gone. It never disturbs a pull
@@ -725,8 +718,7 @@ export interface MediaProvider {
    * cannot detect short of parsing the JPEG itself.
    *
    * Rejects with {@link LiveSnapshotUnavailableError}, whose {@link LiveSnapshotUnavailableError.retryable}
-   * says whether another attempt could succeed — a caller that rate-limits acquisition needs that to
-   * avoid spending its budget on a permanent fault, or abandoning a camera that would have answered.
+   * says whether another attempt could succeed.
    *
    * Carries {@link SharedSourceHints} for the reason stated there: a still polled on an idle camera is
    * routinely the call that OPENS the shared pull, so it decides the power budget and the retained window
@@ -748,8 +740,8 @@ export interface MediaProvider {
      *
      * A live still is refused while a sibling camera on the same station is being watched, because a
      * station serves one camera at a time and the live view is the picture someone is looking at. Answering
-     * the retained still there keeps a caller's tile populated instead of failing it, and this says the
-     * bytes are not current so a caller can label them or ask again later. Absent means freshly captured.
+     * the retained still there answers the call instead of failing it, and this says the bytes are not
+     * current. Absent means freshly captured.
      */
     retained?: true;
   }>;
@@ -769,9 +761,6 @@ export interface MediaProvider {
    * stream.on("video", (frame) => write(frame.data)); // Annex-B
    * stream.stop(); // detach this consumer
    * ```
-   *
-   * A caller writing into a sink of its own paces the stream through {@link LiveStreamConsumer.pause} and
-   * {@link LiveStreamConsumer.resume} rather than buffering what the sink will not take.
    */
   live(opts?: SharedSourceHints & AbortableCall & Record<string, unknown>): Promise<LiveStreamConsumer>;
   /**
@@ -836,7 +825,7 @@ export interface MediaProvider {
  * An encoder that turns raw PCM into AAC-LC frames, supplied by the CALLER. The SDK ships none: the
  * device's audio path is fixed at AAC-LC 16 kHz mono, and every plausible encoder is either a native
  * dependency or an external process, both of which belong to the host rather than to a protocol SDK.
- * A caller that already holds AAC needs none of this — see {@link TalkbackHandle}.
+ * It is unnecessary where the audio is already AAC — see {@link TalkbackHandle}.
  *
  * `encode` receives 16-bit little-endian mono PCM at 16 kHz and returns whole ADTS frames, zero or
  * more per call (an encoder buffers until it has a full 1024-sample block). `flush` drains a partial
@@ -897,13 +886,13 @@ export interface TalkbackHandle {
    *
    * This deliberately does NOT fire on a merely-empty queue. A realtime source keeps the queue near
    * empty by design, so "queue is empty" arrives after the very first frame and stopping on it would
-   * cut the clip to 64 ms. Use {@link pending} if you want the instantaneous depth.
+   * cut the clip to 64 ms. {@link pending} is the instantaneous depth.
    */
   on(event: "finished", listener: () => void): this;
   /**
-   * The path closed — either you called {@link stop}, or the media session it rides inside ended and
+   * The path closed — either {@link stop} was called, or the media session it rides inside ended and
    * took it with it. It always fires exactly once, so it is a teardown hook rather than a signal that
-   * something went wrong; a caller that stopped it already knows.
+   * something went wrong.
    */
   on(event: "stop", listener: () => void): this;
   /**

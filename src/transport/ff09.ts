@@ -75,15 +75,15 @@
  *    device has never rejected the extra field in any live test.
  *  - **The device's `/res` reply to a GET** is NOT a normal command ack: no `mChannel`/`mValue3`/
  *    `apiCommand`/`seq_num`, just `{cmd:1940, payload:{dev_sn, lock_payload, time}}` where `time` is a
- *    **hex string** (not decimal) that equals the keyTime of the GET that triggered it — match it back
- *    to your query to survive interleaved traffic. Its `cmdEnc` has an extra flag bit set vs. a request
+ *    **hex string** (not decimal) that equals the keyTime of the GET that triggered it — matched back
+ *    to the query to survive interleaved traffic. Its `cmdEnc` has an extra flag bit set vs. a request
  *    (`0x48xx` not `0x40xx`) but decodes with the exact same key/iv derivation. Decrypted plaintext:
  *    a leading `0x00` status byte, then TLV fields using the same `sep|len|bytes` encoding but the
  *    response's OWN independent tag numbering (does not line up positionally with the GET/SET request
  *    TLVs) — our own capture only ever showed `a1..ad` (13 fields, tags `0xa1`-`0xad`), but this is NOT
  *    the auto-lock write's own reply scoped to auto-lock: **a single `GET_SETTINGS` reply is a FLAT
  *    DUMP of the device's ENTIRE settings state**, one field per tag, covering every setting in the
- *    `A3`/setting-type enum below (not just whichever one you're about to write) — confirmed against
+ *    `A3`/setting-type enum below (not just the one being written) — confirmed against
  *    the app's own `smartLockGetParamsDataParse` (2026-07-18, same JS dump as the case-0 finding
  *    above), which explicit-tag-reads (not sequentially, `getByteParam(<tag>)`/`getSecondParam(<tag>)`/
  *    `getTimeParam(<tag>)`) THIRTY-FOUR fields, tags `0xa1` through `0xc2`:
@@ -109,10 +109,9 @@
  *    | 0xb1 | `passageModeEndTime`                 |      |                                       |
  *    | 0xb2 | `isPrivacyMode` (setting-type 9)      |      |                                       |
  *
- *    This resolves the earlier `a6`-tracks-enable hypothesis definitively: `a6` is `isOneTouchLock`, an
- *    entirely different setting, which is why it never moved with auto-lock's own on/off state — the
- *    REAL current-enable-state field is `a1`, one position earlier than previously assumed (our own
- *    `parseFf09SettingsResponse` already parses it correctly, it's just never been READ by
+ *    `a6` is `isOneTouchLock`, an entirely different setting, which is why it never moves with
+ *    auto-lock's own on/off state — the REAL current-enable-state field is `a1` (our own
+ *    `parseFf09SettingsResponse` already parses it correctly; it is simply not READ by
  *    `sendFf09Autolock`/`dispatchFf09Autolock`, which only pull `a2`/`a4`/`a5`). Not yet
  *    wired into any code path — flagged here as a documented opportunity, not a shipped read.
  *    See {@link decryptFf09Frame} + {@link parseFf09SettingsResponse}.
@@ -162,14 +161,13 @@ export const LOCK_API_COMMAND = {
   /**
    * NOT used by this encoder — kept only as a real, observed constant. `apiCommand 6012` genuinely
    * appears in live traffic (captured from a real but UNIDENTIFIED iOS app instance on the same
-   * account, 2026-07-16) and was captured once before (2026-07-13) as what was then wrongly assumed
-   * to be the garage OPEN command, but sending it from eufy-sdk never once produced a physical
-   * actuation in several live tests. **Mystery resolved (2026-07-18)**: the app's own `ESLCommand`
-   * enum (carved from a live `/proc/mem` dump) names 6012 `QUERY_STATUS_IN_LOCK` — a read-only status
-   * POLL, not an actuator at all, which is exactly why it never once opened/closed anything. The name
-   * `OPEN_DOOR` is now known to be wrong but kept as-is (not renamed) to avoid API churn for a constant
-   * that was never usable in the first place — do not use it for open, close, or a status read (this
-   * encoder has no query-status support; `GET_SETTINGS`/6016 is the only supported read path).
+   * account, 2026-07-16), but sending it from eufy-sdk never once produced a physical actuation in
+   * several live tests. The app's own `ESLCommand` enum (carved from a live `/proc/mem` dump,
+   * 2026-07-18) names 6012 `QUERY_STATUS_IN_LOCK` — a read-only status POLL, not an actuator at all,
+   * which is exactly why it never once opened/closed anything. The name `OPEN_DOOR` is a misnomer,
+   * kept as-is to avoid API churn on a constant that is not usable — do not use it for open, close, or
+   * a status read (this encoder has no query-status support; `GET_SETTINGS`/6016 is the only supported
+   * read path).
    */
   OPEN_DOOR: 6012,
   /** Read the current auto-lock/settings TLV — {@link buildFf09QueryFrame}. Verified live 2026-07-16. */

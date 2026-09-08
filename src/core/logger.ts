@@ -44,8 +44,8 @@ const LEVEL_RANK: Record<LogLevel, number> = { debug: 0, info: 1, warn: 2, error
 
 /**
  * Built-in {@link Logger} that writes to `console`, gated by a minimum level. `new ConsoleLogger()`
- * turns on all diagnostics (the equivalent of the old `debug: true`); `new ConsoleLogger("warn")`
- * shows only warnings and errors. Each level maps to the matching `console` method.
+ * turns on all diagnostics; `new ConsoleLogger("warn")` shows only warnings and errors. Each level maps
+ * to the matching `console` method.
  *
  * @example
  * ```ts

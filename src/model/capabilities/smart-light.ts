@@ -264,9 +264,8 @@ export type SmartLightActions = Surface<typeof SMART_LIGHT_MEMBERS> & {
  * only over the light's own MQTT wire — so the capability's own detection is the evidence, and each
  * getter reads `undefined` until the first report lands.
  *
- * Exported so a caller can name the table its `*Actions` type is derived from, but NOT published:
- * each entry states its wire id and the evidence it was confirmed on, which the reference site
- * does not carry.
+ * Exported but NOT published: each entry states its wire id and the evidence it was confirmed on,
+ * which the reference site does not carry.
  * @internal
  */
 export const SMART_LIGHT_MEMBERS = {
@@ -397,7 +396,7 @@ export const SMART_LIGHT_MEMBERS = {
   /**
    * Gated on the MODEL, not on a value, and carrying no description: it refuses off the confirmed list
    * for a reason a generated message cannot give, and its id names an entry in a catalog that only
-   * exists at runtime — a generated control would offer a picker with no domain. Neither is a property
+   * exists at runtime, so a generated control would have no domain to offer. Neither is a property
    * write, so it keeps its own signature.
    */
   setEffect: method(

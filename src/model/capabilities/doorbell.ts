@@ -55,8 +55,7 @@ export const DOORBELL_CMD = {
    * `DINGDONG_VOLUME` immediately above: `{account_id,cmd:1718,mChannel:<deviceCh>,mValue3:0,
    * payload:{dingdong_ringtone:N}}`, GCM signCode 8, doorbell `device_channel`, explicit `mValue3:0`.
    * Reversed from a live capture (values 4 and 0 observed) — `N` is an INTEGER INDEX picking one of
-   * several stored chime tones, NOT a boolean (the param-dictionary's prior `type:"bool",
-   * writable:false` guess was wrong — corrected alongside this wire confirmation).
+   * several stored chime tones, NOT a boolean.
    */
   DINGDONG_RINGTONE: 1718,
   /**
@@ -157,9 +156,8 @@ export function parseQuickResponses(
  *    fire-and-forget P2P write looks exactly like success.
  *  - `notificationMode` (1710) — a config JSON the device reports whole; no write is captured.
  *
- * Exported so a caller can name the table its `*Actions` type is derived from, but NOT published:
- * each entry states its wire id and the evidence it was confirmed on, which the reference site
- * does not carry.
+ * Exported but NOT published: each entry states its wire id and the evidence it was confirmed on,
+ * which the reference site does not carry.
  * @internal
  */
 export const DOORBELL_MEMBERS = {
@@ -285,8 +283,8 @@ export const DOORBELL_MEMBERS = {
   /**
    * Play one of the doorbell's quick responses at the visitor. `voiceId` comes from
    * {@link DOORBELL_MEMBERS.quickResponses}. The doorbell only plays while it has an active media
-   * session, so by default this briefly engages a live stream, sends, then tears it down; pass
-   * `{ engage: false }` if you already have a stream open.
+   * session, so by default this briefly engages a live stream, sends, then tears it down.
+   * `{ engage: false }` leaves an already-open stream alone.
    *
    * If engagement was requested but no stream comes up this THROWS, rather than firing 1706 into the
    * void and reporting success — the doorbell would play nothing. The wire is `QUICK_RESPONSE` 1706,

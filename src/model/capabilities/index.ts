@@ -301,10 +301,9 @@ export function detectCapabilities(rec: CloudRecord, codec: Codec): Capability[]
 
 /**
  * The baseline capabilities a codec grants every device of that family — derived from the modules
- * that declare the codec in their {@link import("./types").DetectionSpec} `codecs`. This is the
- * data that used to live in classify.ts's `BASELINE` const; it now lives in the capability files
- * themselves (each module owns "I am part of codec X's baseline"), so the codec→caps table is a
- * projection of the modules, not a second source of truth.
+ * that declare the codec in their {@link import("./types").DetectionSpec} `codecs`. Each capability
+ * file owns "I am part of codec X's baseline", so the codec→caps table is a projection of the modules,
+ * not a second source of truth.
  *
  * @param codec the resolved codec.
  * @returns a fresh array of baseline capabilities for that codec (possibly empty).
@@ -359,8 +358,8 @@ type EventIndex = { exact: Map<number, EventHit[]>; ranges: Array<{ lo: number; 
  * every device — turning a tamper alert into a battery alert. Candidates are resolved against the target
  * device's capabilities at dispatch time ({@link CapabilityModule.decodeEvent}).
  *
- * Parameterised over the modules so the contested-id paths can be driven from synthetic ones; the real
- * index is built once from every registered capability module.
+ * Parameterised over the modules rather than closing over the registry; the real index is built once
+ * from every registered capability module.
  * @internal
  */
 export function buildEventIndex(modules: readonly CapabilityModule[]): Record<"push" | "poll", EventIndex> {
@@ -425,7 +424,7 @@ function lookupEvents(source: "push" | "poll", id: number | undefined): EventHit
  * Pick the mapping that belongs to THIS device when several families claim the same id.
  *
  * With one candidate there is nothing to resolve — emit it, so a device whose capabilities can't be
- * resolved keeps working exactly as before. With several, the device's own capability set decides; if
+ * resolved still gets the event. With several, the device's own capability set decides; if
  * that isn't known, the SDK emits NOTHING rather than guessing, because naming the wrong event (a
  * tamper reported as a battery alert) is worse than staying silent about it.
  */
@@ -674,8 +673,8 @@ export interface DeviceEventMap {
    * `members` table the getters are, for every readable property of every capability.
    *
    * `property` is the name `Device.getProperty` takes and the one a capability getter answers, so a
-   * caller can re-read immediately; `Device.describe()` publishes the `{ accessor, property }` pair for a
-   * caller that wants the fluent accessor behind the name. `value` is what `getProperty` now serves,
+   * caller can re-read immediately; `Device.describe()` publishes the `{ accessor, property }` pair,
+   * which maps the name back to the fluent accessor behind it. `value` is what `getProperty` now serves,
    * narrowed the way the capability getter narrows it and read from the same live state rather than
    * re-converted from the wire. It is absent where no scalar can honestly be given — a property whose
    * stored form is a payload, or one whose stored value does not match its declared type — which means
@@ -692,10 +691,9 @@ export interface DeviceEventMap {
    * Announced against a `Device` the caller is holding, since the value is read out of that device's own
    * live state and the SDK holds the devices it hands out weakly.
    *
-   * Every readable property of every capability, with nothing filtered for being uninteresting: which of
-   * a device's truths a host acts on is the host's call. So a sensor's own check-in timestamp is
-   * announced too, even though the `deviceState` event already carries that fact — read `deviceState`
-   * for liveness and ignore the name, rather than have this floor decide nobody wanted it.
+   * Every readable property of every capability, with nothing filtered for being uninteresting. So a
+   * sensor's own check-in timestamp is announced too, even though the `deviceState` event already
+   * carries that fact.
    *
    * Latency is the inbound path's: seconds for a property a device reports over realtime. For one that
    * only ever arrives as a cloud param — which is most of them — it is whichever comes first of the poll
@@ -780,7 +778,7 @@ export interface DeviceActionMap {
   suction: SuctionActions;
   /** RoboVac locate (find-robot beep): `locating`; `locate(on?)`. */
   locate: LocateActions;
-  /** Identity metadata (read-only): `{ manufacturer, model, serialNumber, name, deviceType?, firmwareVersion?, hardwareVersion? }` for a host's device registry / device-info surface. */
+  /** Identity metadata (read-only): `{ manufacturer, model, serialNumber, name, deviceType?, firmwareVersion?, hardwareVersion? }`. */
   info: DeviceInfo;
 }
 
@@ -925,14 +923,13 @@ export type {
 } from "./types.js";
 /**
  * The value-kind vocabulary a read is annotated with, re-exported from the barrel that publishes the
- * read itself — a caller switching on a member's `kind` needs the union it switches on reachable from
- * the same place.
+ * read itself, so the union a member's `kind` is drawn from is reachable from the same import.
  */
 export type { ValueKind, KnownValueKind } from "../types.js";
 export { KNOWN_VALUE_KINDS, isKnownValueKind } from "../types.js";
 /**
  * The member-table vocabulary a capability's surface is declared in — published because
- * `CapabilityModule.members` is, and a caller reading a module needs the shape it holds.
+ * `CapabilityModule.members` is.
  */
 export type {
   Members,
@@ -947,8 +944,8 @@ export type {
   Surface,
 } from "./members.js";
 /**
- * The type-level parts `Surface` is assembled from — published because `Surface` NAMES them, so a
- * reader of a capability's `*Actions` type reaches them from the same barrel. `ValueKeys` and its
+ * The type-level parts `Surface` is assembled from — published because `Surface` NAMES them.
+ * `ValueKeys` and its
  * siblings select which members each branch of the projection covers; `ReadValue`/`WriteValue` say what
  * a getter answers and a setter takes; `SetterName` gives the setter its name.
  */
@@ -968,17 +965,15 @@ export type {
 export { CapabilityNotSupportedError } from "./types.js";
 /**
  * The shape `Device.describe()` answers with — published from the barrel that publishes the surface it
- * describes, so a caller reads a manifest and reaches the capability objects it names from one import.
+ * describes.
  */
 export type { DeviceManifest, CapabilityDescriptor, ReadDescriptor, ActionDescriptor } from "./manifest.js";
 export type { ActionSpec } from "./types.js";
 /**
  * Ask ONE method what it accepts, without walking a whole manifest.
  *
- * `Device.describe()` is the discovery entry point and stays the one a caller building a control surface
- * uses. This is the same answer for a method already in hand — a caller that resolved
- * `dev.camera()?.setNightVision` from a manifest, and wants its argument at the point of the call, would
- * otherwise have to carry the descriptor alongside the function or re-describe the device. Every member
+ * `Device.describe()` is the discovery entry point; this is the same answer for a method already in
+ * hand, read off the function itself rather than carried beside it. Every member
  * kind is wrapped, so it answers for a derived setter, a momentary action and a method alike, and
  * `undefined` for an action nothing describes.
  */
@@ -1011,9 +1006,8 @@ export type {
  * so the type names the table and the table is part of the published surface.
  *
  * It is also the one declaration of what a capability exposes: per feature its wire id, value type,
- * `kind`, domain (`min`/`max`/`enumValues`), presence gate and the description a caller reads to offer
- * it as a control. A host building a control list off `Surface` reaches the same entry the runtime
- * installed from, rather than a second table that can disagree with it.
+ * `kind`, domain (`min`/`max`/`enumValues`), presence gate and the description published for it.
+ * `Surface` and the runtime install from the same entry, so there is no second table to disagree with it.
  */
 export { ARMING_MEMBERS } from "./arming.js";
 export { AUDIO_MEMBERS } from "./audio.js";
@@ -1047,15 +1041,15 @@ export type { AudioActions } from "./audio.js";
 export { VACUUM_DOCK_MEMBERS } from "./vacuum-dock.js";
 export type { VacuumDockActions } from "./vacuum-dock.js";
 /**
- * The dock's activity is the declared return of the public `dev.vacuumDock()?.dockState` getter, so a
- * consumer needs to be able to name the union — and the list it is taken from, since it names its own.
+ * The dock's activity is the declared return of the public `dev.vacuumDock()?.dockState` getter, so the
+ * union is published — and the list it is taken from, since it names its own.
  */
 export type { DockActivity } from "./vacuum-dock.js";
 export { DOCK_ACTIVITIES } from "./vacuum-dock.js";
 export { HubAlarmTone, type HubAlarmToneValue } from "./siren.js";
 /**
  * RoboVac activity and clean type are the declared returns of the public `dev.vacuumClean()` getters,
- * so a consumer needs to be able to name both unions.
+ * so both unions are published.
  */
 export type { VacuumActivity, VacuumCleanType, CarpetStrategy, CleanExtent } from "./vacuum-clean.js";
 /** The lists those unions are taken from — published because each union names its own. */

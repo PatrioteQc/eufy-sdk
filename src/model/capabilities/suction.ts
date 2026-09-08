@@ -21,7 +21,7 @@ export const SUCTION_DP = {
  * map with **no model argument**: a given int means the same thing on every RoboVac. What varies per
  * model is only **availability** — a device's `get_product_data_point` range may expose a narrower
  * subset (the T2351 catalog lists 0-3) — so the `suction` property stays a raw int rather than being
- * constrained per device, and a host names a reported level with {@link suctionLevelName}.
+ * constrained per device, and {@link suctionLevelName} names a reported level.
  *
  * `BoostIQ` (4) is a real suction level in this scale. The separate `boostIq`
  * boolean (DP 159) is the independent auto-suction toggle — a device may report both, and they don't
@@ -60,12 +60,11 @@ export function suctionLevelName(value: number): string | undefined {
 export type SuctionActions = Surface<typeof SUCTION_MEMBERS> & {
   /**
    * The suction levels this device supports, sourced from the per-SKU `get_product_data_point` catalog
-   * range for DP 158. Use this to build a picker — do not assume all six {@link SuctionLevel} values
-   * are available. For example, a T2351 reports `[0, 1, 2, 3]`.
+   * range for DP 158. Narrower than the full six {@link SuctionLevel} values on many models — a T2351
+   * reports `[0, 1, 2, 3]`.
    *
-   * `undefined` when the catalog is absent or does not cover DP 158 — fall back to the full scale or
-   * hide the picker until a catalog is loaded. Only meaningful on devices where `setSuctionLevel` is
-   * installed (AIoT vacuums).
+   * `undefined` when the catalog is absent or does not cover DP 158. Only meaningful on devices where
+   * `setSuctionLevel` is installed (AIoT vacuums).
    */
   readonly supportedLevels?: readonly SuctionLevelValue[];
 };
@@ -74,14 +73,13 @@ export type SuctionActions = Surface<typeof SUCTION_MEMBERS> & {
  * Every `suction` read and write — `setSuctionLevel` (DP 158, via `writeAs`) and `setBoostIq`
  * (DP 159) are both derived from this table.
  *
- * Exported so a caller can name the table its `*Actions` type is derived from, but NOT published:
- * each entry states its wire id and the evidence it was confirmed on, which the reference site
- * does not carry.
+ * Exported but NOT published: each entry states its wire id and the evidence it was confirmed on,
+ * which the reference site does not carry.
  * @internal
  */
 export const SUCTION_MEMBERS = {
   /**
-   * Narrowed to the known scale for the caller's benefit, which is NARROWER THAN THE WIRE: the level
+   * Narrowed to the known scale, which is NARROWER THAN THE WIRE: the level
    * arrives as a plain integer and a firmware reporting a value outside {@link SuctionLevel} would be
    * typed as one of these regardless. {@link suctionLevelName} stays total for that reason — it answers
    * `undefined` for an int it does not recognise, so an unexpected level surfaces as unnamed rather than

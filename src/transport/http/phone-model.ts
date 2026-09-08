@@ -6,8 +6,8 @@
  * more than a handful of people run the SDK. These helpers pick a realistic model instead — SEEDED by
  * the install's `openudid` so it is STABLE across runs (a value that changed each run would look like a
  * new device every launch and trigger a fresh-device 2FA every time). Pass no seed for a one-off random
- * value. A host that wants a fixed identity sets `phoneModel` / `mediaUserAgent` explicitly and never
- * reaches here.
+ * value. An explicitly configured `phoneModel` / `mediaUserAgent` pins the identity and never reaches
+ * here.
  */
 
 /** Brand → the parts a model string is composed from. `${brand}${first}${second}`. */

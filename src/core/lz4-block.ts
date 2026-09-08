@@ -10,7 +10,7 @@
  * **Why not an npm package.** What travels here is a bare LZ4 block: no magic number, no frame header,
  * no checksum, no stored size. Every LZ4 package on npm speaks the *frame* format by default and
  * exposes the block API awkwardly if at all, and the block format itself is one loop over four
- * quantities. A dependency would be more code to audit than the sixty lines it replaced, so this is
+ * quantities. A dependency would be more code to audit than the sixty lines here, so this is
  * hand-written and tested against blocks produced by the reference liblz4 implementation.
  *
  * @module core/lz4-block

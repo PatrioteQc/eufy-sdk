@@ -2,11 +2,10 @@
  * Writer for the structured, base64-encoded values some device data points carry in place of a plain
  * scalar — the mirror of the `RawDpCodec` reader in `./contracts.ts`.
  *
- * Every write so far hand-rolled its own bytes, which was tolerable while the only one was two varints
- * in a flat message. It stops being tolerable one level down: a dock command wraps a `oneof` two levels
- * deep, a clean-parameter write nests three, and a room-select carries a repeated sub-message. Building
- * each of those by hand is where silent wire bugs come from — and on a fire-and-forget write, a bad
- * frame is indistinguishable from success.
+ * Hand-rolling a write's bytes is where silent wire bugs come from, and the nesting gets deep fast: a
+ * dock command wraps a `oneof` two levels deep, a clean-parameter write nests three, and a room-select
+ * carries a repeated sub-message. On a fire-and-forget write, a bad frame is indistinguishable from
+ * success.
  *
  * **What this is not.** It is not a protobuf library and does not want to be. There is no schema, no
  * field-name lookup, no wire-type inference from a declared type: the caller states the field number and
@@ -70,7 +69,7 @@ export function zigzag(value: number): number {
  * **Zero-valued fields are the caller's decision, not this writer's.** proto3 omits them by default and
  * a device reads an absent field as its zero, so emitting `0` explicitly and omitting it usually mean
  * the same thing — but not always, and only the capability knows which. {@link int} therefore writes
- * exactly what it is given; a caller that wants the default rule skips the call.
+ * exactly what it is given, and omitting the call is what leaves the field absent.
  */
 export class RawDpWriter {
   private readonly body: number[] = [];
@@ -104,7 +103,7 @@ export class RawDpWriter {
    * The sub-message is emitted even when `build` writes nothing into it. That is not an oversight: an
    * EMPTY sub-message is how these protocols say "this subsystem exists and is in its zero state", as
    * opposed to saying nothing about it, and the readers on the other side of this file depend on the
-   * distinction. A caller that means "say nothing" skips the call.
+   * distinction. Omitting the call is what says nothing about it.
    */
   sub(field: number, build: (w: RawDpWriter) => void): this {
     const inner = new RawDpWriter();

@@ -326,9 +326,8 @@ function isDirection(v: unknown): v is PtzDirection {
  * whose ids are unverified placeholders — evidence-gated, so a device that never reports one simply has
  * no getter for it (a live fleet probe found none of the three reported by any device today).
  *
- * Exported so a caller can name the table its `*Actions` type is derived from, but NOT published:
- * each entry states its wire id and the evidence it was confirmed on, which the reference site
- * does not carry.
+ * Exported but NOT published: each entry states its wire id and the evidence it was confirmed on,
+ * which the reference site does not carry.
  * @internal
  */
 export const PTZ_MEMBERS = {
@@ -429,7 +428,7 @@ export const PTZ_MEMBERS = {
    * while this module owns the sub-command id and the reply parsing.
    *
    * `answers` because calling it performs nothing: it hands back the namespace the verbs live on. Offering
-   * it as a control would render a button that returns an object and does nothing.
+   * it as a control would produce one that returns an object and does nothing.
    */
   preset: {
     ...method(

@@ -1,12 +1,11 @@
 /**
  * The robot's map, as `stream.proto` describes it — the messages that arrive on the `biz/…/res` leg.
  *
- * Six message types carry everything a caller could want about a map: its size and where it sits in
+ * Six message types carry everything about a map: its size and where it sits in
  * the world, which cell is floor and which is wall, which room each cell belongs to, what those rooms
  * are called and how they are cleaned, and where the user drew a line the robot must not cross. This
  * decodes all six. It does not draw anything: what it hands back is dimensions, coordinates, names and
- * two pixel planes, and a host that wants a picture has everything it needs to paint one. A host given
- * only a picture can never get back to the data.
+ * two pixel planes.
  *
  * **Units, once, because every coordinate here shares them.** Distances are centimetres — the vendor
  * writes them as "m × 100" throughout — and `resolution` is the width of one cell in those same
@@ -49,7 +48,7 @@ export interface MapLine {
  * A four-cornered zone, corners in the order the device sent them.
  *
  * Not necessarily a rectangle — the vendor's type is `Quadrangle`, and the app lets a zone be rotated
- * — so a host drawing one must treat it as a polygon and not as a bounding box.
+ * — so the corners describe a polygon and not a bounding box.
  */
 export interface MapQuad {
   readonly corners: readonly [MapPoint, MapPoint, MapPoint, MapPoint];
@@ -115,9 +114,8 @@ export interface VacuumMapPlane {
    * Whether this frame is the whole map or an amendment to the last one.
    *
    * **How an `"incremental"` frame is applied is not known.** Nothing states whether it replaces a
-   * region, carries its own origin, or assumes the previous frame's geometry, so a consumer that
-   * cannot answer that should keep `"full"` frames and drop the rest: a stale-but-correct map beats one
-   * assembled by a guessed rule.
+   * region, carries its own origin, or assumes the previous frame's geometry. A stale-but-correct map
+   * beats one assembled by a guessed rule.
    */
   readonly frame: MapFrameKind;
   /** The device's id for this map. `undefined` when it sent none. */
@@ -135,7 +133,7 @@ export interface VacuumMapPlane {
    * `i = row * width + col`, and its value indexes {@link MAP_CELL_VALUES}.
    *
    * Handed over packed rather than expanded. A large map is a megabyte once every cell is its own
-   * byte, and most consumers want a handful of lookups rather than the whole grid.
+   * byte.
    */
   readonly cells: Buffer;
 }
@@ -151,8 +149,8 @@ export interface VacuumRoomOutline {
    * Where this plane's cell `(0, 0)` sits, in centimetres.
    *
    * **Its own origin, not the map's.** The two planes are not guaranteed to start at the same world
-   * position, so a consumer looking up the room under a map cell must convert through world
-   * coordinates rather than reusing the index.
+   * position, so a room lookup under a map cell must convert through world coordinates rather than
+   * reusing the index.
    */
   readonly origin: MapPoint;
   /**
@@ -286,7 +284,7 @@ export interface VacuumMapDescription {
  * A whole map in one message — the vendor's `MapBackup`, sent when a map is switched or edited.
  *
  * Every part is optional because the device sends what changed. A backup with only `description` set
- * is a rename, and reading its absent `map` as an empty one would erase the map a host is holding.
+ * is a rename, and reading its absent `map` as an empty one would erase a map already held.
  */
 export interface VacuumMapBackup {
   readonly description: VacuumMapDescription | undefined;

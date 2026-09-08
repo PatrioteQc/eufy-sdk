@@ -149,8 +149,7 @@ export class Device {
   properties!: readonly PropertySpec[];
   /**
    * What the user named this device in the app (`device_name`), falling back to {@link modelName} when
-   * the record carries none — the name a host shows, since two units of the same product are otherwise
-   * indistinguishable to the person reading the list.
+   * the record carries none.
    */
   name!: string;
   /** Model / T-code from the record ("T8410"), when known. */
@@ -367,12 +366,12 @@ export class Device {
   }
 
   /**
-   * Low-level property read by name — the untyped escape hatch. **Prefer the typed fluent capability
-   * getters** (`dev.battery()?.level`, `dev.contact()?.open`) where the property is exposed by a
-   * capability: they return the value already narrowed to its declared type instead of the loose
-   * `PropertyValue.value` (`boolean|number|string|object`) you get here. Use this only for an unbound
-   * model object (no live client → no `dev.<cap>()`) or a param not yet surfaced on a capability.
-   * Returns `undefined` if never observed.
+   * Low-level property read by name — the untyped escape hatch. The typed fluent capability getters
+   * (`dev.battery()?.level`, `dev.contact()?.open`) answer the value already narrowed to its declared
+   * type where the property is exposed by a capability; this answers the loose `PropertyValue.value`
+   * (`boolean|number|string|object`). It is the only read for an unbound model object (no live client →
+   * no `dev.<cap>()`) and for a param not yet surfaced on a capability. Returns `undefined` if never
+   * observed.
    */
   getProperty(name: string): PropertyValue | undefined {
     const v = this.state.get(name);
@@ -382,11 +381,10 @@ export class Device {
 
   /**
    * Snapshot of all current property values (named + unknown passthrough) — the untyped bulk read, for
-   * diagnostics / discovery. **Prefer the typed fluent capability getters** (`dev.battery()?.level`, …)
-   * for reading a specific known property; this loose map is for dumping everything (e.g. the CLI /
-   * device inspector), not per-property access. Under a freshness policy, schedules a background refresh
-   * when the OLDEST observed value is stale (one fetch covers every param) and returns the current
-   * snapshot immediately.
+   * diagnostics / discovery. The typed fluent capability getters (`dev.battery()?.level`, …) answer one
+   * specific known property; this loose map answers every observed value at once. Under a freshness
+   * policy, schedules a background refresh when the OLDEST observed value is stale (one fetch covers
+   * every param) and returns the current snapshot immediately.
    */
   getProperties(): Record<string, PropertyValue> {
     if (this.refresher && !this.refreshInFlight) {
@@ -467,9 +465,7 @@ export class Device {
    * through `inspectParams`.
    *
    * Nothing is withheld for being uninteresting, here or in a capability's own table. Which of a device's
-   * truths a host acts on is the host's call: a value judged too chatty to mention — a sensor's own
-   * check-in, a robot's session counter ticking through a clean — is exactly the one some caller is
-   * building a progress display out of, and a withheld value cannot be recovered, where an unwanted one
+   * truths a host acts on is the host's call: a withheld value cannot be recovered, where an unwanted one
    * costs a caller one comparison on the name.
    *
    * The value comes out of live state — written microseconds earlier by the same call that produced
@@ -496,9 +492,8 @@ export class Device {
   }
 
   /**
-   * What this device exposes, as data — the shape a caller renders a device from without a branch per
-   * capability: every installed read with what its value MEANS, every offerable action with what it
-   * accepts, and every event each capability emits.
+   * What this device exposes, as data — every installed read with what its value MEANS, every offerable
+   * action with what it accepts, and every event each capability emits.
    *
    * Beside {@link toJSON} rather than folded into it, because the two answer different questions and
    * `toJSON` fires on every implicit `JSON.stringify` (an event payload, a log line) where the shape is
@@ -530,7 +525,7 @@ export class Device {
     };
   }
 
-  /** Plain-object view, handy for the CLI / discovery / debugging. */
+  /** Plain-object view: serial, name, resolved codec/source, capabilities, and every current property value. */
   toJSON(): Record<string, unknown> {
     return {
       sn: this.sn,

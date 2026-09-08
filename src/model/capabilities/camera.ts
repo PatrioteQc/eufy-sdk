@@ -171,8 +171,9 @@ export function resolveVideoQualityTier(value: number | string | boolean): numbe
  * Lift the ACTIVE tier out of the quality config the device reports.
  *
  * 2731 is not a scalar: a T8170 reports `{cur_mode:0, mode_0:{quality:3}, mode_1:{quality:3}}` — one
- * entry per capture mode, with `cur_mode` selecting which is live. Read as a bare number it coerced to
- * a non-numeric string and the getter answered the whole object, typed as though it were a tier.
+ * entry per capture mode, with `cur_mode` selecting which is live. Read as a bare number it would
+ * coerce to a non-numeric string and the getter would answer the whole object, typed as though it were
+ * a tier.
  *
  * A device that reports a plain tier is still read (some models may); anything else — an unknown shape,
  * a mode with no entry, a tier not in {@link VIDEO_QUALITY_TIERS} — is `undefined` rather than a guess.
@@ -341,9 +342,8 @@ function refuseWhenDisabled(ctx: CommandContext, read: (name: string) => { value
  * No `reboot`: it is a STATION operation with an unproven wire, shipped as the device-level
  * `EufyMega.reboot(sn)` (wire-confirmed station-scalar RESTART_HUB) rather than guessed at here.
  *
- * Exported so a caller can name the table its `*Actions` type is derived from, but NOT published:
- * each entry states its wire id and the evidence it was confirmed on, which the reference site
- * does not carry.
+ * Exported but NOT published: each entry states its wire id and the evidence it was confirmed on,
+ * which the reference site does not carry.
  * @internal
  */
 export const CAMERA_MEMBERS = {
@@ -398,7 +398,7 @@ export const CAMERA_MEMBERS = {
   },
   /**
    * A THREE-VALUE enum, not the boolean the name suggests — the middle option is timestamp without the
-   * logo, so a caller offering a plain switch loses a state the device has. `coerceEnumValue` refuses
+   * logo, so a plain switch cannot express every state the device has. `coerceEnumValue` refuses
    * anything outside {@link Watermark} instead of coercing it: on a fire-and-forget write a bogus index
    * would dispatch and look like it worked. The labels are the app's radio order.
    */
@@ -417,9 +417,9 @@ export const CAMERA_MEMBERS = {
     },
   },
   /**
-   * Three modes, and `FullColor` is the one to check for: a model without a spotlight or starlight
-   * sensor omits it, and the wire accepts the value regardless — so offer the option from the device's
-   * own reported set rather than assuming all three. `coerceEnumValue` rejects a value outside
+   * Three modes, and `FullColor` is the conditional one: a model without a spotlight or starlight
+   * sensor omits it, and the wire accepts the value regardless — the device's own reported set is the
+   * only statement of which of the three it has. `coerceEnumValue` rejects a value outside
    * {@link NightVision} rather than coercing it. The payload key on the wire is `night_sion`.
    */
   nightVision: {
@@ -440,8 +440,8 @@ export const CAMERA_MEMBERS = {
     },
   },
   /**
-   * `type` is how the value is STORED, and 2731 stores the whole config — the tier a caller wants is
-   * lifted out of it by `decode`, so the getter answers a tier while the schema stays honest. The setter
+   * `type` is how the value is STORED, and 2731 stores the whole config — the ACTIVE tier is lifted out
+   * of it by `decode`, so the getter answers a tier while the schema stays honest. The setter
    * takes a resolution NAME as well as the tier the getter answers.
    */
   videoQuality: {
@@ -488,8 +488,8 @@ export const CAMERA_MEMBERS = {
    * Privacy mode — the multi-frame burst. Nothing reports it back, so it is a setter with no getter, and
    * it declares no param: the id the burst is built from is the transport's, not this capability's.
    *
-   * Being write-only, it is named by `unobservableMembers(dev.camera())`, so a caller can tell "this camera
-   * is not in privacy mode" from "this camera cannot say" rather than reading both as `undefined`. That
+   * Being write-only, it is named by `unobservableMembers(dev.camera())`, which distinguishes "this camera
+   * is not in privacy mode" from "this camera cannot say" rather than leaving both as `undefined`. That
    * distinction matters most on the families whose power rides this same envelope — see {@link enabled}.
    */
   privacy: {

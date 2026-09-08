@@ -17,9 +17,9 @@ export const PERSON_DETECTION: CapabilityModule = {
    * Inbound AI person events. A face or an identified person is `personDetected`; an explicitly
    * UNRECOGNISED person is `strangerDetected`.
    *
-   * The two are split because they mean opposite things to a host — "someone you know is at the door"
-   * versus "someone you don\'t" — and collapsing them loses the distinction the device went to the
-   * trouble of making. A host that wants either still listens for both.
+   * The two are split because they mean opposite things — "someone known is at the door" versus
+   * "someone unrecognised" — and collapsing them loses the distinction the device went to the trouble
+   * of making.
    */
   events: [
     { source: "push", match: DoorbellPushEvent.FACE_DETECTION, emit: "personDetected" },

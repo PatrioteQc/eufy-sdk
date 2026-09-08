@@ -33,9 +33,9 @@ export type RealtimeKind = "smqtt" | "p2p" | "ankermake-mqtt";
  */
 export const PRINTER_CATEGORY_RE = /ankermake|eufymake|fdm|3d_?print/i;
 /**
- * The coarse grouping a host buckets devices by. Every value is one the SDK can actually DERIVE from a
+ * The coarse device grouping. Every value is one the SDK can actually DERIVE from a
  * resolved codec — anything the codec space doesn't confidently name lands in `"other"` rather than a
- * guess. Intentionally coarse: a host needing the precise kind reads the capabilities.
+ * guess. Intentionally coarse: the precise kind is named by the capabilities.
  */
 export type DeviceClass = "camera" | "homebase" | "vacuum" | "mower" | "sensor" | "light" | "printer" | "other";
 
@@ -62,13 +62,13 @@ export interface EufyDevice {
   p2pDid?: string;
   /**
    * Device state data points (param_type → param_value), exactly as the cloud record carries them.
-   * Raw and unnamed: a host reads state through the capability surface, which resolves these into
-   * named properties. `Device.inspect` labels them for troubleshooting.
+   * Raw and unnamed: the capability surface resolves these into named properties. `Device.inspect`
+   * labels them for troubleshooting.
    *
    * **Not a realtime source.** These are refreshed server-side on the device's own cloud heartbeat,
    * which is slow: measured across a live fleet, the freshest param on an active device was ~12 minutes
    * old, and the per-device `get_device_param_list` call returns the same staleness as the bulk list
-   * (so fetching harder does not make them fresher). Treat them as a coarse state snapshot + liveness
+   * (so fetching harder does not make them fresher). They are a coarse state snapshot plus liveness
    * evidence ({@link paramUpdatedAt}); realtime state arrives over push / P2P / MQTT.
    */
   params?: Record<number, string>;

@@ -95,9 +95,8 @@ export class VacuumMapStore {
   /**
    * Take one piece, and say whether it changed anything.
    *
-   * `false` means the piece was stale — an older revision of a map already held — and was dropped. A
-   * caller emitting an event per change can use the return directly: the device repeats its map
-   * frequently, and re-announcing an unchanged map on every repeat is noise.
+   * `false` means the piece was stale — an older revision of a map already held — and was dropped. The
+   * device repeats its map frequently, so the return is what tells a repeat from a change.
    */
   apply(piece: VacuumMapPiece): boolean {
     switch (piece.kind) {

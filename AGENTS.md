@@ -165,6 +165,15 @@ those layers. CI-enforced by `guard:capability-ownership`, which allowlists exac
   in a JSDoc block **above** the function, type or field; do not narrate inside the body with `//`
   lines. State what is verified, not the iteration history of how you got there. A body comment is a
   smell that the JSDoc is incomplete — move it up, or delete it if the code already says it.
+- **A JSDoc states the declaration, not its audience.** What it is, what it takes, what it answers,
+  what it guarantees, and the protocol fact that makes it so. NOT who will call it, what a caller
+  might do with it, what could be built on it, or which tool finds it handy — a declaration has no
+  say in who reuses it, and naming a consumer dates the doc the moment another one appears. Write
+  about the value, not the reader: `answers undefined when the wire supplies no URL`, never `so a
+host can decide whether to show a button`. Second person (`you`, `your host`) never appears.
+- **A JSDoc does not narrate its own history.** Not what an earlier version did, not what the old
+  path was, not which guess was wrong, not what a fix corrected. Prose that needs editing when the
+  next change lands is not ground truth. That reasoning belongs in the commit that makes the change.
 - **Shipped `src/` cites its PEERS only — never a `.md` file.** `src/` ships in `dist/`, so a pointer
   to a companion prose file dangles for a consumer, and `docs/` is **generated from** this source's
   JSDoc — pointing back at it inverts the direction the site is built on. Reference modules, exported

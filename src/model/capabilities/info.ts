@@ -2,7 +2,7 @@ import type { CapabilityActions, CapabilityModule, CommandContext } from "./type
 import type { MemberDeps } from "./members.js";
 
 /**
- * `info` — per-device identity metadata for a host's device registry / device-info surface.
+ * `info` — per-device identity metadata.
  * UNIVERSAL (every device has it) and READ-ONLY: it dispatches no command and touches no
  * `CommandSink` — its `actions()` factory just projects the already-resolved {@link CommandContext}
  * into a stable {@link DeviceInfo} object.
@@ -21,9 +21,8 @@ import type { MemberDeps } from "./members.js";
 const MANUFACTURER = "eufy";
 
 /**
- * Per-device identity metadata — the object returned by `dev.info()`. The standard identity fields a
- * host maps onto its own device-info surface (manufacturer / model / serial / name / firmware /
- * hardware version); `deviceType` is diagnostic.
+ * Per-device identity metadata — the object returned by `dev.info()`. The standard identity fields
+ * (manufacturer / model / serial / name / firmware / hardware version); `deviceType` is diagnostic.
  */
 export interface DeviceInfo {
   /** Always "eufy" (Anker AIoT) — no per-device manufacturer on the wire. */

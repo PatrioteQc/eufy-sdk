@@ -6,12 +6,11 @@
  * — while the tasks inside a scene are only ever sent, never reported. So this reads what the device
  * publishes and does not pretend to the rest.
  *
- * **This is where a caller gets a real `mapId`.** The plan filed that under B3, multi-map management
- * on DP 172, and B3 cannot supply it: `multi_maps.proto` states outright that a `MAP_GET_ALL` or
- * `MAP_GET_ONE` response travels over p2p rather than the data point, leaving DP 172 carrying only the
- * method, sequence and result of an operation. `SceneInfo.mapid` is on the DP, and so is a scheduled
- * rooms-clean's `map_id` — two reads that hand a caller the id the area-select frames need, with no
- * p2p transfer and no default invented for them.
+ * **A real `mapId` is on this DP.** Multi-map management on DP 172 cannot supply one:
+ * `multi_maps.proto` states outright that a `MAP_GET_ALL` or `MAP_GET_ONE` response travels over p2p
+ * rather than the data point, leaving DP 172 carrying only the method, sequence and result of an
+ * operation. `SceneInfo.mapid` is on the DP, and so is a scheduled rooms-clean's `map_id` — two reads
+ * that carry the id the area-select frames need, with no p2p transfer and no default invented for them.
  *
  * @module model/vacuum-scenes
  */
@@ -51,8 +50,8 @@ export interface VacuumScene {
   /** Why it cannot run. `"none"` while {@link valid} — the vendor reports both fields either way. */
   readonly invalidReason: SceneInvalidReason | undefined;
   /**
-   * The map this scene's rooms belong to, and one of the two places a caller can get a real map id
-   * from — the other being a scheduled rooms-clean.
+   * The map this scene's rooms belong to, and one of the two real map ids the device reports — the
+   * other being a scheduled rooms-clean's.
    *
    * `undefined` when the device sends its no-map sentinel, which is `-2` written into a `uint32`, and
    * `undefined` for a zero as well: proto3 omits a zero-valued field, so a scene tied to map 0 and one
@@ -95,8 +94,8 @@ const ID_FIELD = { VALUE: 1 } as const;
  * The device's "this scene has no map" sentinel: the vendor's documented `-2`, and the field is a
  * `uint32`, so it arrives as `-2` reinterpreted rather than as a negative number.
  *
- * Reported as `undefined` rather than passed through. Four billion is not a map id, and a host that
- * took it for one would send an area-select frame naming a floor that does not exist.
+ * Reported as `undefined` rather than passed through. Four billion is not a map id, and taken for one
+ * it would name a floor that does not exist in an area-select frame.
  */
 const NO_MAP = 0xff_ff_ff_fe;
 

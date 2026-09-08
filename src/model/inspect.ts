@@ -8,9 +8,6 @@
  *  - a **paste-ready `registry.ts` row** for the device's model, and
  *  - **paste-ready param-dictionary snippets** for every param we don't yet know.
  *
- * The point: a user with a new/unconfirmed device runs one command and hands back an export
- * that lets us enrich the SDK — without them knowing anything about the internals.
- *
  * Pure + offline (no network) so it is unit-testable; the live wrapper that fetches a device by
  * serial lives on `EufyMega.inspectDevice`.
  *

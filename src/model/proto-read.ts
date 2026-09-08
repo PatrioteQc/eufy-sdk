@@ -3,9 +3,8 @@
  *
  * `RawDpCodec` hands back a flat list of `{ field, kind, value }` and stops there — it has no schema
  * and no idea which message it just walked. Turning that list into a reading is the decoder's job, and
- * three decoders had grown their own identical copies of the same five functions. They are here now,
- * once, because the interesting part is not the code but the RULE each one encodes, and a rule spelled
- * out in three places drifts in two of them.
+ * these are the readers every decoder on this line shares: the interesting part is not the code but the
+ * RULE each one encodes, and a rule spelled out in three places drifts in two of them.
  *
  * **The rule, in one line: proto3 omits a zero, so absent and zero are the same bytes.** A field set to
  * `0`, `false` or `""` is not written to the wire at all, which means no reader here can tell "the
@@ -50,7 +49,7 @@ export function signed(fields: readonly RawDpField[] | undefined, field: number)
  * Read a string field, or `undefined`.
  *
  * An empty string reads as `undefined` too: proto3 omits it, so a device that sent no name and one
- * that sent an empty name are the same bytes, and `""` is not a name a host should render.
+ * that sent an empty name are the same bytes, and `""` is not a name.
  */
 export function text(fields: readonly RawDpField[] | undefined, field: number): string | undefined {
   const hit = fields?.find((f) => f.field === field);

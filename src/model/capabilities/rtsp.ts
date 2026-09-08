@@ -128,9 +128,8 @@ function credentialsCommand(mode: number, username: string, password: string, ct
  * of step with the advertised type. A member's `write` returns a single command, so the pair cannot be
  * expressed as one.
  *
- * Exported so a caller can name the table its `*Actions` type is derived from, but NOT published:
- * each entry states its wire id and the evidence it was confirmed on, which the reference site
- * does not carry.
+ * Exported but NOT published: each entry states its wire id and the evidence it was confirmed on,
+ * which the reference site does not carry.
  * @internal
  */
 export const RTSP_MEMBERS = {
@@ -159,8 +158,8 @@ export const RTSP_MEMBERS = {
   /**
    * The device-reported RTSP URL — the full `rtsp://user:pass@host/path`, carrying the credentials the
    * device enforces RIGHT NOW. This is the only source of the freshly-generated pair: the credentials
-   * regenerate on every publish toggle and the cloud record lags a cycle, so a host adopting a running
-   * stream reads its URL from here rather than assembling one or imposing its own.
+   * regenerate on every publish toggle and the cloud record lags a cycle, so an assembled URL or an
+   * imposed one would not match what the device is enforcing.
    *
    * The flat property name is `rtspUrl`, not `url`: property names are a FLAT namespace shared across
    * every capability (`getProperty`/`setProperty`/`propertyChanged` key on the bare string), so the

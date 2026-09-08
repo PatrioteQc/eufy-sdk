@@ -420,9 +420,8 @@ export class EufyMega extends EventEmitter {
    *
    * A write whose declared observation never converged is not a fault of this client, so it does not reach
    * the generic error bus: it is the answer to a question `dispatch` deliberately does not wait for, and it
-   * gets its own channel for exactly the reason `commandAck` has one — a caller that wants convergence
-   * visibility should not have to pattern-match `error`, and the dispatch contract must not change shape to
-   * give it. Anything else that goes wrong after the acknowledgement is a genuine fault and is reported as one.
+   * gets its own channel for exactly the reason `commandAck` has one. Anything else that goes wrong after
+   * the acknowledgement is a genuine fault and is reported as one.
    */
   private reportUnacknowledged(e: unknown): void {
     if (e instanceof StateConvergenceError) {
@@ -443,16 +442,13 @@ export class EufyMega extends EventEmitter {
    * Route an internal error to the host, without being able to kill it.
    *
    * A {@link SessionExpiredError} — a kicked/expired token, the transport having already cleared the
-   * session — is emitted as the dedicated `sessionExpired` event so a host can react to auth loss without
-   * pattern-matching the generic `error` bus; it is NOT also sent to `error`. Every other error goes to
-   * `error`.
+   * session — is emitted as the dedicated `sessionExpired` event; it is NOT also sent to `error`. Every
+   * other error goes to `error`.
    *
    * Either way it falls back to a logged warning when nothing listens, because `error` on an
    * `EventEmitter` THROWS when it has no listener, and most of these failures reach us from a
    * fire-and-forget path (a transport callback, an un-awaited re-bind) where that throw would land as an
-   * unhandled rejection and abort the process. A host that listens gets the event exactly as before; one
-   * that does not gets a log line instead of a crash, which is the correct trade for a failure it never
-   * asked to be told about.
+   * unhandled rejection and abort the process.
    *
    * Only reported-error paths reach here — an error thrown straight out of a direct call is the caller's
    * to handle.
@@ -564,8 +560,7 @@ export class EufyMega extends EventEmitter {
   /**
    * Land state a capability recovered from a realtime signal: into the registry (so the next
    * {@link getDevice} sees it) AND into any `Device` already handed out (so a caller holding one sees
-   * the new value without re-fetching). Announces every property whose value moved, then `deviceState`,
-   * so a host can react without polling.
+   * the new value without re-fetching). Announces every property whose value moved, then `deviceState`.
    *
    * Both writes matter: the registry alone would leave an existing `Device` stale until its freshness
    * window expired, and that refresh re-reads the CLOUD record — which for a realtime-only line does
@@ -609,10 +604,10 @@ export class EufyMega extends EventEmitter {
    * rebinds once.
    *
    * `deviceState` is re-emitted once the getters exist. The report that creates them is announced before
-   * they are installed — a host reading them from that first event would see nothing — so the same event
-   * fires again when the reads are actually there, which is what makes "re-read on `deviceState`" true
-   * on the first report rather than only from the second. `bindActions` replaces the action objects, so
-   * a host re-reads through the accessor (`dev.vacuumClean()`) rather than one it cached earlier.
+   * they are installed, so the same event fires again when the reads are actually there, which is what
+   * makes "re-read on `deviceState`" true on the first report rather than only from the second.
+   * `bindActions` replaces the action objects, so the live ones are reached through the accessor
+   * (`dev.vacuumClean()`) and never through a bag cached earlier.
    *
    * The evidence set is widened, never replaced: the ids come back through the cloud record, and a
    * record that omits a realtime-only id would otherwise un-know it and re-trigger on the next report.
@@ -858,8 +853,8 @@ export class EufyMega extends EventEmitter {
    * `param_type → value` shape, so no capability has to claim an id it does not own, and the reads
    * they back stop waiting for the next cloud poll. A capability decode follows for the frames that
    * report a bare value rather than that array, which the generic unwrap cannot recognise. Semantic
-   * events are edge-triggered: the same change also arrives as a push seconds later, and a host wants
-   * it announced once.
+   * events are edge-triggered: the same change also arrives as a push seconds later, and is announced
+   * once.
    */
   private onP2PFrame(stationSn: string, f: P2PFrame): void {
     this.emit("p2p", f);
@@ -879,8 +874,8 @@ export class EufyMega extends EventEmitter {
    * Record the state this signal reports, and say whether it merely repeats the last one announced.
    *
    * One physical change reaches the SDK on several transports — an entry sensor's contact arrives as
-   * a station notify ~2 s before the identical FCM push — and a host wants "the door opened" once.
-   * The comparison is edge-triggered on the field a capability declared
+   * a station notify ~2 s before the identical FCM push — and is announced once. The comparison is
+   * edge-triggered on the field a capability declared
    * ({@link CapabilityModule.stateEvents}) rather than time-windowed: a genuine open→close→open burst
    * differs from the last value at every step and passes intact, where any window wide enough to
    * cover the transport spread would have swallowed the second open.
@@ -1068,9 +1063,9 @@ export class EufyMega extends EventEmitter {
    *
    * The retained still also becomes the answer for a live still that could not be captured. A station
    * serves one camera at a time and a live view outranks a tile, so a still asked for while a sibling is
-   * being watched is refused at the transport. Answering the retained bytes keeps a caller's tile
-   * populated rather than failing it, marked {@link MediaProvider.snapshotLive} `retained` so the caller
-   * knows they are not current. With nothing retained the refusal stands.
+   * being watched is refused at the transport. Answering the retained bytes answers the read rather than
+   * failing it, marked {@link MediaProvider.snapshotLive} `retained` so the caller knows they are not
+   * current. With nothing retained the refusal stands.
    */
   private mediaProviderFor(sn: string): MediaProvider {
     const media = this.p2p.mediaProviderFor(sn);
@@ -1142,7 +1137,7 @@ export class EufyMega extends EventEmitter {
    *
    * A partial cloud outage still resolves, with the devices that answered plus the ones already known — but a
    * session the cloud has rejected REJECTS, with {@link SessionExpiredError}. An empty list would be
-   * indistinguishable from an account with no devices, and a host acts on that by removing everything it had.
+   * indistinguishable from an account with no devices.
    */
   async getDevices(): Promise<EufyDevice[]> {
     const devices = await this.registry.getDevices();
@@ -1184,8 +1179,7 @@ export class EufyMega extends EventEmitter {
   /**
    * Inspect one device by serial: resolve its codec/capabilities, cross-reference every reported
    * `param_type` against the param dictionary, and emit a paste-ready `registry.ts` row plus
-   * dictionary snippets for anything unknown. The enrichment tool — run it on a new/unconfirmed
-   * device and send back the export to grow the device catalog. Loads the device list if needed; prefers
+   * dictionary snippets for anything unknown. Loads the device list if needed; prefers
    * the live `get_device_param_list` for freshest params, falling back to the device-list params.
    */
   async inspectDevice(sn: string): Promise<DeviceInspection> {
@@ -1195,13 +1189,13 @@ export class EufyMega extends EventEmitter {
   /**
    * Build a live {@link Device} model object for one serial: the resolved codec/capabilities with
    * its current param values applied (named via the param dictionary; unknown ids kept as
-   * `unknown_<pt>`). This is the device primitive a host reads — `dev.getProperties()`,
-   * `dev.has(cap)`, etc. Prefers fresh `get_device_param_list`, falls back to the device-list params.
+   * `unknown_<pt>`). This is the device primitive — `dev.getProperties()`, `dev.has(cap)`, etc.
+   * Prefers fresh `get_device_param_list`, falls back to the device-list params.
    * Under auto-realtime the returned Device is wired with a read-through freshness cache (see
-   * {@link Device.setFreshnessPolicy}), so a host that reuses it (e.g. a periodic polling loop) serves
-   * repeat reads from cache instead of re-fetching, and realtime updates keep values fresh.
+   * {@link Device.setFreshnessPolicy}), so repeat reads are served from cache instead of re-fetching,
+   * and realtime updates keep values fresh.
    *
-   * That refresh ANNOUNCES what it lands, like the other two inbound paths. For a host that reads often it
+   * That refresh ANNOUNCES what it lands, like the other two inbound paths. Under frequent reads it
    * fires every `cacheTtlMs` where the poll fires every ten minutes, so it is where most fresh cloud values
    * arrive — and each announcing path is edge-triggered on the same live state, so whichever sees a change
    * first announces it and the others stay silent. Its timing says only when a caller happened to read; the
@@ -1406,7 +1400,7 @@ export class EufyMega extends EventEmitter {
    *
    * Takes effect immediately: the pending tick is cancelled and the loop re-armed at the new interval
    * (or left cancelled for `0`). Unlike the constructor {@link EufyMegaOptions.pollMs}, this can be
-   * changed after login — a host exposing a "how often to poll" setting calls this when the user edits it.
+   * changed after login.
    */
   setPollInterval(ms: number): void {
     this.opts.pollMs = ms;
@@ -1431,8 +1425,8 @@ export class EufyMega extends EventEmitter {
    * Also emits `deviceState` for each device the diff reports as having re-reported. That is tracked
    * apart from the param diff because the two are different facts: the cloud can re-stamp a param with
    * an unchanged VALUE, which is no state change to report but is fresh proof the device is alive. A
-   * device absent from the previous pass is skipped — first sight is discovery, not a transition; a host
-   * wanting an initial reading calls {@link deviceState} directly.
+   * device absent from the previous pass is skipped — first sight is discovery, not a transition;
+   * {@link deviceState} answers an initial reading.
    */
   private async pollOnce(): Promise<void> {
     try {
@@ -1499,8 +1493,7 @@ export class EufyMega extends EventEmitter {
    *
    * Neither alternative is available: re-deriving the value outside live state is two answers for one
    * reading, which is the disagreement the announcement exists to remove, and keeping every device alive
-   * here reverses this map's own invariant. So it is LOUD — a host learns why its events stopped rather
-   * than investigating a silence.
+   * here reverses this map's own invariant. So it is LOUD.
    *
    * Reported only for a serial the caller DID ask for, since one never fetched has no object by definition
    * and was never owed an announcement — reporting those would name most of the account on every pass. The
@@ -1509,7 +1502,7 @@ export class EufyMega extends EventEmitter {
    * the serial and resumes announcing.
    *
    * Deliberately not routed through {@link reportError}: nothing in this SDK failed, so it must not reach a
-   * host's `error` handling. It is a usage fact, at `warn` because a host does want to see it.
+   * host's `error` handling. It is a usage fact, reported at `warn`.
    */
   private liveDeviceToAnnounce(sn: string): Device | undefined {
     const held = this.liveDevices.get(sn);
@@ -1641,7 +1634,7 @@ export class EufyMega extends EventEmitter {
 
   /**
    * Speculatively open the P2P session of the station behind `deviceSn`, if the caller opted this
-   * semantic event in — so a tap-to-view / talkback right after a doorbell ring or a detection starts
+   * semantic event in — so a stream or talkback opened right after a doorbell ring or a detection starts
    * warm instead of paying a cold open.
    *
    * Four gates. `autoRealtime: false` means the SDK opens nothing on its own initiative at all;
@@ -1784,7 +1777,7 @@ export class EufyMega extends EventEmitter {
    * The liveness facts for one device — see {@link DeviceState}. Facts, not an `online` verdict: "how
    * long is too long" is a threshold that belongs to the caller, and it differs per device class.
    *
-   * Pair it with the `deviceState` event to be told when a device reports in, rather than polling this.
+   * The `deviceState` event announces when a device reports in.
    */
   deviceState(sn: string): DeviceState {
     const dev = this.registry.list().find((d) => d.sn === sn);
@@ -1929,8 +1922,7 @@ export class EufyMega extends EventEmitter {
    * Resolves from the same fresh `DeviceRegistry.record` (`get_device_param_list` overlay +
    * category) and `resolveDevice` that {@link getDevice} uses, so the capability set here is byte-for-byte
    * what `device.has(cap)` / `buildActions` saw — a command is never rejected for a capability the
-   * device model advertises (the old path re-detected from the stale device-list params and dropped
-   * `category`/name, so params-fresh-only or name/category-detected caps were falsely gated out).
+   * device model advertises.
    *
    * `paramIds` is cloud params UNION whatever the device reported over realtime — it is the evidence
    * gate behind the typed read getters, so a line whose state only ever arrives live still advertises
@@ -2008,7 +2000,7 @@ export class EufyMega extends EventEmitter {
 
   /**
    * Connect FCM push — the always-on, server-initiated channel that delivers event + **thumbnail**
-   * notifications (motion/person/doorbell/package, each with a thumbnail you fetch). Independent of
+   * notifications (motion/person/doorbell/package, each with a thumbnail URL). Independent of
    * MQTT/P2P. On first run it registers a push token, tells the eufy cloud to push to it, then holds
    * the socket. With a `pushStore`, the token + seen ids persist so later runs just reconnect. Emits:
    *   - `push(event)` — normalised `PushEvent` (deviceSn, eventType, eventName,
@@ -2018,7 +2010,7 @@ export class EufyMega extends EventEmitter {
    *
    * Started automatically by {@link ensureRealtime} after login. A semantic event the caller opted into
    * via {@link EufyMegaOptions.prewarmEvents} — none by default — also speculatively pre-warms that
-   * camera's P2P session, so a tap-to-view / talkback starts instantly; {@link prewarmForEvent} owns that
+   * camera's P2P session, so a following stream or talkback starts warm; {@link prewarmForEvent} owns that
    * decision, and the router stays event-agnostic.
    *
    * Returns the connected client rather than installing it. Registration can outlive a `disconnect()`,
@@ -2154,9 +2146,9 @@ export class EufyMega extends EventEmitter {
    * Close every realtime channel and stop the poll loop.
    *
    * Safe to run twice: each channel is cleared as it closes. The edge-trigger's memory of announced
-   * states goes with them: it describes what a host was told over a connection that no longer exists,
-   * and keeping it would suppress the first report after a reconnect as a duplicate — leaving a host
-   * that reconnects precisely to resynchronise with nothing until the state next physically changes.
+   * states goes with them: it describes what was announced over a connection that no longer exists,
+   * and keeping it would suppress the first report after a reconnect as a duplicate — leaving nothing
+   * announced until the state next physically changes.
    */
   private async teardownRealtime(): Promise<void> {
     this.pollTimer.cancel();
