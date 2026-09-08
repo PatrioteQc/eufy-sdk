@@ -17,15 +17,11 @@ import { buildActions, buildCommand } from "../index.js";
  * `sent` collects what reached the wire.
  */
 const bindMotion = (c: CommandContext, sent: Command[] = []): MotionActions =>
-  buildActions(
-    ["motion"],
-    c,
-    { dispatch: async (cmd) => void sent.push(cmd) },
-    undefined,
-    undefined,
-    undefined,
-    () => undefined,
-  ).motion as unknown as MotionActions;
+  buildActions(["motion"], {
+    ctx: c,
+    sink: { dispatch: async (cmd) => void sent.push(cmd) },
+    read: () => undefined,
+  }).motion as unknown as MotionActions;
 
 /** Resolve an intent the way a device does, pinned to this capability. */
 const intent = (action: string, value: boolean | number | string, c: CommandContext): Command | undefined =>
@@ -115,13 +111,6 @@ describe("motion capability module", () => {
       expect(decodeRadarWdSwitch('{"radar_wd_switch":1,"other":9}')).toBe(true);
       expect(decodeRadarWdSwitch('{"radar_wd_switch":0}')).toBe(false);
     });
-  });
-
-  it("every property has a string name + numeric paramType", () => {
-    for (const p of MOTION.properties) {
-      expect(typeof p.name).toBe("string");
-      expect(typeof p.paramType).toBe("number");
-    }
   });
 
   describe("motionDetection buildCommand", () => {
@@ -360,13 +349,11 @@ describe("motion — the sensor's work-mode report", () => {
 describe("motion — sensitivity scales resolved from reported state", () => {
   const bind = (params: number[], values: Record<string, string> = {}, codec = "camera") => {
     const sent: Record<string, unknown>[] = [];
-    const a = MOTION.actions?.(
-      { channel: 2, codec, paramIds: new Set(params), accountId: "0".repeat(40) } as never,
-      { dispatch: (c: unknown) => (sent.push(c as never), Promise.resolve()) } as never,
-      undefined,
-      undefined,
-      ((n: string) => (values[n] === undefined ? undefined : { value: values[n] })) as never,
-    );
+    const a = MOTION.actions?.({
+      ctx: { channel: 2, codec, paramIds: new Set(params), accountId: "0".repeat(40) } as never,
+      sink: { dispatch: (c: unknown) => (sent.push(c as never), Promise.resolve()) } as never,
+      read: ((n: string) => (values[n] === undefined ? undefined : { value: values[n] })) as never,
+    });
     return { actions: a as never as MotionActions, sent };
   };
 

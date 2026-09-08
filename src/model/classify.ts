@@ -294,8 +294,7 @@ export function classify(rec: CloudRecord): Codec {
   return "camera";
 }
 
-// Per-codec baseline capabilities used to live here as a `BASELINE` table + `codecBaseline()`.
-// That was a second, hardcoded source of the codec→caps mapping. It now lives in the capability
-// files themselves — each module declares `detection.codecs` for the families it's a baseline of —
-// and `codecBaseline()` is derived from those modules in `capabilities/index.ts`. This file keeps
-// only codec *routing* (device_type/model → which wire protocol), the transport axis.
+// Per-codec baseline capabilities live in the capability files themselves — each module declares
+// `detection.codecs` for the families it's a baseline of — and `codecBaseline()` is derived from those
+// modules in `capabilities/index.ts`. This file keeps only codec *routing* (device_type/model → which
+// wire protocol), the transport axis.

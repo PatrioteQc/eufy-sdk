@@ -283,8 +283,7 @@ export class Talkback extends EventEmitter implements TalkbackHandle {
    * Report a failure without being able to kill the host. `error` on an `EventEmitter` THROWS when
    * nothing is listening, and every call site here is either inside the pacing interval or on a
    * detached encode — where that throw aborts the process rather than reaching a caller. The common
-   * case is audio that simply isn't 16 kHz mono, so a host following the documented example must not
-   * be taken down by it.
+   * case is audio that simply isn't 16 kHz mono, which must not take the process down.
    */
   private fail(e: unknown): void {
     const err = e instanceof Error ? e : new Error(String(e));
@@ -322,7 +321,8 @@ export class Talkback extends EventEmitter implements TalkbackHandle {
 
   /**
    * Close the path: stop pacing, drop anything still queued, and send the stop control frame. Queued
-   * audio is deliberately discarded — a caller that wants it played waits for `finished` first.
+   * audio is deliberately discarded — `finished` is the event that says everything queued has already
+   * reached the wire.
    *
    * Everything after the guard runs under `try`/`finally` because the teardown calls back into
    * caller-supplied code (the encoder's `close`, a withheld stream callback, the session's stop frame),

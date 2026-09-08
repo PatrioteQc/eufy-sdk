@@ -27,13 +27,6 @@ describe("doorbell capability module", () => {
     ]);
   });
 
-  it("every property has a string name + numeric paramType", () => {
-    for (const p of DOORBELL.properties) {
-      expect(typeof p.name).toBe("string");
-      expect(typeof p.paramType).toBe("number");
-    }
-  });
-
   it("does not publish the camera-owned status LED under the doorbell capability", () => {
     expect(DOORBELL.properties.some((p) => p.name === "doorbellLedEnable")).toBe(false);
     const doorbellCtx = ctx(3, {

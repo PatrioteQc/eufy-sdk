@@ -40,7 +40,7 @@ export class Timer {
  * Exhaustiveness guard for discriminated unions. Placed in a `switch` `default` (or the else of an
  * `if`-chain) over every variant: if a new variant is added and left unhandled, the call fails to
  * typecheck (its type is no longer `never`), and at runtime it throws instead of silently falling
- * through. Use it wherever an unhandled case must fail loud rather than resolve as a no-op.
+ * through.
  */
 export function assertNever(value: never): never {
   throw new Error(`unhandled variant: ${JSON.stringify(value)}`);
@@ -50,8 +50,6 @@ export function assertNever(value: never): never {
  * Coerce a property value to a boolean WITHOUT the `Boolean("false") === true` footgun (every
  * non-empty string — including `"false"` and `"0"` — is truthy under `Boolean()`). Only an explicit
  * `true` / `1` / `"1"` / `"true"` (case-insensitive) enables; everything else is `false`.
- *
- * Use this for any user/config-supplied on/off value (e.g. `setProperty` routing, HA payloads).
  */
 export function asBool(value: unknown): boolean {
   if (typeof value === "string") return value === "1" || value.toLowerCase() === "true";
@@ -110,7 +108,7 @@ export function structuralEqual(a: unknown, b: unknown): boolean {
  * `HubAlarmTone`, `DoorbellRingtone`), or `undefined` if it isn't one. Unlike `clamp` (for a
  * continuous range), an enum has a small fixed set of real options — silently rounding/clamping a bad
  * index to the nearest valid one would send a WRONG-but-plausible value on a fire-and-forget write,
- * not a safe default. Use this to reject anything outside the set instead.
+ * not a safe default. Anything outside the set is rejected instead.
  */
 export function coerceEnumValue(enumObj: Record<string, number>, value: unknown): number | undefined {
   const n = Number(value);

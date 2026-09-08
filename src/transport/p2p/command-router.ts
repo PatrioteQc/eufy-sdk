@@ -25,8 +25,9 @@ import type {
 import { StationBusyError } from "../../core/contracts.js";
 import { noopLogger, type Logger } from "../../core/logger.js";
 import { assertNever } from "../../core/util.js";
+import { setTimeout as sleep } from "node:timers/promises";
 import { P2PSession, type P2PFrame } from "./p2p-session.js";
-import { buildDirectBinaryBody, buildDeviceNameBody } from "./write-commands.js";
+import { buildDirectBinaryBody } from "./write-commands.js";
 import {
   buildFf09Frame,
   buildFf09QueryFrame,
@@ -246,7 +247,7 @@ export class P2PCommandRouter {
    * transport-neutral command. Keyed on the endpoint, NOT `classifyDevice`'s `realtime` tag: that tag is
    * `"p2p"` for the ENTIRE `eufy_security` category, so it can't tell a P2P lock (T8531, own `p2p_did`)
    * from an MQTT-only lock/garage (T85D0, empty `p2p_did`) — routing the latter to P2P throws
-   * `no P2P session`. This is the same fact the pre-router capability used to pick its transport.
+   * `no P2P session`.
    */
   static claimsDevice(dev: EufyDevice): boolean {
     return typeof dev.p2pDid === "string" && dev.p2pDid.length > 0;
@@ -515,19 +516,6 @@ export class P2PCommandRouter {
   }
 
   /**
-   * Rename a device (or station) — a pure-P2P command (the HomeBase propagates the new name to the
-   * cloud). Fire-and-forget over level-2 (`SET_DEVICE_NAME` 1217 for a device / `SET_HUB_NAME` 1216
-   * for a station, on the station channel 255, body {@link buildDeviceNameBody}). `isStation` comes
-   * from the resolved codec.
-   */
-  async renameDevice(sn: string, name: string, isStation: boolean): Promise<void> {
-    const cmd = isStation ? P2P_ENVELOPE.SET_HUB_NAME : P2P_ENVELOPE.SET_DEVICE_NAME;
-    await this.replayLevel2Send(sn, `rename ${sn} → "${name}"`, ({ session, channel, accountId }) =>
-      session.sendRawLevel2Bytes(buildDeviceNameBody(channel, name, accountId), 255, cmd, 8),
-    );
-  }
-
-  /**
    * Restart a HomeBase. `RESTART_HUB` (1034) is a station-scalar on the broadcast channel 255: a
    * level-2 frame whose body is `[u32 value][account_id padded]` — the same shape as the hub
    * alarm-volume control. ✅ Wire-confirmed byte-exact from a capture of the app's own Restart
@@ -539,16 +527,6 @@ export class P2PCommandRouter {
     await this.replayLevel2Send(sn, `reboot ${sn}`, ({ session, accountId }) =>
       session.sendRawLevel2Bytes(buildDirectBinaryBody(0, accountId), 255, P2P_ENVELOPE.RESTART_HUB, 8),
     );
-  }
-
-  /**
-   * Send a raw control command (`{commandType, data}`) under an outer wrapper (default `1700`) to a
-   * device over P2P. Escape hatch for tooling / reversing new commands before they get a typed
-   * helper. Same routing/encryption as a capability write.
-   */
-  async routeControlRaw(sn: string, outerCmd: number, inner: { commandType: number; data: unknown }): Promise<void> {
-    await this.deviceFor(sn);
-    await this.routeControl(sn, outerCmd, inner);
   }
 
   /**
@@ -612,9 +590,9 @@ export class P2PCommandRouter {
    * **The camera only plays host audio while its media session is open** — verified live on three
    * cameras: the identical start + audio frames produce silence with no media session and audible
    * playback with one. So this attaches a consumer to the shared live source and holds it for the
-   * talkback's lifetime, releasing it on stop. A host already streaming pays nothing extra (the
-   * source is shared and refcounted); a host that only wants to talk gets the session it needs
-   * instead of silence.
+   * talkback's lifetime, releasing it on stop. The source is shared and refcounted, so an already-open
+   * stream costs nothing extra and a talkback on an otherwise idle camera opens the session it needs
+   * instead of playing into silence.
    *
    * The level-2 key is waited for softly: only the HomeBase-attached path requires it, and
    * {@link Talkback.start} reports that failure precisely, so a hard wait here would reject an
@@ -706,15 +684,14 @@ export class P2PCommandRouter {
    *
    * A source that has **stopped** (linger teardown, failed start, budget auto-stop, upstream error) is
    * dropped here rather than re-used, whatever is still attached to it. Its pull is dead, so nothing is
-   * being protected by keeping it — and keeping it meant the options of whichever egress happened to
-   * create it first survived for the process lifetime, so a stray `powered` from the day's first
-   * snapshot would still be dictating the budget hours later. Dropping it lets the next caller build a
-   * fresh source from its own options, which is the difference between fixing the silent-drop defect
-   * and merely reporting it.
+   * being protected by keeping it — and keeping it would leave the options of whichever egress created
+   * it first in force for the process lifetime, so a stray `powered` from the day's first snapshot would
+   * still be dictating the budget hours later. Dropping it lets the next caller build a fresh source
+   * from its own options.
    *
    * Attachment count is deliberately NOT part of that test. A failed start fails its consumers without
-   * detaching them, so a caller still holding its handle left the count non-zero — and requiring an empty
-   * source here is what let one dead source be handed out for the life of the client. A caller must
+   * detaching them, so a caller still holding its handle leaves the count non-zero — and requiring an
+   * empty source here would hand one dead source out for the life of the client. A caller must
    * re-acquire through this method after a failure; `attach()` on the dropped source throws, because it
    * has been disposed.
    *
@@ -844,7 +821,7 @@ export class P2PCommandRouter {
    *    cannot satisfy both. Measured: a still on a sibling halved a live view's frame rate for as long as
    *    it took, and its own capture then took fifteen seconds because it was contending.
    *
-   * A still with no live sibling re-asserts as before, so a tile refreshing on a quiet station is
+   * A still with no live sibling re-asserts, so a tile refreshing on a quiet station is
    * unaffected.
    */
 
@@ -1196,7 +1173,7 @@ export class P2PCommandRouter {
     const t0 = Date.now();
     while (!session.isConnected && Date.now() - t0 < CONNECT_WAIT_MS) {
       opts.signal?.throwIfAborted();
-      await new Promise((r) => setTimeout(r, 200));
+      await sleep(200);
     }
     opts.signal?.throwIfAborted();
     if (!session.isConnected) throw new Error(`P2P session for ${parentSn} did not connect`);
@@ -1238,7 +1215,7 @@ export class P2PCommandRouter {
     let sent = false;
     for (let i = 0; i < DIRECT_CMD_SENDS; i++) {
       if (send(resolved)) sent = true;
-      await new Promise((r) => setTimeout(r, 200));
+      await sleep(200);
     }
     if (!sent) {
       throw new Error(`${describe} for ${sn} was never sent (no level-2 key / session not connected)`);
@@ -1307,9 +1284,9 @@ export class P2PCommandRouter {
    *
    * **Level follows topology** when `form` is `"auto"`, as in {@link resolveScalarParam}: a
    * HomeBase-attached device takes the GCM signCode-8 form, a standalone one the level-1 form. A
-   * standalone camera never negotiates a level-2 key, so pinning this to level 2 left the envelope
+   * standalone camera never negotiates a level-2 key, so pinning this to level 2 makes the envelope
    * unreachable on exactly the devices that serve their own RTSP stream. Verified live: a standalone
-   * camera accepts the level-1 form. With no `form` (default) it stays level-2 only, as before.
+   * camera accepts the level-1 form. With no `form` (default) it stays level-2 only.
    */
   private async sendSetPayloadEnvelope(
     sn: string,
@@ -1575,7 +1552,7 @@ export class P2PCommandRouter {
     const { session, channel, accountId } = await this.resolveSession(sn);
     for (let i = 0; i < DIRECT_CMD_SENDS; i++) {
       session.sendIntStringCommand(outerCmd, value, channel, accountId, channel);
-      await new Promise((r) => setTimeout(r, 200));
+      await sleep(200);
     }
   }
 
@@ -1600,7 +1577,7 @@ export class P2PCommandRouter {
       "utf-8",
     );
     const camInfoPre = Buffer.from("ff00000087030000", "hex"); // 1103 GET_CAMERA_INFO precursor
-    const gap = () => new Promise((r) => setTimeout(r, 150));
+    const gap = () => sleep(150);
 
     session.sendRawLevel2Bytes(camInfoPre, 255, P2P_ENVELOPE.GET_CAMERA_INFO, 8); // precursor on the station channel
     await gap();

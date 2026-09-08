@@ -72,8 +72,8 @@ function statusParam(signal: InboundSignal, paramType: number): string | undefin
  * `"1".equals(e)`). Confirmed against hardware: a T8900 driven through three open/close cycles emitted
  * `"1"`/`"0"` matching the physical state each time.
  *
- * An absent value yields no field at all rather than `false`, so a host can tell "closed" from "this
- * signal said nothing about the contact".
+ * An absent value yields no field at all rather than `false`, so "closed" stays distinguishable from
+ * "this signal said nothing about the contact".
  */
 function contactOpen(raw: unknown): Record<string, unknown> {
   return raw == null || raw === "" ? {} : { open: String(raw) === "1" };
@@ -92,9 +92,8 @@ export type ContactActions = Surface<typeof CONTACT_MEMBERS>;
  * Every `contact` feature, declared once. `contact` (1550) and `lastSeen` (1551) are verified reads;
  * the built-in alarm tone (1507) and volume (1508) are verified writes captured live on a T90E0.
  *
- * Exported so a caller can name the table its `*Actions` type is derived from, but NOT published:
- * each entry states its wire id and the evidence it was confirmed on, which the reference site
- * does not carry.
+ * Exported but NOT published: each entry states its wire id and the evidence it was confirmed on,
+ * which the reference site does not carry.
  * @internal
  */
 export const CONTACT_MEMBERS = {
@@ -128,7 +127,7 @@ export const CONTACT_MEMBERS = {
   /**
    * Link quality to whichever radio the sensor is paired over, in dBm as the device measures it. The
    * same param 1141 the other sub-1G sensors report on, so the number is comparable across them —
-   * unlike a bars mapping, which is the caller's to pick.
+   * unlike a bars mapping, which this SDK never applies.
    */
   rssi: {
     param: 1141,

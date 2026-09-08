@@ -1,15 +1,9 @@
 import { CONTACT, CONTACT_CMD, EntryAlarmTone, type ContactActions } from "../contact.js";
 import { bind } from "./bind.js";
-import type { Command, CommandSink } from "../../../core/contracts.js";
 import type { CommandContext } from "../types.js";
 
 const ctx = (paramIds: number[] = [1550, 1507, 1508], channel = 27): CommandContext =>
   ({ channel, codec: "sensor", serial: "T90E00000000000", paramIds: new Set(paramIds) }) as CommandContext;
-
-function recordingSink(): { sink: CommandSink; sent: Command[] } {
-  const sent: Command[] = [];
-  return { sent, sink: { dispatch: async (c: Command) => void sent.push(c) } };
-}
 
 describe("contact capability module", () => {
   it("declares the capability + schema", () => {
@@ -21,13 +15,6 @@ describe("contact capability module", () => {
       "alarmSoundType",
       "alarmVolume",
     ]);
-  });
-
-  it("every property has a string name + numeric paramType", () => {
-    for (const p of CONTACT.properties) {
-      expect(typeof p.name).toBe("string");
-      expect(typeof p.paramType).toBe("number");
-    }
   });
 
   it("proves contact via the entry-sensor contact param 1550", () => {

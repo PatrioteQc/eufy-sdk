@@ -4,9 +4,8 @@ import type { CapabilityModule } from "./types.js";
 /**
  * Every `co` feature, declared once — the property schema and the evidence-gated getters derive from here.
  *
- * Exported so a caller can name the table its `*Actions` type is derived from, but NOT published:
- * each entry states its wire id and the evidence it was confirmed on, which the reference site
- * does not carry.
+ * Exported but NOT published: each entry states its wire id and the evidence it was confirmed on,
+ * which the reference site does not carry.
  * @internal
  */
 export const CO_MEMBERS = {

@@ -70,7 +70,7 @@ export const ARMING_CMD = {
    * channel in or out of an existing list isn't possible without risking clobbering the rest — so
    * this ships as a caller-supplies-everything write instead of guessing a merge.
    * `devices`/`siren_sensor_action` are even less understood (raw per-device action codes, meaning
-   * unconfirmed) and MUST come from a value you've independently read/captured for the target mode —
+   * unconfirmed) and MUST come from a value independently read/captured for the target mode —
    * see `AlarmDelayConfig`'s field docs.
    */
   ALARM_DELAY_CONFIG: 1255,
@@ -167,7 +167,7 @@ function armingCommand(mode: ArmingMode, ctx: CommandContext): Command {
  * `50` (off this list) and the app reflected it correctly, no rejection. Typed as a closed set anyway
  * so `setAlarmDelayConfig` callers get the same choices a human editing the same setting in the app
  * would see, rather than an arbitrary int that could silently diverge from every value the real UI
- * can actually produce (and so a caller doesn't have to guess what's "sane" — these ARE all of them).
+ * can actually produce.
  */
 export const AlarmDelaySeconds = {
   off: 0,
@@ -192,7 +192,7 @@ export type AlarmDelayCountdown = {
 export type AlarmDelayDeviceAction = {
   deviceChannel: number;
   /** Raw per-device action code. Meaning NOT independently confirmed — pass through verbatim from a
-   * value you've read/captured for this exact mode, never invented. */
+   * value read/captured for this exact mode, never invented. */
   action: number;
 };
 
@@ -210,7 +210,7 @@ export type AlarmDelayConfig = {
   countDownArm: AlarmDelayCountdown;
   /** Every device's participation + action for THIS mode. UNCONFIRMED semantics (the action code's
    * meaning is unknown) — it stayed identical across every `countDownAlarm`-only edit within the same
-   * mode, so pass through exactly what you read back for that mode; never invent a value. */
+   * mode, so pass through exactly what was read back for that mode; never invent a value. */
   devices: AlarmDelayDeviceAction[];
   /** Siren behavior per device for this mode. Same caveat as `devices`. */
   sirenSensorAction: AlarmDelayDeviceAction[];
@@ -248,9 +248,8 @@ export type ArmingActions = Surface<typeof ARMING_MEMBERS>;
 /**
  * Every `arming` feature, declared once.
  *
- * Exported so a caller can name the table its `*Actions` type is derived from, but NOT published:
- * each entry states its wire id and the evidence it was confirmed on, which the reference site
- * does not carry.
+ * Exported but NOT published: each entry states its wire id and the evidence it was confirmed on,
+ * which the reference site does not carry.
  * @internal
  */
 export const ARMING_MEMBERS = {
@@ -258,8 +257,8 @@ export const ARMING_MEMBERS = {
    * The one member whose write domain is NARROWER than its read: `enumValues` names all nine modes a
    * station can report, and the argument's `values` publishes only the three whose wire was captured. That
    * argument IS the domain the derived setter enforces and the refusal names, so an uncaptured mode is
-   * refused by naming the three that work — a host renders the current mode from nine labels and offers
-   * three choices, off one declaration.
+   * refused by naming the three that work — nine labels for the read and three for the write, off one
+   * declaration.
    *
    * `armingCommand` may also throw synchronously (missing account identity) and `bindMembers` turns that
    * into a rejection, so the builder stays plain.
@@ -344,7 +343,7 @@ export const ARMING: CapabilityModule = {
    * The alarm ids carry a static `phase` so one event name covers the whole lifecycle, the same shape
    * `battery` uses for its threshold pushes. The mode-switch push is known to identify WHICH mode and
    * what triggered the change, but neither has been observed on the wire here, so this emits the bare
-   * transition and a host re-reads the mode rather than trusting a decoded field.
+   * transition and refreshes the `mode` read rather than trusting a decoded field.
    */
   events: [
     {

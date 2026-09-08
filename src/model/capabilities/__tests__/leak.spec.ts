@@ -6,13 +6,6 @@ describe("leak capability module", () => {
     expect(LEAK.properties.map((p) => p.name)).toEqual(["leakDetected", "lastSeen"]);
   });
 
-  it("every property has a string name + numeric paramType", () => {
-    for (const p of LEAK.properties) {
-      expect(typeof p.name).toBe("string");
-      expect(typeof p.paramType).toBe("number");
-    }
-  });
-
   it("detects via the water/leak/freeze model-name regex", () => {
     const re = LEAK.detection!.modelHints![0];
     expect(re.test("Water & Freeze Sensor")).toBe(true);

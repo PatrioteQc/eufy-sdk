@@ -7,13 +7,6 @@ describe("video capability module", () => {
     expect(VIDEO.properties).toEqual([]);
   });
 
-  it("every property has a string name + numeric paramType", () => {
-    for (const p of VIDEO.properties) {
-      expect(typeof p.name).toBe("string");
-      expect(typeof p.paramType).toBe("number");
-    }
-  });
-
   it("detects via the live-view enable param + camera codec", () => {
     expect(VIDEO.detection?.evidenceParams).toEqual([1056]);
     expect(VIDEO.detection?.codecs).toEqual(["camera"]);

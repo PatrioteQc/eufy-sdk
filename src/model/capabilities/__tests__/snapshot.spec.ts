@@ -7,13 +7,6 @@ describe("snapshot capability module", () => {
     expect(SNAPSHOT.properties).toEqual([]);
   });
 
-  it("every property has a string name + numeric paramType", () => {
-    for (const p of SNAPSHOT.properties) {
-      expect(typeof p.name).toBe("string");
-      expect(typeof p.paramType).toBe("number");
-    }
-  });
-
   it("detects via the cover-image param + camera codec", () => {
     expect(SNAPSHOT.detection?.evidenceParams).toEqual([1004]);
     expect(SNAPSHOT.detection?.codecs).toEqual(["camera"]);

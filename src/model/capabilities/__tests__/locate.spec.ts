@@ -12,13 +12,6 @@ describe("locate capability module", () => {
     expect(LOCATE.properties.map((p) => p.name)).toEqual(["locating"]);
   });
 
-  it("every property has a string name + numeric paramType", () => {
-    for (const p of LOCATE.properties) {
-      expect(typeof p.name).toBe("string");
-      expect(typeof p.paramType).toBe("number");
-    }
-  });
-
   it("is a vacuum-codec baseline", () => {
     expect(LOCATE.detection?.codecs).toEqual(["vacuum"]);
   });

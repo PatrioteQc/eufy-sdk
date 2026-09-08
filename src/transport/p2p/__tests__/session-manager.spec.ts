@@ -37,7 +37,7 @@ describe("SessionManager lifecycle", () => {
     expect(session.close).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(1000);
     expect(session.close).toHaveBeenCalledOnce();
-    expect(mgr.has("ST")).toBe(false);
+    expect(mgr.get("ST") !== undefined).toBe(false);
   });
 
   it("a wired station never idle-closes (persistent)", async () => {
@@ -48,7 +48,7 @@ describe("SessionManager lifecycle", () => {
     mgr.release("ST");
     await vi.advanceTimersByTimeAsync(10 * 60_000);
     expect(session.close).not.toHaveBeenCalled();
-    expect(mgr.has("ST")).toBe(true);
+    expect(mgr.get("ST") !== undefined).toBe(true);
   });
 
   it("a new user cancels a pending idle-close", async () => {
@@ -86,7 +86,7 @@ describe("SessionManager lifecycle", () => {
     mgr.remove("ST");
     await vi.advanceTimersByTimeAsync(1000);
     expect(session.close).not.toHaveBeenCalled();
-    expect(mgr.has("ST")).toBe(false);
+    expect(mgr.get("ST") !== undefined).toBe(false);
   });
 
   it("close immediately detaches a live session, cancels idle, and permits a fresh acquisition", async () => {
@@ -172,7 +172,7 @@ describe("SessionManager lifecycle", () => {
     await mgr.resetWhenUnused("ST");
 
     expect(session.close).toHaveBeenCalledOnce();
-    expect(mgr.has("ST")).toBe(false);
+    expect(mgr.get("ST") !== undefined).toBe(false);
   });
 
   it("closeAll closes every live session and clears timers", async () => {
@@ -184,7 +184,7 @@ describe("SessionManager lifecycle", () => {
     await mgr.closeAll();
     expect(a.close).toHaveBeenCalledOnce();
     expect(b.close).toHaveBeenCalledOnce();
-    expect(mgr.size).toBe(0);
+    expect(mgr.keys().length).toBe(0);
   });
 
   it("close rejects deferred reset waiters when session teardown fails", async () => {
@@ -240,7 +240,7 @@ describe("SessionManager lifecycle", () => {
     mgr.bumpCommand("ST");
     mgr.bumpCommand("ST");
     await mgr.resetWhenUnused("ST");
-    expect(mgr.has("ST")).toBe(false);
+    expect(mgr.get("ST") !== undefined).toBe(false);
 
     const second = fakeSession("second");
     mgr.register("ST", second);

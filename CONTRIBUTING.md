@@ -21,7 +21,7 @@ npm run build           # tsc → dist/ (ESM)
 npm test                # vitest (offline, synthetic fixtures)
 ```
 
-`ffmpeg` is optional — only the JPEG-snapshot, one-shot mp4 record, and WebRTC container-output paths
+`ffmpeg` is optional — only the JPEG-snapshot and one-shot mp4 record paths
 use it.
 
 ## How the code is written

@@ -11,6 +11,7 @@
  * identical to the legacy app, so registering here receives v6 account pushes.
  */
 import { randomBytes } from "node:crypto";
+import { setTimeout as sleep } from "node:timers/promises";
 import { protoRoot } from "../protobuf.js";
 import { CHECKIN_PROTO } from "./proto.js";
 import type { FcmCredentials } from "./types.js";
@@ -32,11 +33,9 @@ const checkinRoot = () => protoRoot(CHECKIN_PROTO);
 
 /** Generate a valid Firebase Installation ID (22 url-safe chars, starts c-f). */
 export function generateFid(): string {
-  const b = new Uint8Array(17);
-  b.set(randomBytes(17));
+  const b = randomBytes(17);
   b[0] = 0b01110000 + (b[0] % 0b00010000); // 4-bit FID header
-  const fid = Buffer.from(b).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").slice(0, 22);
-  return fid;
+  return b.toString("base64url").slice(0, 22);
 }
 
 interface FidInstallation {
@@ -154,7 +153,7 @@ export class FcmRegistrar {
       const m = last.match(/token=(.+)/);
       if (m) return m[1].trim();
       this.logger.debug(`[fcm] register3 attempt ${attempt + 1}:`, last.slice(0, 120));
-      await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
+      await sleep(1000 * (attempt + 1));
     }
     throw new Error(`GCM register failed: ${last.slice(0, 200)}`);
   }

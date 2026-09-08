@@ -42,7 +42,7 @@ export const LOCK_SETTING_ID = {
  * actuation frame. This module emits ONE transport-neutral intent (identity fields only, no wire bytes,
  * no cipher, no routing key) and names no transport: the command sink routes P2P vs MQTT by the device's
  * topology, and the chosen transport's command router builds the frame + envelope and re-resolves its own
- * routing tail. The host never needs to know which pipe it is — `dev.lock()` looks identical either way,
+ * routing tail. Which pipe it is does not reach `dev.lock()` — its surface is identical either way,
  * the same way P2P-vs-cloud is hidden for live media.
  */
 export type LockActions = Surface<typeof LOCK_MEMBERS>;
@@ -100,9 +100,8 @@ const overP2p = (ctx: AvailabilityContext): boolean => ctx.hasP2p === true;
  * They carry no `param`: a setting id is not a param id, nothing reports these back, and declaring one
  * would put a wire number where the schema expects a reported value.
  *
- * Exported so a caller can name the table its `*Actions` type is derived from, but NOT published:
- * each entry states its wire id and the evidence it was confirmed on, which the reference site
- * does not carry.
+ * Exported but NOT published: each entry states its wire id and the evidence it was confirmed on,
+ * which the reference site does not carry.
  * @internal
  */
 export const LOCK_MEMBERS = {
@@ -125,7 +124,7 @@ export const LOCK_MEMBERS = {
   /**
    * Cell charge as a percentage, on the same param 1101 every battery device reports. Named `battery`
    * within this capability rather than deferring to the `battery` capability: a lock resolves as a lock,
-   * so `dev.lock().battery` is the accessor a caller reaches for.
+   * so the accessor is `dev.lock().battery`.
    */
   battery: {
     param: 1101,
@@ -136,9 +135,8 @@ export const LOCK_MEMBERS = {
     description: "Lock battery level 0-100 (verified: param 1101).",
   },
   /**
-   * Link quality in dBm as the lock measures it, on the shared param 1141. Worth reading beside
-   * `battery` when an actuation appears to do nothing: both methods here are fire-and-forget, so a weak
-   * link is silent rather than an error.
+   * Link quality in dBm as the lock measures it, on the shared param 1141. Both actuation methods here
+   * are fire-and-forget, so a weak link is silent rather than an error.
    */
   rssi: {
     param: 1141,
@@ -171,8 +169,7 @@ export const LOCK_MEMBERS = {
    * identical settings frame; confirmed on-device in both directions on both families.
    *
    * **Unlike `lock`/`unlock` this can reject on a device TIMEOUT**, not just missing identity — the GET
-   * step is a genuine precondition, so a caller assuming every lock method is fire-and-forget should
-   * still catch this one.
+   * step is a genuine precondition, so this one is not fire-and-forget.
    */
   setAutoLock: method(
     ({ ctx, sink }) =>
@@ -305,7 +302,7 @@ export const LOCK_MEMBERS = {
    * A genuine request/reply query, not a passive property, so it always talks to the device.
    *
    * `answers` for that reason: the returned snapshot IS the point, so it is not a control to offer even
-   * though it takes no arguments — a button here would run a round-trip and discard the answer.
+   * though it takes no arguments — offering it as one would run a round-trip and discard the answer.
    */
   getAutoLockState: {
     ...provided(

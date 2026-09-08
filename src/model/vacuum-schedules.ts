@@ -1,9 +1,8 @@
 /**
  * The schedules a robot vacuum holds — `TimerResponse` on DP 164, decoded.
  *
- * The last thing the plan filed under "needs a capture". It did not: the product catalogue named the
- * DP, and the vendor's `timing.proto` had carried the whole message all along. What was missing was
- * only the number joining them, and a `get_product_data_point` dump supplied it.
+ * The DP number comes from a `get_product_data_point` dump; the product catalogue names the DP, and the
+ * vendor's `timing.proto` carries the message.
  *
  * The shape is deeper than anything else on this line — a repeated `TimerInfo`, each with four nested
  * containers and a `oneof` for what the timer actually does — which is why it decodes here rather than
@@ -11,8 +10,7 @@
  * the device for one, and it holds no DP number of its own.
  *
  * **`TimerInfo.Addition` is deliberately not decoded.** It carries the account ids of whoever created
- * and last edited each timer. A host showing a schedule needs the time and the days, not who set it,
- * and the ids are the kind of value this SDK does not put in a caller's hands without a reason.
+ * and last edited each timer — the kind of value this SDK does not surface without a reason.
  *
  * @module model/vacuum-schedules
  */
@@ -26,8 +24,7 @@ export type VacuumScheduleAction = (typeof VACUUM_SCHEDULE_ACTIONS)[number];
 /**
  * Weekdays in the vendor's own bit order — Sunday first, because `Cycle.week_bits` puts it at bit 0.
  *
- * Written out rather than derived from a locale so the mapping is the wire's and not the reader's: a
- * host that wants Monday-first ordering re-sorts a list whose members are unambiguous.
+ * Written out rather than derived from a locale so the mapping is the wire's and not the reader's.
  */
 export const VACUUM_SCHEDULE_WEEKDAYS = [
   "sunday",
@@ -66,7 +63,7 @@ export interface VacuumSchedule {
    * The offset from UTC the timer's clock was set against, in seconds east.
    *
    * Carried per timer rather than per device: the robot stores whatever the phone that created the
-   * schedule told it, so a host converting to an absolute instant must use this and not its own zone.
+   * schedule told it, so an absolute instant follows from this offset and not from any local zone.
    */
   readonly utcOffsetSeconds: number;
   /** Whether the phone that created the timer said its region observes daylight saving. */

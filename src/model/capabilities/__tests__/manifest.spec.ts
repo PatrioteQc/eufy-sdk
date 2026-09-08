@@ -43,12 +43,7 @@ const describeAll = (paramIds: Set<number>, media?: MediaProvider): ReturnType<t
   describeCapabilities(
     buildActions(
       BINDABLE.map((m) => m.capability),
-      ctxWith(paramIds),
-      sink,
-      media,
-      undefined,
-      undefined,
-      () => undefined,
+      { ctx: ctxWith(paramIds), sink, read: () => undefined, media },
     ),
   );
 
@@ -79,7 +74,7 @@ const tableReads = (m: CapabilityModule, paramIds: Set<number>): string[] =>
 describe("describeCapabilities — enumeration of the live bound objects", () => {
   it("describes only the alarm-output members installed for each verified siren family", () => {
     const describeSiren = (ctx: CommandContext) =>
-      describeCapabilities(buildActions(["siren"], ctx, sink, undefined, undefined, undefined, () => undefined)).find(
+      describeCapabilities(buildActions(["siren"], { ctx, sink, read: () => undefined })).find(
         (entry) => entry.capability === "siren",
       )!;
     const homeBase = describeSiren({
@@ -168,15 +163,9 @@ describe("describeCapabilities — enumeration of the live bound objects", () =>
 
   it("marks a read writable only where its own setter is installed beside it", () => {
     for (const d of describeAll(allParams())) {
-      const bound = buildActions(
-        [d.capability],
-        ctxWith(allParams()),
-        sink,
-        undefined,
-        undefined,
-        undefined,
-        () => undefined,
-      )[camelCase(d.capability) as keyof ReturnType<typeof buildActions>] as Record<string, unknown>;
+      const bound = buildActions([d.capability], { ctx: ctxWith(allParams()), sink, read: () => undefined })[
+        camelCase(d.capability) as keyof ReturnType<typeof buildActions>
+      ] as Record<string, unknown>;
       const installed = Object.getOwnPropertyDescriptors(bound);
       for (const r of d.reads.filter((r) => r.writable)) {
         const member = CAPABILITY_MODULES[d.capability].members![r.accessor] as ValueMember;
@@ -188,15 +177,9 @@ describe("describeCapabilities — enumeration of the live bound objects", () =>
 
   it("lists a described action by the name it is installed under, and the rest as undescribed", () => {
     for (const d of describeAll(allParams())) {
-      const bound = buildActions(
-        [d.capability],
-        ctxWith(allParams()),
-        sink,
-        undefined,
-        undefined,
-        undefined,
-        () => undefined,
-      )[camelCase(d.capability) as keyof ReturnType<typeof buildActions>] as Record<string, unknown>;
+      const bound = buildActions([d.capability], { ctx: ctxWith(allParams()), sink, read: () => undefined })[
+        camelCase(d.capability) as keyof ReturnType<typeof buildActions>
+      ] as Record<string, unknown>;
       const methods = Object.entries(Object.getOwnPropertyDescriptors(bound))
         .filter(([, p]) => typeof p.value === "function")
         .map(([name]) => name);

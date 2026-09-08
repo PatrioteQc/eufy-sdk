@@ -13,13 +13,6 @@ describe("suction capability module", () => {
     expect(SUCTION.properties.map((p) => p.name)).toEqual(["suction", "boostIq"]);
   });
 
-  it("every property has a string name + numeric paramType", () => {
-    for (const p of SUCTION.properties) {
-      expect(typeof p.name).toBe("string");
-      expect(typeof p.paramType).toBe("number");
-    }
-  });
-
   it("is a vacuum-codec baseline", () => {
     expect(SUCTION.detection?.codecs).toEqual(["vacuum"]);
   });

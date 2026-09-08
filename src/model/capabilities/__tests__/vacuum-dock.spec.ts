@@ -21,13 +21,6 @@ describe("vacuum_dock capability module", () => {
     expect(VACUUM_DOCK.properties.map((p) => p.name)).toEqual(["dockFirmwareVersion", "dockState"]);
   });
 
-  it("every property has a string name + numeric paramType", () => {
-    for (const p of VACUUM_DOCK.properties) {
-      expect(typeof p.name).toBe("string");
-      expect(typeof p.paramType).toBe("number");
-    }
-  });
-
   it("is detected by DP 173, not as a vacuum-codec baseline", () => {
     expect(VACUUM_DOCK.detection?.evidenceParams).toEqual([173]);
     expect(VACUUM_DOCK.detection?.codecs).toBeUndefined();

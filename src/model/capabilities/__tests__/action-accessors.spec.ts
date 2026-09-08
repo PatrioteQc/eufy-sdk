@@ -35,13 +35,11 @@ const EXPECTED_ACCESSORS = [
   "locate",
   "lock",
   "motion",
-  "personDetection",
   "ptz",
   "rtsp",
   "siren",
   "smartLight",
   "smoke",
-  "storage",
   "vacuumClean",
   "vacuumDock",
 ] as const;
@@ -62,7 +60,7 @@ describe("fluent capability accessors — type/runtime coupling", () => {
     const ctx: CommandContext = { channel: 0, codec: "camera", paramIds: new Set() };
     const sink: CommandSink = { dispatch: async () => {} };
     const caps = MODULES.filter(bindable).map((m) => m.capability);
-    const actions = buildActions(caps, ctx, sink);
+    const actions = buildActions(caps, { ctx, sink, read: () => undefined });
     expect(Object.keys(actions).sort()).toEqual([...EXPECTED_ACCESSORS].sort());
   });
 });

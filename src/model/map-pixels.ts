@@ -2,8 +2,7 @@
  * Reading a single cell out of a map — the last step between the decoded planes and an answer.
  *
  * {@link VacuumMapPlane} and {@link VacuumRoomOutline} hand back their planes packed, because a large
- * map is a megabyte once every cell is its own byte and almost every caller wants a handful of lookups
- * rather than the whole grid. These are those lookups.
+ * map is a megabyte once every cell is its own byte. These are the lookups into them.
  *
  * **The two planes do not share a grid.** Each carries its own `origin` and its own `resolution`, and
  * nothing says they agree — so a cell index from one is not a cell index in the other. Everything here
@@ -121,8 +120,7 @@ export function roomIdAtPoint(outline: VacuumRoomOutline, point: MapPoint): numb
 }
 
 /**
- * The room at a world position, named — what an automation asking "which room is the robot in" wants,
- * and the thing a rendered image can never answer.
+ * The room at a world position, named — the join of the outline's room id with the room list.
  *
  * Takes the outline and the room list separately because the device sends them separately, on two
  * channels that arrive at different times: a caller holding one without the other gets `undefined`

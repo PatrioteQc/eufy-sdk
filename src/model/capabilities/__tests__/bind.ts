@@ -2,7 +2,8 @@ import { buildActions } from "../index.js";
 import { camelCase } from "../access.js";
 import type { Capability } from "../../types.js";
 import type { CommandContext } from "../types.js";
-import type { Command, Ff09SettingsReader, MediaProvider, RawDpCodec } from "../../../core/contracts.js";
+import type { MemberDeps } from "../members.js";
+import type { Command } from "../../../core/contracts.js";
 
 /**
  * The bound `dev.<cap>()` object plus the commands it sent — what a caller actually holds.
@@ -15,24 +16,17 @@ import type { Command, Ff09SettingsReader, MediaProvider, RawDpCodec } from "../
 export function bind<T>(
   capability: Capability,
   ctx: CommandContext,
-  opts: {
-    media?: MediaProvider;
-    ff09Settings?: Ff09SettingsReader;
-    /** The injected Raw-DP reader, for a capability whose getters `decode` a structured payload. */
-    rawDp?: RawDpCodec;
+  deps: Partial<Omit<MemberDeps, "ctx" | "sink" | "read">> & {
+    /** Loosened for specs: a fixture reader may answer a narrower value type than the real reader. */
     read?: (name: string) => { value: unknown } | undefined;
   } = {},
 ): { acts: T; sent: Command[] } {
   const sent: Command[] = [];
-  const actions = buildActions(
-    [capability],
+  const actions = buildActions([capability], {
     ctx,
-    { dispatch: async (c) => void sent.push(c) },
-    opts.media,
-    opts.ff09Settings,
-    opts.rawDp,
-    opts.read as never,
-  );
-  const key = camelCase(capability);
-  return { acts: (actions as Record<string, unknown>)[key] as T, sent };
+    sink: { dispatch: async (c) => void sent.push(c) },
+    ...(deps as Omit<MemberDeps, "ctx" | "sink">),
+    read: (deps.read ?? (() => undefined)) as MemberDeps["read"],
+  });
+  return { acts: (actions as Record<string, unknown>)[camelCase(capability)] as T, sent };
 }

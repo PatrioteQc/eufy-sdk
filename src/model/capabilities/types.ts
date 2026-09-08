@@ -16,25 +16,18 @@ import type { DpCatalog } from "./dp-catalog.js";
  * @module model/capabilities/types
  */
 
-import type { Capability, Codec, CloudRecord, ParamValue, PropertySpec, PropertyValue, ValueKind } from "../types.js";
-import type { Members } from "./members.js";
+import type { Capability, Codec, CloudRecord, PropertySpec, PropertyValue, ValueKind } from "../types.js";
+import type { Members, MemberDeps } from "./members.js";
 // The transport boundary contract lives in core/ — imported by BOTH the capability layer (which
 // produces intent) and the transport layer (which consumes it), so neither imports the other.
 // Capability modules import Command/CommandSink/MediaProvider/ScalarForm straight from core/contracts.
-import type {
-  Command,
-  CommandSink,
-  MediaProvider,
-  Ff09SettingsReader,
-  DpInboundFrame,
-  RawDpCodec,
-} from "../../core/contracts.js";
+import type { Command, Ff09SettingsReader, DpInboundFrame } from "../../core/contracts.js";
 
 /**
  * How a capability is discovered on a device. All fields are additive OR-ed evidence — a device
  * has the capability if ANY field matches. Mechanisms, most-to-least dynamic:
  *  - `evidenceParams` — a reported `param_type` whose PRESENCE proves the capability (the device
- *    self-reports it when you pull its info over P2P). Namespace-agnostic: security param ids and
+ *    self-reports it when its info is pulled over P2P). Namespace-agnostic: security param ids and
  *    vacuum Tuya-DP ids are declared the same way.
  *  - `deviceTypes` — vendor `DeviceType` numbers that guarantee the capability (static vendor
  *    table, e.g. Indoor-PT = 31/35/111). Used when there is no honest self-reported signal.
@@ -81,7 +74,7 @@ export interface CapabilityFrame {
  * them into one semantic {@link CapabilityEvent} (`motion`, `doorbellPress`, `lockState`,
  * `ptzNotify`, …), so the consumer never has to know which transport delivered it:
  *  - `push` — an FCM notification, already normalized: a numeric `eventType` + optional thumbnail.
- *  - `p2p-frame` — a live P2P frame (the old `CapabilityFrame`; what `decodeFrame` consumed).
+ *  - `p2p-frame` — a live P2P frame ({@link CapabilityFrame}).
  *  - `poll` — a cloud param that changed between polls (`paramType` from→to).
  */
 export type InboundSignal =
@@ -137,9 +130,8 @@ export interface EventMapping {
    */
   payload?: Record<string, unknown>;
   /**
-   * Fields DERIVED from the signal — for state a push carries under an opaque single-letter wire key
-   * that no host should be expected to decode itself. Merged last, over both the raw body and
-   * {@link payload}.
+   * Fields DERIVED from the signal — for state a push carries under an opaque single-letter wire key.
+   * Merged last, over both the raw body and {@link payload}.
    *
    * Same evidence bar as everything else: only map a key whose meaning is confirmed in the V6 app or a
    * capture. Return `{}` when this signal doesn't carry the field, so nothing is invented.
@@ -303,14 +295,13 @@ export type CapabilityActions = Record<string, (...args: any[]) => any>;
  * closing the read/write asymmetry (writes are typed+fluent; a raw `getProperty("battery")?.value` is
  * the loose `ParamValue`). Returns the current property value for a property NAME, or
  * `undefined` if never observed. The facade wires it to the device's live state, so a getter built
- * once stays current as realtime/poll updates land. Extract the value with the `reads.ts` helpers
- * (`readNum`/`readBool`/`readStr`) — they guard the runtime type rather than lie-cast.
+ * once stays current as realtime/poll updates land. The `readNum`/`readBool`/`readStr` extractors in
+ * `./access.ts` guard the runtime type rather than lie-cast.
  */
 export type CapabilityStateReader = (name: string) => PropertyValue | undefined;
 
 /**
- * One argument a described action accepts, in the same value vocabulary the reads use ({@link ValueKind})
- * — so a caller decides how to solicit a value from data rather than from a per-action branch.
+ * One argument a described action accepts, in the same value vocabulary the reads use ({@link ValueKind}).
  *
  * A numeric range belongs here as `min`/`max`/`step`, and must be the SAME constant the action clamps
  * with: a retyped range is a drift bug no test can catch, since both copies stay individually valid.
@@ -333,7 +324,7 @@ export interface ActionArgSpec {
 
 /**
  * What one action on `dev.<cap>()` accepts and what it changes — the write-side counterpart to a
- * member's read getter, for a caller building a control surface without a branch per capability.
+ * member's read getter.
  *
  * Carries no name: it is attached to the method itself (`describedAction` in `./access.ts`), so the
  * action's own key is its name and a rename cannot leave a description behind pointing at nothing.
@@ -422,17 +413,17 @@ export interface CapabilityModule {
    * several transports report is announced once per real change instead of once per transport.
    *
    * One physical change can reach the SDK on more than one path: an entry sensor's contact arrives
-   * as a station notify ~2 s before the same value arrives as an FCM push. Both are real, but a host
-   * wants "the door opened" once. Listing the event here makes the emitter edge-triggered on that
-   * field: a value equal to the last one announced for that device is suppressed.
+   * as a station notify ~2 s before the same value arrives as an FCM push. Both are real, but they
+   * describe one change. Listing the event here makes the emitter edge-triggered on that field: a
+   * value equal to the last one announced for that device is suppressed.
    *
    * Declare this ONLY for events carrying a settled state. An event that is a **pulse** — motion,
    * a doorbell press — must be omitted: consecutive pulses are identical by nature and deduping them
    * would drop real detections.
    *
    * Edge-triggering is applied to realtime sources only. A poll still re-announces an unchanged
-   * state, so a host that missed a frame or restarted gets re-synchronised rather than waiting for
-   * the state to change again.
+   * state, so a missed realtime frame is re-synchronised rather than left waiting for the state to
+   * change again.
    */
   stateEvents?: { event: string; field: string }[];
   /**
@@ -473,8 +464,8 @@ export interface CapabilityModule {
    * Every injected provider here names a **technical job**, never the capability that happens to be
    * its first caller: `media` is shared by every media-capable device, and `ff09Settings` is named for
    * the frame family it reads, so any device driven by that frame can use it. That is the rule, not a
-   * convention — a provider you cannot name without saying "lock" or "vacuum" is a provider split in
-   * the wrong place.
+   * convention — a provider that cannot be named without saying "lock" or "vacuum" is a provider split
+   * in the wrong place.
    *
    * `ff09Settings` exists as its own boundary because `GET_SETTINGS` is a request/reply query
    * (decrypt + parse + pick P2P-vs-MQTT), and neither `CommandSink` (write-only, `Promise<void>`) nor
@@ -482,13 +473,7 @@ export interface CapabilityModule {
    * needing a live read is one more method on {@link Ff09SettingsReader}; a genuinely different wire
    * family is its own provider, not another parameter bolted on next to this one.
    */
-  actions?(
-    ctx: CommandContext,
-    sink: CommandSink,
-    media?: MediaProvider,
-    ff09Settings?: Ff09SettingsReader,
-    read?: CapabilityStateReader,
-  ): CapabilityActions;
+  actions?(deps: MemberDeps): CapabilityActions;
   /**
    * The capability's surface, one entry per feature — the schema, the getters, the setters, the intent
    * routes and the descriptions all derived from it. See `./members.ts`.
