@@ -67,6 +67,21 @@ export interface EufyMegaOptions extends MegaClientConfig {
    */
   localAddresses?: Record<string, string>;
   /**
+   * Suppress the `255.255.255.255` local-lookup broadcast (default `false` — broadcast is sent).
+   *
+   * An unconnected P2P session broadcasts a local lookup **once a second for the whole connect
+   * timeout**, which is how a station on the same LAN is found without knowing its address. That is
+   * cheap when it works and not free when it does not: the datagram goes to every host on the segment,
+   * every associated client of a WLAN has to receive it, and a host that sets `SO_BROADCAST` on many
+   * sockets in quick succession is doing something unusual to its own network stack.
+   *
+   * Turning it off costs the LAN-discovery path only. A station whose record carries a usable
+   * `ip_addr` is still found directly, and the PPCS cloud lookup — which is what actually connects a
+   * station in most topologies — is unaffected. Set it when the caller knows its stations' addresses,
+   * or when the broadcast is suspected of disturbing the host's own networking.
+   */
+  noBroadcast?: boolean;
+  /**
    * Auto-manage connectivity (default `true`). When on, a successful {@link EufyMega.login} brings up
    * the always-on event channels itself — FCM push + secure MQTT (if the account has appliances) — and
    * eagerly warms P2P only for **wired** stations (HomeBases / mains cameras). Battery cameras stay

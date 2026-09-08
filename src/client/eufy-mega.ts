@@ -342,6 +342,7 @@ export class EufyMega extends EventEmitter {
       poweredFor: (parentSn) => this.stationPower(parentSn),
       sessionIdle: { batteryIdleMs: opts.p2pIdleMs },
       localAddresses: opts.localAddresses,
+      noBroadcast: opts.noBroadcast,
       listDevices: () => this.registry.list(),
       ensureDevices: async () => {
         await this.registry.getDevices();
