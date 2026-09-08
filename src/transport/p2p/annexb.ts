@@ -129,11 +129,11 @@ export function updatedParamSets(buf: Buffer, current: ParamSets | undefined): P
  *
  * A decoder reads parameter sets in stream order, so they are emitted VPS → SPS → PPS: a PPS ahead of
  * the SPS it references is as useless as none at all. Sets carrying no NALs return the input unchanged
- * rather than an equal copy, so a caller that already has a self-contained unit pays nothing.
+ * rather than an equal copy.
  *
  * Emitting a duplicate set is harmless — a decoder overwrites the entry with the same id — which is why
- * this needs no knowledge of what the unit already carries; {@link extractParamSets} answers that for a
- * caller that wants to prime only when necessary.
+ * this needs no knowledge of what the unit already carries; {@link extractParamSets} answers what a
+ * unit carries already.
  */
 export function prefixParamSets(annexb: Buffer, sets: ParamSets): Buffer {
   const ordered = [...sets.vps, ...sets.sps, ...sets.pps];
@@ -321,7 +321,7 @@ export function codedGeometry(sets: ParamSets): CodedGeometry | undefined {
   if (!sps) return undefined;
   const geometry = sets.codec === "h264" ? h264Geometry(sps) : sets.codec === "h265" ? h265Geometry(sps) : undefined;
   if (!geometry) return undefined;
-  const { width, height, coded } = geometry;
+  const { width, height } = geometry;
   const plausible =
     Number.isInteger(width) &&
     Number.isInteger(height) &&

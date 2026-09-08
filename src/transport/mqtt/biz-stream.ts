@@ -73,8 +73,7 @@ const BY_ID = new Map<number, BizChannel>(Object.entries(BIZ_CHANNEL).map(([name
 
 /**
  * Name a channel id under the default numbering, or `undefined` for an id the vendor's table does not
- * list. Useful for logging and for a caller deciding what to keep; not a substitute for a
- * device-declared mapping where one exists.
+ * list. Not a substitute for a device-declared mapping where one exists.
  */
 export function bizChannelName(id: number): BizChannel | undefined {
   return BY_ID.get(id);

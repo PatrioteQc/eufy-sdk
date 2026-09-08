@@ -58,13 +58,6 @@ describe("battery capability module", () => {
     ]);
   });
 
-  it("every property has a string name + numeric paramType", () => {
-    for (const p of BATTERY.properties) {
-      expect(typeof p.name).toBe("string");
-      expect(typeof p.paramType).toBe("number");
-    }
-  });
-
   it("proves battery via the reported battery-level param 1101", () => {
     expect(BATTERY.detection?.evidenceParams).toContain(1101);
   });

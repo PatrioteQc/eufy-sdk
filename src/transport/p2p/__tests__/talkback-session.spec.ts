@@ -565,7 +565,7 @@ describe("Talkback media-session lifetime", () => {
   it("stops itself after the idle window when nothing is written", async () => {
     const sink = fakeSink();
     const releaseMedia = vi.fn();
-    const talk = new Talkback(sink, {
+    new Talkback(sink, {
       channel: 0,
       homeBaseAttached: false,
       releaseMedia,

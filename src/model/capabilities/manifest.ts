@@ -1,17 +1,16 @@
 /**
- * What a device exposes, as data — the manifest a caller renders a device from without a branch per
- * capability.
+ * What a device exposes, as data — one JSON-safe shape per device, with no branch per capability.
  *
- * A caller holding a bound device can already CALL everything on it; what it cannot do from outside the
- * package is find out what is there and what a value means. The member table states both, and this turns
- * that statement into a public, JSON-safe shape: which reads a device actually installed, which of its
- * actions are offerable, and which events it emits.
+ * A bound device is fully callable but states nothing about ITSELF from outside the package: neither
+ * what is installed nor what a value means is readable off it. The member table states both, and this
+ * turns that statement into a public, JSON-safe shape: which reads a device actually installed, which
+ * of its actions are offerable, and which events it emits.
  *
- * **Derived from the LIVE bound objects, not recomputed from the tables.** The descriptors of the object
- * a caller holds are the only source that cannot disagree with what `bindMembers` installed — evidence
+ * **Derived from the LIVE bound objects, not recomputed from the tables.** The descriptors of the bound
+ * object are the only source that cannot disagree with what `bindMembers` installed — evidence
  * gates, provider gates and unverified writes are all already applied there. Recomputing the same answer
  * from the module tables would be a second implementation of the gate, and it would be wrong in exactly
- * the cases a caller notices: a media method on a device bound without that provider, a read for a param
+ * the cases that matter: a media method on a device bound without that provider, a read for a param
  * the device never reported. The table is joined in only for SEMANTICS (what the value means), which the
  * bound object does not carry.
  *
@@ -33,7 +32,7 @@ export interface ReadDescriptor {
   property: string;
   /** How the value is stored. */
   type: PropertyValueType;
-  /** What the value MEANS — the annotation a caller presents or converts from. See {@link ValueKind}. */
+  /** What the value MEANS, as opposed to how it is stored. See {@link ValueKind}. */
   kind?: ValueKind;
   /** The unit the device reports the value in, when it has one (`"%"`, `"°C"`, `"dBm"`). */
   unit?: string;
@@ -71,12 +70,11 @@ export interface CapabilityDescriptor {
   accessor: string;
   /** The reads INSTALLED on this device, never the theoretical set. */
   reads: readonly ReadDescriptor[];
-  /** The installed actions that carry a description, so a caller can offer them without knowing them. */
+  /** The installed actions that carry a description. */
   actions: readonly ActionDescriptor[];
   /**
-   * Installed, callable actions with no description — fully usable by a caller that knows the SDK, but
-   * not auto-offerable. Published rather than hidden so the gap is visible instead of looking like the
-   * action doesn't exist.
+   * Installed, callable actions with no description — usable, but not auto-offerable. Published rather
+   * than hidden so the gap is visible instead of looking like the action doesn't exist.
    */
   undescribedActions: readonly string[];
   /** The semantic event names this capability emits. */
@@ -108,9 +106,9 @@ export interface DeviceManifest {
 /**
  * Describe the capability objects a device has bound, one descriptor each.
  *
- * Parameterised over the module list (like `buildEventIndex`) so a spec can drive it with a synthetic
- * catalogue; the barrel binds it to the real one. A capability the device did not bind — because it does
- * not have it, or because nothing is bound yet — contributes no descriptor at all.
+ * Parameterised over the module list; the barrel binds it to the real one. A capability the device did
+ * not bind — because it does not have it, or because nothing is bound yet — contributes no descriptor
+ * at all.
  * @internal
  */
 export function describeBound(
@@ -146,11 +144,11 @@ export function describeBound(
 }
 
 /**
- * A member's semantics, as a caller reads them.
+ * A member's semantics, as published.
  *
  * The DECODED kind and option set win where a member declares them: a decode IS the value handed over,
- * so describing the payload it came out of would mis-describe exactly the reads a caller most wants to
- * render. Absent a decode, a context-resolved enum domain ({@link resolvedEnum}) is reported with enum
+ * so describing the payload it came out of would mis-describe the value that is actually delivered.
+ * Absent a decode, a context-resolved enum domain ({@link resolvedEnum}) is reported with enum
  * `kind`; otherwise the member's stored kind and static options stand.
  */
 function readDescriptor(

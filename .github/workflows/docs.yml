@@ -57,7 +57,7 @@ jobs:
             docs/package-lock.json
 
       # The API reference is generated from the library source, so TypeDoc needs the SDK's deps
-      # (mqtt/protobufjs/werift + @types) resolvable. Install them at the repo root first.
+      # (mqtt/protobufjs + @types) resolvable. Install them at the repo root first.
       - name: Install SDK deps (for TypeDoc source resolution)
         working-directory: ${{ github.workspace }}
         run: npm ci

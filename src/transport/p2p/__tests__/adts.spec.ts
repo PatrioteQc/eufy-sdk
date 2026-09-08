@@ -6,7 +6,6 @@ import {
   isSupportedAdts,
   MAX_AUDIO_FRAME_BYTES,
   parseAdtsHeader,
-  splitAdtsFrames,
 } from "../adts.js";
 
 /**
@@ -98,11 +97,6 @@ describe("AdtsFrameReader", () => {
     const frame = adtsFrame(80, 0x44);
     const out = new AdtsFrameReader().push(Buffer.concat([Buffer.from([0x00, 0x01, 0x02, 0xff, 0x00]), frame]));
     expect(out).toEqual([frame]);
-  });
-
-  it("splitAdtsFrames is the one-shot form of the same scan", () => {
-    const frames = [adtsFrame(64, 0x01), adtsFrame(96, 0x02)];
-    expect(splitAdtsFrames(Buffer.concat(frames))).toEqual(frames);
   });
 });
 

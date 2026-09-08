@@ -20,9 +20,8 @@ const LEGACY_LOCATE_DP = TUYA_VACUUM_DP.LOOK_FOR_SWEEPER;
  * common call is a bare `locate()` meaning "start beeping" — and a derived setter always takes its
  * value. Dispatches DP 103 (legacy Tuya) or DP 160 (AIoT) based on which DP the device has reported.
  *
- * Exported so a caller can name the table its `*Actions` type is derived from, but NOT published:
- * each entry states its wire id and the evidence it was confirmed on, which the reference site
- * does not carry.
+ * Exported but NOT published: each entry states its wire id and the evidence it was confirmed on,
+ * which the reference site does not carry.
  * @internal
  */
 export const LOCATE_MEMBERS = {
@@ -51,8 +50,7 @@ export const LOCATE_MEMBERS = {
    * setter always demands its value.
    *
    * That default is also why the argument is named here: it is absent from the function's arity, so the
-   * description would otherwise derive as taking NO arguments and a caller would never learn the beep can
-   * be cancelled.
+   * description would otherwise derive as taking NO arguments and leave the cancel form undeclared.
    */
   locate: {
     ...method(

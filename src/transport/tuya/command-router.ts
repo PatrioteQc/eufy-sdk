@@ -115,7 +115,7 @@ export class TuyaCommandRouter {
    *
    * The response shape from `getDeviceDps` is not yet pinned from a live capture. The defensive
    * extraction tries both `result.dps` (a nested map) and bare `result` (a flat map), and returns
-   * `null` when neither yields a non-empty record so the caller can skip the delivery safely.
+   * `null` when neither yields a non-empty record.
    */
   async fetchDps(sn: string): Promise<Record<string, unknown> | null> {
     const ids = this.snMap.get(sn);

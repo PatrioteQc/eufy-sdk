@@ -1,7 +1,7 @@
 import { asBool } from "../../core/util.js";
 import { CusPushEvent, DoorbellPushEvent, HB3PairedDevicePushEvent, IndoorPushEvent } from "../push-events.js";
 import { describeDevice, setJson, setJsonRaw, setPayload, setScalar } from "./access.js";
-import { propertiesOf, type Members, type Surface } from "./members.js";
+import { propertiesOf, type Members, type Surface, type MemberDeps } from "./members.js";
 import { DeviceType } from "../device-types.js";
 import type {
   CapabilityActions,
@@ -12,7 +12,7 @@ import type {
   InboundSignal,
 } from "./types.js";
 import type { ParamValue } from "../types.js";
-import type { Command, CommandSink } from "../../core/contracts.js";
+import type { Command } from "../../core/contracts.js";
 
 /**
  * The P2P **feature-command ids** this motion capability drives. Capability-owned wire vocabulary
@@ -95,8 +95,8 @@ export const MOTION_CMD = {
    * `{snooze_time:21600,chime_onoff:0,homebase_onoff:1,motion_notify_onoff:1,startTime:1784794716}`,
    * `{snooze_time:0}` (clearing/cancelling — the bare shape, no extra fields), and
    * `{snooze_time:3600,chime_onoff:0,homebase_onoff:0,motion_notify_onoff:1,startTime:1784794730}`.
-   * Confirms `command_schema.json`'s field names exactly; the earlier worry that `paramValue =
-   * base64(JSON.stringify(payload))` meant a cloud-only HTTP path was WRONG — it's a real P2P frame.
+   * Confirms `command_schema.json`'s field names exactly; it is a real P2P frame, not the cloud-only
+   * HTTP path a `paramValue = base64(JSON.stringify(payload))` shape might suggest.
    * `chime_onoff`/`homebase_onoff`/`motion_notify_onoff` meanings are NOT independently verified
    * (only observed alongside 2 different snooze picks) — `setSnoozeTime` ships the exact 2nd-capture
    * values as fixed defaults rather than exposing them, since their semantics aren't confirmed enough
@@ -122,7 +122,7 @@ export const MOTION_CMD = {
    * **READ is object-OR-scalar.** The app reads it as
    * `typeof v === "object" ? v.radar_wd_switch : v`, so the stored value may be a JSON object
    * `{radar_wd_switch,…}` OR a bare scalar — a plain bool coercion reports `false` for the object
-   * form (feature-on looks off, and a state-mirroring host then "corrects" it with a spurious write).
+   * form, so a feature that is on reads as off.
    * Decoded by {@link decodeRadarWdSwitch} to match the app.
    *
    * ⚠️ Replay + readback confirmed on a T8214 (2706 `0`→`1`→`0`), NOT byte-captured. Provenance `apk`.
@@ -448,13 +448,12 @@ export function decodeRadarWdSwitch(raw: unknown): boolean | undefined {
  * the intent routes and the descriptions all come out of this table.
  *
  * The four raw sensitivity params are read-only members: each family reports its ladder under a
- * DIFFERENT id and two of them run inverted, so the value a caller wants is the STEP, resolved across
+ * DIFFERENT id and two of them run inverted, so the meaningful value is the STEP, resolved across
  * all four by the methods in `actions()`. They stay in the schema because the device reports them and a
  * diagnosis may want the raw number.
  *
- * Exported so a caller can name the table its `*Actions` type is derived from, but NOT published:
- * each entry states its wire id and the evidence it was confirmed on, which the reference site
- * does not carry.
+ * Exported but NOT published: each entry states its wire id and the evidence it was confirmed on,
+ * which the reference site does not carry.
  * @internal
  */
 export const MOTION_MEMBERS = {
@@ -481,7 +480,7 @@ export const MOTION_MEMBERS = {
    * First of the four raw sensitivity params, all `unexposed`: reported, so they stay in the schema and
    * answer through `getProperty` for a diagnosis, but given no typed getter because a raw number here
    * means nothing on its own — each family reports its ladder under a different id and two run
-   * inverted. The value a caller wants is the STEP, resolved across all four by `sensitivityStep()` in
+   * inverted. The meaningful value is the STEP, resolved across all four by `sensitivityStep()` in
    * `actions()`. This id is both the read and the write for the five-step rising scale.
    */
   motionSensitivity: {
@@ -572,10 +571,10 @@ export const MOTION_MEMBERS = {
     description: "Raw sensitivity a standalone PIR sensor reports (verified: param 1609, inverted ladder).",
   },
   /**
-   * A standalone motion sensor's user test mode — worth knowing that this is the ONLY state in which
-   * such a sensor reports detections over P2P, so a caller waiting on sensor motion outside test mode
-   * is waiting on the push path. `realtime` is deliberately NOT set: the id never appears in the cloud
-   * record, so the getter arrives only once the station has reported it.
+   * A standalone motion sensor's user test mode — the ONLY state in which such a sensor reports
+   * detections over P2P; outside it, detections arrive on the push path. `realtime` is deliberately NOT
+   * set: the id never appears in the cloud record, so the getter arrives only once the station has
+   * reported it.
    *
    * The write is the one asymmetric pair here — enter is a `1350` payload carrying the channel, leave is
    * a direct-binary frame, and each is refused in the other's shape. Sensor-family only; a camera
@@ -674,13 +673,7 @@ export const MOTION: CapabilityModule = {
    * `requireFamily`, in the one place the wire is now declared — so the property path and the
    * fluent setter are guarded by the same check instead of two copies of it.
    */
-  actions(
-    ctx: CommandContext,
-    sink: CommandSink,
-    _media?: unknown,
-    _ff09?: unknown,
-    read?: CapabilityStateReader,
-  ): CapabilityActions {
+  actions({ ctx, sink, read }: MemberDeps): CapabilityActions {
     return {
       sensitivitySteps: () => scaleFor(ctx, read)?.ladder.length,
       sensitivityStep: () => {
@@ -737,8 +730,7 @@ export const MOTION: CapabilityModule = {
    * (`CusPushEvent.MOTION_SENSOR_PIR`) — verified live on a T8910.
    *
    * Inbound detection pushes. Each kind gets its OWN event name rather than one `motion` event with a
-   * discriminator: hosts model these as separate sensors, and the existing pet/package events already
-   * follow that shape.
+   * discriminator: they are separate detections, the same shape the existing pet/package events follow.
    *
    * The camera families share these ids (indoor, doorbell and hub-paired all use the same integers for
    * the same meaning), so one row per id covers every family.

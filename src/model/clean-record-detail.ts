@@ -8,8 +8,7 @@
  *
  * Fetching stays with the caller on purpose: the host these URLs point at is unconfirmed, and this
  * client's binary path is host-allowlisted with SSRF checks by design. Handing the SDK a URL to fetch
- * would route around a control that exists for a reason. A caller that has the bytes can decode them
- * here; a caller that wants the SDK to go and get them is asking for a different, larger decision.
+ * would route around a control that exists for a reason.
  *
  * @module model/clean-record-detail
  */

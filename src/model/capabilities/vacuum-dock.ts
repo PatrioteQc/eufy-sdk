@@ -63,8 +63,8 @@ export function decodeDockFirmware(raw: ParamValue | undefined, codec: RawDpCode
  * Every value {@link DockActivity} can take — the read's declared domain, so the schema a caller reads
  * and the type it compiles against are the same list rather than two that can drift.
  *
- * Published alongside {@link DockActivity} so a caller can offer the set as data — a picker or a
- * legend needs the members at runtime, not only at compile time.
+ * Published alongside {@link DockActivity} so the members are reachable as data at runtime, not only
+ * at compile time.
  */
 export const DOCK_ACTIVITIES = [
   "idle",
@@ -308,8 +308,7 @@ export const VACUUM_DOCK_MEMBERS = {
   /**
    * Run the dock's full deep self-clean cycle — `StationRequest.manual_cmd.self_maintain`.
    *
-   * The longest-running of these and the one a caller is most likely to want gated behind a
-   * confirmation, since it occupies the dock for a while.
+   * The longest-running of these — it occupies the dock for a while.
    */
   selfMaintain: {
     type: "bool",

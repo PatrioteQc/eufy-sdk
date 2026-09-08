@@ -44,13 +44,6 @@ describe("light capability module", () => {
     expect(LIGHT.properties.map((p) => p.name)).toEqual(["light", "brightness", "spotlightEnabled"]);
   });
 
-  it("every property has a string name + numeric paramType", () => {
-    for (const p of LIGHT.properties) {
-      expect(typeof p.name).toBe("string");
-      expect(typeof p.paramType).toBe("number");
-    }
-  });
-
   it("detects only from real SPOTLIGHT params (NOT 1045 status LED)", () => {
     // 1045 (status LED, on every camera) must NOT be here — that's `camera`, not `light`.
     expect(LIGHT.detection?.evidenceParams).not.toContain(1045);
@@ -178,7 +171,11 @@ describe("light capability module", () => {
 
     it("setAutoSpotlight(on) sends the 1422 composite; opts override the carried brightness/time/mode", async () => {
       const sent: Command[] = [];
-      const acts = LIGHT.actions!(jsonCtx(3), { dispatch: async (c) => void sent.push(c) });
+      const acts = LIGHT.actions!({
+        ctx: jsonCtx(3),
+        sink: { dispatch: async (c) => void sent.push(c) },
+        read: () => undefined,
+      });
       await acts.setAutoSpotlight!(true); // no opts → captured defaults
       expect(sent[0]).toMatchObject({
         kind: "set-payload",

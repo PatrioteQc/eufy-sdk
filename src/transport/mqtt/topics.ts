@@ -47,7 +47,7 @@ const EUFY_HOME = "eufy_home";
  * The topic prefix segment for a device — the second path component in `cmd/{prefix}/{pn}/{sn}/…`.
  * Uses `eufy_home` for clean-line devices (derived from `deviceClass`, not `category`, because the
  * cloud record's `category` field does not reliably match the topic namespace for this line).
- * Everything else falls back to `device.category` as before.
+ * Everything else falls back to `device.category`.
  */
 function topicPrefix(device: EufyDevice): string {
   if (device.deviceClass === "vacuum" || device.deviceClass === "mower") return EUFY_HOME;

@@ -128,9 +128,8 @@ function recordSetting(param: number, value: number, ctx: CommandContext): Comma
  * weaker evidence than "speaks this setting": an entry sensor reports a level (1101) and nothing else,
  * and handing it a power-source frame it never accepts would look like success.
  *
- * Exported so a caller can name the table its `*Actions` type is derived from, but NOT published:
- * each entry states its wire id and the evidence it was confirmed on, which the reference site
- * does not carry.
+ * Exported but NOT published: each entry states its wire id and the evidence it was confirmed on,
+ * which the reference site does not carry.
  * @internal
  */
 export const BATTERY_MEMBERS = {
@@ -368,7 +367,7 @@ export const BATTERY_MEMBERS = {
    *
    * It is NOT a low-battery flag, on two independent grounds: the app's own param table names 1103
    * `GET_CAMERA_INFO`, and a T8170 at 92% and a T8171 at 27% both report the constant `5`. Typed as a
-   * bool it would read `false` on every device forever — a shape a caller cannot tell from a real answer.
+   * bool it would read `false` on every device forever — a shape indistinguishable from a real answer.
    */
   cameraInfo: {
     param: BATTERY_PARAM.CAMERA_INFO,

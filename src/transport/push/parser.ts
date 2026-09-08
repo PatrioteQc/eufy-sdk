@@ -36,8 +36,6 @@ export class McsParser extends EventEmitter {
   private messageTag = 0;
   private messageSize = 0;
   private sizePacketSoFar = 0;
-  private handshakeComplete = false;
-  private waiting = false;
 
   /** Reset for a fresh connection. */
   reset(): void {
@@ -46,19 +44,12 @@ export class McsParser extends EventEmitter {
     this.messageTag = 0;
     this.messageSize = 0;
     this.sizePacketSoFar = 0;
-    this.handshakeComplete = false;
-    this.waiting = false;
   }
 
   /** Feed a chunk of TLS bytes. */
   handleData(chunk: Buffer): void {
     this.data = Buffer.concat([this.data, chunk]);
-    if (this.waiting) {
-      this.waiting = false;
-      this.waitForData();
-    } else {
-      this.waitForData();
-    }
+    this.waitForData();
   }
 
   private minBytesNeeded(): number {
@@ -75,10 +66,7 @@ export class McsParser extends EventEmitter {
   }
 
   private waitForData(): void {
-    if (this.data.length < this.minBytesNeeded()) {
-      this.waiting = true;
-      return;
-    }
+    if (this.data.length < this.minBytesNeeded()) return;
     switch (this.state) {
       case State.VERSION_TAG_AND_SIZE:
         this.onVersion();
@@ -141,7 +129,6 @@ export class McsParser extends EventEmitter {
     }
     if (this.data.length < this.messageSize) {
       this.state = State.PROTO_BYTES;
-      this.waiting = true;
       return;
     }
     const buf = this.data.subarray(0, this.messageSize);
@@ -153,7 +140,6 @@ export class McsParser extends EventEmitter {
       object = type.toObject(type.decode(buf), { longs: String, enums: String, bytes: Buffer });
     }
     this.emitMessage({ tag: this.messageTag, object });
-    if (this.messageTag === MessageTag.LoginResponse) this.handshakeComplete = true;
     this.next();
   }
 
@@ -164,9 +150,5 @@ export class McsParser extends EventEmitter {
 
   private emitMessage(m: McsMessage): void {
     this.emit("message", m);
-  }
-
-  get isHandshakeComplete(): boolean {
-    return this.handshakeComplete;
   }
 }

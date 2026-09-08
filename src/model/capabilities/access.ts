@@ -87,10 +87,10 @@ export function setStationScalar(cmd: number, value: number, channel: number): C
 }
 
 /**
- * A one-line device descriptor for error messages — carries every identifier a maintainer needs to
- * reproduce/triage from a log later (deviceType, model T-code, full serial, channel, codec). Use it
- * in every "capability detected but this device's wire is unknown / unsupported" throw so the log
- * line is self-contained instead of just naming a bare `deviceType`.
+ * A one-line device descriptor for error messages — carries every identifier needed to reproduce or
+ * triage from a log later (deviceType, model T-code, full serial, channel, codec), so a "capability
+ * detected but this device's wire is unknown / unsupported" throw is self-contained instead of naming
+ * a bare `deviceType`.
  */
 export function describeDevice(ctx: CommandContext): string {
   return (
@@ -129,8 +129,7 @@ const ACTION_SPEC = Symbol("eufy.actionSpec");
  *
  * The alternative — a table of descriptions beside `actions()` — restates every method name, which is
  * one rename away from describing a method that no longer exists. Here the object key IS the name, so
- * the two cannot come apart. The description is then readable only off a BUILT action object, which is
- * the only place it is wanted: a caller asking what a bound device can do.
+ * the two cannot come apart. The description is then readable only off a BUILT action object.
  *
  * See {@link ActionSpec} for what may be described — the value-taking method rather than its aliases,
  * and only a wire confirmed on real hardware.
@@ -149,8 +148,8 @@ export function actionSpecOf(fn: unknown): ActionSpec | undefined {
  * is reached under.
  *
  * Lives here because two callers need the same answer: the barrel installs the accessors under these
- * names, and the manifest publishes them so a caller can go from a described capability back to the
- * object it lives on. A second copy would be a rename away from naming an accessor that doesn't exist.
+ * names, and the manifest publishes them, so a described capability names the accessor its object
+ * lives on. A second copy would be a rename away from naming an accessor that doesn't exist.
  * @internal
  */
 export function camelCase(cap: Capability): string {

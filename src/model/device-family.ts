@@ -130,7 +130,7 @@ export const isWiredDoorbell = (ctx: FamilyContext): boolean => ctx.deviceType =
  * A **negative exclusion**: returns `false` only for the one confirmed non-AIoT platform
  * (`"eufy_home_tuya"` — ThingClips/Tuya Cloud). Any absent, unknown, or unrecognised category
  * defaults to `true`, matching the polarity of `routeCommand` which sends `aiot-dp` to MQTT
- * unless `category === "eufy_home_tuya"`. The two gates now agree: an unknown-category AIoT
+ * unless `category === "eufy_home_tuya"`. The two gates agree: an unknown-category AIoT
  * vacuum both routes to MQTT *and* has its setters installed.
  *
  * | `category`          | platform                           | returns |

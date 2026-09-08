@@ -195,9 +195,8 @@ function sirenPayload(cmd: number, body: Record<string, number>, ctx: CommandCon
  * configuration, test, and stop; evidenced HomeBases expose alarm configuration plus trigger/stop;
  * verified attached cameras expose trigger/stop only.
  *
- * Exported so a caller can name the table its `*Actions` type is derived from, but NOT published:
- * each entry states its wire id and the evidence it was confirmed on, which the reference site
- * does not carry.
+ * Exported but NOT published: each entry states its wire id and the evidence it was confirmed on,
+ * which the reference site does not carry.
  * @internal
  */
 export const SIREN_MEMBERS = {

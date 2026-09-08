@@ -62,8 +62,8 @@ export interface EufyMegaOptions extends MegaClientConfig {
   storedSnapshotCache?: boolean;
   /**
    * LAN address overrides for direct P2P, keyed by **parent-station serial** → `host` or `host:port`.
-   * The SDK normally derives a station's LAN address from its device record; supply this when the
-   * record's IP is wrong/blocked (AP isolation, a stale `ip_addr`) and you know the real LAN address.
+   * The SDK normally derives a station's LAN address from its device record; an entry here overrides it
+   * where the record's IP is wrong/blocked (AP isolation, a stale `ip_addr`).
    */
   localAddresses?: Record<string, string>;
   /**
@@ -137,7 +137,7 @@ export interface EufyMegaOptions extends MegaClientConfig {
   pollMs?: number;
   /**
    * Which semantic events speculatively pre-warm a camera's P2P session — **opt-in, default `[]`**, an
-   * empty list being what disables it. Naming an event buys a tap-to-view / talkback right after it
+   * empty list being what disables it. Naming an event buys a stream or talkback opened right after it
    * starting warm rather than paying a cold open, and costs what the three paragraphs below describe.
    *
    * Any name in {@link DeviceEventMap} is accepted, so the list autocompletes and a typo won't compile.
@@ -156,8 +156,8 @@ export interface EufyMegaOptions extends MegaClientConfig {
    * inside that tail restarts it.
    *
    * **Frequency is a property of the installation, not of the event name.** A camera set to report human
-   * detection only fires `personDetected` as often as a busier one fires raw `motion`, so pick the events
-   * a user actually looks at within the window and read the rate off the fleet in front of you.
+   * detection only fires `personDetected` as often as a busier one fires raw `motion`, so the rate is the
+   * fleet's and not the event's.
    */
   prewarmEvents?: (keyof DeviceEventMap)[];
   /**
@@ -170,10 +170,10 @@ export interface EufyMegaOptions extends MegaClientConfig {
    */
   prewarmTiers?: PowerTier[];
   /**
-   * ffmpeg's own `-loglevel` for the media paths that shell out to it (live snapshot / record / WebRTC
-   * container). Default `"error"` (quiet). Raise it (e.g. `"trace"`) to diagnose a failing decode/mux;
+   * ffmpeg's own `-loglevel` for the media paths that shell out to it (live snapshot / record).
+   * Default `"error"` (quiet). A raised level (e.g. `"trace"`) reports a failing decode/mux;
    * ffmpeg's stderr is then forwarded to the {@link EufyMegaOptions.logger} as `[ffmpeg]` debug lines
-   * — so you also need a `logger` that shows `debug`. Independent of the SDK's own log level.
+   * — visible only where that logger shows `debug`. Independent of the SDK's own log level.
    */
   ffmpegLogLevel?: FfmpegLevel;
   /**
@@ -181,13 +181,14 @@ export interface EufyMegaOptions extends MegaClientConfig {
    *
    * By default `TuyaCommandRouter` refuses to send `dp.publish` because the request shape
    * has been reversed but not yet confirmed from a live on-device capture — a wrong shape comes back
-   * as a generic Tuya error indistinguishable from an actual device rejection. Set `true` only once
-   * you have confirmed the full round-trip on a real device, or have accepted that ambiguity.
+   * as a generic Tuya error indistinguishable from an actual device rejection. `true` sends it anyway,
+   * which is sound only where the full round-trip has been confirmed on a real device, or that
+   * ambiguity is accepted.
    */
   tuyaAllowUnverified?: boolean;
   /**
-   * The `ffmpeg` executable the media paths that shell out should run (live snapshot / record / WebRTC
-   * container). Default: the bare name `"ffmpeg"`, looked up on `PATH`.
+   * The `ffmpeg` executable the media paths that shell out should run (live snapshot / record).
+   * Default: the bare name `"ffmpeg"`, looked up on `PATH`.
    *
    * Set it when the host ships or manages its own build — an absolute path is resolved without any
    * `PATH` lookup, so those paths work on a host that has no system ffmpeg at all. The SDK never
@@ -229,8 +230,7 @@ export interface DeviceState {
 /**
  * A single semantic event tagged with its name — the payload of the catch-all `"event"` listener.
  * A discriminated union over {@link DeviceEventMap}, so switching on `e.eventName` narrows `e` to that
- * event's payload. Lets a consumer fan every device event to one bus/handler without registering a
- * listener per name (`eufy.on("event", e => bus.emit(e.eventName, e))`).
+ * event's payload.
  *
  * The tag is `eventName`, not `name`: an event payload may legitimately carry its own `name` field, and
  * overwriting it to tag the event would destroy data. Matches the `eventName` carried on a push event.
@@ -266,8 +266,7 @@ export type EufyMegaEventMap = {
    * A device is gone from the account — unpaired, or moved away.
    *
    * Deliberately conservative: suppressed when a poll only partially resolved (a failed house query
-   * returns a subset), because a host acting on this typically deletes an accessory, and an absence
-   * caused by an outage is not a removal.
+   * returns a subset), because an absence caused by an outage is not a removal.
    */
   deviceRemoved: [device: EufyDevice];
   /**
@@ -290,8 +289,8 @@ export type EufyMegaEventMap = {
    *
    * The frame is unwrapped as far as its bytes and no further: `frame.payload` is a Raw-DP frame in
    * the base64 a codec reads, and `frame.channelId` says which `stream.proto` message it holds. That
-   * split is deliberate while the decoders are being built — a host can already see what its robot
-   * sends, and the meaning of a channel is settled in one place rather than in this event's shape.
+   * split is deliberate while the decoders are being built — the meaning of a channel is settled in one
+   * place rather than in this event's shape.
    */
   mapFrame: [info: { deviceSn: string; frame: BizMapFrame }];
   /**
@@ -333,7 +332,7 @@ export type EufyMegaEventMap = {
    * step already threw on no reply by the time this fires — `getAcked` is always `true` here, `acked`
    * reports the SET step's fire-and-forget ack. `dispatch()`/`lock()`/`unlock()`/`setAutoLock()` stay
    * `Promise<void>` and never throw on a missing SET ack (fire-and-forget, same as every other write) —
-   * this event is the optional channel for a host that wants delivery visibility without the dispatch
+   * this event is the optional channel for delivery visibility, without the dispatch
    * contract itself changing shape. Secure-MQTT DP writes use the persistent account connection and
    * report broker publication (`acked: true`) without an `instanceIp`; that is not device convergence.
    */
@@ -346,9 +345,8 @@ export type EufyMegaEventMap = {
    * transport has carried it, and the observation a member declares decides separately whether the device
    * applied it; where that observation times out, the wire accepted the write and the device ignored it — seen
    * on a battery camera whose power write is acknowledged and never acted on. It is reported here rather than
-   * on `error` because it is an outcome and not a fault, for the same reason `commandAck` has its own channel:
-   * a host wanting convergence visibility should not pattern-match `error`, and the dispatch contract must not
-   * change shape to give it. `observed` is what the param read when the deadline passed, absent where the
+   * on `error` because it is an outcome and not a fault, for the same reason `commandAck` has its own
+   * channel. `observed` is what the param read when the deadline passed, absent where the
    * device reported none at all.
    */
   commandUnconfirmed: [
@@ -363,9 +361,9 @@ export type EufyMegaEventMap = {
   ];
   /**
    * The cloud session was kicked or invalidated — another client logged into the same account, or the
-   * token expired. The SDK has already cleared the persisted session; a host should re-drive `login()`
-   * (which usually needs 2FA). Distinct from `error` so a host can react to auth loss without
-   * pattern-matching the generic `error` bus. A session error is emitted ONLY here, not also on `error`.
+   * token expired. The SDK has already cleared the persisted session, so recovery is a fresh `login()`
+   * (which usually needs 2FA). Distinct from `error`: a session error is emitted ONLY here, not also
+   * on `error`.
    */
   sessionExpired: [err: Error];
   // Any transport error.

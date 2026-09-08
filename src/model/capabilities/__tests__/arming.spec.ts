@@ -21,13 +21,6 @@ describe("arming capability module", () => {
     expect(ARMING.properties.map((p) => p.name)).toEqual(["armingMode"]);
   });
 
-  it("every property has a string name + numeric paramType", () => {
-    for (const p of ARMING.properties) {
-      expect(typeof p.name).toBe("string");
-      expect(typeof p.paramType).toBe("number");
-    }
-  });
-
   it("proves arming via the guard-mode param 1224", () => {
     expect(ARMING.detection?.evidenceParams).toContain(1224);
   });

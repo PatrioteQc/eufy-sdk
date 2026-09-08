@@ -1,4 +1,4 @@
-import type { Command, CommandSink } from "../../../core/contracts.js";
+import type { CommandSink } from "../../../core/contracts.js";
 import { RTSP, RTSP_PARAM, RtspRecordingMode, type RtspActions } from "../rtsp.js";
 import { bind } from "./bind.js";
 import { Device } from "../../device.js";

@@ -93,7 +93,7 @@ export {
 } from "./map-pixels.js";
 export { VacuumMapStore, type VacuumMapPiece, type VacuumMapSnapshot } from "./vacuum-map-store.js";
 export { paramDef, namespaceForCodec, type ParamNamespace } from "./param-namespace.js";
-export { inspectParams, formatInspection, type ParamInspection, type DeviceInspection } from "./inspect.js";
+export { inspectParams, type ParamInspection, type DeviceInspection } from "./inspect.js";
 // The capability surface: the typed `dev.<cap>()` objects, the member tables they derive from, and the
 // module registry. A caller has to be able to NAME what an accessor returns, and each `XActions` alias
 // is `Surface<typeof X_MEMBERS>`, so the table is part of that type rather than a detail behind it.
@@ -111,16 +111,11 @@ export {
   CusPushEvent,
   CusPushAlarmType,
   CusPushMode,
-  ServerPushEvent,
   DoorbellPushEvent,
   IndoorPushEvent,
   HB3PairedDevicePushEvent,
   LockPushEvent,
-  GarageDoorPushEvent,
-  SmartSafeEvent,
   SmartDropPushEvent,
   NotificationStyle,
-  HB3PairedDeviceMessageType,
   detectionName,
-  type PushDeviceKind,
 } from "./push-events.js";

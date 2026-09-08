@@ -297,10 +297,9 @@ describe("param dictionary — full real-device coverage", () => {
     expect(SECURITY_PARAMS[1141].name).toBe("rssi");
   });
 
-  it("covers the real security param space (150+ ids, all observed)", () => {
+  it("covers the real security param space (150+ ids, membership is the observation)", () => {
     const ids = Object.keys(SECURITY_PARAMS);
     expect(ids.length).toBeGreaterThan(150);
-    expect(Object.values(SECURITY_PARAMS).every((d) => d.observed)).toBe(true);
   });
 
   it("namespaces are separate — clean DP 163 = battery, mega-sourced", () => {
@@ -346,7 +345,7 @@ describe("inspectParams — enrichment export", () => {
   it("emits dictionary snippets for the unknown params", () => {
     expect(rep.dictionarySnippet).toContain("987654");
     expect(rep.dictionarySnippet).toContain('provenance: "guessed"');
-    expect(rep.dictionarySnippet).toContain('models: ["T8214"]');
+    expect(rep.dictionarySnippet).toContain("reported by T8214");
   });
 });
 

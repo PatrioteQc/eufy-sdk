@@ -333,8 +333,8 @@ class ConsumerImpl extends EventEmitter implements Consumer {
    * Skipped when nothing is listening: `emit("error")` on an `EventEmitter` with no `"error"` listener
    * throws {@link ERR_UNHANDLED_ERROR} instead of returning, and this emit sits inside a synchronous
    * fan-out reached from the transport's own datagram handler — so a consumer that only ever wanted `stop`
-   * (a perfectly ordinary caller) would strand every consumer after it in the loop and take the host's
-   * process with it. Such a consumer still gets its `stop` from {@link end}.
+   * would strand every consumer after it in the loop and take the host's process with it. Such a
+   * consumer still gets its `stop` from {@link end}.
    */
   fail(err: Error): void {
     if (!this.detached && this.listenerCount("error") > 0) this.emit("error", err);

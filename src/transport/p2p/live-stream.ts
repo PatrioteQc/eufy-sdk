@@ -1,7 +1,7 @@
 /**
  * Managed realtime live stream over P2P — turns a station's `CMD_VIDEO_FRAME` (1300) /
- * `CMD_AUDIO_FRAME` (1301) frames into a clean, continuous **Annex-B H.264** (+ audio) feed that a
- * downstream muxer (go2rtc / ffmpeg) can ingest and serve as WebRTC / RTSP / HLS.
+ * `CMD_AUDIO_FRAME` (1301) frames into a clean, continuous **Annex-B H.264** (+ audio) elementary
+ * feed a muxer can ingest.
  *
  * Two video frame variants are handled:
  *  - **Plaintext** (`signCode 0`, e.g. HomeBase-attached cameras): a fixed 22-byte frame header

@@ -63,7 +63,7 @@ eufy.on("sessionExpired", async () => {
 | `live stream failed to start (no frames within warm-up window)`                   | the source never produced a frame in time                                                                                                                                                                                            | handle the stream `error`, then call `cam.live()` again to rebuild                                                                                                                                        |
 | `timeout waiting for a clean keyframe`                                            | a snapshot/record couldn't get a keyframe in the window                                                                                                                                                                              | retry, or widen the timeout via the call's options                                                                                                                                                        |
 | `the P2P session closed … into the clip` / `the stream failed during the clip`    | `record()`'s own pull went away before the clip's window elapsed                                                                                                                                                                     | retry once the session is back; a clip shorter than requested is returned rather than failed when the camera simply goes quiet                                                                            |
-| `ffmpeg not runnable` / snapshot or record fails                                  | no runnable `ffmpeg` (needed for JPEG snapshot / mp4 record / WebRTC container)                                                                                                                                                      | point the SDK at the binary you ship with `ffmpegPath`, install `ffmpeg`, or use the ffmpeg-free paths (`openReadable()`, `recordFragments()`); see [§5](#_5-media-snapshot-record-ffmpeg)                |
+| `ffmpeg not runnable` / snapshot or record fails                                  | no runnable `ffmpeg` (needed for JPEG snapshot / mp4 record)                                                                                                                                                                         | point the SDK at the binary you ship with `ffmpegPath`, install `ffmpeg`, or use the ffmpeg-free paths (`openReadable()`, `recordFragments()`); see [§5](#_5-media-snapshot-record-ffmpeg)                |
 | `p2p down` / `smqtt reconnecting` on `error`                                      | a transient transport drop                                                                                                                                                                                                           | the channels reconnect on their own; re-attach live streams when a consumer gets `stop`                                                                                                                   |
 
 ## 4. Streams that hang or stop
@@ -95,8 +95,7 @@ eufy.on("sessionExpired", async () => {
 
 ## 5. Media (snapshot / record / ffmpeg)
 
-The JPEG snapshot (`snapshotLive`), one-shot `record`, and WebRTC-container paths shell out to
-`ffmpeg`.
+The JPEG snapshot (`snapshotLive`) and one-shot `record` paths shell out to `ffmpeg`.
 
 **No `ffmpeg` on `PATH`?** That is ordinary on a managed host, and it does not mean these paths are
 unavailable — name the binary you ship instead of editing the process `PATH`:
@@ -108,8 +107,6 @@ const eufy = new EufyMega({ email, password, ffmpegPath: "/opt/your-host/bin/ffm
 An absolute path is spawned directly, with no `PATH` lookup. It is not probed at construction, so a
 wrong path surfaces as the media call's own `ffmpeg not runnable` rejection; check it up front with
 `ffmpegAvailable(path)`, which resolves the same executable the media paths will run.
-`createWebRtcPeer` takes its own `ffmpegPath` for the container mux — and uses it for the availability
-check that selects the mux, so a host-supplied build no longer falls back to a raw stream.
 
 When one of them fails, surface ffmpeg's **own** diagnostics through your logger: raise
 `ffmpegLogLevel` on the client and the SDK forwards ffmpeg's stderr as `[ffmpeg]`-prefixed **debug**
@@ -120,8 +117,7 @@ const eufy = new EufyMega({ email, password, ffmpegLogLevel: "trace", logger: ne
 ```
 
 Accepted values (quiet → loud): `quiet` `panic` `fatal` `error` (default) `warning` `info` `verbose`
-`debug` `trace`. An unset/invalid value stays at `error`. (`createWebRtcPeer` takes the same
-`ffmpegLogLevel` option for its own container mux.)
+`debug` `trace`. An unset/invalid value stays at `error`.
 
 This is ffmpeg's own verbosity — **orthogonal** to the `Logger`'s min-level, which still gates whether
 the `[ffmpeg]` lines are shown. So to see them you need **both**: a level above `error` **and** a
