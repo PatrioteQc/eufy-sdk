@@ -7,8 +7,8 @@
  */
 import { EventEmitter } from "node:events";
 import type { Reader, Type, Root } from "protobufjs";
-import { protobufjs, protoRoot } from "../protobuf.js";
-import { MCS_PROTO } from "./proto.js";
+import { protobufjs } from "../protobuf.js";
+import { mcsRoot } from "./proto.js";
 import { MessageTag } from "./message-tags.js";
 import type { McsMessage } from "./types.js";
 
@@ -31,9 +31,9 @@ const TAG_TO_TYPE: Partial<Record<MessageTag, string>> = {
 };
 
 export class McsParser extends EventEmitter {
-  /** Parsed on first use, once per process — see ../protobuf.ts for why this is not a static field. */
+  /** Parsed on first use, once per process — see ./proto.ts for why this is not a static field. */
   private static get root(): Root {
-    return protoRoot(MCS_PROTO);
+    return mcsRoot();
   }
   private data = Buffer.alloc(0);
   private state = State.VERSION_TAG_AND_SIZE;

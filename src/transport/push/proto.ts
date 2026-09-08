@@ -1,3 +1,6 @@
+import type { Root } from "protobufjs";
+import { protobufjs } from "../protobuf.js";
+
 /**
  * Google MCS + Android check-in protobuf schemas, embedded as strings so they
  * ship in the build without a file-copy step (protobufjs `parse()` instead of
@@ -229,3 +232,17 @@ message CheckinResponse {
   optional string deviceDataVersionInfo = 12;
 }
 `;
+
+/**
+ * The parsed roots, one per document, parsed on first use.
+ *
+ * Here rather than beside the consumers because both `McsParser` and `PushClient` want the SAME MCS
+ * root: a lazy root per file would parse the document twice for no reason. Keeping `protobufjs` out of
+ * this module's imports is what makes that free — these are function bodies, so the engine still loads
+ * only when a root is actually asked for.
+ */
+let mcs: Root | undefined;
+export const mcsRoot = (): Root => (mcs ??= protobufjs().parse(MCS_PROTO).root);
+
+let checkin: Root | undefined;
+export const checkinRoot = (): Root => (checkin ??= protobufjs().parse(CHECKIN_PROTO).root);

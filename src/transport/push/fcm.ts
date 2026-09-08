@@ -12,8 +12,7 @@
  */
 import { randomBytes } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
-import { protoRoot } from "../protobuf.js";
-import { CHECKIN_PROTO } from "./proto.js";
+import { checkinRoot } from "./proto.js";
 import type { FcmCredentials } from "./types.js";
 import { noopLogger, type Logger } from "../../core/logger.js";
 
@@ -27,9 +26,6 @@ export const FCM = {
   AUTH_VERSION: "FIS_v2",
   SDK_VERSION: "a:16.3.1",
 } as const;
-
-/** Parsed on first use, once per process — see ../protobuf.ts. */
-const checkinRoot = () => protoRoot(CHECKIN_PROTO);
 
 /** Generate a valid Firebase Installation ID (22 url-safe chars, starts c-f). */
 export function generateFid(): string {
