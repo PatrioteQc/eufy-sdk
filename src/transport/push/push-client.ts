@@ -7,7 +7,6 @@
  */
 import { EventEmitter } from "node:events";
 import tls from "node:tls";
-import type { Root } from "protobufjs";
 import { mcsRoot } from "./proto.js";
 import { MessageTag } from "./message-tags.js";
 import { McsParser } from "./parser.js";
@@ -84,10 +83,6 @@ export function normalizePushEvent(raw: RawPushMessage): PushEvent {
 }
 
 export class PushClient extends EventEmitter {
-  /** Parsed on first use, once per process — see ./proto.ts for why this is not a static field. */
-  private static get root(): Root {
-    return mcsRoot();
-  }
   /** Consecutive MCS login rejections tolerated (self-healing propagation) before surfacing an error. */
   private static readonly MAX_LOGIN_FAILURES = 3;
   private socket?: tls.TLSSocket;
@@ -143,7 +138,7 @@ export class PushClient extends EventEmitter {
   }
 
   private buildLoginRequest(): Buffer {
-    const LoginRequest = PushClient.root.lookupType("mcs_proto.LoginRequest");
+    const LoginRequest = mcsRoot().lookupType("mcs_proto.LoginRequest");
     const hexAndroidId = BigInt(this.creds.androidId).toString(16);
     const obj = {
       adaptiveHeartbeat: false,
@@ -165,13 +160,13 @@ export class PushClient extends EventEmitter {
   }
 
   private buildHeartbeatPing(): Buffer {
-    const Ping = PushClient.root.lookupType("mcs_proto.HeartbeatPing");
+    const Ping = mcsRoot().lookupType("mcs_proto.HeartbeatPing");
     const buf = Ping.encodeDelimited({}).finish();
     return Buffer.concat([Buffer.from([MessageTag.HeartbeatPing]), buf]);
   }
 
   private buildHeartbeatAck(lastStreamId?: number): Buffer {
-    const Ack = PushClient.root.lookupType("mcs_proto.HeartbeatAck");
+    const Ack = mcsRoot().lookupType("mcs_proto.HeartbeatAck");
     const obj = lastStreamId ? { lastStreamIdReceived: lastStreamId } : {};
     const buf = Ack.encodeDelimited(obj).finish();
     return Buffer.concat([Buffer.from([MessageTag.HeartbeatAck]), buf]);
