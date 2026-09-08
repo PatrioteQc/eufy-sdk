@@ -10,7 +10,7 @@
  * that had already granted the SUBSCRIBE. That means we can find the right instance with SUBSCRIBE
  * alone — no PUBLISH is required to tell instances apart, so this module never sends one.
  */
-import mqtt from "mqtt";
+import { loadMqtt } from "./engine.js";
 import { resolve4 } from "node:dns/promises";
 import { bareIpTlsOptions } from "./bare-ip-tls.js";
 
@@ -63,14 +63,17 @@ export function rankResults(results: ProbeResult[]): ProbeResult[] {
  * options come from `./bare-ip-tls.ts`, which checks the presented certificate against
  * `creds.hostname` rather than the IP.
  */
-export function probeBrokerInstance(
+export async function probeBrokerInstance(
   ip: string,
   creds: BrokerCredentials,
   opts: { clientId: string; topic: string; timeoutMs?: number },
 ): Promise<ProbeResult> {
+  // Before the clock starts: the reported `ms` is a round trip to a broker, and a first caller that
+  // also paid for loading the engine would otherwise record that module load as network latency.
+  const mqtt = await loadMqtt();
   const start = Date.now();
   const timeoutMs = opts.timeoutMs ?? 8000;
-  return new Promise((resolvePromise) => {
+  return await new Promise((resolvePromise) => {
     let settled = false;
     const finish = (r: Omit<ProbeResult, "ip" | "ms">) => {
       if (settled) return;

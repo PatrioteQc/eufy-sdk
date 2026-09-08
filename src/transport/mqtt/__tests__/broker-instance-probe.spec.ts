@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { nextClient } from "./lazy-engine.js";
 import { EventEmitter } from "node:events";
 
 /**
@@ -51,7 +52,7 @@ describe("probeBrokerInstance", () => {
 
   it("verifies the instance it dials, checking the certificate against the broker hostname", async () => {
     const p = probeBrokerInstance("198.51.100.7", CREDS, { clientId: "probe-1", topic: "a/res" });
-    fakeClients[0].emit("connect");
+    (await nextClient(fakeClients)).emit("connect");
     await p;
 
     const opts = connectOptsSeen[0];

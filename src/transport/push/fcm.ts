@@ -12,8 +12,7 @@
  */
 import { randomBytes } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
-import protobuf from "protobufjs";
-import { CHECKIN_PROTO } from "./proto.js";
+import { checkinRoot } from "./proto.js";
 import type { FcmCredentials } from "./types.js";
 import { noopLogger, type Logger } from "../../core/logger.js";
 
@@ -27,8 +26,6 @@ export const FCM = {
   AUTH_VERSION: "FIS_v2",
   SDK_VERSION: "a:16.3.1",
 } as const;
-
-const checkinRoot = protobuf.parse(CHECKIN_PROTO).root;
 
 /** Generate a valid Firebase Installation ID (22 url-safe chars, starts c-f). */
 export function generateFid(): string {
@@ -72,8 +69,8 @@ export class FcmRegistrar {
   }
 
   private async checkin(): Promise<{ androidId: string; securityToken: string }> {
-    const CheckinRequest = checkinRoot.lookupType("CheckinRequest");
-    const CheckinResponse = checkinRoot.lookupType("CheckinResponse");
+    const CheckinRequest = checkinRoot().lookupType("CheckinRequest");
+    const CheckinResponse = checkinRoot().lookupType("CheckinResponse");
     const payload = {
       androidId: 0,
       checkin: {

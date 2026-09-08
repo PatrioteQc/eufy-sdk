@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { nextClient } from "./lazy-engine.js";
 import { EventEmitter } from "node:events";
 
 /**
@@ -42,7 +43,7 @@ describe("SecureMqtt.connect — reconnect lifecycle", () => {
     const m = new SecureMqtt({ credentials: CREDS, instanceIp: "198.51.100.7" });
     m.on("error", () => {}); // SecureMqtt re-emits — a real caller always listens (e.g. ensureSecurityMqttFor)
     const p = m.connect();
-    const client = fakeClients[0];
+    const client = await nextClient(fakeClients);
     client.emit("error", new Error("ECONNREFUSED"));
 
     await expect(p).rejects.toThrow("ECONNREFUSED");
@@ -53,7 +54,7 @@ describe("SecureMqtt.connect — reconnect lifecycle", () => {
     const m = new SecureMqtt({ credentials: CREDS });
     m.on("error", () => {});
     const p = m.connect();
-    const client = fakeClients[0];
+    const client = await nextClient(fakeClients);
     client.emit("connect");
     await p;
 
@@ -64,7 +65,7 @@ describe("SecureMqtt.connect — reconnect lifecycle", () => {
   it("defaults reconnectPeriod to 5000 (persistent) unless the caller overrides it", async () => {
     const m = new SecureMqtt({ credentials: CREDS });
     const p = m.connect();
-    fakeClients[0].emit("connect");
+    (await nextClient(fakeClients)).emit("connect");
     await p;
     expect(connectOptsSeen[0].reconnectPeriod).toBe(5000);
   });
@@ -72,7 +73,7 @@ describe("SecureMqtt.connect — reconnect lifecycle", () => {
   it("a one-shot caller (reconnectPeriod:0) gets that value passed straight through to mqtt.connect", async () => {
     const m = new SecureMqtt({ credentials: CREDS, instanceIp: "198.51.100.7", reconnectPeriod: 0 });
     const p = m.connect();
-    fakeClients[0].emit("connect");
+    (await nextClient(fakeClients)).emit("connect");
     await p;
     expect(connectOptsSeen[0].reconnectPeriod).toBe(0);
   });
@@ -80,7 +81,7 @@ describe("SecureMqtt.connect — reconnect lifecycle", () => {
   it("verifies the server on a pinned-instance dial, checking the certificate against the hostname", async () => {
     const m = new SecureMqtt({ credentials: CREDS, instanceIp: "198.51.100.7" });
     const p = m.connect();
-    fakeClients[0].emit("connect");
+    (await nextClient(fakeClients)).emit("connect");
     await p;
 
     const opts = connectOptsSeen[0];
