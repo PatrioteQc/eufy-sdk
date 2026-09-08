@@ -43,6 +43,23 @@ const CREDS = {
   aws_root_ca1_pem: "ca",
 };
 
+/**
+ * The client the code under test just created — awaited, because it no longer exists synchronously.
+ *
+ * `mqtt` is imported lazily now (see ../engine.ts: it is +19 MB of RSS that an account with no
+ * appliance never needs), so `connect()` awaits a module load before calling `mqtt.connect`. The
+ * client therefore appears a few microtasks after the call rather than during it. That is the only
+ * thing these tests had to change — the promise each method returns, and everything it settles with,
+ * is unchanged.
+ */
+async function nextClient(index = 0) {
+  return await vi.waitFor(() => {
+    const client = fakeClients[index];
+    if (!client) throw new Error(`no mqtt client #${index} yet`);
+    return client;
+  });
+}
+
 describe("probeBrokerInstance", () => {
   beforeEach(() => {
     fakeClients.length = 0;
@@ -51,7 +68,7 @@ describe("probeBrokerInstance", () => {
 
   it("verifies the instance it dials, checking the certificate against the broker hostname", async () => {
     const p = probeBrokerInstance("198.51.100.7", CREDS, { clientId: "probe-1", topic: "a/res" });
-    fakeClients[0].emit("connect");
+    (await nextClient()).emit("connect");
     await p;
 
     const opts = connectOptsSeen[0];

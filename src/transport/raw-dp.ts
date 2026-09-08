@@ -30,7 +30,7 @@
  * Pure and stateless — no socket, no session — so it sits at the transport root beside `ff09.ts` and is
  * imported by direct path rather than re-exported from the barrel.
  */
-import protobuf from "protobufjs";
+import { protobufjs } from "./protobuf.js";
 import type { RawDpCodec, RawDpField } from "../core/contracts.js";
 
 /**
@@ -39,7 +39,7 @@ import type { RawDpCodec, RawDpField } from "../core/contracts.js";
  * remaining fields cannot be trusted to be at the offsets they appear to be.
  */
 function readFields(body: Buffer): RawDpField[] | undefined {
-  const r = protobuf.Reader.create(body);
+  const r = protobufjs().Reader.create(body);
   const out: RawDpField[] = [];
   try {
     while (r.pos < r.len) {
@@ -80,7 +80,7 @@ export const rawDpCodec: RawDpCodec = Object.freeze({
     let len: number;
     let bodyStart: number;
     try {
-      const r = protobuf.Reader.create(buf);
+      const r = protobufjs().Reader.create(buf);
       len = r.uint32();
       bodyStart = r.pos;
     } catch {

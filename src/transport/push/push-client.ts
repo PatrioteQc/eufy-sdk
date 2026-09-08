@@ -7,7 +7,8 @@
  */
 import { EventEmitter } from "node:events";
 import tls from "node:tls";
-import protobuf, { type Root } from "protobufjs";
+import type { Root } from "protobufjs";
+import { protoRoot } from "../protobuf.js";
 import { MCS_PROTO } from "./proto.js";
 import { MessageTag } from "./message-tags.js";
 import { McsParser } from "./parser.js";
@@ -84,7 +85,10 @@ export function normalizePushEvent(raw: RawPushMessage): PushEvent {
 }
 
 export class PushClient extends EventEmitter {
-  private static root: Root = protobuf.parse(MCS_PROTO).root;
+  /** Parsed on first use, once per process — see ../protobuf.ts for why this is not a static field. */
+  private static get root(): Root {
+    return protoRoot(MCS_PROTO);
+  }
   /** Consecutive MCS login rejections tolerated (self-healing propagation) before surfacing an error. */
   private static readonly MAX_LOGIN_FAILURES = 3;
   private socket?: tls.TLSSocket;

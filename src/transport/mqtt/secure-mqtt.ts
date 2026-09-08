@@ -12,7 +12,8 @@
  * classifyDevice.
  */
 import { EventEmitter } from "node:events";
-import mqtt, { type MqttClient } from "mqtt";
+import type { MqttClient } from "mqtt";
+import { loadMqtt } from "./engine.js";
 import type { EufyDevice, RealtimeMessage, RealtimeTransport } from "../../core/types.js";
 import { noopLogger, type Logger } from "../../core/logger.js";
 import { bareIpTlsOptions } from "./bare-ip-tls.js";
@@ -99,12 +100,15 @@ export class SecureMqtt extends EventEmitter implements RealtimeTransport {
    * Open the broker connection, resolving once it is established. Pinned to a broker instance's IP, or
    * to the plain hostname; only the former needs its own TLS shape, see `./bare-ip-tls.ts`.
    */
-  connect(): Promise<void> {
+  async connect(): Promise<void> {
+    // The engine, not at import: see ./engine.ts. This method already returned a promise, so awaiting
+    // a module load in front of a TLS connect changes nothing a caller can observe.
+    const mqtt = await loadMqtt();
     const c = this.o.credentials;
     const port = c.endpoint_port ?? 8883;
     const pinned = this.o.instanceIp;
     const reconnectPeriod = this.o.reconnectPeriod ?? 5000;
-    return new Promise((resolve, reject) => {
+    return await new Promise((resolve, reject) => {
       const client = pinned
         ? mqtt.connect({
             host: pinned,

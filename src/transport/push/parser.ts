@@ -6,7 +6,8 @@
  * Implements Google's MCS (mtalk) stream framing.
  */
 import { EventEmitter } from "node:events";
-import protobuf, { type Reader, type Type, type Root } from "protobufjs";
+import type { Reader, Type, Root } from "protobufjs";
+import { protobufjs, protoRoot } from "../protobuf.js";
 import { MCS_PROTO } from "./proto.js";
 import { MessageTag } from "./message-tags.js";
 import type { McsMessage } from "./types.js";
@@ -30,7 +31,10 @@ const TAG_TO_TYPE: Partial<Record<MessageTag, string>> = {
 };
 
 export class McsParser extends EventEmitter {
-  private static root: Root = protobuf.parse(MCS_PROTO).root;
+  /** Parsed on first use, once per process — see ../protobuf.ts for why this is not a static field. */
+  private static get root(): Root {
+    return protoRoot(MCS_PROTO);
+  }
   private data = Buffer.alloc(0);
   private state = State.VERSION_TAG_AND_SIZE;
   private messageTag = 0;
@@ -109,7 +113,7 @@ export class McsParser extends EventEmitter {
   }
 
   private onSize(): void {
-    const reader: Reader = protobuf.Reader.create(this.data);
+    const reader: Reader = protobufjs().Reader.create(this.data);
     let incomplete = false;
     try {
       this.messageSize = reader.int32();
