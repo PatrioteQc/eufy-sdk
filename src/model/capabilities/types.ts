@@ -16,12 +16,12 @@ import type { DpCatalog } from "./dp-catalog.js";
  * @module model/capabilities/types
  */
 
-import type { Capability, Codec, CloudRecord, ParamValue, PropertySpec, PropertyValue, ValueKind } from "../types.js";
+import type { Capability, Codec, CloudRecord, PropertySpec, PropertyValue, ValueKind } from "../types.js";
 import type { Members, MemberDeps } from "./members.js";
 // The transport boundary contract lives in core/ — imported by BOTH the capability layer (which
 // produces intent) and the transport layer (which consumes it), so neither imports the other.
 // Capability modules import Command/CommandSink/MediaProvider/ScalarForm straight from core/contracts.
-import type { Command, Ff09SettingsReader, DpInboundFrame, RawDpCodec } from "../../core/contracts.js";
+import type { Command, Ff09SettingsReader, DpInboundFrame } from "../../core/contracts.js";
 
 /**
  * How a capability is discovered on a device. All fields are additive OR-ed evidence — a device

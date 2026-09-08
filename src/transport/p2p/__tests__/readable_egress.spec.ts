@@ -79,4 +79,14 @@ describe("openReadableFromConsumer", () => {
 });
 
 type ReadableOptions = NonNullable<Parameters<typeof openReadableFromConsumer>[1]>;
-const _audioIsNotAReadableOption: "audio" extends keyof ReadableOptions ? never : true = true;
+
+/**
+ * Audio is a separate egress, so it is not an option on the video Readable — asserted in the type
+ * system, where the mistake would be made.
+ */
+describe("the Readable option set", () => {
+  it("does not offer audio", () => {
+    const audioIsNotAnOption: "audio" extends keyof ReadableOptions ? never : true = true;
+    expect(audioIsNotAnOption).toBe(true);
+  });
+});

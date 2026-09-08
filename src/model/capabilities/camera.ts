@@ -1,6 +1,6 @@
 import { asBool, coerceEnumValue } from "../../core/util.js";
 import { DeviceType } from "../device-types.js";
-import { isIndoorCamera, isIndoorCamMini, isIndoorPanTiltS350, isOutdoorPanTilt } from "../device-family.js";
+import { isIndoorCamera, isIndoorCamMini, isIndoorPanTiltS350 } from "../device-family.js";
 import { setScalar, setPayload, hasCapability } from "./access.js";
 import { AUDIO_CMD } from "./audio.js";
 import { accepts, propertiesOf, provided, type Members, type Surface, type MemberDeps } from "./members.js";

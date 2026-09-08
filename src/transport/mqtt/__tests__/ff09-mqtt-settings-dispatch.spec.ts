@@ -86,7 +86,7 @@ function makeRouter(opts: { delay: number; a7: number; a8: number; currentlyEnab
   fakeMqtt.disconnect = vi.fn().mockResolvedValue(undefined);
 
   const publishedBodies: string[] = [];
-  fakeMqtt.publish = vi.fn().mockImplementation(async (topic: string, body: string) => {
+  fakeMqtt.publish = vi.fn().mockImplementation(async (_topic: string, body: string) => {
     publishedBodies.push(body);
     const { apiCommand, time } = decodeEnvelope(body);
     if (apiCommand === LOCK_API_COMMAND.GET_SETTINGS) {
@@ -235,7 +235,7 @@ describe("MqttCommandRouter.dispatchCommand (ff09-autolock)", () => {
     fakeMqtt.id = "client-1";
     fakeMqtt.subscribeDevice = vi.fn().mockResolvedValue(undefined);
     fakeMqtt.disconnect = vi.fn().mockResolvedValue(undefined);
-    fakeMqtt.publish = vi.fn().mockImplementation(async (topic: string, body: string) => {
+    fakeMqtt.publish = vi.fn().mockImplementation(async (_topic: string, body: string) => {
       const { apiCommand, time } = decodeEnvelope(body);
       if (apiCommand === LOCK_API_COMMAND.GET_SETTINGS) {
         const plain = buildResponsePlain(90, 1, 2, true);

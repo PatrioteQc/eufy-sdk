@@ -31,7 +31,6 @@ import { MqttCommandRouter } from "../transport/mqtt/command-router.js";
 import { TuyaCommandRouter } from "../transport/tuya/command-router.js";
 import { TuyaDpRouter, parseTuyaDpReport } from "../transport/tuya/dp-codec.js";
 import { rawDpCodec } from "../transport/raw-dp.js";
-import { parseCleanRecordDetail, type CleanRecordDetail } from "../model/clean-record-detail.js";
 import { resolveLightEffect as resolveLightEffectHttp } from "../transport/http/light-catalog.js";
 import {
   buildCommand as buildCapabilityCommand,
@@ -81,7 +80,6 @@ import type {
   EufyMegaOptions,
   EufyMegaEvent,
   EufyMegaEventMap,
-  AnyDeviceEvent,
   DeviceState,
   RealtimePlaneReadiness,
   RealtimeReadiness,
@@ -1600,7 +1598,7 @@ export class EufyMega extends EventEmitter {
             readiness.ready++;
             readiness.pending--;
           },
-          (error) => {
+          (_error) => {
             if (signal?.aborted) return;
             readiness.failed++;
             readiness.pending--;
