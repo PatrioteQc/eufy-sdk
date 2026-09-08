@@ -852,11 +852,34 @@ export class MegaHttpClient {
    * The `*.eufylife.com` gateway uses a SEPARATE ecdh key from the mega `*.eufy.com` gateway
    * (own bootstrap localKey `118c12c8…`, own `/v3/openapi/oauth/key/exchange` path, and data
    * calls want `Content-Type: text/plain`). {@link ensureSessionKey} now keeps a PER-HOST key
-   * for eufylife hosts and exchanges against the eufylife host, so `getCiphers()`
-   * works (the old HTTP 463 is fixed).
+   * for eufylife hosts and exchanges against the eufylife host, so `getFaces()`/`getCiphers()`
+   * work (the old HTTP 463 is fixed). Note `getFaces` returns an empty roster for accounts whose
+   * faces live on the HomeBase — the P2P database path carries the real roster.
    */
-  private async securityAppPost<T = any>(path: string, body: Record<string, unknown> = {}): Promise<T> {
+  async securityAppPost<T = any>(path: string, body: Record<string, unknown> = {}): Promise<T> {
     return this.postSigned<T>(this.securityAppHost(), path, body, true);
+  }
+
+  /**
+   * List the account's enrolled AI faces (the recognition roster). Each entry is keyed by `ai_user_id` —
+   * the id an `IDENTITY_PERSON_DETECTION` push carries as `person_id` — so this is the lookup table for
+   * naming a recognised person. Endpoint: `/v3/aiassis/get_faces` on the security-app host.
+   *
+   * Answers an empty roster for an account whose faces live on the HomeBase; that roster is read over
+   * the P2P database path instead.
+   */
+  async getFaces(opts: { aiGroupId?: number; num?: number; page?: number } = {}): Promise<any> {
+    return this.securityAppPost("/v3/aiassis/get_faces", {
+      ai_group_id: opts.aiGroupId ?? 0,
+      num: opts.num ?? 2000,
+      page: opts.page ?? 0,
+      orderby: "-ai_user_id",
+    });
+  }
+
+  /** Resolve specific AI face ids (e.g. a push `person_id`) → face records. */
+  async getFacesByIds(aiUserIds: number[]): Promise<any> {
+    return this.securityAppPost("/v3/aiassis/get_faces_by_ids", { ai_user_ids: aiUserIds });
   }
 
   /**

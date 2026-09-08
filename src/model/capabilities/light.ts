@@ -4,7 +4,7 @@ import { WALL_LIGHT_TYPES } from "../device-family.js";
 import { setScalar, setJson, setPayload, describeDevice } from "./access.js";
 import type { CapabilityModule, CapabilityActions, CommandContext } from "./types.js";
 import { propertiesOf, type Members, type Surface, type MemberDeps } from "./members.js";
-import type { Command, CommandSink } from "../../core/contracts.js";
+import type { Command } from "../../core/contracts.js";
 
 /**
  * The P2P **feature-command ids** this light capability drives. Capability-owned wire vocabulary —

@@ -1,12 +1,5 @@
-import type {
-  CapabilityModule,
-  InboundSignal,
-  CapabilityEvent,
-  CommandContext,
-  DecodedState,
-  CapabilityActions,
-} from "./types.js";
-import type { Command, CommandSink } from "../../core/contracts.js";
+import type { CapabilityModule, InboundSignal, CapabilityEvent, DecodedState, CapabilityActions } from "./types.js";
+import type { Command } from "../../core/contracts.js";
 import { method, propertiesOf, type Members, type Surface, type MemberDeps } from "./members.js";
 import { asBool, clamp } from "../../core/util.js";
 

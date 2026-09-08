@@ -12,7 +12,7 @@ import type {
   InboundSignal,
 } from "./types.js";
 import type { ParamValue } from "../types.js";
-import type { Command, CommandSink } from "../../core/contracts.js";
+import type { Command } from "../../core/contracts.js";
 
 /**
  * The P2P **feature-command ids** this motion capability drives. Capability-owned wire vocabulary

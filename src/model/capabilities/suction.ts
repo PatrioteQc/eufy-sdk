@@ -1,4 +1,4 @@
-import type { AvailabilityContext, CapabilityModule, CapabilityActions, CommandContext } from "./types.js";
+import type { AvailabilityContext, CapabilityModule, CapabilityActions } from "./types.js";
 import { asBool, enumLabels } from "../../core/util.js";
 import { pickDpParams, aiotDp } from "./access.js";
 import { propertiesOf, type Members, type Surface, type MemberDeps } from "./members.js";

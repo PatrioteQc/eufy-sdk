@@ -36,7 +36,6 @@ export class McsParser extends EventEmitter {
   private messageTag = 0;
   private messageSize = 0;
   private sizePacketSoFar = 0;
-  private handshakeComplete = false;
 
   /** Reset for a fresh connection. */
   reset(): void {
@@ -45,7 +44,6 @@ export class McsParser extends EventEmitter {
     this.messageTag = 0;
     this.messageSize = 0;
     this.sizePacketSoFar = 0;
-    this.handshakeComplete = false;
   }
 
   /** Feed a chunk of TLS bytes. */
@@ -142,7 +140,6 @@ export class McsParser extends EventEmitter {
       object = type.toObject(type.decode(buf), { longs: String, enums: String, bytes: Buffer });
     }
     this.emitMessage({ tag: this.messageTag, object });
-    if (this.messageTag === MessageTag.LoginResponse) this.handshakeComplete = true;
     this.next();
   }
 

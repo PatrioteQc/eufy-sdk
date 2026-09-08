@@ -27,7 +27,7 @@ import { noopLogger, type Logger } from "../../core/logger.js";
 import { assertNever } from "../../core/util.js";
 import { setTimeout as sleep } from "node:timers/promises";
 import { P2PSession, type P2PFrame } from "./p2p-session.js";
-import { buildDirectBinaryBody, buildDeviceNameBody } from "./write-commands.js";
+import { buildDirectBinaryBody } from "./write-commands.js";
 import {
   buildFf09Frame,
   buildFf09QueryFrame,

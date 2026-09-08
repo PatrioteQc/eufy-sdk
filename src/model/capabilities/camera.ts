@@ -5,7 +5,7 @@ import { setScalar, setPayload, hasCapability } from "./access.js";
 import { AUDIO_CMD } from "./audio.js";
 import { accepts, propertiesOf, provided, type Members, type Surface, type MemberDeps } from "./members.js";
 import type { CapabilityModule, CapabilityActions, CommandContext } from "./types.js";
-import { CameraDisabledError, type Command, type CommandSink, type MediaProvider } from "../../core/contracts.js";
+import { CameraDisabledError, type Command, type MediaProvider } from "../../core/contracts.js";
 
 /**
  * The P2P **feature-command ids** this camera capability drives (direct-binary switches + `1350`

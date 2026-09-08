@@ -302,8 +302,7 @@ export class EufyMega extends EventEmitter {
    * One map per clean-line device, assembled from the pieces its `biz/…/res` frames carry.
    *
    * Created on the first frame that decodes rather than per device: a store for a robot that has never
-   * sent a map would answer `undefined` to everything, which {@link EufyMega.mapFor} already does
-   * without allocating anything.
+   * sent a map would answer `undefined` to everything, so allocating one buys nothing.
    */
   private readonly mapStores = new Map<string, VacuumMapStore>();
   /** Re-armed after each cloud-param poll; cancelled by {@link disconnect}. */

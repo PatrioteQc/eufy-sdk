@@ -25,11 +25,10 @@ import type {
   ProductLine,
   InboundSignal,
   CapabilityActions,
-  CapabilityStateReader,
   CommandContext,
   AvailabilityContext,
 } from "./types.js";
-import type { Command, CommandSink, MediaProvider, Ff09SettingsReader, RawDpCodec } from "../../core/contracts.js";
+import type { Command } from "../../core/contracts.js";
 
 import { VIDEO } from "./video.js";
 import { RTSP } from "./rtsp.js";
