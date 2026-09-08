@@ -28,6 +28,7 @@ import { assertNever } from "../../core/util.js";
 import { setTimeout as sleep } from "node:timers/promises";
 import { P2PSession, type P2PFrame } from "./p2p-session.js";
 import { buildDirectBinaryBody } from "./write-commands.js";
+import { CommandType } from "./commands.js";
 import {
   buildFf09Frame,
   buildFf09QueryFrame,
@@ -105,6 +106,9 @@ const LEVEL2_GRACE_MS = 25_000;
  * so a station that offers no key does not charge this to every later command.
  */
 const LEVEL2_SETTLE_MS = 8_000;
+
+/** How long a station's live RTSP URL push is awaited — the connect wait and the URL wait together. */
+const RTSP_URL_READ_TIMEOUT_MS = 12_000;
 
 /**
  * Options accepted when warming a {@link SharedLiveSource} for a device (all optional).
@@ -1089,6 +1093,84 @@ export class P2PCommandRouter {
     await this.sendBySessionLevel(sn, {
       l1: () => this.sendIntStringCommand(sn, param, value),
       l2: () => this.sendDirectBinary(sn, param, value),
+    });
+  }
+
+  /**
+   * Read the camera's LIVE authoritative RTSP URL — host, path, and the credentials it enforces
+   * RIGHT NOW — by writing the publish switch `CMD_NAS_SWITCH` (idempotent when already on, and never
+   * touching the credentials themselves, so a NAS/NVR consuming the stream elsewhere is undisturbed)
+   * plus `CMD_NAS_TEST` to start the livestream, then awaiting the `rtspUrl` event `P2PSession` emits
+   * for a matching-channel `CMD_NAS_SWITCH` push. This is the only source of the freshly-generated
+   * credentials: the vendor app regenerates them on every publish toggle and the cloud record lags.
+   *
+   * Both provokes go through {@link resolveScalarParam} `"auto"` — the ONE level decision — not a
+   * pinned level-1 send: a keyed HomeBase publishes 1145 on its level-2 seal, and the level-1 form is
+   * silently ignored there (the likely cause of attached-camera reads never answering). The shared
+   * path also repeats the datagram for RF resilience, exactly as the normal publish does.
+   *
+   * A single channel-filtered listener is armed BEFORE the provokes and torn down on either outcome,
+   * so a fast push cannot fall in a re-arm gap and a station that never answers leaks nothing. The
+   * station is shared by every channel (a HomeBase multiplexes its attached cameras over one session),
+   * so a push for another camera is filtered out rather than resolving this read.
+   *
+   * Bounded by {@link RTSP_URL_READ_TIMEOUT_MS}: the abort covers `resolveSession`'s connect wait and
+   * the URL wait. The device/station resolution ahead of them relies on its own HTTP timeouts.
+   *
+   * `undefined` on any failure: no route, no account id, or no matching push before the deadline.
+   */
+  async readReportedRtspUrl(sn: string): Promise<string | undefined> {
+    const log = this.deps.logger ?? noopLogger;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), RTSP_URL_READ_TIMEOUT_MS);
+    const { signal } = controller;
+    try {
+      const { session, channel, accountId } = await this.resolveSession(sn, { waitLevel2: "soft", signal });
+      if (!accountId) return undefined;
+      // Arm the wait BEFORE provoking, so a push that arrives between the two writes is not lost.
+      const url = this.awaitRtspUrl(session, channel, signal);
+      // Provoke through the ONE level decision (and its RF-resilience repeat), but do not block the read
+      // on the retransmits finishing: the URL push can land after the first datagram, so the read
+      // returns as soon as it arrives (or the deadline aborts), while the repeats run to completion.
+      void this.resolveScalarParam(sn, CommandType.CMD_NAS_SWITCH, 1, "auto").catch((e) =>
+        log.debug(`[p2p] ${sn} RTSP publish-switch provoke failed`, e),
+      );
+      void this.resolveScalarParam(sn, CommandType.CMD_NAS_TEST, 1, "auto").catch((e) =>
+        log.debug(`[p2p] ${sn} RTSP livestream provoke failed`, e),
+      );
+      return await url;
+    } catch (e) {
+      log.debug(`[p2p] ${sn} live RTSP URL read ${signal.aborted ? "timed out" : "failed"}`, e);
+      return undefined;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /**
+   * One channel-filtered wait for the station's `rtspUrl` push: a single persistent listener, attached
+   * up front and removed on resolve or abort, so nothing leaks and no push falls in a re-arm gap. The
+   * station multiplexes every attached camera's channel over one session, so a push for another camera
+   * is ignored rather than resolving the wrong read.
+   */
+  private awaitRtspUrl(session: P2PSession, channel: number, signal: AbortSignal): Promise<string> {
+    return new Promise<string>((resolve, reject) => {
+      const onUrl = (ev: { channel: number; url: string }): void => {
+        if (ev.channel !== channel) return;
+        cleanup();
+        resolve(ev.url);
+      };
+      const onAbort = (): void => {
+        cleanup();
+        reject(signal.reason ?? new Error("aborted"));
+      };
+      const cleanup = (): void => {
+        session.off("rtspUrl", onUrl);
+        signal.removeEventListener("abort", onAbort);
+      };
+      if (signal.aborted) return reject(signal.reason ?? new Error("aborted"));
+      session.on("rtspUrl", onUrl);
+      signal.addEventListener("abort", onAbort, { once: true });
     });
   }
 

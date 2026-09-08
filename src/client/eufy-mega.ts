@@ -1186,6 +1186,21 @@ export class EufyMega extends EventEmitter {
   }
 
   /**
+   * The device's LIVE, authoritative `rtsp://` URL — host, path, and the credentials it is
+   * enforcing right now — or `undefined` when none is pushed within the read window.
+   *
+   * A thin public door onto the P2P transport (which stays internal otherwise): opens the
+   * station's session on demand, so a viewer adopting a tile can call this directly without one
+   * already existing, and bounds + swallows every failure itself (no route, level-2 not ready, no
+   * push in time) into `undefined` — nothing for this facade method to add. It writes only the
+   * publish switch and the test-stream provoke, never the credentials, so a stream a NAS/NVR already
+   * consumes keeps its own pair.
+   */
+  async reportedRtspUrl(sn: string): Promise<string | undefined> {
+    return this.p2p.readReportedRtspUrl(sn);
+  }
+
+  /**
    * Build a live {@link Device} model object for one serial: the resolved codec/capabilities with
    * its current param values applied (named via the param dictionary; unknown ids kept as
    * `unknown_<pt>`). This is the device primitive — `dev.getProperties()`, `dev.has(cap)`, etc.
