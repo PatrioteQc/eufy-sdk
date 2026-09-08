@@ -72,7 +72,7 @@ npm install @mega-yfue/eufy-sdk
 Once the repository is public, releases also go to npmjs and the `.npmrc` becomes unnecessary.
 
 **Node.js ≥ 24.5.0** is required, not just recommended (see [`.nvmrc`](./.nvmrc)). `ffmpeg` is
-optional — only the live JPEG snapshot, one-shot mp4 record and WebRTC container-output paths use it,
+optional — only the live JPEG snapshot and one-shot mp4 record paths use it,
 and a host that ships its own build names it with `new EufyMega({ ffmpegPath })` rather than needing
 one on `PATH`.
 
@@ -90,7 +90,7 @@ Four layers, one dependency direction — `core` → `transport` → `model` →
 ```
 src/
   core/         shared floor: crypto, cross-layer contracts, value types, session store
-  transport/    every byte-on-a-wire module: http, mqtt, p2p, push, webrtc
+  transport/    every byte-on-a-wire module: http, mqtt, p2p, push, tuya
   model/        Device + one self-contained module per capability
   client/       the facade: login, device registry, event fan-out
   index.ts      public surface — one `export *` per layer barrel
@@ -101,7 +101,7 @@ src/
 never names a feature. Anything genuinely shared is a contract in `core/`. That rule and the rest of
 the code practice are in [AGENTS.md](./AGENTS.md).
 
-Three runtime dependencies — `mqtt`, `protobufjs`, `werift` — and that is deliberate. HTTP is native
+Three runtime dependencies — `mqtt`, `protobufjs`, `jpeg-js` — and that is deliberate. HTTP is native
 `fetch`, hashing and ciphers are `node:crypto`, 64-bit integers are `BigInt`.
 
 **Unverified write paths throw rather than guess.** Some writes are fire-and-forget, so a guessed

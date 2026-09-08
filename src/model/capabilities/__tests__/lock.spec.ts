@@ -152,13 +152,6 @@ describe("lock capability module", () => {
     expect("getAutoLockState" in acts).toBe(false);
   });
 
-  it("every property has a string name + numeric paramType", () => {
-    for (const p of LOCK.properties) {
-      expect(typeof p.name).toBe("string");
-      expect(typeof p.paramType).toBe("number");
-    }
-  });
-
   it("detects via the lock and safe model-name regexes", () => {
     const [lockRe, safeRe] = LOCK.detection!.modelHints!;
     expect(lockRe.test("Smart Lock")).toBe(true);

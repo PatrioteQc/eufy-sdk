@@ -106,19 +106,9 @@ export class SessionManager {
     return this.entries.get(parentSn)?.session;
   }
 
-  /** Whether a station has a live session. */
-  has(parentSn: string): boolean {
-    return this.entries.get(parentSn)?.session !== undefined;
-  }
-
   /** Serials of stations with a live session. */
   keys(): string[] {
     return [...this.entries].filter(([, e]) => e.session).map(([sn]) => sn);
-  }
-
-  /** Number of stations with a live session. */
-  get size(): number {
-    return this.keys().length;
   }
 
   /** A plain `Map<parentSn, P2PSession>` snapshot of the live sessions (for `getSessions()` / tests). */

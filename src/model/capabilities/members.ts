@@ -4,14 +4,14 @@
  * Each entry in a module's `members` table is one thing a device exposes, and everything else is
  * DERIVED from it: the property schema the model consumes, the TYPE of the bound `dev.<cap>()` object,
  * the evidence-gated getter, the setter beside it, the intent name `setProperty` resolves through, and
- * the description a caller reads to offer the feature as a control.
+ * the description published for it.
  *
- * The alternative — a table per concern, joined by name — is what let one feature be spelled in six
- * places and disagree with itself. Here a rename moves everything at once, because there is only one
+ * The alternative — a table per concern, joined by name — is how one feature ends up spelled in six
+ * places and disagreeing with itself. Here a rename moves everything at once, because there is only one
  * declaration to rename.
  *
- * Deriving the type is what makes this pay for a developer as well as for discovery: `dev.motion()`
- * autocompletes from the same table the runtime installs from, with no hand-written `*Actions`.
+ * The surface TYPE is derived from the same table the runtime installs from: `dev.motion()`
+ * autocompletes with no hand-written `*Actions`.
  *
  * @module model/capabilities/members
  */
@@ -166,7 +166,7 @@ export interface ValueMember {
    * would lose the names it can pass. Only the TYPE is used — nothing reads the value.
    */
   accepts?: unknown;
-  /** Numeric bounds a caller can solicit within — the same constants `write` clamps with. */
+  /** Numeric bounds the value must fall within — the same constants `write` clamps with. */
   min?: number;
   max?: number;
   /**
@@ -181,7 +181,7 @@ export interface ValueMember {
    * Declared only where a family routes the write elsewhere: the read then answers honestly about the param
    * it observes while disagreeing with what the setter did, and a caller has no reason to distrust it. Such a
    * member is named by {@link unreflectedMembers} for the devices where it applies, so the disagreement is
-   * something a caller can see rather than discover.
+   * stated rather than left to be discovered.
    */
   readReflectsWrite?: (ctx: CommandContext) => boolean;
   /**
@@ -306,6 +306,11 @@ export interface MemberDeps {
    * already-open stream with no provider at all, and only needs one to open a stream itself.
    */
   media?: MediaProvider;
+  /**
+   * The `ff09` settings reader, when the device is bound to one. Named for the frame family it reads,
+   * so any device driven by that frame can use it — see {@link Ff09SettingsReader}.
+   */
+  ff09Settings?: Ff09SettingsReader;
 }
 
 /**
@@ -313,8 +318,7 @@ export interface MemberDeps {
  *
  * The escape hatch that keeps the table honest instead of pretending everything is a property — a
  * sensitivity STEP is resolved across four wire ids and two numeric directions, so it is neither a
- * getter over one param nor a momentary command. Its signature flows through to the surface type, so a
- * caller still gets autocomplete on it.
+ * getter over one param nor a momentary command. Its signature flows through to the surface type.
  */
 export interface MethodMember<F> {
   method: (deps: MemberDeps) => F;
@@ -324,7 +328,7 @@ export interface MethodMember<F> {
   /**
    * What the method accepts, for a signature whose arity does not state it: a parameter with a DEFAULT is
    * absent from `Function.length`, so `locate(on = true)` would otherwise be described as taking nothing
-   * at all. Naming it is also the better description — a caller learns the beep can be cancelled.
+   * at all.
    *
    * Only needed for that case. A method taking its arguments plainly is described as existing with its
    * arguments unstated, and a nullary one has them derived (see `describe`).
@@ -334,10 +338,9 @@ export interface MethodMember<F> {
    * This member ANSWERS rather than ACTS: a sub-API namespace (`ptz.preset()`) or a live query whose
    * returned value is the whole point (`lock.getAutoLockState()`).
    *
-   * Both take no arguments, but that arity says nothing about a control — offering one as a button calls it
-   * and throws the answer away. So the empty argument list is NOT derived here, leaving the arguments
-   * unstated, which is exactly what keeps a caller from auto-offering it. It stays described, and callable,
-   * for code that reaches it deliberately.
+   * Both take no arguments, but that arity says nothing about a control — calling one and discarding the
+   * answer is not what it is for. So the empty argument list is NOT derived here, leaving the arguments
+   * unstated, which is exactly what keeps it from being auto-offered. It stays described, and callable.
    */
   answers?: true;
 }
@@ -575,8 +578,8 @@ export type Surface<M extends Members> = {
 
 /**
  * Resolve a member's enum options for a device, evaluating `enumValuesFor` at most once. Returns the
- * options and whether they came from the device context (`dynamic`), so a caller derives both the
- * option set and the enum `kind` from a single result. A context domain (`enumValuesFor(ctx)`) is
+ * options and whether they came from the device context (`dynamic`), so the option set and the enum
+ * `kind` both come from a single result. A context domain (`enumValuesFor(ctx)`) is
  * returned when present; absent that (or with no context) the static `enumValues`; a member with
  * neither yields no options.
  */
@@ -638,9 +641,9 @@ const BOOL_VALUES: ReadonlySet<unknown> = new Set([true, false, 0, 1, "0", "1", 
  * Build a member's wire for a value, or throw the reason it will not.
  *
  * The ONE write path: the fluent setter and the intent route both come through here, so the declared
- * domain is enforced once and refused with one message. Splitting them is how `setProperty` came to
- * report an out-of-range value as a device that lacks the feature while the setter beside it named the
- * set the value had to come from.
+ * domain is enforced once and refused with one message. Splitting them would let `setProperty` report an
+ * out-of-range value as a device that lacks the feature while the setter beside it named the set the
+ * value had to come from.
  * @internal
  */
 export function memberWrite(
@@ -686,9 +689,9 @@ function writeDomain(m: ValueMember): readonly (string | number)[] | undefined {
  * Whether a value falls in the domain the member PUBLISHES — the set {@link rejection} names.
  *
  * Enforced here rather than in each `write`, because a domain declared for the description and enforced
- * somewhere else is two copies: the 22 lambdas disagreed on the same declaration, some refusing an
- * out-of-range value and some clamping it, and one (`powerSource`) enforcing nothing at all — which on a
- * fire-and-forget wire sent a value the member's own message says is invalid and looked like success.
+ * somewhere else is two copies: per-`write` enforcement drifts — some refusing an out-of-range value,
+ * some clamping it, some enforcing nothing at all — which on a fire-and-forget wire sends a value the
+ * member's own message says is invalid and looks like success.
  *
  * Only a value of the STORED type is judged. A member may {@link ValueMember.accepts} more than its
  * getter answers — a resolution name for a tier stored as an int — and that vocabulary is the `write`'s
@@ -729,11 +732,11 @@ function rejection(name: string, m: ValueMember, value: unknown): string {
 }
 
 /**
- * The description a caller reads to offer a member as a control, derived from the member itself.
+ * The description of a member as a control, derived from the member itself.
  *
  * `reflects` names the member's own accessor, but only where that accessor was actually installed:
  * {@link ActionSpec} states that a stateful action's reflected read IS its evidence gate, so naming a
- * read the device never reported would promise a control whose state a caller cannot show. A write-only
+ * read the device never reported would promise a control whose state cannot be read back. A write-only
  * member has no state to reflect at all, and a member whose read is absent describes the same way —
  * still offerable, just not as a switch with a position.
  *
@@ -743,9 +746,9 @@ function rejection(name: string, m: ValueMember, value: unknown): string {
  * `videoQuality`'s tier set from vanishing when it renames its argument.
  *
  * The derived argument carries `decodedValues` but NOT `enumValues`, which the reflected read already
- * publishes; a second copy on the argument could only drift from it. So a caller offers the argument's own
- * set where it has one and the read's otherwise — the same precedence {@link writeDomain} enforces with,
- * which is what makes a stated `values` a NARROWING of the read rather than an unrelated second list.
+ * publishes; a second copy on the argument could only drift from it. The argument's own set therefore
+ * stands where it has one and the read's otherwise — the same precedence {@link writeDomain} enforces
+ * with, which is what makes a stated `values` a NARROWING of the read rather than an unrelated second list.
  */
 function describeWrite(name: string, m: ValueMember, reported: boolean): ActionSpec {
   const stateful = !m.writeOnly && reported;
@@ -771,12 +774,10 @@ function describeWrite(name: string, m: ValueMember, reported: boolean): ActionS
  * A `method` or provider-backed member owns its whole signature, so the table cannot say what its
  * argument means the way {@link describeWrite} can for a value — but it can still say the method exists
  * and what it does. `momentary` is the honest form for both: neither reflects a read this table knows of.
- * Without this, `description` was required at 29 call sites and read at none, so a contributor writing
- * one believed they had described a method that reported itself undescribed.
  *
  * **An EMPTY argument list is derived from the function's arity**, which is the one thing the table can
- * read off a signature it did not write. Absent arguments only ever meant "not stated", so a caller could
- * not tell `lock()` — which genuinely takes none and is offerable as a plain button — from a method whose
+ * read off a signature it did not write. Absent arguments mean "not stated", which does not distinguish
+ * `lock()` — which genuinely takes none and is offerable as a plain control — from a method whose
  * arguments nobody has described yet. A function declaring no parameters says the former, and it cannot
  * drift, because the function IS the declaration.
  *
@@ -826,8 +827,8 @@ export function narrow(
  *
  * A {@link ValueMember.readAliases} id counts as the same evidence as the member's own `param`: an alias
  * is the SAME value on another family's wire, and `Device` resolves one into this member's property, so a
- * device that reports only the alias does hold the state. Gating on `param` alone hid the read on exactly
- * the families the alias exists for — a standalone camera reports its power state on 2001, never 1035.
+ * device that reports only the alias does hold the state. Gating on `param` alone would hide the read on
+ * exactly the families the alias exists for — a standalone camera reports its power state on 2001, never 1035.
  */
 function reads(
   m: Pick<ValueMember, "param" | "realtime" | "readAvailable" | "readAliases">,
@@ -880,23 +881,15 @@ export function installs(
  * A getter is skipped for a `writeOnly` or `unexposed` member, and a setter for an `unverified` one —
  * declared so the capability documents the device, never installed.
  */
-export function bindMembers<M extends Members>(
-  members: M,
-  ctx: CommandContext,
-  sink: CommandSink,
-  read: CapabilityStateReader,
-  media?: MediaProvider,
-  rawDp?: RawDpCodec,
-  ff09Settings?: Ff09SettingsReader,
-): Surface<M> {
+export function bindMembers<M extends Members>(members: M, deps: MemberDeps): Surface<M> {
+  const { ctx, sink, read, rawDp } = deps;
   const out: Record<string, unknown> = {};
   const unobservable: string[] = [];
   const unreflected: string[] = [];
-  const deps: MemberDeps = { ctx, sink, read, rawDp, media };
   for (const [name, m] of Object.entries(members)) {
     if ("provided" in m) {
       if (!hasRequiredCapabilities(m, ctx.capabilities)) continue;
-      const provider = m.needs === "media" ? media : ff09Settings;
+      const provider = deps[m.needs];
       if (!provider) continue;
       const built = (m.provided as (p: unknown, d: MemberDeps) => unknown)(provider, deps);
       if (typeof built === "function") out[name] = describe(m.description, built, m);
@@ -949,7 +942,7 @@ export function bindMembers<M extends Members>(
 }
 
 /**
- * Two statements a caller needs and cannot derive from the shape, carried out of band so neither becomes a
+ * Two statements that cannot be derived from the shape, carried out of band so neither becomes a
  * member of the capability it describes. Same device as `core/contracts`' command-observation symbol.
  */
 const UNOBSERVABLE = Symbol("unobservable-members");
@@ -969,8 +962,7 @@ function statement(surface: object, key: symbol): readonly string[] {
  * The members this device can be told to change but will never report back.
  *
  * `cam.privacy === undefined` reads identically for a device that reports the value as unset and one that
- * never reports it, and guessing between them is what a caller must not do: refusing a working camera
- * withdraws it, and allowing a dead one shows a viewer a stream that will never carry frames.
+ * never reports it, and the two must not be guessed between.
  *
  * Only members whose setter is actually installed for this device are listed. A member whose write is
  * unverified has no setter and its intent path throws, so calling it something the device "accepts" would
@@ -990,7 +982,7 @@ export const unobservableMembers = (surface: object): readonly string[] => state
  * A readable value that silently disagrees with the write is worse than an unreadable one: a caller has no
  * reason to distrust it. Camera enablement is one on the families whose power rides the privacy envelope —
  * the write goes there while the read still observes the on/off param, so a camera that has been turned off
- * still reads as on. Naming it lets a caller decline to act on the value instead of acting on a wrong one.
+ * still reads as on.
  *
  * Empty for any object that is not a bound capability.
  */

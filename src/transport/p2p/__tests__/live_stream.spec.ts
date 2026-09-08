@@ -1,5 +1,5 @@
 import { LiveStream, DEFAULT_KEEPALIVE_MS } from "../live-stream.js";
-import { STATION_CHANNEL, type P2PSession, type P2PFrame } from "../p2p-session.js";
+import { STATION_CHANNEL, type P2PSession } from "../p2p-session.js";
 import { FakeP2PSession, START_CODE, p2pAudioFrame, p2pVideoFrame } from "./live-source-fixtures.js";
 
 describe("LiveStream", () => {

@@ -38,7 +38,7 @@ describe("info capability module", () => {
       macAddress: "AA:BB:CC:00:00:00",
       updateAvailable: true,
     };
-    const info = INFO.actions!(ctx, SINK) as unknown as DeviceInfo;
+    const info = INFO.actions!({ ctx, sink: SINK, read: () => undefined }) as unknown as DeviceInfo;
     expect(info).toEqual({
       manufacturer: "eufy",
       model: "T8000P0000000000",
@@ -55,7 +55,7 @@ describe("info capability module", () => {
 
   it("manufacturer is constant and absent fields stay undefined (never fabricated)", () => {
     const ctx: CommandContext = { channel: 0, codec: "camera", paramIds: new Set() };
-    const info = INFO.actions!(ctx, SINK) as unknown as DeviceInfo;
+    const info = INFO.actions!({ ctx, sink: SINK, read: () => undefined }) as unknown as DeviceInfo;
     expect(info.manufacturer).toBe("eufy");
     expect(info.model).toBeUndefined();
     expect(info.serialNumber).toBeUndefined();

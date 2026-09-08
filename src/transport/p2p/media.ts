@@ -1,10 +1,10 @@
 /**
  * Camera **media** operations over P2P — live snapshot, live stream, clip recording.
  *
- * These are the bodies that used to live on `EufyMega`; they take an already-resolved
- * {@link P2PSession} (the client owns session/channel resolution) and return data. They speak only
- * P2P + ffmpeg — no dependency on the client class — so the client stays thin and this stays the
- * single home for the media protocol. Surfaced to consumers via `device.camera()`.
+ * These take an already-resolved {@link P2PSession} (the client owns session/channel resolution) and
+ * return data. They speak only P2P + ffmpeg — no dependency on the client class — so the client stays
+ * thin and this stays the single home for the media protocol. Surfaced to consumers via
+ * `device.camera()`.
  *
  * `snapshotLive` / `record` shell out to ffmpeg. The binary is whatever {@link spawnFfmpeg} resolves —
  * the bare name on `PATH` by default, or the executable the caller named (`ffmpegPath`).

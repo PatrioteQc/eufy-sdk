@@ -5,7 +5,6 @@ import { MOTION } from "../motion.js";
 import { DeviceType } from "../../device-types.js";
 import { bind as bindCapability } from "./bind.js";
 import type { CameraActions } from "../camera.js";
-import type { CommandContext } from "../../types.js";
 import type { CommandSink } from "../../../core/contracts.js";
 
 /**

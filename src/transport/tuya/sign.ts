@@ -79,10 +79,7 @@ export interface TuyaSigner {
   sign(preimage: string): string;
 }
 
-/**
- * Test-only {@link TuyaSigner} that throws on every call. Useful for unit-testing request builders
- * in isolation — the stub lets you wire the full request path without needing a real sign key.
- */
+/** Test-only {@link TuyaSigner} that throws on every call. */
 export class StubSigner implements TuyaSigner {
   sign(_preimage: string): string {
     throw new Error(

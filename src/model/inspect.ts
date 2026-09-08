@@ -8,9 +8,6 @@
  *  - a **paste-ready `registry.ts` row** for the device's model, and
  *  - **paste-ready param-dictionary snippets** for every param we don't yet know.
  *
- * The point: a user with a new/unconfirmed device runs one command and hands back an export
- * that lets us enrich the SDK — without them knowing anything about the internals.
- *
  * Pure + offline (no network) so it is unit-testable; the live wrapper that fetches a device by
  * serial lives on `EufyMega.inspectDevice`.
  *
@@ -76,11 +73,7 @@ function buildDictSnippet(model: string, unknown: ParamInspection[]): string {
   return unknown
     .map(
       (p) =>
-        `  ${p.paramType}: { paramType: ${p.paramType}, name: ${tsString(p.name)}, type: ${tsString(
-          p.inferredType,
-        )}, writable: false, provenance: "guessed", observed: true, models: [${tsString(
-          model,
-        )}], note: ${tsString(`reported by ${model}; sample value=${p.value}; needs naming/toggle-diff`)} },`,
+        `  ${p.paramType}: { name: ${tsString(p.name)}, type: ${tsString(p.inferredType)}, provenance: "guessed" }, // reported by ${model}; sample value=${p.value}; needs naming/toggle-diff`,
     )
     .join("\n");
 }
@@ -148,32 +141,4 @@ export function inspectParams(rec: CloudRecord, sn?: string): DeviceInspection {
     registrySnippet: buildRegistrySnippet(model, entry),
     dictionarySnippet: buildDictSnippet(model, unknown),
   };
-}
-
-/** Render a {@link DeviceInspection} as a human-readable text report (for the CLI). */
-export function formatInspection(rep: DeviceInspection): string {
-  const L: string[] = [];
-  L.push(`Device ${rep.sn ?? ""} — ${rep.resolved.name} (${rep.model ?? "?"}, deviceType ${rep.deviceType ?? "?"})`);
-  L.push(`  codec=${rep.resolved.codec} (resolved via ${rep.resolved.source})  namespace=${rep.namespace}`);
-  L.push(`  capabilities: ${rep.resolved.capabilities.join(", ")}`);
-  L.push(
-    `  params: ${rep.counts.total} total — ${rep.counts.known} known, ${rep.counts.unknown} UNKNOWN, ${rep.counts.unconfirmed} unconfirmed(guessed)`,
-  );
-  L.push("");
-  L.push("  param   value                          name                          provenance");
-  for (const p of rep.params) {
-    const flag = !p.known ? "❓" : p.provenance === "verified" || p.provenance === "mega" ? "✅" : "·";
-    L.push(
-      `  ${flag} ${String(p.paramType).padEnd(6)} ${p.value.slice(0, 28).padEnd(30)} ${p.name.padEnd(28)} ${
-        p.provenance ?? "UNKNOWN"
-      }`,
-    );
-  }
-  L.push("");
-  L.push(`── suggested registry.ts row ${rep.suggestedRegistry.exists ? "(model already in registry)" : "(NEW)"} ──`);
-  L.push(rep.registrySnippet);
-  L.push("");
-  L.push(`── param-dictionary additions (${rep.counts.unknown} unknown) ──`);
-  L.push(rep.dictionarySnippet);
-  return L.join("\n");
 }

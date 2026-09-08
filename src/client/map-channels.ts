@@ -52,22 +52,23 @@ const reader =
  * reads them yet — the first four have no decoder, and scenes already arrive on DP 180. A frame on any
  * of them is reported as undecoded rather than half-read by a decoder written for a different message.
  */
-const READERS: ReadonlyMap<number, ChannelReader> = new Map([
-  [BIZ_CHANNEL.MAP_DATA, reader("plane", decodeVacuumMap)],
-  [BIZ_CHANNEL.ROOM_OUTLINE, reader("outline", decodeVacuumRoomOutline)],
-  [BIZ_CHANNEL.ROOM_PARAMS, reader("rooms", decodeVacuumRoomParams)],
-  [BIZ_CHANNEL.RESTRICTED_ZONE, reader("zones", decodeVacuumRestrictedZones)],
-  [BIZ_CHANNEL.DYNAMIC_DATA, reader("pose", decodeVacuumPose)],
-]);
+const READER_BY_CHANNEL = {
+  MAP_DATA: reader("plane", decodeVacuumMap),
+  ROOM_OUTLINE: reader("outline", decodeVacuumRoomOutline),
+  ROOM_PARAMS: reader("rooms", decodeVacuumRoomParams),
+  RESTRICTED_ZONE: reader("zones", decodeVacuumRestrictedZones),
+  DYNAMIC_DATA: reader("pose", decodeVacuumPose),
+} satisfies Partial<Record<BizChannel, ChannelReader>>;
 
-/** Which channels above are read, named as {@link BIZ_CHANNEL} names them, for a guard over the two. */
-export const DECODED_MAP_CHANNELS: readonly BizChannel[] = [
-  "MAP_DATA",
-  "ROOM_OUTLINE",
-  "ROOM_PARAMS",
-  "RESTRICTED_ZONE",
-  "DYNAMIC_DATA",
-];
+/**
+ * Which channels are read, named as {@link BIZ_CHANNEL} names them — the key set of
+ * {@link READER_BY_CHANNEL}. The `satisfies` on that table constrains every key to a `BizChannel`.
+ */
+export const DECODED_MAP_CHANNELS: readonly BizChannel[] = Object.keys(READER_BY_CHANNEL) as BizChannel[];
+
+const READERS: ReadonlyMap<number, ChannelReader> = new Map(
+  DECODED_MAP_CHANNELS.map((name) => [BIZ_CHANNEL[name], READER_BY_CHANNEL[name as keyof typeof READER_BY_CHANNEL]]),
+);
 
 /**
  * Decode one frame off the map stream into the map piece it carries, or `undefined`.

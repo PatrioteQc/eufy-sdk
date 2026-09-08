@@ -137,13 +137,6 @@ describe("vacuum_clean capability module", () => {
     ]);
   });
 
-  it("every property has a string name + numeric paramType", () => {
-    for (const p of VACUUM_CLEAN.properties) {
-      expect(typeof p.name).toBe("string");
-      expect(typeof p.paramType).toBe("number");
-    }
-  });
-
   it("is a vacuum-codec baseline", () => {
     expect(VACUUM_CLEAN.detection?.codecs).toEqual(["vacuum"]);
   });

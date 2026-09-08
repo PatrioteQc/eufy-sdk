@@ -218,9 +218,11 @@ const CMD_CAMERA_INFO = 1103;
 const CMD_DATABASE_IMAGE = 1308;
 /** CMD_DATABASE (1306) — P2P SQLite-ish query; reply carries `{cmd:10000,count,data:[…]}`. */
 const CMD_DATABASE = 1306;
-const CMD_DATABASE_QUERY = 10000;
-/** Inner query cmd the eufy app uses for the AI event-history read that bundles the face roster. */
-const QUERY_COMBINATION_WITH_AI = 10011;
+/**
+ * Inner query cmds carried in a {@link CMD_DATABASE} payload. `FULL_TABLE` reads one table whole;
+ * `COMBINATION_WITH_AI` is the AI event-history read that bundles the face roster.
+ */
+const DB_QUERY = { FULL_TABLE: 10000, COMBINATION_WITH_AI: 10011 } as const;
 /** AAD for the level-2 (gateway/"signCode 8") AES-256-GCM frames — fixed across all eufy P2P. */
 const GCM_AAD = Buffer.from("eufy security");
 
@@ -1480,7 +1482,7 @@ export class P2PSession extends EventEmitter {
 
   /**
    * Query an on-station database table over P2P (edge-AI face DB, event records, …).
-   * Sends `CMD_SET_PAYLOAD{cmd:CMD_DATABASE, payload:{cmd:CMD_DATABASE_QUERY, table}}`.
+   * Sends `CMD_SET_PAYLOAD{cmd:CMD_DATABASE, payload:{cmd:DB_QUERY.FULL_TABLE, table}}`.
    * The HomeBase streams back `CMD_DATABASE` (1306) frames `{cmd:10000,count,data:[…]}`,
    * level-1-encrypted — decoded and emitted as `dbChunk` (decrypted text) per frame.
    * Tables: `familiar_faces`, `person_basic_info`, `event_person_list`, `history_record_info`.
@@ -1496,7 +1498,7 @@ export class P2PSession extends EventEmitter {
     //   { account_id, cmd:1306, mChannel, mValue3:0,
     //     payload:{ table, cmd:<innerCmd>, payload:{…query…}, transaction } }
     // i.e. the query params are NESTED under a second `payload`, not flattened.
-    const inner: Record<string, unknown> = { cmd: opts.innerCmd ?? CMD_DATABASE_QUERY };
+    const inner: Record<string, unknown> = { cmd: opts.innerCmd ?? DB_QUERY.FULL_TABLE };
     if (table) inner.table = table;
     if (opts.query) inner.payload = opts.query;
     inner.transaction = `${Date.now()}`;
@@ -1551,7 +1553,7 @@ export class P2PSession extends EventEmitter {
     this.queryDatabase("person_basic_info", {
       accountId: opts.accountId,
       channel: opts.channel,
-      innerCmd: CMD_DATABASE_QUERY,
+      innerCmd: DB_QUERY.FULL_TABLE,
       query: this.fullTableQuery(),
     });
   }
@@ -1566,7 +1568,7 @@ export class P2PSession extends EventEmitter {
     this.queryDatabase("face_feature_info", {
       accountId: opts.accountId,
       channel: opts.channel,
-      innerCmd: CMD_DATABASE_QUERY,
+      innerCmd: DB_QUERY.FULL_TABLE,
       query: this.fullTableQuery(),
     });
   }

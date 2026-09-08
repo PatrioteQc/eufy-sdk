@@ -127,9 +127,7 @@ export interface DiscoverOptions {
 
 /**
  * Probe every candidate instance (fresh DNS + any known extras), in sequence, SUBSCRIBE-only. Returns
- * every result (granted ones first) so the caller can inspect the whole matrix rather than just the
- * first hit — useful when comparing this across more than one credential set (e.g. our own
- * `eufy_security`-scoped cert vs. the app's own extracted cert).
+ * every result, granted ones first, rather than only the first hit.
  */
 export async function discoverReachableInstance(
   creds: BrokerCredentials,

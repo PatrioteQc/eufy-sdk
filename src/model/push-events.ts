@@ -63,20 +63,6 @@ export enum CusPushMode {
   SWITCH = 9,
 }
 
-/** Server/account-level events. */
-export enum ServerPushEvent {
-  REMOVE_HOMEBASE = 10100,
-  REMOVE_DEVICE = 10200,
-  INVITE_DEVICE = 10300,
-  VERIFICATION = 10500,
-  WEB_ACTION = 10800,
-  ALARM_NOTIFY = 10900,
-  ALARM_GUEST_NOTIFY = 11000,
-  HOUSE_REMOVE = 11200,
-  HOUSE_INVITE = 11300,
-  HOUSE_ADDED = 11400,
-}
-
 /** Doorbell AI-detection events (3xxx). All v6-confirmed. */
 export enum DoorbellPushEvent {
   BACKGROUND_ACTIVE = 3100,
@@ -151,31 +137,6 @@ export enum LockPushEvent {
   LOCK_ONLINE = 771,
 }
 
-/** Garage-door events. */
-export enum GarageDoorPushEvent {
-  CLOSED_DOOR_BY_APP = 1,
-  OPEN_DOOR_BY_APP = 2,
-  CLOSED_DOOR_WITHOUT_APP = 3,
-  OPEN_DOOR_WITHOUT_APP = 4,
-  TIMEOUT_DOOR_OPEN_WARNING = 5,
-  TIMEOUT_CLOSED_DOOR = 6,
-  TIMEOUT_DOOR_OPEN_WARNING_MINUTES = 7,
-  LOW_BATTERY = 8,
-}
-
-/** Smart-safe events. */
-export enum SmartSafeEvent {
-  ALARM_911 = 1946161152,
-  LOCK_STATUS = 1946161153,
-  SHAKE_ALARM = 1946161154,
-  BATTERY_STATUS = 1946161155,
-  LONG_TIME_NOT_CLOSE = 1946161156,
-  FORCE_FIGURE = 1946161157,
-  LOW_POWER = 1946161158,
-  INPUT_ERR_MAX = 1946161159,
-  SHUTDOWN = 1946161160,
-}
-
 /** SmartDrop locker events. */
 export enum SmartDropPushEvent {
   LOW_BATTERY = 6,
@@ -191,37 +152,6 @@ export enum NotificationStyle {
   THUMB = 2,
   ALL = 3,
 }
-
-/** HomeBase-3 sub-device message routing (the `type` in a HB3 push). */
-export enum HB3PairedDeviceMessageType {
-  SECURITY_EVT = 1,
-  TFCARD_EVT = 2,
-  DOOR_SENSOR_EVT = 3,
-  CAM_STATE_EVT = 4,
-  GSENSOR_EVT = 5,
-  BATTERY_LOW_EVT = 6,
-  BATTERY_HOT_EVT = 7,
-  LIGHT_STATE_EVT = 8,
-  ARMING_EVT = 9,
-  ALARM_EVT = 10,
-  BATTERY_FULL_EVT = 11,
-  REPEATER_RSSI_WEAK_EVT = 12,
-  UPGRADE_STATUS = 13,
-  MOTION_SENSOR_EVT = 14,
-  BAT_DOORBELL_EVT = 15,
-  ALARM_DELAY_EVT = 16,
-  HUB_BATT_POWERED_EVT = 17,
-  INDOOR_EVT = 18,
-  SMARTLOCK_EVT = 19,
-  LOCK_EVT = 20,
-  BBM_SOCK_EVT = 21,
-  DOOR_STATUS_EVT = 22,
-  HHD_EVT = 23,
-}
-
-/** A coarse label for the device family a push came from (for routing). */
-export type PushDeviceKind =
-  "doorbell" | "indoor" | "hb3_paired" | "lock" | "garage" | "smart_safe" | "smart_drop" | "server" | "generic";
 
 /** Resolve a 3xxx AI-detection event id to a human name (camera/doorbell). */
 export function detectionName(eventType: number): string {

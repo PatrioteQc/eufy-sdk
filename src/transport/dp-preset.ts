@@ -15,7 +15,7 @@
  * nonlinear gamut expansion isn't fully reversed.
  */
 import type { DpField } from "./mqtt/dp-codec.js";
-import { u32le } from "../core/util.js";
+import { clamp, u32le } from "../core/util.js";
 
 /** One layer of a gallery light effect, as the cloud catalog `params.layer[]` describes it. */
 export interface DpPresetLayer {
@@ -312,5 +312,5 @@ export function dpPresetFields(spec: DpPresetSpec): DpField[] {
 
 /** The `0xa4`-brightness `0x0201` device-info fields for the companion brightness write. */
 export function dpLevelFields(level: number): DpField[] {
-  return [{ tag: 0xa4, value: Buffer.from([Math.max(0, Math.min(100, Math.round(level))) & 0xff]) }];
+  return [{ tag: 0xa4, value: Buffer.from([clamp(Math.round(level), 0, 100) & 0xff]) }];
 }

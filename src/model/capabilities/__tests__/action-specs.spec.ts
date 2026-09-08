@@ -85,15 +85,14 @@ const built = (m: CapabilityModule): CapabilityActions => {
     capabilities: new Set([m.capability, "snapshot"]),
   };
   const bindContext = (context: CommandContext): CapabilityActions => {
-    const actions = buildActions(
-      [m.capability],
-      context,
+    const actions = buildActions([m.capability], {
+      ctx: context,
       sink,
-      { snapshotStored: async () => Buffer.alloc(0) } as MediaProvider,
-      {} as Ff09SettingsReader,
-      {} as RawDpCodec,
-      () => undefined,
-    );
+      read: () => undefined,
+      media: { snapshotStored: async () => Buffer.alloc(0) } as MediaProvider,
+      ff09Settings: {} as Ff09SettingsReader,
+      rawDp: {} as RawDpCodec,
+    });
     return actions[camelCase(m.capability) as keyof typeof actions] as CapabilityActions;
   };
   const installsAction = (actions: CapabilityActions): boolean =>

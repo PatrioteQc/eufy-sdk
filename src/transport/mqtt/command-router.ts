@@ -121,8 +121,8 @@ function buildFf09QueryTrans(input: {
  * The shape of a GET-settings `/res` reply — NOT the normal command-ack envelope
  * ({@link buildFf09Trans}'s `{cmd,mChannel,mValue3,payload:{apiCommand,lock_payload,seq_num,time}}}`).
  * The device replies with just `{cmd:1940, payload:{dev_sn, lock_payload, time}}`, where `time` is a
- * **hex string** (not decimal) equal to the keyTime of the GET that triggered it — match it back to
- * your query's `time` to survive interleaved traffic. See `transport/ff09.ts`'s module doc. `time`'s
+ * **hex string** (not decimal) equal to the keyTime of the GET that triggered it — matched back to the
+ * query's `time` to survive interleaved traffic. See `transport/ff09.ts`'s module doc. `time`'s
  * type is `string | number`: confirmed a hex string live, but a decimal is also accepted in case a
  * future firmware / a different lock family sends it that way (the P2P sibling `sendFf09Autolock` is
  * defensive the same way), rather than silently discarding a numeric reply as "not a match".
@@ -298,9 +298,9 @@ export class MqttCommandRouter {
         return;
       default:
         // The facade sink routes an ff09-* command here only for an MQTT device (no P2P endpoint).
-        // `ff09-setting-toggle` (Rain Mode) is P2P-only — the lock capability doesn't even offer it on a
-        // non-P2P device — so if one reaches here it's a routing bug; fail loud rather than guess an MQTT
-        // shape that isn't known to exist. Same for any non-ff09 or non-aiot-dp kind (the facade routes those to P2P).
+        // `ff09-setting-toggle` (Rain Mode) has no MQTT form, so one reaching here is a routing bug; fail
+        // loud rather than guess a shape that is not known to exist. Same for any non-ff09 or non-aiot-dp
+        // kind (the facade routes those to P2P).
         throw new Error(
           `MqttCommandRouter received an unroutable command (${cmd.kind}) for ${sn} — the facade sink should ` +
             `only route ff09-actuate/ff09-autolock/aiot-dp here`,
@@ -529,8 +529,8 @@ export class MqttCommandRouter {
   }
 
   /**
-   * The `ff09-autolock` intent handler over MQTT — read-modify-write the T85D0's auto-lock setting
-   * (`dev.lock()?.setAutoLock`). ✅ LIVE-VERIFIED end-to-end (2026-07-17): both enable and disable
+   * The `ff09-autolock` intent handler over MQTT — read-modify-write the T85D0's auto-lock setting.
+   * ✅ LIVE-VERIFIED end-to-end (2026-07-17): both enable and disable
    * driven through this exact codepath against a real T85D0, confirmed via the app UI showing the new
    * state afterward, not just byte-exact against a capture. Unlike {@link dispatchFf09Actuate} (one
    * fire-and-forget frame), this is a GET then a SET over the SAME one-shot MQTT connection:
@@ -646,8 +646,8 @@ export class MqttCommandRouter {
   }
 
   /**
-   * **Read the T85D0's current auto-lock settings over MQTT** — the `Ff09SettingsReader` behind
-   * `dev.lock()?.getAutoLockState()`. A pure GET, no SET: opens its own one-shot MQTT connection (same
+   * **Read the T85D0's current auto-lock settings over MQTT** — the `Ff09SettingsReader` implementation.
+   * A pure GET, no SET: opens its own one-shot MQTT connection (same
    * lifecycle as {@link dispatchFf09Autolock}), reuses {@link fetchFf09SettingsGetReply}, then decrypts
    * + decodes fields `a1`-`a5` per `transport/ff09.ts`'s response tag map. Live-verified only insofar
    * as the underlying GET step already is (`setAutoLock`'s own read) — the standalone read path itself

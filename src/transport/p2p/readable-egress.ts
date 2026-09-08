@@ -1,14 +1,14 @@
 /**
  * Readable egress — mint a `node:stream` Readable over a {@link Consumer} of a {@link SharedLiveSource}.
  *
- * This is the in-process pull surface: a host pipes the Readable wherever it wants (an HTTP response,
- * a file, a child process' stdin) without touching the P2P internals. Backpressure is honored — when
- * the Readable's internal buffer fills, the consumer is paused; the consumer's own bounded queue then
- * applies the V2 drop-to-keyframe policy if the sink stays slow, so one stuck reader never stalls the
- * shared upstream or its peers. Destroying the Readable detaches the consumer (refcount--).
+ * This is the in-process pull surface: the Readable can be piped anywhere a `node:stream` goes, without
+ * touching the P2P internals. Backpressure is honored — when the Readable's internal buffer fills, the
+ * consumer is paused; the consumer's own bounded queue then applies the V2 drop-to-keyframe policy if
+ * the sink stays slow, so one stuck reader never stalls the shared upstream or its peers. Destroying the
+ * Readable detaches the consumer (refcount--).
  *
- * Two modes: raw Annex-B **bytes** (default — feed straight to ffmpeg/go2rtc) or **objectMode**
- * {@link LiveVideoFrame}s (when the caller wants the codec/keyframe metadata per access unit).
+ * Two modes: raw Annex-B **bytes** (default) or **objectMode** {@link LiveVideoFrame}s, which carry the
+ * codec/keyframe metadata per access unit.
  *
  * @module p2p/readable-egress
  */

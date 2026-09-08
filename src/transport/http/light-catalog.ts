@@ -1,14 +1,13 @@
 /**
- * `eufy_life` light-effect **catalogue** over the mega `light` HTTP service. All the discover /
- * batchget / aigc calls + response parsing live here, next to the rest of the HTTP surface, so the
- * facade stays a thin delegator. The MQTT command router's `resolveLightEffect` dep points straight at
- * {@link resolveLightEffect} — this module owns fetching a catalogue definition, `transport/dp-preset.ts`
- * owns turning one into wire fields. Both the router (to send an effect) and {@link listLightEffects}
- * (to report whether an entry is drivable at all) call that shared serializer, which is why it sits at
- * the transport root rather than under one transport folder.
+ * Light-effect **catalogue** over the vendor's `light` HTTP service — `/app/light/discover/list`,
+ * `/app/light/lighteffect/batchget` and `/app/light/aigc/recommend/list`, with their response parsing.
+ * `light` here is the service path the vendor publishes, which is why this sits with the rest of the
+ * HTTP surface.
  *
- * Nothing here names a capability: it's an HTTP catalogue keyed by numeric ids. The `smart_light`
- * capability that ultimately consumes an effect lives in `model/`, decoupled via the router's dep.
+ * This module fetches a catalogue definition; `transport/dp-preset.ts` turns one into wire fields, and
+ * sits at the transport root because both this and the MQTT router serialize through it.
+ *
+ * The catalogue is keyed by numeric id throughout and carries no model vocabulary.
  */
 import type { MegaHttpClient } from "./mega-client.js";
 import type { DpPresetSpec } from "../dp-preset.js";
@@ -16,18 +15,17 @@ import { b8, specIsSerializable } from "../dp-preset.js";
 
 /**
  * One entry in the light-effect gallery — the browsable catalogue behind {@link listLightEffects}.
- * `lightId` is the value `dev.smartLight()?.setEffect(lightId)` takes; `buildable` says whether that
- * effect's definition can be turned into wire fields at all — false when the entry carries no layers,
- * or carries a layer shape this SDK can't encode. `setEffect` rejects a non-buildable entry.
+ * `buildable` says whether the entry's definition can be turned into wire fields at all: false when it
+ * carries no layers, or a layer shape this SDK cannot encode.
  */
 export interface LightEffectSummary {
-  /** The catalogue id to pass to `dev.smartLight()?.setEffect(lightId)`. */
+  /** The catalogue id that identifies this effect on the wire. */
   lightId: number;
   /** Display name from the catalogue (e.g. "Presidents Day"), when present. */
   name?: string;
   /** Preview swatch — `"RRGGBB|RRGGBB…"` — when the catalogue entry carries one. */
   colors?: string;
-  /** Whether `setEffect(lightId)` can build this over the wire. */
+  /** Whether this entry can be serialized to wire fields. */
   buildable: boolean;
 }
 
@@ -115,7 +113,7 @@ function toLightEffectSummary(entry: Record<string, unknown>): LightEffectSummar
  * Browse the light-effect gallery — the catalogue of `lightId`s that `setEffect` accepts. Unions every
  * scene/light id found anywhere in the `/app/light/discover/list` carousel (walked recursively) with a
  * scan over the default `LIGHT_EFFECT_ID_WINDOW` (the dense id band holding the app's category tabs) plus any
- * `ids` you pass, then resolves them via `/app/light/lighteffect/batchget` (which returns an entry only
+ * `ids` given, then resolves them via `/app/light/lighteffect/batchget` (which returns an entry only
  * for ids that exist). Pass `idRange` to widen/narrow the scan or `ids` to fetch specific ones.
  *
  * `batchget` is issued in chunks of `BATCHGET_CHUNK` (100) ids — the scanned set runs to the hundreds,

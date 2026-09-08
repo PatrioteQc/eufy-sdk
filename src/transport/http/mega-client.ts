@@ -50,7 +50,7 @@ export interface MegaClientConfig {
   /**
    * Phone model reported to the cloud as this install's device. Defaults to a realistic, RANDOM model
    * (see {@link randomPhoneModel}) seeded by `openudid` so it is stable across runs — this keeps many
-   * SDK installs from all reporting one identical model. Set an explicit value to pin your own identity.
+   * SDK installs from all reporting one identical model. An explicit value pins a fixed identity.
    */
   phoneModel?: string;
   /** OS version string reported in headers. */
@@ -60,7 +60,7 @@ export interface MegaClientConfig {
   /**
    * `user-agent` sent on the push-media download path (`downloadMedia`/`downloadImage`). Defaults to a
    * realistic Android string consistent with `phoneModel` and seeded by `openudid` (stable across runs);
-   * override to pin your own. Not the account identity — that's `phoneModel`.
+   * an explicit value pins a fixed one. Not the account identity — that's `phoneModel`.
    */
   mediaUserAgent?: string;
   /** Persist + reuse the session (token + session key) across runs. Default: in-memory. */
@@ -109,8 +109,8 @@ export class MegaApiError extends Error {
 
 /**
  * `get_device_param_list` refuses a shared or member account: only the device's owner may read it. The
- * refusal is permanent for the life of that account's session, so a caller should fall back to the
- * device-list params rather than retry.
+ * refusal is permanent for the life of that account's session, so a retry cannot change it — the
+ * device-list params carry the same `{param_type, param_value, update_time}` and are not owner-gated.
  */
 export const OWNER_ONLY_CODE = 20004;
 
@@ -255,8 +255,8 @@ function tokenRejected(code: number | undefined, msg: string | undefined): boole
  * Strip a token the gateway echoed back into its own error message.
  *
  * `"token not exist, token = <the rejected token>"` is the vendor's wording, and that message travels into the
- * error a host logs and pastes into a bug report. A credential that has just been rejected is still a
- * credential, and it is never the part of the message that explains anything.
+ * error the SDK surfaces. A credential that has just been rejected is still a credential, and it is
+ * never the part of the message that explains anything.
  */
 function withoutTokenEcho(text: string): string {
   return text.replace(/token\s*[=:]\s*"?[A-Za-z0-9._-]{8,}"?/gi, "token = <redacted>");
@@ -742,8 +742,7 @@ export class MegaHttpClient {
    * Fetch one page of a device's stored **map data** from the mega `clean` service.
    *
    * Paginated by both `page` and a byte `last_offset`, because one map is larger than one response: the
-   * answer carries `offset`, `last_offset`, `len`, `total` and `is_next_page` so a caller can walk a map
-   * across several calls and reassemble it.
+   * answer carries `offset`, `last_offset`, `len`, `total` and `is_next_page`.
    *
    * Returns the raw response, `content` included. **The content is not decoded anywhere in this SDK and
    * deliberately so** — the decoder is the vendor's clean-native library, which is absent from the base
@@ -774,9 +773,9 @@ export class MegaHttpClient {
   }
 
   /**
-   * Generic authed escape hatch for scripts/experiments: a signed POST to
-   * `app-{service}-{region}.eufy.com{path}` with an arbitrary body. Use the typed wrappers
-   * above in SDK code; this exists so tooling can probe endpoints / body shapes live.
+   * Generic authed signed POST to `app-{service}-{region}.eufy.com{path}` with an arbitrary body.
+   * The typed wrappers above cover the known endpoints; this is the generic escape hatch for one that
+   * has none yet — {@link fetchLightCatalog} drives the `things` service through it.
    */
   request<T = unknown>(service: string, path: string, body: unknown = {}): Promise<T> {
     return this.post<T>(service, path, body);
@@ -851,20 +850,22 @@ export class MegaHttpClient {
    *
    * The `*.eufylife.com` gateway uses a SEPARATE ecdh key from the mega `*.eufy.com` gateway
    * (own bootstrap localKey `118c12c8…`, own `/v3/openapi/oauth/key/exchange` path, and data
-   * calls want `Content-Type: text/plain`). {@link ensureSessionKey} now keeps a PER-HOST key
-   * for eufylife hosts and exchanges against the eufylife host, so `getFaces()`/`getCiphers()`
-   * work (the old HTTP 463 is fixed). Note `getFaces` returns an empty roster for accounts whose
-   * faces live on the HomeBase — use the P2P path for the real roster.
+   * calls want `Content-Type: text/plain`). {@link ensureSessionKey} keeps a PER-HOST key
+   * for eufylife hosts and exchanges against the eufylife host, so `getFaces()`/`getCiphers()` work.
+   * Note `getFaces` returns an empty roster for accounts whose faces live on the HomeBase — the P2P
+   * database path carries the real roster.
    */
   async securityAppPost<T = any>(path: string, body: Record<string, unknown> = {}): Promise<T> {
     return this.postSigned<T>(this.securityAppHost(), path, body, true);
   }
 
   /**
-   * List the account's enrolled AI faces (the recognition roster). Each entry is
-   * keyed by `ai_user_id` — the id that shows up as `person_id` on an
-   * `IDENTITY_PERSON_DETECTION` push, so this is the lookup table for naming a
-   * recognised person. Endpoint: `/v3/aiassis/get_faces` on the security-app host.
+   * List the account's enrolled AI faces (the recognition roster). Each entry is keyed by `ai_user_id` —
+   * the id an `IDENTITY_PERSON_DETECTION` push carries as `person_id` — so this is the lookup table for
+   * naming a recognised person. Endpoint: `/v3/aiassis/get_faces` on the security-app host.
+   *
+   * Answers an empty roster for an account whose faces live on the HomeBase; that roster is read over
+   * the P2P database path instead.
    */
   async getFaces(opts: { aiGroupId?: number; num?: number; page?: number } = {}): Promise<any> {
     return this.securityAppPost("/v3/aiassis/get_faces", {
@@ -1057,8 +1058,8 @@ export class MegaHttpClient {
    * Structural rather than a list of paths: a login round trip is itself an authenticated call while a limited
    * token is held, so re-logging in from inside one would recurse — and a path list would have to be
    * maintained alongside every request the login flow makes. A 2FA code already outstanding is a login a human
-   * is part-way through, and restarting it silently would discard it. No credentials means nothing to try: a
-   * host running purely off a restored session has to be told.
+   * is part-way through, and restarting it silently would discard it. No credentials means nothing to try,
+   * so the rejection surfaces instead.
    */
   private canReauthenticate(): boolean {
     return !!this.cfg.email && !!this.cfg.password && !this.loggingIn && !this.pending2fa;
@@ -1069,8 +1070,7 @@ export class MegaHttpClient {
    *
    * Answers whether a usable session was obtained; a login that needs a captcha or a 2FA code answers `false`,
    * because neither can be satisfied from here — the caller then surfaces the rejection so the host can drive
-   * the flow it owns. A login that fails outright answers `false` too, with the reason logged: the caller has a
-   * more useful thing to tell its own caller than "the re-login failed".
+   * the flow it owns. A login that fails outright answers `false` too, with the reason logged.
    *
    * One attempt is SHARED by every call that was in flight against the dead token. A device-list refresh fires
    * several at once, and each starting its own login would spend N of them to learn one thing — worse, on an

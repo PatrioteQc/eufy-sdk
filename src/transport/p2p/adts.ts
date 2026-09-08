@@ -155,13 +155,3 @@ export class AdtsFrameReader {
     return this.buffered.length;
   }
 }
-
-/**
- * Split a complete ADTS buffer into its frames in one pass, for a caller that already holds the whole
- * stream (a file). Streaming callers want {@link AdtsFrameReader} instead, so a frame straddling two
- * chunks survives.
- */
-export function splitAdtsFrames(buf: Buffer): Buffer[] {
-  const reader = new AdtsFrameReader();
-  return reader.push(buf);
-}

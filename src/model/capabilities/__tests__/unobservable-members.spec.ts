@@ -25,7 +25,10 @@ const ctx = (paramIds: number[]): CommandContext =>
 const sink = { dispatch: async () => undefined };
 
 function bind(members: Record<string, unknown>, paramIds: number[]) {
-  return bindMembers(members as never, ctx(paramIds), sink as never, () => undefined) as Record<string, unknown>;
+  return bindMembers(members as never, { ctx: ctx(paramIds), sink: sink as never, read: () => undefined }) as Record<
+    string,
+    unknown
+  >;
 }
 
 const writeOnlyMember = {

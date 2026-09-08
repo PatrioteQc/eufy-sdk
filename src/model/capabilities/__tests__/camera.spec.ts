@@ -15,7 +15,7 @@ import type { CameraActions } from "../camera.js";
 import { DeviceType } from "../../device-types.js";
 import { Device } from "../../device.js";
 import type { CommandContext } from "../types.js";
-import type { Command, MediaProvider } from "../../../core/contracts.js";
+import type { MediaProvider } from "../../../core/contracts.js";
 
 /**
  * Pinned to the `camera` capability so intent resolution is this module's alone — the barrel walks every

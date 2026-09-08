@@ -4,17 +4,16 @@ import type { CapabilityModule } from "./types.js";
 /**
  * Every `leak` feature, declared once — the property schema and the evidence-gated getters derive from here.
  *
- * Exported so a caller can name the table its `*Actions` type is derived from, but NOT published:
- * each entry states its wire id and the evidence it was confirmed on, which the reference site
- * does not carry.
+ * Exported but NOT published: each entry states its wire id and the evidence it was confirmed on,
+ * which the reference site does not carry.
  * @internal
  */
 export const LEAK_MEMBERS = {
   /**
    * The alarm flag, modelled as state even though the sensor announces a leak as a PUSH EVENT rather
    * than by holding a param — so 1560 is a `guessed` placeholder and the evidence gate will normally
-   * leave this getter uninstalled. A caller that wants leaks reliably listens for the event; this read
-   * is here so the flag has a home once a capture pins a real id.
+   * leave this getter uninstalled. The push event is the reliable channel for a leak; this read is
+   * here so the flag has a home once a capture pins a real id.
    */
   leakDetected: {
     param: 1560,

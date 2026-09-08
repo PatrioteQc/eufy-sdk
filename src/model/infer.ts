@@ -1,10 +1,10 @@
 /**
  * Naming inference.
  *
- * Capability *detection* (evidence params, model/category hints, vendor device-type tables) used
- * to live here as `inferCapabilities`. It now lives per-capability in `src/model/capabilities/*`
- * (each module's `detection` spec) and is dispatched by the barrel's `detectCapabilities`. What
- * remains here is the one piece that is about *naming*, not capabilities: {@link inferName}.
+ * Capability *detection* (evidence params, model/category hints, vendor device-type tables) lives
+ * per-capability in `src/model/capabilities/*` (each module's `detection` spec) and is dispatched by
+ * the barrel's `detectCapabilities`. What lives here is the one piece that is about *naming*, not
+ * capabilities: {@link inferName}.
  *
  * @module model/infer
  */
@@ -13,8 +13,7 @@ import type { CloudRecord } from "./types.js";
 
 /**
  * Best-effort display name from a cloud record. Prefers a clean uppercase model T-code
- * (e.g. `"T8423"`); falls back to `undefined` so the caller can use the raw model string or
- * its own naming. Never throws.
+ * (e.g. `"T8423"`); falls back to `undefined`. Never throws.
  *
  * A "clean model code" is the eufy product-code shape: a leading letter (usually `T`) plus
  * digits, optionally with a short alphanumeric suffix. We normalise case and trim noise; if

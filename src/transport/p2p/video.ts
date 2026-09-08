@@ -112,7 +112,7 @@ export class VideoFrameDecoder {
     this.eccPrivateKeyHex = eccPrivateKey.toString("hex");
   }
 
-  /** The media key recovered from the most recent keyframe, if any (for inspection/testing). */
+  /** The media key recovered from the most recent keyframe, if any. */
   get currentMediaKey(): Buffer | undefined {
     return this.mediaKey ? Buffer.from(this.mediaKey) : undefined;
   }
@@ -224,8 +224,8 @@ export class AccessUnitAssembler {
 
   /**
    * @param onDropped called for each incomplete unit discarded, with what had arrived, how many frames it
-   * arrived in, and how many this assembler has dropped in total — enough for a caller to report the first
-   * one loudly and the rest quietly, without keeping its own count.
+   * arrived in, and how many this assembler has dropped in total — a running count, so no caller keeps
+   * its own.
    */
   constructor(private readonly onDropped?: (drop: { carried: number; chunks: number; count: number }) => void) {}
 

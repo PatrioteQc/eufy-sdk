@@ -10,9 +10,8 @@ import type { CapabilityModule } from "./types.js";
  * reach them through `getProperty`, with no typed getter asserting a meaning this SDK cannot back.
  * A live probe of the fleet's T8960 confirms neither is reported at all today.
  *
- * Exported so a caller can name the table its `*Actions` type is derived from, but NOT published:
- * each entry states its wire id and the evidence it was confirmed on, which the reference site
- * does not carry.
+ * Exported but NOT published: each entry states its wire id and the evidence it was confirmed on,
+ * which the reference site does not carry.
  * @internal
  */
 export const KEYPAD_MEMBERS = {
@@ -47,8 +46,8 @@ export const KEYPAD_MEMBERS = {
   },
   /**
    * The keypad's link quality in dBm — the one verified read in this table, on the same param 1141 the
-   * other sub-1G sensors report signal strength on. Reported as the device measures it; a caller that
-   * wants bars maps the dBm itself.
+   * other sub-1G sensors report signal strength on. Reported as the device measures it: raw dBm, never
+   * normalised to a bar count.
    */
   rssi: {
     param: 1141,

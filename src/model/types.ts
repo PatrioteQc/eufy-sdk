@@ -4,7 +4,7 @@
  * The whole model is **data-driven and capability-based**.
  * There is exactly ONE concrete device class; behaviour comes from:
  *
- *  - a **codec** (axis B2 — how you frame/route commands for a device *family*), and
+ *  - a **codec** (axis B2 — how commands are framed/routed for a device *family*), and
  *  - a set of composable **capabilities** (axis A — what the device exposes), each of which
  *    contributes a property schema (and, later, command behaviour).
  *
@@ -81,8 +81,8 @@ export type Capability =
 export type PropertyValueType = "bool" | "number" | "string" | "enum";
 
 /**
- * What a value MEANS, as opposed to how it is stored — the semantic annotation a caller needs to
- * render or convert a reading without a hardcoded table per property.
+ * What a value MEANS, as opposed to how it is stored — the semantic annotation that makes a reading
+ * convertible without a hardcoded table per property.
  *
  * `PropertyValueType` says a value is a number; this says whether that number is a battery
  * percentage, a temperature, a signal strength, a duration or an instant. The distinction is not
@@ -112,8 +112,8 @@ export type PropertyValueType = "bool" | "number" | "string" | "enum";
  *    step, a mode index and a segment count are all `scalar` precisely because there is none; they
  *    are NOT counts of anything, and the name says only "a bare number". A quantity with a unit takes
  *    the kind naming that unit, and the two are checked against each other in both directions.
- *  - **`identifier` vs `enum`** — can we publish the set? An `enum` ships its options with it, so a
- *    caller can render a label without asking anyone. An `identifier` is a number whose domain is
+ *  - **`identifier` vs `enum`** — can we publish the set? An `enum` ships its options with it, so its
+ *    label needs nothing else. An `identifier` is a number whose domain is
  *    held somewhere we do not control (a catalogue the app fetches), so there is no set to ship and
  *    arithmetic on it — ordering, nearest-value, a range — is meaningless.
  *  - **`bitfield` vs `enum`** — one value, or several at once? A bitfield's bits combine, so it has no
@@ -192,8 +192,7 @@ export interface PropertySpec {
   /** Human unit, when meaningful (e.g. "%", "°C", "dBm"). */
   unit?: string;
   /**
-   * What the value means ({@link ValueKind}) — the machine-readable half of {@link unit}, so a caller
-   * can decide how to present or convert a reading from data instead of a per-property branch.
+   * What the value means ({@link ValueKind}) — the machine-readable half of {@link unit}.
    *
    * Absent when the stored value carries no scalar meaning of its own: a structured payload whose
    * semantic value is a field inside it declares the kind on the member that decodes it
@@ -270,7 +269,7 @@ export interface PropertyValue {
 }
 
 /**
- * One property whose value moved, as a host is told about it.
+ * One property whose value moved — the payload of a property-change announcement.
  *
  * Identified by property NAME and nothing else. The name is unique per device, is what `applyParams`
  * already answers with, and is the key `Device.getProperty` takes — so a caller can re-read
@@ -279,8 +278,8 @@ export interface PropertyValue {
  * to key on, which then breaks on the family where that property's read alias is promoted. The ids stay
  * available through `inspectDevice` and `Device.describe()`.
  *
- * A caller that wants the capability accessor behind the name already has that mapping:
- * `Device.describe()` publishes the `{ accessor, property }` pair, joined once at setup.
+ * The capability accessor behind the name is published by `Device.describe()` as the
+ * `{ accessor, property }` pair, joined once at setup.
  */
 export interface PropertyChange {
   /** The property whose value moved — a key of this device's own schema. */
@@ -348,8 +347,7 @@ export interface CloudRecord {
   category?: string;
   /**
    * What the user named this device in the app (`device_name`), when the record carries one. Not a
-   * classification signal — carried so a device answers with the name its owner sees, which is the one
-   * a host registers it under.
+   * classification signal — carried so a device answers with the name its owner sees.
    */
   name?: string;
   /**

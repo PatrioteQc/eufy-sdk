@@ -3,14 +3,9 @@ import { STORAGE } from "../storage.js";
 describe("storage capability module", () => {
   it("declares the capability + schema", () => {
     expect(STORAGE.capability).toBe("storage");
-    expect(STORAGE.properties.map((p) => p.name)).toEqual(["sdCard", "storageFree", "storageTotal"]);
-  });
-
-  it("every property has a string name + numeric paramType", () => {
-    for (const p of STORAGE.properties) {
-      expect(typeof p.name).toBe("string");
-      expect(typeof p.paramType).toBe("number");
-    }
+    // No owned station reports a capacity param, and 1131 — the only candidate id — is `deviceStatus`
+    // in the dictionary, reported by ten devices with an unrelated meaning.
+    expect(STORAGE.properties).toEqual([]);
   });
 
   it("is a station-codec baseline", () => {

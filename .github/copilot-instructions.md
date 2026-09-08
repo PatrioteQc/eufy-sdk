@@ -8,7 +8,7 @@ When reviewing a pull request, weight these above generic style feedback. Each o
 ships a bug that looks like success:
 
 - **Layer direction.** `model/` must never import `transport/` (or a wire library: `mqtt`,
-  `protobufjs`, `werift`), and `transport/` must never import `model/`. A shared need becomes an
+  `protobufjs`), and `transport/` must never import `model/`. A shared need becomes an
   interface in `core/contracts.ts`, injected by `client/` — never a relaxed import or a wire constant
   hoisted into `core/`. CI greps both directions.
 - **Guessed wires.** A write path that has not been confirmed on real hardware must throw, not send a
