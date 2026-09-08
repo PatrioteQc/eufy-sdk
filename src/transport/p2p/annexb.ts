@@ -328,11 +328,7 @@ export function codedGeometry(sets: ParamSets): CodedGeometry | undefined {
     width > 0 &&
     height > 0 &&
     width <= MAX_CODED_DIMENSION &&
-    height <= MAX_CODED_DIMENSION &&
-    // A display size larger than the size it is coded at is not a crop, it is a misparse — and it is the
-    // reading a cropping caller would act on by indexing past the end of its decoder's own buffer.
-    coded.width >= width &&
-    coded.height >= height;
+    height <= MAX_CODED_DIMENSION;
   return plausible ? geometry : undefined;
 }
 

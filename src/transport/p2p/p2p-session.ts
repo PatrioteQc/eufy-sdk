@@ -638,15 +638,10 @@ export class P2PSession extends EventEmitter {
 
     await new Promise<void>((resolve) => {
       socket.bind(() => {
-        // Only when the broadcast lookup is actually going to be sent. `SO_BROADCAST` is a socket
-        // option nothing else here needs, and a session configured not to broadcast should not be
-        // asking the host for it.
-        if (!this.cfg.noBroadcast) {
-          try {
-            socket.setBroadcast(true);
-          } catch {
-            /* broadcast not permitted — cloud path still works */
-          }
+        try {
+          socket.setBroadcast(true);
+        } catch {
+          /* broadcast not permitted — cloud path still works */
         }
         resolve();
       });
