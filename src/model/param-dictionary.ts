@@ -1032,9 +1032,9 @@ export const SECURITY_PARAMS: Record<number, ParamDef> = {
     provenance: "apk",
   },
   6020: {
-    name: "enterOta",
+    name: "notificationStyle",
     type: "number",
-    provenance: "apk",
+    provenance: "verified",
   },
   6022: {
     name: "fingerPwUsage",
