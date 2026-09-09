@@ -1,7 +1,7 @@
 import { asBool, coerceEnumValue } from "../../core/util.js";
 import { DeviceType } from "../device-types.js";
 import { isIndoorCamera, isIndoorCamMini, isIndoorPanTiltS350 } from "../device-family.js";
-import { setScalar, setPayload, hasCapability } from "./access.js";
+import { setScalar, setPayload, setJson, hasCapability } from "./access.js";
 import { AUDIO_CMD } from "./audio.js";
 import { accepts, propertiesOf, provided, type Members, type Surface, type MemberDeps } from "./members.js";
 import type { CapabilityModule, CapabilityActions, CommandContext } from "./types.js";
@@ -50,6 +50,21 @@ export const CAMERA_CMD = {
    * (1013). (Some models omit full colour; enum in {@link NightVision}.)
    */
   NIGHT_VISION_TYPE: 1277,
+  /**
+   * Push-notification STYLE — how much a detection push carries: text alone, a thumbnail, or text
+   * followed by a thumbnail. App `CMD_INDOOR_PUSH_NOTIFY_TYPE`, and the "indoor" is a misnomer: the
+   * wire is confirmed on an OUTDOOR standalone camera (T8171). The app's id→name table carries TWO
+   * aliases for this id, `ENTER_OTA` and `INDOOR_PUSH_NOTIFY_TYPE`; the confirmed behaviour is the
+   * notification style.
+   *
+   * Wire verified live on a T8171 (standalone, own channel, reached over the cloud/WAN path): the
+   * `1700` CONTROL_PAYLOAD wrapper, signCode 8, plaintext
+   * `{"commandType":6020,"data":{"value":N,"transaction":"<epoch ms>"}}`. All three values captured
+   * byte-exact, each read back on the cloud param within ~10s. The station answers on the same wrapper
+   * ~600ms later; that reply's shape is not claimed here.
+   * (Values in {@link NotificationStyle}.)
+   */
+  PUSH_NOTIFY_TYPE: 6020,
   /**
    * **Anti-theft detection** switch (app `APP_CMD_EAS_SWITCH`). Despite the "EAS" name the app's own
    * parser maps this id onto `anti_theft_detection_switch`, so the camera member uses that semantic
@@ -101,6 +116,21 @@ export const Watermark = {
 } as const;
 /** A watermark option — the value side of {@link Watermark}. */
 export type WatermarkValue = (typeof Watermark)[keyof typeof Watermark];
+
+// Deliberately NOT JSDoc: `NotificationStyle` is re-exported publicly, and TypeDoc publishes a JSDoc
+// block verbatim — the publication guard rejects wire detail on the generated page. The wire itself is
+// documented on CAMERA_CMD.PUSH_NOTIFY_TYPE, which stays internal.
+// Wire: CMD_INDOOR_PUSH_NOTIFY_TYPE 6020 — all three values verified live (T8171 standalone).
+export const NotificationStyle = {
+  /** The push carries text alone. */
+  TextOnly: 1,
+  /** The push carries a thumbnail of the detection. */
+  IncludedThumbnail: 2,
+  /** The push arrives as text, then updates with a thumbnail. */
+  TextFirstThenThumbnail: 3,
+} as const;
+/** A notification style — the value side of {@link NotificationStyle}. */
+export type NotificationStyleValue = (typeof NotificationStyle)[keyof typeof NotificationStyle];
 
 /**
  * Night-vision mode: 0=Off, 1=Infrared (the app shows "B&W Auto"), 2=FullColor ("Color"). Use
@@ -414,6 +444,33 @@ export const CAMERA_MEMBERS = {
     write: (v, ctx) => {
       const w = coerceEnumValue(Watermark, v);
       return w == null ? undefined : setScalar(CAMERA_CMD.SET_DEVS_OSD, w, ctx, "auto");
+    },
+  },
+  /**
+   * `coerceEnumValue` refuses anything outside {@link NotificationStyle} instead of coercing it: every
+   * neighbouring value is itself a real style, so a coerced one selects the wrong notification and
+   * reports success.
+   *
+   * `transaction` is part of the verified frame — a decimal epoch-in-milliseconds string, fresh per
+   * command.
+   */
+  notificationStyle: {
+    param: CAMERA_CMD.PUSH_NOTIFY_TYPE,
+    type: "enum",
+    kind: "enum",
+    enumValues: { 1: "Text Only", 2: "Included Thumbnail", 3: "Text First, Then Thumbnail" },
+    provenance: "verified",
+    description:
+      "How much a detection push carries: text only, a thumbnail, or text then a thumbnail " +
+      "(CMD_INDOOR_PUSH_NOTIFY_TYPE 6020). All three values wire-verified live on a standalone " +
+      "T8171 over the cloud/WAN path — the 1700 control-payload wrapper, each one read back on the " +
+      "cloud param. A value outside the enum is REJECTED, not clamped: every neighbouring value is a " +
+      "real style, so a bad one would silently select the wrong notification.",
+    write: (v, ctx) => {
+      const style = coerceEnumValue(NotificationStyle, v);
+      return style == null
+        ? undefined
+        : setJson(CAMERA_CMD.PUSH_NOTIFY_TYPE, { value: style, transaction: String(Date.now()) }, ctx);
     },
   },
   /**

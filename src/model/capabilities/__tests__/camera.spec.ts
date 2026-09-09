@@ -3,6 +3,7 @@ import {
   CAMERA_CMD,
   CAMERA_MEMBERS,
   Watermark,
+  NotificationStyle,
   NightVision,
   VideoQuality,
   resolveVideoQuality,
@@ -39,6 +40,7 @@ describe("camera capability module", () => {
       "enabled",
       "imageFlipped",
       "watermark",
+      "notificationStyle",
       "nightVision",
       "videoQuality",
       "antiTheftDetection",
@@ -155,6 +157,34 @@ describe("camera capability module", () => {
         channel: 3,
       });
       expect(buildCommand("watermark", Watermark.Off, ctx())).toMatchObject({ value: 0 });
+    });
+
+    it("notificationStyle → the 1700 control payload for 6020, on the device channel (verified)", () => {
+      // All three values captured byte-exact from the app on a standalone T8171, each read back on
+      // the cloud param.
+      expect(NotificationStyle).toEqual({ TextOnly: 1, IncludedThumbnail: 2, TextFirstThenThumbnail: 3 });
+      const cmd = buildCommand("notificationStyle", NotificationStyle.IncludedThumbnail, ctx(0));
+      expect(cmd).toMatchObject({
+        kind: "set-json",
+        param: CAMERA_CMD.PUSH_NOTIFY_TYPE, // 6020
+        channel: 0,
+      });
+      // `transaction` is a decimal epoch-in-milliseconds string, so only its shape is fixed.
+      const data = (cmd as { data: Record<string, unknown> }).data;
+      expect(data.value).toBe(2);
+      expect(data.transaction).toMatch(/^\d{13}$/);
+      expect(buildCommand("notificationStyle", NotificationStyle.TextOnly, ctx(2))).toMatchObject({
+        channel: 2,
+        data: { value: 1 },
+      });
+    });
+
+    it("notificationStyle rejects a value outside the enum — every neighbour is a real style", () => {
+      for (const bad of [0, 4, -1, "x"]) {
+        expect(() => buildCommand("notificationStyle", bad as number, ctx())).toThrow(
+          /notificationStyle: .+ is not a valid value \(must be one of 1\/2\/3\)/,
+        );
+      }
     });
 
     it("watermark / nightVision throw on a value outside the enum (no bogus level on the wire)", () => {
