@@ -28,10 +28,12 @@
  * the precise signal the geometry search below depends on — libjpeg/mozjpeg-based codecs (`@jsquash`,
  * `sharp`) grey-fill instead, which would silently break the search.
  *
- * **CPU blocking:** `jpeg-js` is synchronous pure JS. Each v2 thumbnail runs repeated candidate
- * decodes on the event loop until reconstruction finishes. The synthetic 176×144 and 264×200 fixtures
- * each took about one second on one Node 24 test host; timing varies by image and hardware, and
- * simultaneous thumbnails queue behind this work.
+ * **Cost:** `jpeg-js` is synchronous pure JS, so a reconstruction holds the event loop for its whole
+ * duration and simultaneous thumbnails queue behind it. The synthetic 176×144 and 264×200 fixtures
+ * measured 168 ms and 256 ms, at a peak of 47 MB and 52 MB of resident memory, on one Node 24 test
+ * host; both vary with the image and the hardware. The peak is candidate frames, not the thumbnail —
+ * a decoder allocates a frame's component buffers before it can discover the scan does not fill it,
+ * which is why {@link ladderByMcuCount} exists.
  *
  * @module transport/http/decodeImageV2
  */
@@ -244,6 +246,27 @@ function maxHeight(tail: Buffer, width: number, subsampling: number, seed: numbe
   return height;
 }
 
+/**
+ * The coarse ladder ordered by MCU count, ascending.
+ *
+ * Whether a candidate decodes is monotone in its MCU count: the plaintext scan carries a fixed number
+ * of MCUs, and any frame demanding more of them runs out of entropy-coded data and throws. Walked in
+ * this order, the first candidate that fails is the last one worth attempting, and the largest frame
+ * that decodes is the one before it — so the search never builds a frame it can already prove the scan
+ * cannot fill.
+ *
+ * That proof is what bounds the cost. A decoder discovers the shortfall only after allocating the
+ * candidate's full component buffers, so an unbounded walk pays for every oversized frame on the
+ * ladder: recovering a 176x144 thumbnail measured 98 candidate decodes totalling 29.7 Mpx, of which
+ * 29.2 Mpx was spent by candidates that then threw, three of them at 1920x1080. Ordered, the same
+ * reconstruction costs 47 MB of peak RSS instead of 158, and 168 ms instead of 1490.
+ */
+function ladderByMcuCount(subsampling: number): [number, number][] {
+  const [mcuWidth, mcuHeight] = MCU[subsampling]!;
+  const mcus = ([width, height]: [number, number]): number => (width / mcuWidth) * (height / mcuHeight);
+  return [...LADDER].sort((a, b) => mcus(a) - mcus(b));
+}
+
 /** True if the blob is a v2 `v2_eufysecurity:` push thumbnail. */
 export function isV2Image(data: Buffer): boolean {
   return data.length >= V2_PREFIX.length && data.subarray(0, V2_PREFIX.length).toString("latin1") === V2_PREFIX;
@@ -264,9 +287,10 @@ export function decodeImageV2(data: Buffer): Buffer | null {
   let best: { spread: number; subsampling: number; width: number; height: number } | null = null;
   for (const subsampling of [2, 0, 1]) {
     let filled: { width: number; height: number; img: Decoded } | null = null;
-    for (const [width, height] of LADDER) {
+    for (const [width, height] of ladderByMcuCount(subsampling)) {
       const img = decodeCandidate(tail, width, height, subsampling);
-      if (img && (!filled || width * height > filled.width * filled.height)) filled = { width, height, img };
+      if (!img) break;
+      if (!filled || width * height > filled.width * filled.height) filled = { width, height, img };
     }
     if (!filled) continue;
     const spread = colorSpread(filled.img);
