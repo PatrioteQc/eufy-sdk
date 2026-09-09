@@ -133,21 +133,56 @@ export const VideoQuality = {
 /** A video-quality resolution name — the value side of {@link VideoQuality}. */
 export type VideoQualityName = (typeof VideoQuality)[keyof typeof VideoQuality];
 
-/** Quality tier → resolution label. Tiers confirmed on a real device: 1=720P, 2=1080P, 3=3K HD. */
-export const VIDEO_QUALITY_TIERS: Readonly<Record<number, string>> = {
-  1: "HD (720P)",
-  2: "Full HD (1080P)",
-  3: "3K HD",
+/**
+ * Quality tier → resolution label, keyed by device model T-code prefix. The TIER numbers are shared —
+ * 1, 2 and 3 mean lowest, middle and highest on every camera confirmed so far — but the top tier's
+ * resolution is the sensor's, so its label is per-model: a 2K camera's tier 3 is "2K HD" where a 3K
+ * camera's is "3K HD". A model with no entry falls back to `DEFAULT`.
+ * **Expand as new models are confirmed.**
+ */
+export const VIDEO_QUALITY_TIER_MAPS: Readonly<Record<string, Readonly<Record<number, string>>>> = {
+  /** Confirmed live on a T8425 and a T8170. */
+  DEFAULT: { 1: "HD (720P)", 2: "Full HD (1080P)", 3: "3K HD" },
+  /**
+   * A 2K sensor, so tier 3 tops out lower while the tier numbering matches. Confirmed live on a T8171,
+   * against a T8170 — one T-code apart, and the two disagree — which is why the lookup matches a model
+   * by PREFIX and never by substring.
+   */
+  T8171: { 1: "HD (720P)", 2: "Full HD (1080P)", 3: "2K HD" },
 };
 
-/** Resolve a raw `quality` tier value to its resolution label — or `undefined`. */
-export function resolveVideoQuality(value: number): string | undefined {
-  return VIDEO_QUALITY_TIERS[value];
+/**
+ * The tier → label map for a device model: its own {@link VIDEO_QUALITY_TIER_MAPS} entry when one
+ * matches by T-code prefix, else `DEFAULT`.
+ */
+export function videoQualityTierMap(model: string | undefined): Readonly<Record<number, string>> {
+  const m = (model ?? "").toUpperCase();
+  const key = Object.keys(VIDEO_QUALITY_TIER_MAPS).find((k) => k !== "DEFAULT" && m.startsWith(k));
+  return (key && VIDEO_QUALITY_TIER_MAPS[key]) || VIDEO_QUALITY_TIER_MAPS.DEFAULT;
 }
 
-/** Inverse: the raw `quality` tier value for a resolution NAME — or `undefined` if not a known tier. */
-export function resolveVideoQualityValue(name: string): number | undefined {
-  const hit = Object.entries(VIDEO_QUALITY_TIERS).find(
+/**
+ * Every tier value a camera can report, independent of model — the tier numbering is shared even where
+ * the top tier's label is not.
+ */
+export const VIDEO_QUALITY_TIERS: readonly number[] = Object.keys(VIDEO_QUALITY_TIER_MAPS.DEFAULT).map(Number);
+
+/** Is this a real quality tier, as opposed to a number that merely parses? */
+function isVideoQualityTier(tier: number): boolean {
+  return Number.isInteger(tier) && VIDEO_QUALITY_TIERS.includes(tier);
+}
+
+/**
+ * Resolve a raw `quality` tier to the resolution label a device model gives it — or `undefined`. The
+ * model is required because the top tier names the sensor, not the tier.
+ */
+export function resolveVideoQuality(model: string | undefined, value: number): string | undefined {
+  return videoQualityTierMap(model)[value];
+}
+
+/** Inverse: the raw tier a model gives a resolution NAME — or `undefined` if it offers no such name. */
+export function resolveVideoQualityValue(model: string | undefined, name: string): number | undefined {
+  const hit = Object.entries(videoQualityTierMap(model)).find(
     ([, label]) => label.toLowerCase() === name.trim().toLowerCase(),
   );
   return hit ? Number(hit[0]) : undefined;
@@ -158,13 +193,17 @@ export function resolveVideoQualityValue(name: string): number | undefined {
  * valid tier value, else `undefined`. Unlike a bare `Number()`, this rejects a value that isn't a real
  * tier (0, negative, out of range): the write is fire-and-forget, so an out-of-range quality value
  * would look like it worked while doing nothing. A numeric string ("2") is a raw tier; a non-numeric
- * string is looked up as a resolution name; a boolean is not a tier.
+ * string is looked up as a resolution name on THIS model, so a name another model uses for the same
+ * tier is refused rather than silently accepted; a boolean is not a tier.
  */
-export function resolveVideoQualityTier(value: number | string | boolean): number | undefined {
+export function resolveVideoQualityTier(
+  model: string | undefined,
+  value: number | string | boolean,
+): number | undefined {
   if (typeof value === "boolean") return undefined;
-  if (typeof value === "string" && !/^\d+$/.test(value.trim())) return resolveVideoQualityValue(value);
+  if (typeof value === "string" && !/^\d+$/.test(value.trim())) return resolveVideoQualityValue(model, value);
   const tier = Number(value);
-  return Number.isInteger(tier) && VIDEO_QUALITY_TIERS[tier] != null ? tier : undefined;
+  return isVideoQualityTier(tier) ? tier : undefined;
 }
 
 /**
@@ -179,12 +218,15 @@ export function resolveVideoQualityTier(value: number | string | boolean): numbe
  * a mode with no entry, a tier not in {@link VIDEO_QUALITY_TIERS} — is `undefined` rather than a guess.
  */
 function decodeVideoQualityTier(raw: unknown): number | undefined {
-  if (typeof raw === "number" || typeof raw === "string") return resolveVideoQualityTier(raw);
+  if (typeof raw === "number" || typeof raw === "string") {
+    const tier = Number(raw);
+    return isVideoQualityTier(tier) ? tier : undefined;
+  }
   if (typeof raw !== "object" || raw === null) return undefined;
   const cfg = raw as Record<string, unknown>;
   const mode = cfg[`mode_${Number(cfg.cur_mode) || 0}`];
   const quality = typeof mode === "object" && mode !== null ? (mode as Record<string, unknown>).quality : undefined;
-  return typeof quality === "number" ? resolveVideoQualityTier(quality) : undefined;
+  return typeof quality === "number" && isVideoQualityTier(quality) ? quality : undefined;
 }
 
 /**
@@ -450,7 +492,7 @@ export const CAMERA_MEMBERS = {
     provenance: "verified",
     decode: (raw) => decodeVideoQualityTier(raw),
     decodedKind: "enum",
-    decodedValues: Object.keys(VIDEO_QUALITY_TIERS).map(Number),
+    decodedValues: [...VIDEO_QUALITY_TIERS],
     description:
       "Video record quality (2731) as a resolution tier. The device reports the whole config — " +
       "`{cur_mode, mode_<n>:{quality}}`, read live off a T8170 — and the ACTIVE mode's tier is lifted out " +
@@ -460,7 +502,7 @@ export const CAMERA_MEMBERS = {
     args: [{ name: "quality", kind: "enum", description: "A tier; the resolution name it maps to is accepted too." }],
     ...accepts<VideoQualityName>(),
     write: (v, ctx) => {
-      const q = resolveVideoQualityTier(v);
+      const q = resolveVideoQualityTier(ctx.model, v);
       return q == null
         ? undefined
         : setPayload(CAMERA_CMD.VIDEO_QUALITY_SET, { channel: 0, mode: 0, primary_view: 0, quality: q }, ctx, 0);
