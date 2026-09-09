@@ -1794,10 +1794,16 @@ export class P2PSession extends EventEmitter {
         this.emit("error", e instanceof Error ? e : new Error(String(e)));
       }
     }
-    // CMD_SET_PAYLOAD reply with no JSON is a numeric result code (int32 LE) for the
-    // command we just sent — negative = failure (e.g. -104 = file not found, common
-    // when an ephemeral /userdata/push/*.jpg thumbnail has already been cleaned up).
-    if (header.commandId === CMD_SET_PAYLOAD && !frame.json && data.length >= 4) {
+    // A reply with no JSON body is a numeric result code (int32 LE) for the command just sent —
+    // negative is a failure (-104 file not found, -108 refused). BOTH control wrappers answer this
+    // way: media over CMD_SET_PAYLOAD and device control over CMD_CONTROL_PAYLOAD. Reading only the
+    // first discarded the answer to every control write, so a clean rejection reached a caller as
+    // silence and was indistinguishable from a command the station never replied to at all.
+    if (
+      (header.commandId === CMD_SET_PAYLOAD || header.commandId === CMD_CONTROL_PAYLOAD) &&
+      !frame.json &&
+      data.length >= 4
+    ) {
       this.emit("commandResult", { code: data.readInt32LE(0), channel: header.channel });
     }
     this.emit("data", frame);
