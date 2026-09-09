@@ -38,6 +38,18 @@ describe("P2P frame — command result", () => {
     expect(results(1350, code(-104))).toEqual([{ code: -104, channel: 0 }]);
   });
 
+  it("reads the result of a direct command, which is no wrapper at all", () => {
+    // 1246 is the param id itself carrying a direct-binary body, and it answers with four bytes just
+    // as the wrappers do. An allowlist of wrappers would leave exactly the writes that have no other
+    // confirmation path reporting nothing.
+    expect(results(1246, code(0))).toEqual([{ code: 0, channel: 0 }]);
+  });
+
+  it("reports nothing for a media frame, whose body is never control plaintext", () => {
+    expect(results(1300, code(0))).toEqual([]);
+    expect(results(1301, code(0))).toEqual([]);
+  });
+
   it("reports nothing for a reply that carries a JSON document", () => {
     // A document is the answer itself; only a bodyless reply is a bare result code.
     const body = Buffer.concat([Buffer.from(JSON.stringify({ cmd: 1306, count: 0 }), "utf8"), Buffer.from([0])]);

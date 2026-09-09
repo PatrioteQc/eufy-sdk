@@ -1795,20 +1795,22 @@ export class P2PSession extends EventEmitter {
       }
     }
     // A reply whose whole body is a four-byte int32 LE is the result of the command just sent —
-    // negative is a failure (-104 file not found, -108 refused). BOTH control wrappers answer this
-    // way: media over CMD_SET_PAYLOAD and device control over CMD_CONTROL_PAYLOAD. Reading only the
-    // first discarded the answer to every control write, so a clean rejection reached a caller as
-    // silence and was indistinguishable from a command the station never replied to at all.
+    // negative is a failure (-104 file not found, -108 refused). Reading only CMD_SET_PAYLOAD
+    // discarded the answer to every other write, so a clean rejection reached a caller as silence and
+    // was indistinguishable from a command the station never replied to at all.
     //
-    // The body must be exactly four bytes, not merely long enough. A frame the decrypt above could
-    // not open stays ciphertext — the level-1 path needs 16-byte alignment and the level-2 path can
-    // decline — and ciphertext is neither JSON nor four bytes, so a length test alone would read its
-    // first word and report a fabricated code for a command whose answer was never recovered.
-    if (
-      (header.commandId === CMD_SET_PAYLOAD || header.commandId === CMD_CONTROL_PAYLOAD) &&
-      !frame.json &&
-      data.length === 4
-    ) {
+    // The shape identifies it, not the command id. Both wrappers answer this way, and so does a
+    // direct outer command that is no wrapper at all — 1246 replies with four bytes exactly as 1700
+    // does, and a direct-binary switch is the write with the least other confirmation to fall back
+    // on. An allowlist of wrappers would keep those silent.
+    //
+    // The body must be exactly four bytes, not merely long enough: on the wire a control reply is a
+    // 36-byte sign-8 frame carrying four bytes of plaintext, measured across two captures. A frame
+    // the decrypt above could not open stays ciphertext — the level-1 path needs 16-byte alignment
+    // and the level-2 path can decline — and ciphertext is neither JSON nor four bytes, so a length
+    // test alone would read its first word and report a fabricated code for a command whose answer
+    // was never recovered. Media is excluded because its bodies are never control plaintext.
+    if (!isMedia && !frame.json && data.length === 4) {
       this.emit("commandResult", { code: data.readInt32LE(0), channel: header.channel });
     }
     this.emit("data", frame);
