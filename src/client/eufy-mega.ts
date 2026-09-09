@@ -1195,9 +1195,8 @@ export class EufyMega extends EventEmitter {
    * credentials, so a stream a NAS/NVR already consumes keeps its own pair.
    *
    * This is the CANONICAL way to fetch the URL: it provokes and returns it. The `rtsp` capability's
-   * `url` member ({@link import("../model/capabilities/rtsp.js")}) surfaces the SAME value as inbound
-   * state for code that already holds a `dev.rtsp()` and reacts to `propertyChanged` — not a second
-   * way to fetch it.
+   * `url` member surfaces the SAME value as inbound state for code that already holds a `dev.rtsp()`
+   * and reacts to `propertyChanged` — not a second way to fetch it.
    *
    * Every failure — no route, no account id, level-2 not ready, no push before the deadline — collapses
    * to `undefined`. The distinction the caller might want (terminal "no RTSP" vs a transient "session
