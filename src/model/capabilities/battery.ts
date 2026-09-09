@@ -133,6 +133,22 @@ function recordSetting(param: number, value: number, ctx: CommandContext): Comma
  * does not carry.
  * @internal
  */
+
+/**
+ * Camera models that are MAINS-powered yet still report the battery param (1101) as a fixed sentinel
+ * (e.g. 0 or 100), not a real cell. They keep the `battery` capability (for working-mode/recording),
+ * but the PHYSICAL-battery reads (`level`, `charging`) are withheld via {@link notMainsCamera} so they
+ * don't sprout a bogus battery %/icon. Matched by T-code prefix; confirmed on owned hardware: T8425
+ * (Floodlight Cam) and the T8419 Indoor Cam (see the mains-cam note on `publishedWorkingModeDomain`).
+ */
+const MAINS_CAMERA_MODELS = ["T8425", "T8419"] as const;
+
+/** False for a mains camera that only reports 1101 as a sentinel — used to gate the physical reads. */
+const notMainsCamera = (ctx: AvailabilityContext): boolean => {
+  const model = (ctx.model ?? "").toUpperCase();
+  return !MAINS_CAMERA_MODELS.some((prefix) => model.startsWith(prefix));
+};
+
 export const BATTERY_MEMBERS = {
   /**
    * The headline percentage, and this capability's detection evidence: reporting 1101 is what proves a
@@ -146,6 +162,7 @@ export const BATTERY_MEMBERS = {
     unit: "%",
     kind: "percent",
     provenance: "verified",
+    available: notMainsCamera,
     description: "Battery level 0-100 (verified: param 1101).",
   },
   /**
@@ -158,6 +175,7 @@ export const BATTERY_MEMBERS = {
     type: "bool",
     kind: "boolean",
     provenance: "apk",
+    available: notMainsCamera,
     coerce: (v) => {
       const n = Number(v);
       return n !== 0 && n !== 2;

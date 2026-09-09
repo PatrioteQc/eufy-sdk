@@ -69,6 +69,22 @@ describe("battery capability module", () => {
     expect(BATTERY.detection?.evidenceParams).toContain(1101);
   });
 
+  it("withholds the physical battery reads (level/charging) on mains cameras that report 1101 as a sentinel", () => {
+    const members = BATTERY.members as Record<string, { available?: (ctx: { model?: string }) => boolean }>;
+    const avail = (name: string, model?: string) => {
+      const a = members[name].available;
+      return a ? a({ model }) : true;
+    };
+    // Mains cameras (T8425 Floodlight, T8419 Indoor) must NOT publish a battery %/charging entity.
+    for (const model of ["T8425P00", "T8419P00"]) {
+      expect(avail("level", model)).toBe(false);
+      expect(avail("charging", model)).toBe(false);
+    }
+    // Real battery cams (and unknown models) keep them.
+    expect(avail("level", "T8114P00")).toBe(true);
+    expect(avail("level", undefined)).toBe(true);
+  });
+
   it("writes recordAutoStop as an INVERTED station-scalar on the device channel (wire-verified T8170)", () => {
     const ctx = evidenced({ channel: 1 });
     // OFF ⇒ value 1, ON ⇒ value 0 (inverted); 132-byte station-scalar body (no channel word) on ch1.
