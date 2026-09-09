@@ -15,11 +15,11 @@
  */
 
 import { build } from "esbuild";
-import { readFileSync, readdirSync, renameSync, rmSync, statSync } from "node:fs";
+import { readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 const DIST = "dist";
-const STAGE = ".bundle";
+const ENTRY = join(DIST, "index.js");
 
 const pkg = JSON.parse(readFileSync("package.json", "utf8"));
 
@@ -32,9 +32,13 @@ const pkg = JSON.parse(readFileSync("package.json", "utf8"));
  */
 const external = Object.keys(pkg.dependencies ?? {});
 
+// Written over the entry point it was built from. esbuild resolves and loads every input before it
+// writes anything, so overwriting the entry is safe and saves staging the output somewhere else only
+// to rename it back.
 await build({
-  entryPoints: [join(DIST, "index.js")],
-  outfile: join(STAGE, "index.js"),
+  entryPoints: [ENTRY],
+  outfile: ENTRY,
+  allowOverwrite: true,
   bundle: true,
   format: "esm",
   platform: "node",
@@ -44,21 +48,11 @@ await build({
   logLevel: "warning",
 });
 
-/** Every emitted `.js` and `.js.map` under `dist`, which the bundle now supersedes. */
-function emittedJs(dir) {
-  const out = [];
-  for (const entry of readdirSync(dir)) {
-    const path = join(dir, entry);
-    if (statSync(path).isDirectory()) out.push(...emittedJs(path));
-    else if (entry.endsWith(".js") || entry.endsWith(".js.map")) out.push(path);
-  }
-  return out;
+// Everything tsc emitted except the bundle and its map, which the bundle now supersedes.
+for (const file of readdirSync(DIST, { recursive: true, encoding: "utf8" })) {
+  if (file === "index.js" || file === "index.js.map") continue;
+  if (file.endsWith(".js") || file.endsWith(".js.map")) rmSync(join(DIST, file));
 }
 
-for (const file of emittedJs(DIST)) rmSync(file);
-renameSync(join(STAGE, "index.js"), join(DIST, "index.js"));
-renameSync(join(STAGE, "index.js.map"), join(DIST, "index.js.map"));
-rmSync(STAGE, { recursive: true, force: true });
-
-const bytes = statSync(join(DIST, "index.js")).size;
+const bytes = statSync(ENTRY).size;
 console.log(`bundled dist/index.js (${(bytes / 1024 / 1024).toFixed(2)} MB, external: ${external.join(", ")})`);

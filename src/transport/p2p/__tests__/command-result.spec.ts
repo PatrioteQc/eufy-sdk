@@ -47,4 +47,16 @@ describe("P2P frame — command result", () => {
   it("reports nothing for a body too short to hold one", () => {
     expect(results(1700, Buffer.from([0, 1, 2]))).toEqual([]);
   });
+
+  it("reports nothing for a body that is longer than a result code", () => {
+    // The body IS the int32, so anything longer is a different kind of frame. Widening the read to
+    // the general control wrapper made this reachable: a frame the decrypt could not open stays
+    // ciphertext, and a length-only test would report its first word as a result the station never
+    // sent. Sixteen bytes, because the level-1 path only decrypts what is block-aligned.
+    expect(results(1700, Buffer.alloc(16, 0xa5))).toEqual([]);
+  });
+
+  it("reports nothing for non-JSON text that happens to arrive on the control wrapper", () => {
+    expect(results(1700, Buffer.from("not a result", "utf8"))).toEqual([]);
+  });
 });
