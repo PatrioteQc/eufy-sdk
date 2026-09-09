@@ -1,9 +1,9 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import { asBool, coerceEnumValue, enumLabels } from "../../core/util.js";
 import { DoorbellPushEvent } from "../push-events.js";
-import { readNum, setPayload, setScalar } from "./access.js";
+import { setPayload, setScalar } from "./access.js";
 import { method, propertiesOf, provided, type Members, type Surface } from "./members.js";
-import type { CapabilityModule, CapabilityStateReader } from "./types.js";
+import type { CapabilityModule } from "./types.js";
 import type { MediaProvider } from "../../core/contracts.js";
 
 /**
@@ -74,6 +74,9 @@ export const DOORBELL_CMD = {
    * wrapper — signCode 8, on the doorbell's own channel, the same 136-byte direct-binary
    * `[u32 channel][u32 value][account_id ASCII pad 128]` struct as its 1703/1704 siblings. The station
    * answers with an unencrypted level-1 frame carrying 0.
+   *
+   * Replayed from this SDK and confirmed on that device: three writes in one session, each read back off
+   * the parameter — quality alone, then the encoding format with the quality held, then a restore.
    */
   VIDEO_QUALITY: 1705,
   /**
@@ -160,17 +163,6 @@ function composite(raw: unknown): number | undefined {
   if (typeof raw !== "number" && (typeof raw !== "string" || raw.trim() === "")) return undefined;
   const v = Number(raw);
   return Number.isInteger(v) && v >= 0 && v <= 8 && v % 5 <= 3 ? v : undefined;
-}
-
-/**
- * Is high compression currently selected? Read off the composite {@link DOORBELL_CMD.VIDEO_QUALITY}
- * value, which is what the device stores for it. Answers `false` when the device has never reported the
- * parameter: low compression is the arithmetic identity, so the quality setter still sends the value the
- * caller asked for and nothing is invented for the other half.
- */
-function highCompressionNow(read: CapabilityStateReader | undefined): boolean {
-  const raw = readNum(read, "videoQuality");
-  return raw !== undefined && raw >= 5;
 }
 
 /**
@@ -344,7 +336,8 @@ export const DOORBELL_MEMBERS = {
       "Live-view quality: 0 Auto / 1 Low / 2 Medium / 3 High (1705 CMD_BAT_DOORBELL_VIDEO_QUALITY). " +
       "The parameter also carries the video encoding format, so this is the remainder mod 5 — see " +
       "highCompressionEncoding for the other half. Ranks, not resolutions: the app's picker reads " +
-      "Auto/Low/Medium/High. Written by setVideoQuality, which preserves the encoding bit.",
+      "Auto/Low/Medium/High. Written by setVideoQuality, which takes the encoding format too — " +
+      "hardware-confirmed on a T8210.",
   },
   /**
    * The encoding half of the SAME integer, so it declares no param of its own and reaches into the
@@ -363,42 +356,32 @@ export const DOORBELL_MEMBERS = {
     },
     description:
       "Video encoding format: true = high compression, false = low compression (the +5 offset inside " +
-      "1705, which also carries videoQuality). Written by setHighCompressionEncoding, which preserves " +
-      "the quality.",
+      "1705, which also carries videoQuality). Set through setVideoQuality, which takes both halves " +
+      "because the wire carries both.",
   },
   /**
-   * Set the live-view quality, keeping the encoding format as it is. Both settings share one integer, so
-   * this reads the current value to rebuild it; a device that has never reported 1705 has nothing to
-   * preserve and the call throws rather than guessing an encoding format for it.
+   * Set both halves of {@link DOORBELL_CMD.VIDEO_QUALITY} at once, because the wire has no way to set
+   * one alone: every frame carries the whole integer.
+   *
+   * Taking both is not a convenience choice. An earlier shape took one and preserved the other by
+   * reading it back, and it failed on hardware: the state reader is the snapshot the device was bound
+   * with, so a second write in the same session composed against the value from before the first and
+   * silently reverted it. Requiring both puts that decision where it can be made correctly — a caller
+   * reads {@link DOORBELL_MEMBERS.videoQuality} and {@link DOORBELL_MEMBERS.highCompressionEncoding}
+   * and passes what it wants, instead of the SDK guessing from a stale copy.
    */
   setVideoQuality: method(
-    ({ ctx, sink, read }) =>
-      async (quality: DoorbellVideoQualityValue): Promise<void> => {
+    ({ ctx, sink }) =>
+      async (quality: DoorbellVideoQualityValue, highCompression: boolean): Promise<void> => {
         const q = coerceEnumValue(DoorbellVideoQuality, quality);
         if (q === undefined) {
           throw new Error(`videoQuality: ${String(quality)} is not one of ${enumLabels(DoorbellVideoQuality)}`);
         }
         await sink.dispatch(
-          setScalar(DOORBELL_CMD.VIDEO_QUALITY, q + (highCompressionNow(read) ? 5 : 0), ctx, "direct-binary"),
+          setScalar(DOORBELL_CMD.VIDEO_QUALITY, q + (asBool(highCompression) ? 5 : 0), ctx, "direct-binary"),
         );
       },
-    "Set the live-view quality, preserving the encoding format.",
-  ),
-  /** The mirror of {@link DOORBELL_MEMBERS.setVideoQuality}: keeps the quality, changes the encoding. */
-  setHighCompressionEncoding: method(
-    ({ ctx, sink, read }) =>
-      async (high: boolean): Promise<void> => {
-        const raw = readNum(read, "videoQuality");
-        if (raw === undefined) {
-          throw new Error(
-            "highCompressionEncoding: the device has not reported 1705, so the quality to preserve is unknown",
-          );
-        }
-        await sink.dispatch(
-          setScalar(DOORBELL_CMD.VIDEO_QUALITY, (raw % 5) + (asBool(high) ? 5 : 0), ctx, "direct-binary"),
-        );
-      },
-    "Set the video encoding format, preserving the live-view quality.",
+    "Set the live-view quality and the video encoding format, which share one wire.",
   ),
   /**
    * A config blob the device reports WHOLE, so it is typed `string` and handed back unparsed — three

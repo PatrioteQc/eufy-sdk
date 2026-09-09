@@ -216,32 +216,33 @@ describe("doorbell capability module", () => {
       }
     });
 
-    it("each setter preserves the half it does not own", async () => {
-      // The bound reader supplies the stored composite; the setter must rebuild it, not overwrite it.
-      const withRaw = (raw: number) =>
-        bind<DoorbellActions>("doorbell", ctx(2), {
-          read: (n) => (n === "videoQuality" ? { value: raw } : undefined),
-        });
-      const a = withRaw(8); // High + high compression
-      await a.acts.setVideoQuality(DoorbellVideoQuality.Low);
-      expect(a.sent[0]).toMatchObject({ param: DOORBELL_CMD.VIDEO_QUALITY, value: 6 }); // Low, still high compression
-
-      const b = withRaw(8);
-      await b.acts.setHighCompressionEncoding(false);
-      expect(b.sent[0]).toMatchObject({ param: DOORBELL_CMD.VIDEO_QUALITY, value: 3 }); // High, low compression
-
-      const c = withRaw(1); // Low + low compression
-      await c.acts.setHighCompressionEncoding(true);
-      expect(c.sent[0]).toMatchObject({ value: 6 });
+    it("one setter carries both halves — the wire has no way to send one", async () => {
+      const { acts, sent } = bind<DoorbellActions>("doorbell", ctx(2));
+      await acts.setVideoQuality(DoorbellVideoQuality.Low, true);
+      expect(sent[0]).toMatchObject({ param: DOORBELL_CMD.VIDEO_QUALITY, value: 6, channel: 2 });
+      await acts.setVideoQuality(DoorbellVideoQuality.High, false);
+      expect(sent[1]).toMatchObject({ value: 3 });
+      await acts.setVideoQuality(DoorbellVideoQuality.Auto, true);
+      expect(sent[2]).toMatchObject({ value: 5 });
     });
 
-    it("refuses a quality outside the enum, and refuses to guess a quality it has never read", async () => {
-      const { acts } = bind<DoorbellActions>("doorbell", ctx(2), {
+    it("takes both halves rather than preserving one from a read — that failed on hardware", async () => {
+      // An earlier shape took only the quality and rebuilt the integer from the state reader. The reader
+      // is the snapshot the device was bound with, so a second write composed against the value from
+      // before the first: setting Low on 8 gave 6 correctly, then setting low compression re-read 8 and
+      // sent 3, reverting the quality. Requiring both arguments removes the stale copy entirely, so no
+      // reader is consulted here at all.
+      const { acts, sent } = bind<DoorbellActions>("doorbell", ctx(2), {
         read: (n) => (n === "videoQuality" ? { value: 8 } : undefined),
       });
-      await expect(acts.setVideoQuality(9 as never)).rejects.toThrow(/videoQuality/);
-      const blind = bind<DoorbellActions>("doorbell", ctx(2));
-      await expect(blind.acts.setHighCompressionEncoding(true)).rejects.toThrow(/has not reported 1705/);
+      await acts.setVideoQuality(DoorbellVideoQuality.Low, false);
+      expect(sent[0]).toMatchObject({ value: 1 });
+    });
+
+    it("refuses a quality outside the enum", async () => {
+      const { acts, sent } = bind<DoorbellActions>("doorbell", ctx(2));
+      await expect(acts.setVideoQuality(9 as never, true)).rejects.toThrow(/videoQuality/);
+      expect(sent).toHaveLength(0);
     });
   });
 });
