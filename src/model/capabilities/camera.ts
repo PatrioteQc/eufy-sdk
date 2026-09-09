@@ -66,11 +66,26 @@ export const CAMERA_CMD = {
    */
   EAS_SWITCH: 1015,
   /**
-   * Video / streaming quality (resolution). ✅ Wire confirmed on T8425 ch3:
-   * `1350` SET_PAYLOAD, inner cmd 2731, `payload:{channel:0, mode:0, primary_view:0, quality:N}`,
-   * mValue3:0, on the device channel. quality enum 1/2/3 (low/mid/high, exact labels TBC).
+   * RECORDING quality — what gets stored, not the live view; {@link CAMERA_CMD.STREAMING_QUALITY_SET}
+   * below is the live one, and the app's name for this id is `multicamSetRecordQuailty`.
+   * Wire confirmed on a T8425 ch3: `1350` SET_PAYLOAD, inner cmd 2731,
+   * `payload:{channel:0, mode:0, primary_view:0, quality:N}`, mValue3 0, on the device channel. Tiers
+   * 1/2/3, named in {@link RECORDING_QUALITY_TIERS}; there is no tier 0 here, unlike streaming.
    */
-  VIDEO_QUALITY_SET: 2731,
+  RECORDING_QUALITY_SET: 2731,
+  /**
+   * LIVE-VIEW quality — a separate setting from {@link CAMERA_CMD.RECORDING_QUALITY_SET}, and the app's
+   * names for the two invert what they suggest: 2730 is `multicamSetVideoQuailty` and drives the
+   * Streaming Quality picker, while 2731 is `multicamSetRecordQuailty` and drives Recording Quality.
+   * Changing one leaves the other's parameter untouched, which is how they were told apart.
+   *
+   * Unlike recording it offers a tier 0, `Auto`. Wire verified live on a T8170 (standalone): the `1350`
+   * SET_PAYLOAD envelope, signCode 8, plaintext `{"cmd":2730,"payload":{"transaction":"<epoch ms>",
+   * "quality":N,"channel":0,"mode":0,"primary_view":0},"account_id":…}`. All four tiers captured
+   * byte-exact and read back on parameter 1020; the station echoes the same payload back as a `1351`
+   * NOTIFY_PAYLOAD carrying the same `transaction`.
+   */
+  STREAMING_QUALITY_SET: 2730,
 } as const;
 
 /** Whether a model-side record or bound context reports the camera-owned legacy EAS switch. */
@@ -129,49 +144,91 @@ export type NightVisionValue = (typeof NightVision)[keyof typeof NightVision];
  * A resolution label is presentation, and one that cannot be derived is presentation the SDK would get
  * wrong; `Max` is a fact about the tier.
  */
-export const VideoQuality = {
+export const RecordingQuality = {
   HD720: "HD (720P)",
   FullHD1080: "Full HD (1080P)",
   Max: "Max",
 } as const;
-/** A video-quality name — the value side of {@link VideoQuality}. */
-export type VideoQualityName = (typeof VideoQuality)[keyof typeof VideoQuality];
+/** A video-quality name — the value side of {@link RecordingQuality}. */
+export type RecordingQualityName = (typeof RecordingQuality)[keyof typeof RecordingQuality];
 
 /**
  * Quality tier → name. Tiers confirmed on real devices: 1 = 720P, 2 = 1080P, 3 = the sensor's maximum
  * (observed as 2K on a T8171 and 3K on a T8170 and a T8425, hence the rank rather than a resolution).
  */
-export const VIDEO_QUALITY_TIERS: Readonly<Record<number, string>> = {
+export const RECORDING_QUALITY_TIERS: Readonly<Record<number, string>> = {
   1: "HD (720P)",
   2: "Full HD (1080P)",
   3: "Max",
 };
 
+/**
+ * Live-view quality names — the recording tiers plus `Auto`, which only streaming offers: the camera
+ * picks a tier from the link instead of being pinned to one.
+ */
+export const StreamingQuality = {
+  Auto: "Auto",
+  ...RecordingQuality,
+} as const;
+/** A live-view quality name — the value side of {@link StreamingQuality}. */
+export type StreamingQualityName = (typeof StreamingQuality)[keyof typeof StreamingQuality];
+
+/**
+ * Live-view quality tier → name. Tier 0 is `Auto`; 1, 2 and 3 are the recording tiers, confirmed to
+ * carry the same names on a T8170 and a T8171.
+ */
+export const STREAMING_QUALITY_TIERS: Readonly<Record<number, string>> = {
+  0: "Auto",
+  ...RECORDING_QUALITY_TIERS,
+};
+
+/** Resolve a live-view quality tier to its name — or `undefined` if it is not a tier. */
+export function resolveStreamingQuality(value: number): string | undefined {
+  return STREAMING_QUALITY_TIERS[value];
+}
+
+/**
+ * Resolve a `setStreamingQuality` argument — a name ({@link StreamingQuality}) or a raw tier — to a
+ * valid tier, else `undefined`. `Auto` is tier 0 here, so unlike the recording resolver a 0 is
+ * accepted; anything outside the tier set is still refused rather than sent.
+ */
+export function resolveStreamingQualityTier(value: number | string | boolean): number | undefined {
+  if (typeof value === "boolean") return undefined;
+  if (typeof value === "string" && !/^\d+$/.test(value.trim())) {
+    const hit = Object.entries(STREAMING_QUALITY_TIERS).find(
+      ([, label]) => label.toLowerCase() === value.trim().toLowerCase(),
+    );
+    return hit ? Number(hit[0]) : undefined;
+  }
+  const tier = Number(value);
+  return Number.isInteger(tier) && STREAMING_QUALITY_TIERS[tier] != null ? tier : undefined;
+}
+
 /** Resolve a raw `quality` tier value to its resolution label — or `undefined`. */
-export function resolveVideoQuality(value: number): string | undefined {
-  return VIDEO_QUALITY_TIERS[value];
+export function resolveRecordingQuality(value: number): string | undefined {
+  return RECORDING_QUALITY_TIERS[value];
 }
 
 /** Inverse: the raw `quality` tier value for a resolution NAME — or `undefined` if not a known tier. */
-export function resolveVideoQualityValue(name: string): number | undefined {
-  const hit = Object.entries(VIDEO_QUALITY_TIERS).find(
+export function resolveRecordingQualityValue(name: string): number | undefined {
+  const hit = Object.entries(RECORDING_QUALITY_TIERS).find(
     ([, label]) => label.toLowerCase() === name.trim().toLowerCase(),
   );
   return hit ? Number(hit[0]) : undefined;
 }
 
 /**
- * Resolve a `setVideoQuality` argument — a resolution NAME ({@link VideoQuality}) OR a raw tier — to a
+ * Resolve a `setRecordingQuality` argument — a resolution NAME ({@link RecordingQuality}) OR a raw tier — to a
  * valid tier value, else `undefined`. Unlike a bare `Number()`, this rejects a value that isn't a real
  * tier (0, negative, out of range): the write is fire-and-forget, so an out-of-range quality value
  * would look like it worked while doing nothing. A numeric string ("2") is a raw tier; a non-numeric
  * string is looked up as a resolution name; a boolean is not a tier.
  */
-export function resolveVideoQualityTier(value: number | string | boolean): number | undefined {
+export function resolveRecordingQualityTier(value: number | string | boolean): number | undefined {
   if (typeof value === "boolean") return undefined;
-  if (typeof value === "string" && !/^\d+$/.test(value.trim())) return resolveVideoQualityValue(value);
+  if (typeof value === "string" && !/^\d+$/.test(value.trim())) return resolveRecordingQualityValue(value);
   const tier = Number(value);
-  return Number.isInteger(tier) && VIDEO_QUALITY_TIERS[tier] != null ? tier : undefined;
+  return Number.isInteger(tier) && RECORDING_QUALITY_TIERS[tier] != null ? tier : undefined;
 }
 
 /**
@@ -183,15 +240,15 @@ export function resolveVideoQualityTier(value: number | string | boolean): numbe
  * a tier.
  *
  * A device that reports a plain tier is still read (some models may); anything else — an unknown shape,
- * a mode with no entry, a tier not in {@link VIDEO_QUALITY_TIERS} — is `undefined` rather than a guess.
+ * a mode with no entry, a tier not in {@link RECORDING_QUALITY_TIERS} — is `undefined` rather than a guess.
  */
-function decodeVideoQualityTier(raw: unknown): number | undefined {
-  if (typeof raw === "number" || typeof raw === "string") return resolveVideoQualityTier(raw);
+function decodeRecordingQualityTier(raw: unknown): number | undefined {
+  if (typeof raw === "number" || typeof raw === "string") return resolveRecordingQualityTier(raw);
   if (typeof raw !== "object" || raw === null) return undefined;
   const cfg = raw as Record<string, unknown>;
   const mode = cfg[`mode_${Number(cfg.cur_mode) || 0}`];
   const quality = typeof mode === "object" && mode !== null ? (mode as Record<string, unknown>).quality : undefined;
-  return typeof quality === "number" ? resolveVideoQualityTier(quality) : undefined;
+  return typeof quality === "number" ? resolveRecordingQualityTier(quality) : undefined;
 }
 
 /**
@@ -447,30 +504,70 @@ export const CAMERA_MEMBERS = {
     },
   },
   /**
+   * Live-view quality, the pair to {@link CAMERA_MEMBERS.recordingQuality} and a different setting on a
+   * different wire: changing one leaves the other's parameter untouched.
+   *
+   * The READ is 1020, which reports the resolved tier as a plain integer, while the WRITE rides 2730's
+   * `1350` payload. They are two ids for one setting because 2730 carries a per-mode config and 1020
+   * carries the tier in force; the tier is what this property means. 1020 is also the name the param
+   * dictionary already gives that id, and `Device` keys state by NAME — a member claiming 2730 under
+   * this name would collide with it on a device reporting both.
+   *
+   * `transaction` is part of the frame that was captured, so it is sent. The recording sibling's own
+   * confirmed frame carries no such field; neither is inferred from the other.
+   */
+  streamingQuality: {
+    param: 1020,
+    type: "number",
+    kind: "enum",
+    enumValues: STREAMING_QUALITY_TIERS,
+    provenance: "verified",
+    args: [{ name: "quality", kind: "enum", description: "A tier, or the name it maps to. 0 is Auto." }],
+    ...accepts<StreamingQualityName>(),
+    description:
+      "Live-view quality as a tier, 0 = Auto (1020; the write rides 2730 " +
+      "APP_CMD_MULTI_CAM_SET_VIDEO_QUALITY). Distinct from recordingQuality, which is what gets stored. " +
+      "All four tiers wire-verified live on a T8170 and read back on 1020, and the same four confirmed " +
+      "on a T8171 — see CAMERA_CMD.STREAMING_QUALITY_SET. A value outside the tier set is REJECTED, not " +
+      "clamped: every tier in range is a real quality, so a bad one would silently pick another.",
+    write: (v, ctx) => {
+      const q = resolveStreamingQualityTier(v);
+      return q == null
+        ? undefined
+        : setPayload(
+            CAMERA_CMD.STREAMING_QUALITY_SET,
+            { channel: 0, mode: 0, primary_view: 0, quality: q, transaction: String(Date.now()) },
+            ctx,
+            0,
+          );
+    },
+  },
+  /**
    * `type` is how the value is STORED, and 2731 stores the whole config — the ACTIVE tier is lifted out
    * of it by `decode`, so the getter answers a tier while the schema stays honest. The setter
    * takes a resolution NAME as well as the tier the getter answers.
    */
-  videoQuality: {
-    param: CAMERA_CMD.VIDEO_QUALITY_SET,
+  recordingQuality: {
+    param: CAMERA_CMD.RECORDING_QUALITY_SET,
     type: "string",
     provenance: "verified",
-    decode: (raw) => decodeVideoQualityTier(raw),
+    decode: (raw) => decodeRecordingQualityTier(raw),
     decodedKind: "enum",
-    decodedValues: Object.keys(VIDEO_QUALITY_TIERS).map(Number),
+    decodedValues: Object.keys(RECORDING_QUALITY_TIERS).map(Number),
     description:
-      "Video record quality (2731) as a resolution tier. The device reports the whole config — " +
+      "RECORDING quality as a tier (2731) — distinct from streamingQuality, which is the live view. " +
+      "The device reports the whole config — " +
       "`{cur_mode, mode_<n>:{quality}}`, read live off a T8170 — and the ACTIVE mode's tier is lifted out " +
       "of it on read. ✅ write wire verified live (T8425): 1350 SET_PAYLOAD " +
-      "{channel:0, mode:0, primary_view:0, quality:N}. Tier→label in VIDEO_QUALITY_TIERS / resolveVideoQuality " +
+      "{channel:0, mode:0, primary_view:0, quality:N}. Tier→label in RECORDING_QUALITY_TIERS / resolveRecordingQuality " +
       "(verified on T8425; add a per-model map if a model's tiers ever diverge).",
     args: [{ name: "quality", kind: "enum", description: "A tier; the resolution name it maps to is accepted too." }],
-    ...accepts<VideoQualityName>(),
+    ...accepts<RecordingQualityName>(),
     write: (v, ctx) => {
-      const q = resolveVideoQualityTier(v);
+      const q = resolveRecordingQualityTier(v);
       return q == null
         ? undefined
-        : setPayload(CAMERA_CMD.VIDEO_QUALITY_SET, { channel: 0, mode: 0, primary_view: 0, quality: q }, ctx, 0);
+        : setPayload(CAMERA_CMD.RECORDING_QUALITY_SET, { channel: 0, mode: 0, primary_view: 0, quality: q }, ctx, 0);
     },
   },
   /**

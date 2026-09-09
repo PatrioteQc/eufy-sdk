@@ -4,10 +4,15 @@ import {
   CAMERA_MEMBERS,
   Watermark,
   NightVision,
-  VideoQuality,
-  resolveVideoQuality,
+  RecordingQuality,
+  RECORDING_QUALITY_TIERS,
+  resolveRecordingQuality,
+  StreamingQuality,
+  STREAMING_QUALITY_TIERS,
+  resolveStreamingQuality,
+  resolveStreamingQualityTier,
 } from "../camera.js";
-import type { VideoQualityName } from "../camera.js";
+import type { RecordingQualityName } from "../camera.js";
 import { buildCommand } from "../index.js";
 import { actionSpecOf } from "../access.js";
 import { bind } from "./bind.js";
@@ -40,7 +45,8 @@ describe("camera capability module", () => {
       "imageFlipped",
       "watermark",
       "nightVision",
-      "videoQuality",
+      "streamingQuality",
+      "recordingQuality",
       "antiTheftDetection",
       "statusLed",
     ]);
@@ -183,44 +189,76 @@ describe("camera capability module", () => {
       });
     });
 
-    it("videoQuality → 1350 set-payload (2731), raw tier or resolution NAME (verified T8425)", () => {
+    it("recordingQuality → 1350 set-payload (2731), raw tier or resolution NAME (verified T8425)", () => {
       // Raw tier value.
-      expect(buildCommand("videoQuality", 3, ctx(3))).toMatchObject({
+      expect(buildCommand("recordingQuality", 3, ctx(3))).toMatchObject({
         kind: "set-payload",
-        cmd: CAMERA_CMD.VIDEO_QUALITY_SET,
+        cmd: CAMERA_CMD.RECORDING_QUALITY_SET,
         payload: { channel: 0, mode: 0, primary_view: 0, quality: 3 },
         channel: 3,
         mValue3: 0,
       });
       // Tier → name: the lower two are resolutions, the top is a rank because the sensor behind it
       // differs (2K on a T8171, 3K on a T8170 / T8425) and no device reports which.
-      expect(resolveVideoQuality(1)).toBe("HD (720P)");
-      expect(resolveVideoQuality(3)).toBe("Max");
-      expect(buildCommand("videoQuality", VideoQuality.Max, ctx(0))).toMatchObject({ payload: { quality: 3 } });
-      const byName = buildCommand("videoQuality", VideoQuality.HD720, ctx(3));
-      expect(byName).toMatchObject({ cmd: CAMERA_CMD.VIDEO_QUALITY_SET, payload: { quality: 1 } });
+      expect(resolveRecordingQuality(1)).toBe("HD (720P)");
+      expect(resolveRecordingQuality(3)).toBe("Max");
+      expect(buildCommand("recordingQuality", RecordingQuality.Max, ctx(0))).toMatchObject({ payload: { quality: 3 } });
+      const byName = buildCommand("recordingQuality", RecordingQuality.HD720, ctx(3));
+      expect(byName).toMatchObject({ cmd: CAMERA_CMD.RECORDING_QUALITY_SET, payload: { quality: 1 } });
     });
 
-    it("videoQuality throws on a value that isn't a real tier (no bogus value on the fire-and-forget wire)", () => {
+    it("streamingQuality → 2730's 1350 payload, and it is NOT the recording wire", () => {
+      // Tier 0 is Auto, which recording has no equivalent for.
+      expect(STREAMING_QUALITY_TIERS[0]).toBe("Auto");
+      expect(RECORDING_QUALITY_TIERS[0]).toBeUndefined();
+      expect(resolveStreamingQuality(3)).toBe("Max");
+      const cmd = buildCommand("streamingQuality", StreamingQuality.Auto, ctx(0));
+      expect(cmd).toMatchObject({
+        kind: "set-payload",
+        cmd: CAMERA_CMD.STREAMING_QUALITY_SET, // 2730
+        mValue3: 0,
+        payload: { channel: 0, mode: 0, primary_view: 0, quality: 0 },
+      });
+      // The two settings ride different sub-commands; confusing them is the trap this pins.
+      expect(CAMERA_CMD.STREAMING_QUALITY_SET).not.toBe(CAMERA_CMD.RECORDING_QUALITY_SET);
+      expect(buildCommand("recordingQuality", 3, ctx(0))).toMatchObject({
+        cmd: CAMERA_CMD.RECORDING_QUALITY_SET,
+      });
+      // `transaction` is in the captured frame, so only its shape is fixed.
+      expect((cmd as { payload: Record<string, unknown> }).payload.transaction).toMatch(/^\d{13}$/);
+      expect(buildCommand("streamingQuality", "Max", ctx(2))).toMatchObject({ payload: { quality: 3 } });
+    });
+
+    it("streamingQuality takes Auto where recordingQuality refuses 0", () => {
+      // Same number, different meaning: 0 is a real tier on one wire and out of range on the other.
+      expect(resolveStreamingQualityTier(0)).toBe(0);
+      expect(resolveStreamingQualityTier("Auto")).toBe(0);
+      expect(() => buildCommand("recordingQuality", 0, ctx())).toThrow(/recordingQuality/);
+      for (const bad of [-1, 4, 99, "nope"]) {
+        expect(resolveStreamingQualityTier(bad as number)).toBeUndefined();
+      }
+    });
+
+    it("recordingQuality throws on a value that isn't a real tier (no bogus value on the fire-and-forget wire)", () => {
       const c = ctx(3); // verified tiers = 1/2/3
       // Out-of-range raw values must NOT produce a command (0 / negative / above top tier / non-tier name).
       for (const bad of [0, -1, 99, "0", "4K HD", "3K HD", "2K HD"]) {
-        expect(() => buildCommand("videoQuality", bad, c)).toThrow(
-          /videoQuality: .+ is not a valid value \(must be one of 1\/2\/3\)/,
+        expect(() => buildCommand("recordingQuality", bad, c)).toThrow(
+          /recordingQuality: .+ is not a valid value \(must be one of 1\/2\/3\)/,
         );
       }
       // Valid tiers still pass.
-      expect(buildCommand("videoQuality", 2, c)).toMatchObject({ payload: { quality: 2 } });
+      expect(buildCommand("recordingQuality", 2, c)).toMatchObject({ payload: { quality: 2 } });
     });
 
     /**
-     * The member renames its argument (`quality`, not `videoQuality`) and explains what it takes, while
+     * The member renames its argument (`quality`, not `recordingQuality`) and explains what it takes, while
      * the tier set is DERIVED from `decodedValues`. A member's own arg used to REPLACE the derived one, so
      * the rename silently dropped the tiers and left a caller rendering a picker with nothing to pick.
      */
-    it("videoQuality's described argument keeps the derived tier set under its own name", () => {
-      const { acts } = camera(ctx(3, { paramIds: new Set([CAMERA_CMD.VIDEO_QUALITY_SET]) }));
-      const spec = actionSpecOf(acts.setVideoQuality)!;
+    it("recordingQuality's described argument keeps the derived tier set under its own name", () => {
+      const { acts } = camera(ctx(3, { paramIds: new Set([CAMERA_CMD.RECORDING_QUALITY_SET]) }));
+      const spec = actionSpecOf(acts.setRecordingQuality)!;
       expect(spec.args).toEqual([
         {
           name: "quality",
@@ -437,16 +475,16 @@ describe("camera capability module", () => {
     it("a derived setter dispatches its member's command; a value the member rejects never reaches the wire", async () => {
       const { acts, sent } = camera(ctx(3));
       await acts.setWatermark(2);
-      await acts.setVideoQuality(3);
+      await acts.setRecordingQuality(3);
       expect(sent).toHaveLength(2);
       expect(sent[0]).toMatchObject({ param: CAMERA_CMD.SET_DEVS_OSD, value: 2 });
-      expect(sent[1]).toMatchObject({ cmd: CAMERA_CMD.VIDEO_QUALITY_SET, payload: { quality: 3 } });
+      expect(sent[1]).toMatchObject({ cmd: CAMERA_CMD.RECORDING_QUALITY_SET, payload: { quality: 3 } });
       await expect(acts.setWatermark(5)).rejects.toThrow("watermark: 5 is not a valid value (must be one of 0/1/2)");
       await expect(acts.setNightVision(9)).rejects.toThrow(
         "nightVision: 9 is not a valid value (must be one of 0/1/2)",
       );
-      await expect(acts.setVideoQuality(0)).rejects.toThrow(
-        "videoQuality: 0 is not a valid value (must be one of 1/2/3)",
+      await expect(acts.setRecordingQuality(0)).rejects.toThrow(
+        "recordingQuality: 0 is not a valid value (must be one of 1/2/3)",
       );
       expect(sent).toHaveLength(2);
     });
@@ -585,9 +623,11 @@ const _statusLed: Exact<typeof cam.statusLed, boolean | undefined> = true;
 const _setStatusLedOptional: Exact<undefined extends typeof cam.setStatusLed ? true : false, true> = true;
 
 // `accepts` widens the SETTER past the getter: a resolution name as well as the tier that is stored.
-const _videoQualityRead: Exact<typeof cam.videoQuality, number | undefined> = true;
-const _videoQualityWrite: Exact<Parameters<NonNullable<typeof cam.setVideoQuality>>[0], VideoQualityName | number> =
-  true;
+const _recordingQualityRead: Exact<typeof cam.recordingQuality, number | undefined> = true;
+const _recordingQualityWrite: Exact<
+  Parameters<NonNullable<typeof cam.setRecordingQuality>>[0],
+  RecordingQualityName | number
+> = true;
 
 // An evidence-gated write is OPTIONAL, so a caller is made to check; an ungated one is not.
 const _antiTheftOptional: Exact<undefined extends typeof cam.setAntiTheftDetection ? true : false, true> = true;
@@ -609,8 +649,8 @@ export const _surfaceAssertions = [
   _setPrivacy,
   _statusLed,
   _setStatusLedOptional,
-  _videoQualityRead,
-  _videoQualityWrite,
+  _recordingQualityRead,
+  _recordingQualityWrite,
   _antiTheftOptional,
   _watermarkRequired,
   _snapshotOptional,
