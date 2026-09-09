@@ -70,7 +70,10 @@ export const CAMERA_CMD = {
    * below is the live one, and the app's name for this id is `multicamSetRecordQuailty`.
    * Wire confirmed on a T8425 ch3: `1350` SET_PAYLOAD, inner cmd 2731,
    * `payload:{channel:0, mode:0, primary_view:0, quality:N}`, mValue3 0, on the device channel. Tiers
-   * 1/2/3, named in {@link RECORDING_QUALITY_TIERS}; there is no tier 0 here, unlike streaming.
+   * 1/2/3, named in {@link RECORDING_QUALITY_TIERS} — no tier 0 on this wire, where streaming has one.
+   * That is a fact about 2731 on the cameras it was confirmed on, not about recording everywhere: a
+   * doorbell's own pickers offer Auto/Low/Medium/High for both, and its quality rides neither 2730 nor
+   * 2731, so its domain is its own to establish.
    */
   RECORDING_QUALITY_SET: 2731,
   /**
@@ -155,6 +158,8 @@ export type RecordingQualityName = (typeof RecordingQuality)[keyof typeof Record
 /**
  * Quality tier → name. Tiers confirmed on real devices: 1 = 720P, 2 = 1080P, 3 = the sensor's maximum
  * (observed as 2K on a T8171 and 3K on a T8170 and a T8425, hence the rank rather than a resolution).
+ * The vendor names by rank itself where a resolution would not travel: a doorbell's pickers read
+ * Auto/Low/Medium/High.
  */
 export const RECORDING_QUALITY_TIERS: Readonly<Record<number, string>> = {
   1: "HD (720P)",
@@ -163,8 +168,8 @@ export const RECORDING_QUALITY_TIERS: Readonly<Record<number, string>> = {
 };
 
 /**
- * Live-view quality names — the recording tiers plus `Auto`, which only streaming offers: the camera
- * picks a tier from the link instead of being pinned to one.
+ * Live-view quality names — the recording tiers plus `Auto`, which 2730 offers and 2731 does not: the
+ * camera picks a tier from the link instead of being pinned to one.
  */
 export const StreamingQuality = {
   Auto: "Auto",
