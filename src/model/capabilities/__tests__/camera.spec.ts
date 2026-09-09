@@ -6,7 +6,6 @@ import {
   NightVision,
   VideoQuality,
   resolveVideoQuality,
-  resolveVideoQualityValue,
 } from "../camera.js";
 import type { VideoQualityName } from "../camera.js";
 import { buildCommand } from "../index.js";
@@ -193,47 +192,19 @@ describe("camera capability module", () => {
         channel: 3,
         mValue3: 0,
       });
-      // Tier → label on a model with no entry of its own: 1=720P, 2=1080P, 3=3K HD (T8425).
-      expect(resolveVideoQuality("T8425", 1)).toBe("HD (720P)");
-      expect(resolveVideoQuality("T8425", 3)).toBe("3K HD");
+      // Tier → name: the lower two are resolutions, the top is a rank because the sensor behind it
+      // differs (2K on a T8171, 3K on a T8170 / T8425) and no device reports which.
+      expect(resolveVideoQuality(1)).toBe("HD (720P)");
+      expect(resolveVideoQuality(3)).toBe("Max");
+      expect(buildCommand("videoQuality", VideoQuality.Max, ctx(0))).toMatchObject({ payload: { quality: 3 } });
       const byName = buildCommand("videoQuality", VideoQuality.HD720, ctx(3));
       expect(byName).toMatchObject({ cmd: CAMERA_CMD.VIDEO_QUALITY_SET, payload: { quality: 1 } });
-    });
-
-    it("the top tier's label is the model's, not a shared one", () => {
-      // Same tier number, different sensor: a 2K camera's tier 3 is not a 3K camera's. The tier
-      // NUMBERING is shared, which is why only the label is per-model.
-      expect(resolveVideoQuality("T8171", 3)).toBe("2K HD");
-      expect(resolveVideoQuality("T8425", 3)).toBe("3K HD");
-      expect(resolveVideoQuality("T8171", 1)).toBe(resolveVideoQuality("T8425", 1));
-      // A name belongs to the model that offers it: the 3K label is not a tier on a 2K camera, and
-      // accepting it would write tier 3 while the caller believed it asked for 3K.
-      expect(resolveVideoQualityValue("T8171", "2K HD")).toBe(3);
-      expect(resolveVideoQualityValue("T8171", "3K HD")).toBeUndefined();
-      expect(resolveVideoQualityValue("T8425", "2K HD")).toBeUndefined();
-      // An unknown model falls back rather than answering nothing.
-      expect(resolveVideoQuality(undefined, 3)).toBe("3K HD");
-    });
-
-    it("tells T8170 from T8171 — one T-code apart, and they disagree on tier 3", () => {
-      // Both confirmed live, and the pair is why the model lookup is a prefix match: anything looser
-      // would hand the 2K camera's label to the 3K one, or the reverse.
-      expect(resolveVideoQuality("T8170", 3)).toBe("3K HD");
-      expect(resolveVideoQuality("T8171", 3)).toBe("2K HD");
-      expect(resolveVideoQualityValue("T8170", "3K HD")).toBe(3);
-      expect(resolveVideoQualityValue("T8170", "2K HD")).toBeUndefined();
-    });
-
-    it("videoQuality takes the name the BOUND model offers, and refuses another model's", () => {
-      const solo = ctx(0, { model: "T8171" });
-      expect(buildCommand("videoQuality", "2K HD", solo)).toMatchObject({ payload: { quality: 3 } });
-      expect(() => buildCommand("videoQuality", "3K HD", solo)).toThrow(/videoQuality/);
     });
 
     it("videoQuality throws on a value that isn't a real tier (no bogus value on the fire-and-forget wire)", () => {
       const c = ctx(3); // verified tiers = 1/2/3
       // Out-of-range raw values must NOT produce a command (0 / negative / above top tier / non-tier name).
-      for (const bad of [0, -1, 99, "0", "4K HD"]) {
+      for (const bad of [0, -1, 99, "0", "4K HD", "3K HD", "2K HD"]) {
         expect(() => buildCommand("videoQuality", bad, c)).toThrow(
           /videoQuality: .+ is not a valid value \(must be one of 1\/2\/3\)/,
         );

@@ -52,8 +52,6 @@ export {
   VideoQuality,
   type VideoQualityName,
   VIDEO_QUALITY_TIERS,
-  VIDEO_QUALITY_TIER_MAPS,
-  videoQualityTierMap,
   resolveVideoQuality,
   resolveVideoQualityValue,
   resolveVideoQualityTier,
