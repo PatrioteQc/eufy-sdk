@@ -61,7 +61,7 @@ export const CAMERA_CMD = {
    * `1700` CONTROL_PAYLOAD wrapper, signCode 8, plaintext
    * `{"commandType":6020,"data":{"value":N,"transaction":"<epoch ms>"}}`. All three values captured
    * byte-exact, each read back on the cloud param within ~10s. The station answers on the same wrapper
-   * ~600ms later; that reply's shape is not claimed here.
+   * ~600ms later with a 4-byte body; nothing reads it, so its meaning is not claimed here.
    * (Values in {@link NotificationStyle}.)
    */
   PUSH_NOTIFY_TYPE: 6020,
