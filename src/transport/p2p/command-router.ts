@@ -1132,12 +1132,12 @@ export class P2PCommandRouter {
       // Provoke through the ONE level decision (and its RF-resilience repeat), but do not block the read
       // on the retransmits finishing: the URL push can land after the first datagram, so the read
       // returns as soon as it arrives (or the deadline aborts), while the repeats run to completion.
-      void this.resolveScalarParam(sn, CommandType.CMD_NAS_SWITCH, 1, "auto").catch((e) =>
-        log.debug(`[p2p] ${sn} RTSP publish-switch provoke failed`, e),
-      );
-      void this.resolveScalarParam(sn, CommandType.CMD_NAS_TEST, 1, "auto").catch((e) =>
-        log.debug(`[p2p] ${sn} RTSP livestream provoke failed`, e),
-      );
+      // The publish switch alone does not elicit the push; the livestream test paired with it does.
+      for (const cmd of [CommandType.CMD_NAS_SWITCH, CommandType.CMD_NAS_TEST]) {
+        void this.resolveScalarParam(sn, cmd, 1, "auto").catch((e) =>
+          log.debug(`[p2p] ${sn} RTSP provoke ${cmd} failed`, e),
+        );
+      }
       return await url;
     } catch (e) {
       log.debug(`[p2p] ${sn} live RTSP URL read ${signal.aborted ? "timed out" : "failed"}`, e);

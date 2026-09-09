@@ -169,9 +169,12 @@ export const RTSP_MEMBERS = {
    *
    * The FRAME SHAPE — 1145 returning as a NUL-terminated `rtsp://user:pass@host/path` string — was
    * OBSERVED live, so `decodeState` is grounded. The station pushes it only once the stream is asked to
-   * start, not from the publish switch alone (field-confirmed): the transport's device-URL read
-   * provokes it and `EufyMega.reportedRtspUrl` returns it directly; this member is the same URL surfaced
-   * as inbound state for a consumer that prefers to read `dev.rtsp()?.url`.
+   * start, not from the publish switch alone (field-confirmed).
+   *
+   * To FETCH the URL, the canonical call is `EufyMega.reportedRtspUrl(sn)` — it provokes and returns it.
+   * This member is NOT a second fetch path: it surfaces whatever the station last pushed as inbound
+   * state, for code that already holds a `dev.rtsp()` and reacts to `propertyChanged` (a getter that is
+   * simply absent until a push has landed), rather than driving the read itself.
    *
    * `provenance` below is `verified` for the VALUE and its frame — not for the id: {@link STREAM_URL}
    * is synthetic and the wire never reports it, so no capture could have "verified" the id itself.
