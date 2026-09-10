@@ -414,7 +414,7 @@ export interface ProvidedMember<P extends keyof Providers, F> {
 
 /**
  * Widen a setter's argument past the value its getter answers — see {@link ValueMember.accepts}.
- * Spread into the member (`...accepts<VideoQualityName>()`); the carried value is never read.
+ * Spread into the member (`...accepts<RecordingQualityName>()`); the carried value is never read.
  */
 export function accepts<T>(): { accepts: T } {
   return { accepts: undefined as T };
@@ -743,7 +743,7 @@ function rejection(name: string, m: ValueMember, value: unknown): string {
  * The argument defaults to the member's own kind and bounds, so a boolean switch and an enum picker
  * describe themselves with nothing declared. A member that names its own {@link ValueMember.args}
  * OVERRIDES only what it states — the derived domain survives underneath, which is what keeps
- * `videoQuality`'s tier set from vanishing when it renames its argument.
+ * `recordingQuality`'s tier set from vanishing when it renames its argument.
  *
  * The derived argument carries `decodedValues` but NOT `enumValues`, which the reflected read already
  * publishes; a second copy on the argument could only drift from it. The argument's own set therefore
