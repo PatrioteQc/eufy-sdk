@@ -73,7 +73,7 @@ describe("battery capability module", () => {
 
   it("publishes NO battery %/charging property on mains cameras that report 1101 as a sentinel", () => {
     const namesFor = (model: string | undefined) =>
-      propertiesOf(BATTERY.members, { model } as AvailabilityContext).map((p) => p.name);
+      propertiesOf(BATTERY.members!, { model } as AvailabilityContext).map((p) => p.name);
     // Mains cameras (T8425 Floodlight, T8419 Indoor) publish neither the battery nor charging property.
     for (const model of ["T8425P00", "T8419P00"]) {
       expect(namesFor(model)).not.toContain("battery");
