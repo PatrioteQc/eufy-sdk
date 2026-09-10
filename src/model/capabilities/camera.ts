@@ -700,6 +700,10 @@ export const CAMERA_MEMBERS = {
     decode: (raw) => decodeRecordingQualityTier(raw),
     decodedKind: "enum",
     decodedValues: Object.keys(RECORDING_QUALITY_TIERS).map(Number),
+    // Label the decoded tiers so a host can render this as a labelled choice (a dropdown) rather than
+    // a bare number — same shape as `suction` and the sibling `streamingQuality`. `decode` still owns
+    // the value (a tier); these are only the tier→label map, keyed to match `decodedValues`.
+    enumValues: RECORDING_QUALITY_TIERS,
     description:
       "RECORDING quality as a tier (2731) — distinct from streamingQuality, which is the live view. " +
       "The device reports the whole config — " +
