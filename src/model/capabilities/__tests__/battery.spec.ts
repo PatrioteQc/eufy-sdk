@@ -11,6 +11,8 @@ import {
   type PowerSourceName,
 } from "../battery.js";
 import { buildCommand } from "../index.js";
+import { propertiesOf } from "../members.js";
+import type { AvailabilityContext } from "../types.js";
 import { bind } from "./bind.js";
 import type { CommandContext } from "../types.js";
 import type { Capability } from "../../types.js";
@@ -69,20 +71,17 @@ describe("battery capability module", () => {
     expect(BATTERY.detection?.evidenceParams).toContain(1101);
   });
 
-  it("withholds the physical battery reads (level/charging) on mains cameras that report 1101 as a sentinel", () => {
-    const members = BATTERY.members as Record<string, { available?: (ctx: { model?: string }) => boolean }>;
-    const avail = (name: string, model?: string) => {
-      const a = members[name].available;
-      return a ? a({ model }) : true;
-    };
-    // Mains cameras (T8425 Floodlight, T8419 Indoor) must NOT publish a battery %/charging entity.
+  it("publishes NO battery %/charging property on mains cameras that report 1101 as a sentinel", () => {
+    const namesFor = (model: string | undefined) =>
+      propertiesOf(BATTERY.members, { model } as AvailabilityContext).map((p) => p.name);
+    // Mains cameras (T8425 Floodlight, T8419 Indoor) publish neither the battery nor charging property.
     for (const model of ["T8425P00", "T8419P00"]) {
-      expect(avail("level", model)).toBe(false);
-      expect(avail("charging", model)).toBe(false);
+      expect(namesFor(model)).not.toContain("battery");
+      expect(namesFor(model)).not.toContain("charging");
     }
     // Real battery cams (and unknown models) keep them.
-    expect(avail("level", "T8114P00")).toBe(true);
-    expect(avail("level", undefined)).toBe(true);
+    expect(namesFor("T8114P00")).toContain("battery");
+    expect(namesFor(undefined)).toContain("battery");
   });
 
   it("writes recordAutoStop as an INVERTED station-scalar on the device channel (wire-verified T8170)", () => {
