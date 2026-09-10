@@ -50,8 +50,6 @@ const KNOWN_UNLISTED = new Map<number, string>([
   // invariant, so its own change rather than a capability's.
   [1014, "person_detection.personDetection — guessed"],
   [1016, "person_detection.personDetected — guessed"],
-  [1018, "ptz.rotationSpeed — guessed"],
-  [1206, "ptz.panAngle — guessed"],
   [1560, "leak.leakDetected — guessed"],
   [1561, "smoke.smokeDetected — guessed"],
   [1562, "co.coDetected — guessed"],
@@ -69,14 +67,6 @@ const SHARED_READS = new Set<number>([
   1141, // rssi
   1551, // lastSeen
 ]);
-
-/**
- * KNOWN one-owner violation, tracked as debt: 1207 is the verified `camera.imageFlipped` WRITE
- * (app INDOOR_ROTATE_IMAGE, live-confirmed), but `ptz.tiltAngle` also reads it as a guessed angle.
- * On a pan-tilt cam that means flipping the image reads back as a tilt angle. TODO: repoint
- * ptz.tiltAngle to its real id (needs an on-device capture) or drop it.
- */
-const KNOWN_CROSS_OWNER = new Set<number>([1207]);
 
 type Mod = CapabilityModule & { line?: string };
 
@@ -109,7 +99,7 @@ describe("property id integrity (cross-module)", () => {
 
   it("no param is owned by two capabilities in the same product line (one-owner rule)", () => {
     // key = `${line}:${paramType}`; a real device reports one id, so two same-line capabilities
-    // reading it means one is wrong. Same-meaning shared reads and the known 1207 debt are exempt.
+    // reading it means one is wrong. Only same-meaning shared reads are exempt.
     const owners = new Map<string, string[]>();
     for (const [cap, m] of Object.entries(CAPABILITY_MODULES)) {
       const line = (m as Mod).line ?? "security";
@@ -122,7 +112,7 @@ describe("property id integrity (cross-module)", () => {
       .filter(([, v]) => v.length > 1)
       .filter(([key]) => {
         const id = Number(key.split(":")[1]);
-        return !SHARED_READS.has(id) && !KNOWN_CROSS_OWNER.has(id);
+        return !SHARED_READS.has(id);
       })
       .map(([key, v]) => `${key} claimed by ${v.join(", ")}`);
     expect(collisions).toEqual([]);
