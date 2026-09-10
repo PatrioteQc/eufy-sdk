@@ -420,6 +420,9 @@ const SETTER_ELSEWHERE: Record<string, string> = {
   "rtsp.recordingMode": "setRecordingMode",
   "locate.locating": "locate",
   "lock.locked": "lock",
+  // Both halves of the doorbell's param 1705 (live-view quality + encoding format) must be written
+  // together, so `videoQuality` is `writtenElsewhere` via setVideoQuality, which takes both.
+  "doorbell.videoQuality": "setVideoQuality",
 };
 
 describe("published schema — every writable property has a reachable setter", () => {
