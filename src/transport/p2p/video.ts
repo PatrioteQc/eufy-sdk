@@ -154,7 +154,15 @@ export class VideoFrameDecoder {
       const dec = createDecipheriv("aes-256-gcm", mediaKey, nonce);
       dec.setAAD(VIDEO_GCM_AAD);
       dec.setAuthTag(tag);
-      const h264: Buffer = Buffer.concat([dec.update(body), dec.final()]);
+      // Two allocations, not three. AES-GCM returns the whole plaintext from `update()` and an EMPTY
+      // buffer from `final()` (which only verifies the tag), so concatenating unconditionally copies
+      // every frame into a second full-size Buffer for nothing. At ~25 fps that is a frame-sized
+      // allocation per frame thrown at an allocator that does not give the pages back: a consumer on a
+      // memory-capped host measured RSS growing roughly with the bytes streamed while its own
+      // accounting stayed flat. The concat stays as the correct fallback for any mode that splits.
+      const head = dec.update(body);
+      const tail = dec.final();
+      const h264: Buffer = tail.length ? Buffer.concat([head, tail]) : head;
       return { keyframe: header.keyframe, h264, width: header.width, height: header.height };
     } catch {
       return undefined;
