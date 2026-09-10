@@ -1186,6 +1186,29 @@ export class EufyMega extends EventEmitter {
   }
 
   /**
+   * The device's LIVE, authoritative `rtsp://` URL — host, path, and the credentials it is
+   * enforcing right now — or `undefined` when none is pushed within the read window.
+   *
+   * A thin public door onto the P2P transport (which stays internal otherwise): opens the
+   * station's session on demand, so a viewer adopting a tile can call this directly without one
+   * already existing. It writes only the publish switch and the test-stream provoke, never the
+   * credentials, so a stream a NAS/NVR already consumes keeps its own pair.
+   *
+   * This is the CANONICAL way to fetch the URL: it provokes and returns it. The `rtsp` capability's
+   * `url` member surfaces the SAME value as inbound state for code that already holds a `dev.rtsp()`
+   * and reacts to `propertyChanged` — not a second way to fetch it.
+   *
+   * Every failure — no route, no account id, level-2 not ready, no push before the deadline — collapses
+   * to `undefined`. The distinction the caller might want (terminal "no RTSP" vs a transient "session
+   * not warm yet") is not drawn here yet; a caller that retries on `undefined` recovers from the
+   * transient case. The read window is a fixed 12 s — long enough for a cold HomeBase to wake and
+   * answer, and about the ceiling a UI adopting a tile will wait — deliberately not caller-tunable.
+   */
+  async reportedRtspUrl(sn: string): Promise<string | undefined> {
+    return this.p2p.readReportedRtspUrl(sn);
+  }
+
+  /**
    * Build a live {@link Device} model object for one serial: the resolved codec/capabilities with
    * its current param values applied (named via the param dictionary; unknown ids kept as
    * `unknown_<pt>`). This is the device primitive — `dev.getProperties()`, `dev.has(cap)`, etc.
