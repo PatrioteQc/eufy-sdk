@@ -121,6 +121,31 @@ function recordSetting(param: number, value: number, ctx: CommandContext): Comma
 }
 
 /**
+ * Camera models that are MAINS-powered yet still report the battery param (1101) as a fixed sentinel
+ * (e.g. 0 or 100), not a real cell. They keep the `battery` capability (for working-mode/recording),
+ * but the PHYSICAL-battery reads (`level`, `charging`) are withheld via {@link notMainsCamera} so they
+ * don't sprout a bogus battery %/icon.
+ *
+ * An explicit list, NOT a `device-family.ts` predicate (`isFloodLight`/`isIndoorCamera`): composing
+ * those would over-reach — not every floodlight or indoor cam is mains-only, and this must assert mains
+ * only for hardware actually checked. `WORKING_MODE_DEFAULT_MODELS` in this file is the same shape.
+ * Evidence bars differ: T8425 (Floodlight Cam) is confirmed on owned hardware; T8419 (Indoor Cam) is
+ * taken from the app's own mains-cam handling (see the note on `publishedWorkingModeDomain`).
+ *
+ * KNOWN, ACCEPTED trade: because the capability stays, `poweredOf` (camera.ts) still resolves these as
+ * `battery`, so a live stream is budgeted as if cell-powered. An unnecessary power budget is cheap; a
+ * phantom battery icon is a support ticket — so the visible entity is fixed here and the budget is
+ * left as-is (a `poweredOf` refinement would be a separate change).
+ */
+const MAINS_CAMERA_MODELS = ["T8425", "T8419"] as const;
+
+/** False for a mains camera that only reports 1101 as a sentinel — used to gate the physical reads. */
+const notMainsCamera = (ctx: AvailabilityContext): boolean => {
+  const model = (ctx.model ?? "").toUpperCase();
+  return !MAINS_CAMERA_MODELS.some((prefix) => model.startsWith(prefix));
+};
+
+/**
  * Every `battery` feature, declared once — the property schema, the evidence-gated getters, the derived
  * setters, the intent routes and the descriptions all come out of this table. Order is schema order.
  *
@@ -145,6 +170,7 @@ export const BATTERY_MEMBERS = {
     unit: "%",
     kind: "percent",
     provenance: "verified",
+    available: notMainsCamera,
     description: "Battery level 0-100 (verified: param 1101).",
   },
   /**
@@ -157,6 +183,7 @@ export const BATTERY_MEMBERS = {
     type: "bool",
     kind: "boolean",
     provenance: "apk",
+    available: notMainsCamera,
     coerce: (v) => {
       const n = Number(v);
       return n !== 0 && n !== 2;

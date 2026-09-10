@@ -11,6 +11,8 @@ import {
   type PowerSourceName,
 } from "../battery.js";
 import { buildCommand } from "../index.js";
+import { propertiesOf } from "../members.js";
+import type { AvailabilityContext } from "../types.js";
 import { bind } from "./bind.js";
 import type { CommandContext } from "../types.js";
 import type { Capability } from "../../types.js";
@@ -60,6 +62,19 @@ describe("battery capability module", () => {
 
   it("proves battery via the reported battery-level param 1101", () => {
     expect(BATTERY.detection?.evidenceParams).toContain(1101);
+  });
+
+  it("publishes NO battery %/charging property on mains cameras that report 1101 as a sentinel", () => {
+    const namesFor = (model: string | undefined) =>
+      propertiesOf(BATTERY.members!, { model } as AvailabilityContext).map((p) => p.name);
+    // Mains cameras (T8425 Floodlight, T8419 Indoor) publish neither the battery nor charging property.
+    for (const model of ["T8425P00", "T8419P00"]) {
+      expect(namesFor(model)).not.toContain("battery");
+      expect(namesFor(model)).not.toContain("charging");
+    }
+    // Real battery cams (and unknown models) keep them.
+    expect(namesFor("T8114P00")).toContain("battery");
+    expect(namesFor(undefined)).toContain("battery");
   });
 
   it("writes recordAutoStop as an INVERTED station-scalar on the device channel (wire-verified T8170)", () => {
