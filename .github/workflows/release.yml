@@ -31,11 +31,16 @@
 # The counter therefore has to come from somewhere, and the registry is the only place that knows it:
 # nothing is committed, so package.json still says the base version on every run. Deriving the suffix
 # locally would republish `-beta.0` forever and every push after the first would fail on an
-# already-published version. So the step below asks the registry what is on the channel's dist-tag and
-# increments THAT — and it asks the registry it PUBLISHES to, which is GitHub Packages. Querying the
-# default registry would read npmjs, where these prereleases do not exist, and compute `-beta.0` every
-# time. The registry being the state is also what makes a re-run of a failed job correct rather than a
-# duplicate.
+# already-published version. So the step below reads the registry's VERSION LIST, takes the highest N
+# already published for THIS base on this channel, and adds one — and it reads the registry it
+# PUBLISHES to, which is GitHub Packages. Querying the default registry would read npmjs, where these
+# prereleases do not exist, and compute `-beta.0` every time. The registry being the state is also what
+# makes a re-run of a failed job correct rather than a duplicate.
+#
+# The channel's dist-tag is NOT the counter, because one dist-tag serves every base: a single push to
+# `beta-0.1.1` moves `beta` to 0.1.1-beta.0, and from then on every push to a still-open `beta-0.1.0`
+# reads a base that is not its own, falls back to "first prerelease of 0.1.0", and 409s on
+# 0.1.0-beta.0 forever. Per-base, from the version list, there is no shared cursor to hijack.
 #
 # ── Credentials: no token is stored for either registry ─────────────────────────────────────────
 # GitHub Packages authenticates with the job's own GITHUB_TOKEN, written into ~/.npmrc for that host —
@@ -182,10 +187,9 @@ jobs:
           echo "auth written to $npmrc; entries now:"
           sed 's/=.*/=<redacted>/' "$npmrc"
 
-      # `beta-1.2.3` → 1.2.3-beta.N, where N continues from whatever is on the `beta` dist-tag rather
-      # than restarting at 0 on every push (see the header). `npm version pre` is the right verb, not
-      # `prerelease`: on 1.2.3 the latter bumps the patch first and yields 1.2.3-beta.0 → 1.2.4-beta.0,
-      # silently releasing a version ahead of the branch it came from.
+      # `beta-1.2.3` → 1.2.3-beta.N, where N continues from the highest 1.2.3-beta.* already on the
+      # registry rather than restarting at 0 on every push (see the header). Per-base and not from the
+      # `beta` dist-tag, which one push to a different beta branch is enough to point elsewhere.
       #
       # --no-git-tag-version keeps all of it local to the runner: nothing is committed or tagged.
       - name: Apply the prerelease version
@@ -195,24 +199,28 @@ jobs:
         run: |
           set -euo pipefail
           base="${GITHUB_REF_NAME#*-}"
+          name="$(npm pkg get name --workspaces=false | tr -d '"')"
           # Ask the registry this actually publishes to. Without --registry the query goes to npmjs,
           # where these prereleases do not exist, so every run would compute `-beta.0` afresh and the
           # second push would 409 on a version already there.
           #
+          # `versions` is a packument field, so it lists every version regardless of which one the
+          # spec resolves to — but a spec there must be: bare `npm view <name> <field>` means
+          # `@latest`, and GitHub Packages has no `latest` dist-tag while only prereleases exist, so
+          # it prints nothing at all. `@$TAG` is the one tag a prerelease channel is guaranteed to
+          # have set, on its own previous publish.
+          #
           # A brand-new package, or a channel with nothing on it yet, prints an empty string rather
-          # than failing — hence the `|| true` and the emptiness check.
-          published="$(npm view "$(npm pkg get name --workspaces=false | tr -d '"')@$TAG" version \
+          # than failing — hence the `|| true`.
+          versions="$(npm view "$name@$TAG" versions --json \
             --registry=https://npm.pkg.github.com 2>/dev/null || true)"
 
-          if [ -n "$published" ] && [ "${published%%-*}" = "$base" ]; then
-            # Same base still in flight on this channel: continue its counter.
-            npm version "$published" --no-git-tag-version --allow-same-version
-            npm version pre --preid="$TAG" --no-git-tag-version
-          else
-            # First prerelease of this base, or the branch moved on to a new base version.
-            npm version "$base" --no-git-tag-version --allow-same-version
-            npm version pre --preid="$TAG" --no-git-tag-version
-          fi
+          # Highest N among this base's prereleases on this channel; empty when there are none, which
+          # `${n:--1} + 1` turns into the first, `.0`.
+          n="$(printf '%s' "$versions" | tr -d '[]" ' | tr ',' '\n' \
+            | sed -n "s/^${base//./\\.}-$TAG\.\([0-9]\{1,\}\)$/\1/p" | sort -n | tail -1)"
+
+          npm version "$base-$TAG.$(( ${n:--1} + 1 ))" --no-git-tag-version --allow-same-version
           echo "publishing $(npm pkg get version | tr -d '"') to the $TAG channel"
 
       # `v1.2.3` → publish 1.2.3. The tag is the version, so a release is a tag and nothing else — no
