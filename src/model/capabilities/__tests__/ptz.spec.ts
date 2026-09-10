@@ -31,7 +31,8 @@ const zoomCtx = (channel = 0): CommandContext => ctx(channel, [6204]);
 describe("ptz capability module", () => {
   it("declares the capability + schema", () => {
     expect(PTZ.capability).toBe("ptz");
-    expect(PTZ.properties.map((p) => p.name)).toEqual(["rotationSpeed", "panAngle", "tiltAngle"]);
+    // No value member: no device reports its position as a parameter, so PTZ is methods + one event.
+    expect(PTZ.properties).toEqual([]);
   });
 
   describe("detection", () => {

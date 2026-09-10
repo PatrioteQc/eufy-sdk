@@ -314,65 +314,19 @@ function isDirection(v: unknown): v is PtzDirection {
 }
 
 /**
- * `ptz` — PTZ cameras. `rotationSpeed` is an unverified placeholder; pan/tilt are command-driven so
- * their reported angles are placeholders too.
- */
-/**
  * Every `ptz` feature, declared once.
  *
- * Movement is command-driven, so almost everything here is a `method`: `rotate` takes a direction
- * plus an optional speed, the four compass verbs take nothing, `preset()` returns a whole sub-API, and
- * `zoom` is gated on the device having a second lens. The three reported angles/speed are value members
- * whose ids are unverified placeholders — evidence-gated, so a device that never reports one simply has
- * no getter for it (a live fleet probe found none of the three reported by any device today).
+ * Movement is command-driven, so every entry is a `method`: `rotate` takes a direction plus an
+ * optional speed, the four compass verbs take nothing, `preset()` returns a whole sub-API, and `zoom`
+ * is gated on the device having a second lens. There is no value member: no device reports its pan/tilt
+ * position as a parameter. Position arrives only while the camera moves, as the `ptzNotify` event
+ * {@link PTZ} decodes from a live frame.
  *
  * Exported but NOT published: each entry states its wire id and the evidence it was confirmed on,
  * which the reference site does not carry.
  * @internal
  */
 export const PTZ_MEMBERS = {
-  /**
-   * How fast the camera pans, if it reports it at all — 1018 is a `guessed` placeholder and a fleet
-   * probe found no device reporting it, so expect no getter. A bare `scalar` because neither the range
-   * nor the direction of the number is established. Not the same thing as `rotate`'s `zoom` argument,
-   * which scales one STEP rather than setting a speed.
-   */
-  rotationSpeed: {
-    param: 1018,
-    type: "number",
-    kind: "scalar",
-    provenance: "guessed",
-    description: "Pan/tilt rotation speed. UNVERIFIED: placeholder param id pending verification.",
-  },
-  /**
-   * Where the camera is currently pointed horizontally, in degrees as the device would report them —
-   * never converted or normalised, since the origin and the direction of travel are both unconfirmed.
-   * 1206 is a `guessed` placeholder, unreported by any device probed so far. Read-only regardless:
-   * movement here is command-driven, so there is no "go to angle X" write to pair with it.
-   */
-  panAngle: {
-    param: 1206,
-    type: "number",
-    unit: "\u00b0",
-    kind: "degrees",
-    provenance: "guessed",
-    description: "Reported pan angle. UNVERIFIED placeholder pending capture verification.",
-  },
-  /**
-   * The vertical counterpart to `panAngle`, with the same standing: degrees as reported, a `guessed`
-   * placeholder id, no device seen reporting it, and no write. Note 1207 is the same number
-   * `camera.imageFlipped` uses for its own rotate-image param — an unconfirmed id colliding with a
-   * confirmed one on another capability, and a reason to treat this placeholder with suspicion.
-   */
-  tiltAngle: {
-    param: 1207,
-    type: "number",
-    unit: "\u00b0",
-    kind: "degrees",
-    provenance: "guessed",
-    description: "Reported tilt angle. UNVERIFIED placeholder pending capture verification.",
-  },
-
   /** Rotate a step in a direction; `zoom` scales the step size (1.0 = the default step). */
   rotate: method(
     ({ ctx, sink }) =>
@@ -459,7 +413,7 @@ export const PTZ_MEMBERS = {
 
 export const PTZ: CapabilityModule = {
   capability: "ptz",
-  description: "Pan/tilt (PTZ) control. Movement is command-driven; angles are reported state.",
+  description: "Pan/tilt (PTZ) control. Movement is command-driven; position arrives as a live event.",
   /**
    * The intent route for the movement verbs — kept alongside the member table because these are
    * ARGUMENT-TAKING verbs, not property writes: `rotate` takes a direction, the preset verbs take an id.
