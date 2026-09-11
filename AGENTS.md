@@ -11,7 +11,7 @@ Setup, the dev workflow and the PR process are in [CONTRIBUTING.md](./CONTRIBUTI
 - **TypeScript** (strict), `module`/`moduleResolution` **nodenext**, `"type": "module"` → **ESM emit**
   (explicit `.js` import specifiers), target ES2024, `dist/` output. No framework.
 - **Node.js ≥ 24.5.0** required (see `.nvmrc`), not just recommended.
-- Runtime deps: **mqtt, protobufjs, werift** — that's all. HTTP is native `fetch`, hashing and ciphers
+- Runtime deps: **mqtt, protobufjs, jpeg-js** — that's all. HTTP is native `fetch`, hashing and ciphers
   are `node:crypto`, 64-bit integers are `BigInt`.
 - Tests: **Vitest** (esbuild type-strip, specs run as real ESM). Type safety is `tsc`'s job via
   `npm run typecheck`, not the test runner's. Formatting: Prettier. No linter.
@@ -27,7 +27,7 @@ one above it.
    boundary vocabulary (`Command`, `CommandSink`, `MediaProvider`, …) — the one thing genuinely shared
    across layers, which is why it lives here. Plus crypto, value types, session store, utilities. **No
    wire-identifier constants:** model and transport use disjoint id subsets, so each owns its own.
-2. **`transport/{http,mqtt,p2p,push,webrtc}/`** — every byte-on-a-wire module, one folder and barrel
+2. **`transport/{http,mqtt,p2p,push,tuya}/`** — every byte-on-a-wire module, one folder and barrel
    each. Owns sessions, frame codecs, encryption, and the wire ids it issues. A new transport goes
    here. Imports `core/` only.
 3. **`model/`** — the device domain: `Device`, classification, and one self-contained module per
@@ -82,12 +82,28 @@ path exists. A provider is what's left when the inbound path cannot know what it
 An optional provider is genuinely optional: a device bound without it must degrade to `undefined`,
 never to a guess.
 
+## Reuse before abstraction
+
+1. **Search before creating.** Before adding a helper, type, provider, command kind or serializer,
+   search the whole repository by operation and data shape, including the primitive APIs it uses rather
+   than only its proposed name. Finish when every new primitive either reuses an existing owner or has
+   a distinct contract or authority.
+2. **Preserve ownership and contract.** Reuse or extend an existing primitive when it owns the same
+   operation and satisfies the required semantics. Introduce an abstraction when it simplifies current
+   callers under that same ownership. Trust-boundary validation and independently authoritative
+   declarations remain local.
+3. **Reduce after green.** After focused tests and typechecking pass, inspect the diff for same-contract
+   helpers, value shapes and test setup already owned elsewhere. Resolve every match before running the
+   full verification gate.
+
 ## Capability design
 
 Adding a capability touches **only its own module file plus a couple of lines in
 `capabilities/index.ts`**. `device.ts` and the client facade **never name a capability** — the fluent
 `dev.camera()` accessors and the typed event map are derived from the barrel projections. Do not add a
-`switch` or `if` on a capability name outside its module.
+`switch` or `if` on a capability name outside its module, and do not call one capability's accessor from
+those layers. CI-enforced by `guard:capability-ownership`, which allowlists exactly one exception
+(`stationPower`, resolving a station's power tier for the P2P session lifecycle).
 
 - **One feature, one entry.** A module declares ONE **`members` table** and everything is derived from
   it: the property schema, the evidence-gated getter, the setter beside it, the intent route, the
@@ -149,6 +165,15 @@ Adding a capability touches **only its own module file plus a couple of lines in
   in a JSDoc block **above** the function, type or field; do not narrate inside the body with `//`
   lines. State what is verified, not the iteration history of how you got there. A body comment is a
   smell that the JSDoc is incomplete — move it up, or delete it if the code already says it.
+- **A JSDoc states the declaration, not its audience.** What it is, what it takes, what it answers,
+  what it guarantees, and the protocol fact that makes it so. NOT who will call it, what a caller
+  might do with it, what could be built on it, or which tool finds it handy — a declaration has no
+  say in who reuses it, and naming a consumer dates the doc the moment another one appears. Write
+  about the value, not the reader: `answers undefined when the wire supplies no URL`, never `so a
+host can decide whether to show a button`. Second person (`you`, `your host`) never appears.
+- **A JSDoc does not narrate its own history.** Not what an earlier version did, not what the old
+  path was, not which guess was wrong, not what a fix corrected. Prose that needs editing when the
+  next change lands is not ground truth. That reasoning belongs in the commit that makes the change.
 - **Shipped `src/` cites its PEERS only — never a `.md` file.** `src/` ships in `dist/`, so a pointer
   to a companion prose file dangles for a consumer, and `docs/` is **generated from** this source's
   JSDoc — pointing back at it inverts the direction the site is built on. Reference modules, exported
@@ -164,3 +189,13 @@ Adding a capability touches **only its own module file plus a couple of lines in
   command named after the first.
 - **No backward-compat below 1.0.** Remove speculative and dead code rather than keeping old shapes
   beside new ones.
+
+## Agent skills
+
+### Issue tracker
+
+Issues and specs live in GitHub Issues for this repository; use the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Use the canonical labels `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, and `wontfix`. See `docs/agents/triage-labels.md`.

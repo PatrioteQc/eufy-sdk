@@ -21,7 +21,7 @@ npm run build           # tsc → dist/ (ESM)
 npm test                # vitest (offline, synthetic fixtures)
 ```
 
-`ffmpeg` is optional — only the JPEG-snapshot, one-shot mp4 record, and WebRTC container-output paths
+`ffmpeg` is optional — only the JPEG-snapshot and one-shot mp4 record paths
 use it.
 
 ## How the code is written
@@ -44,8 +44,8 @@ an ESM load smoke test → `typecheck:examples` → `test`. A green `npm test` a
 `.github/workflows/ci.yml` invokes the same script, so green `verify` means green CI.
 
 Individual pieces if you need them: `npm run guard:decorrelation`, `npm run guard:lines`,
-`npm run guard:docrefs`, `npm run guard:consumer-agnostic`, `npm run guard:seal` (build first),
-`npm run check:esm`, and `npm run format` to auto-fix formatting.
+`npm run guard:docrefs`, `npm run guard:consumer-agnostic`, `npm run guard:capability-ownership`,
+`npm run guard:seal` (build first), `npm run check:esm`, and `npm run format` to auto-fix formatting.
 
 **One gate lives outside `verify`:** `guard:docs`, the publication guard over the generated API
 reference. It needs the docs toolchain, which `verify` deliberately does not require. Reproduce it
@@ -63,10 +63,6 @@ synthetic fixtures. Add tests for new wire logic and capability behaviour.
 
 - **Conventional Commits** (`feat:`, `fix:`, `docs:`, `refactor:`, …).
 - **Sign your commits** (GPG / `-S`).
-- **Maintainer commits credit all three of us.** The project is jointly owned, so a commit from one
-  maintainer carries `Co-authored-by:` trailers for the other two — every commit, not just the notable
-  ones. `git config commit.template .gitmessage` fills them in for you. Your own contributions keep
-  your authorship; this rule is about not letting shared work read as one person's.
 - **PRs: concise, dev-to-dev, to the point.** Say what changed and why; call out anything unverified
   or deferred. If a PR is stacked on another, set its base to that branch and say so.
 - **Live testing is read-only by default.** Never run write commands against a real device without

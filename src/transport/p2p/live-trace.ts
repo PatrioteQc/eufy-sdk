@@ -1,0 +1,80 @@
+/**
+ * Bounded, identity-free live-startup diagnostics.
+ *
+ * A live start spans two modules — the session issues the media command and reassembles datagrams, the
+ * stream turns accepted frames into access units — so the message and its phase vocabulary have one owner
+ * here rather than a literal repeated at each call site. A caller reads these to tell one startup outcome
+ * from another, and matches on {@link LIVE_TRACE_MESSAGE} plus a {@link LiveTrace} phase to do it.
+ *
+ * Every field is a fixed label, a boolean, a data-type id, or a sign code. No serial, P2P identifier,
+ * address, account id, key material, or media byte is carried, so the records are safe in a host's log.
+ *
+ * @module p2p/live-trace
+ */
+import type { Logger } from "../../core/logger.js";
+
+/** The message every startup trace is logged under. */
+export const LIVE_TRACE_MESSAGE = "[live] start trace";
+
+/** One bounded startup observation. */
+export type LiveTrace =
+  /** A media start or keepalive was sent, with the topology and encryption level it was sent under. */
+  | { phase: "media-command"; topology: "attached" | "own"; action: "start" | "keepalive"; level2: boolean }
+  /** The device acknowledged a retained start, or that start was repeated / abandoned unacknowledged. */
+  | { phase: "media-command-ack" | "media-command-retry" | "media-command-unacknowledged"; action: "start" }
+  /** The first inbound video command, and whether this stream's channel filter accepted it. */
+  | { phase: "first-video-command"; signCode: number; accepted: boolean }
+  /** The first reassembled video access unit, and whether it was decodable on its own. */
+  | { phase: "first-video-unit"; keyframe: boolean }
+  /** The first keyframe reached the consumer. */
+  | { phase: "first-keyframe" }
+  /** Media tagged for another camera on the same station arrived first. */
+  | { phase: "first-foreign-media-command"; media: "audio" | "video" }
+  /** A video payload decoded to nothing, so no access unit could be built from it. */
+  | { phase: "video-decode-empty"; signCode: number }
+  /** A datagram was missing on a data channel, discarding the logical frame being reassembled. */
+  | { phase: "datagram-gap"; dataType: number }
+  /** A data channel's numbering restarted mid-connection, so sequencing resynchronized onto it. */
+  | { phase: "sequence-restart"; dataType: number }
+  /**
+   * A live start is holding for the station's level-2 key, with the milliseconds it will wait.
+   *
+   * The first of three phases that account for the wait before any media command is sent. A start that looks
+   * slow is either waiting here, waiting for the station to serve the channel it was asked for, or being
+   * re-issued — and only these separate them.
+   */
+  | { phase: "level2-wait"; waitMs: number }
+  /** The station's level-2 key was negotiated, under the cipher it selected. */
+  | { phase: "level2-ready"; cipherId: number }
+  /** The level-2 key did not arrive in its grace, so the start proceeds at level 1 or not at all. */
+  | { phase: "level2-absent"; waitedMs: number }
+  /** A shared source began warming, with the interval it re-issues on and the deadline it fails at. */
+  | { phase: "warming"; retryMs: number; deadlineMs: number }
+  /**
+   * A media command was never put on the wire, and what it was missing.
+   *
+   * The attached media start has no level-1 form, so without the station's level-2 key there is nothing to
+   * send. A command that was never sent is otherwise indistinguishable from one the station ignored, which is
+   * the difference between a key that never arrived and a station that is not answering.
+   */
+  | { phase: "media-command-unsent"; reason: "level2-key" | "address" }
+  /**
+   * This connection's path has stopped answering the heartbeat, with how long it has been silent.
+   *
+   * The station answers every PING with a PONG, so silence past several heartbeats is the path being gone.
+   * Stated only where a pong arrived: a station that has never answered says nothing by not answering now.
+   */
+  | { phase: "path-stale"; silentMs: number };
+
+/**
+ * Record one startup observation at debug level.
+ *
+ * `source` states which pull the record belongs to, as an OPAQUE per-process handle — never a serial, a
+ * channel or an address. A phase says what happened and nothing about where, so four cameras warming off one
+ * HomeBase produce four indistinguishable records; the handle groups them without naming anything, cannot be
+ * resolved to a device by whoever reads it, and means nothing in the next run. That is what keeps these
+ * records retainable.
+ */
+export function traceLiveStart(logger: Logger, trace: LiveTrace, source?: string): void {
+  logger.debug(LIVE_TRACE_MESSAGE, source === undefined ? trace : { ...trace, source });
+}

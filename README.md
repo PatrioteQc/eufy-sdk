@@ -10,7 +10,7 @@
   <img src="https://raw.githubusercontent.com/mega-yfue/eufy-sdk/main/docs/public/logo.svg" alt="eufy-sdk" height="72">
 </picture>
 
-**One typed client for the whole eufy ecosystem — devices, realtime events, and live media.**
+**One typed client for the whole Anker eufy ecosystem — devices, realtime events, and live media.**
 
 [![npm](https://img.shields.io/npm/v/@mega-yfue/eufy-sdk?logo=npm&color=cb3837)](https://www.npmjs.com/package/@mega-yfue/eufy-sdk)
 [![CI](https://github.com/mega-yfue/eufy-sdk/actions/workflows/ci.yml/badge.svg)](https://github.com/mega-yfue/eufy-sdk/actions/workflows/ci.yml)
@@ -30,14 +30,15 @@
 
 ## What it is
 
-A TypeScript SDK for the eufy cloud that the current eufy app speaks. It logs in (captcha and 2FA
+A TypeScript SDK for the Anker eufy cloud that the current eufy app speaks. It logs in (captcha and 2FA
 included), keeps a **persistent session**, and models every device as a capability-driven `Device`
 you drive through a **typed, fluent API**:
 
 ```ts
 const dev = await eufy.getDevice(sn);
 
-await dev.camera()?.snapshot();
+const stored = await dev.camera()?.snapshotStored?.(); // latest retained push JPEG
+const fresh = await dev.camera()?.snapshotLive(); // explicit fresh live capture
 await dev.panTilt()?.rotate(PtzDirection.left);
 await dev.light()?.setBrightness(60);
 
@@ -54,14 +55,17 @@ code path and an unlisted or future device resolves the same way as a known one.
 
 ## Install
 
-Once published:
-
 ```bash
 npm install @mega-yfue/eufy-sdk
 ```
 
+Releases go to **npmjs**, published from CI with provenance. Prereleases ship on the `beta` channel
+(`npm install @mega-yfue/eufy-sdk@beta`) while a version is still under review.
+
 **Node.js ≥ 24.5.0** is required, not just recommended (see [`.nvmrc`](./.nvmrc)). `ffmpeg` is
-optional — only the JPEG-snapshot, one-shot mp4 record and WebRTC container-output paths use it.
+optional — only the live JPEG snapshot and one-shot mp4 record paths use it,
+and a host that ships its own build names it with `new EufyMega({ ffmpegPath })` rather than needing
+one on `PATH`.
 
 ## Documentation
 
@@ -77,7 +81,7 @@ Four layers, one dependency direction — `core` → `transport` → `model` →
 ```
 src/
   core/         shared floor: crypto, cross-layer contracts, value types, session store
-  transport/    every byte-on-a-wire module: http, mqtt, p2p, push, webrtc
+  transport/    every byte-on-a-wire module: http, mqtt, p2p, push, tuya
   model/        Device + one self-contained module per capability
   client/       the facade: login, device registry, event fan-out
   index.ts      public surface — one `export *` per layer barrel
@@ -88,7 +92,7 @@ src/
 never names a feature. Anything genuinely shared is a contract in `core/`. That rule and the rest of
 the code practice are in [AGENTS.md](./AGENTS.md).
 
-Three runtime dependencies — `mqtt`, `protobufjs`, `werift` — and that is deliberate. HTTP is native
+Three runtime dependencies — `mqtt`, `protobufjs`, `jpeg-js` — and that is deliberate. HTTP is native
 `fetch`, hashing and ciphers are `node:crypto`, 64-bit integers are `BigInt`.
 
 **Unverified write paths throw rather than guess.** Some writes are fire-and-forget, so a guessed
@@ -108,13 +112,23 @@ PRs welcome. [CONTRIBUTING.md](./CONTRIBUTING.md) covers setup, the dev workflow
 [AGENTS.md](./AGENTS.md) is the code practice — the architecture invariants and the rules CI enforces.
 Security issues go through [SECURITY.md](./SECURITY.md), never a public issue.
 
+## Thanks
+
+Huge thanks to the testers who run this against real hardware and make sure it's ready — they are
+credited in the release notes for the version their work landed in.
+
 ## License
 
 [Apache-2.0](./LICENSE). Contributions are accepted under the same license (inbound = outbound).
 
 ## Disclaimer
 
-Independent and unofficial, built for interoperability with eufy devices you own. **Not affiliated
-with, endorsed by, or sponsored by Anker Innovations or eufy.** "eufy" and "Anker" are trademarks of
-their respective owners and appear here only to identify the hardware this SDK talks to. Use
-responsibly — rapid or failed logins can trigger a captcha or a temporary cooldown.
+Independent and unofficial, built for interoperability with Anker eufy devices you own. **Not
+affiliated with, endorsed by, or sponsored by Anker Innovations, Anker eufy, or eufy.** "Anker eufy",
+"eufy" and "Anker" are trademarks of their respective owners and appear here only to identify the
+hardware this SDK talks to. Use responsibly — rapid or failed logins can trigger a captcha or a
+temporary cooldown.
+
+The vendor now brands the line **Anker eufy**; "eufy" alone is the short form and still the name on
+the wire (`eufy_security`, `eufy_life`, `eufy_mega`) and in every product name (eufyCam, eufy Clean,
+eufy Life). Protocol vocabulary follows the device, not the marketing, so those are not renamed here.

@@ -1,13 +1,18 @@
 /**
- * Public entry point of the SDK.
+ * eufy-sdk — one typed client for every Anker eufy device.
  *
- * The library is split into four layers, each behind its own barrel. `model/` and `transport/` are
- * decorrelated by design — neither imports the other, and anything genuinely shared between them is
- * a contract in `core/`. `client/` is the facade a caller actually holds.
- *
- * The layers are empty in this scaffold commit; the implementation lands with the source move.
+ * Log in, model devices as capability-driven objects with a fluent typed API,
+ * and subscribe to typed semantic events. Transport is internal.
  */
-export * from "./core/index.js";
-export * from "./transport/index.js";
-export * from "./model/index.js";
+
+// Facade: the EufyMega client + its public options/event types.
 export * from "./client/index.js";
+
+// Shared primitives: crypto, cross-cutting types, session store, utils.
+export * from "./core/index.js";
+
+// Device connectivity — internal wire, surfaced for advanced/escape-hatch use.
+export * from "./transport/index.js";
+
+// Device model: capability-driven Device + capability modules.
+export * from "./model/index.js";

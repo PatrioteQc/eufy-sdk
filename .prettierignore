@@ -1,11 +1,7 @@
 node_modules/
 dist/
-coverage/
 package-lock.json
 *.log
-# binary test fixtures
-src/__tests__/fixtures/*.bin
-src/__tests__/fixtures/*.jpg
 
 # generated API reference (TypeDoc output)
 docs/api/

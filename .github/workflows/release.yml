@@ -1,17 +1,12 @@
-# Publish @mega-yfue/eufy-sdk to npm.
+# Publish @mega-yfue/eufy-sdk.
 #
-# Publishing happens on one trigger: a published GitHub Release on tag vX.Y.Z, which ships to the
-# `latest` dist-tag.
+# Two triggers: a published GitHub Release on tag vX.Y.Z ships to `latest`, and a push to a
+# `beta-X.Y.Z` / `alpha-X.Y.Z` branch ships a prerelease to that channel.
 #
-# ── Prerelease channels exist in this file but are not wired up ─────────────────────────────────
-# The `beta` and `alpha` machinery below is complete and tested, but the `push:` triggers that fed it
-# are commented out. While the library is being assembled, `beta-X.Y.Z` is a staging branch that
-# merges into main (see merge-policy.yml) and nothing more — a publish on every push would spend
-# prerelease numbers on work in progress, and the consumer that would install them reads the source
-# tree directly rather than the registry.
-#
-# Re-enable by uncommenting the two branch patterns under `push:`. Everything downstream already
-# handles them: the channel resolver, the registry-continued -beta.N counter, the dist-tag.
+# ── One registry: npmjs ─────────────────────────────────────────────────────────────────────────
+# Every channel publishes to npmjs, public, with provenance. The repository is public, so the built
+# library and the source it is built from are readable by the same people, and a second registry would
+# only be a second place for the same tarball to be out of date.
 #
 # ── The REF names the version, on all three channels ────────────────────────────────────────────
 # The tag `v1.2.3` publishes 1.2.3; the branch `beta-1.2.3` publishes 1.2.3-beta.N. package.json's
@@ -31,12 +26,17 @@
 #
 # The counter therefore has to come from somewhere, and the registry is the only place that knows it:
 # nothing is committed, so package.json still says the base version on every run. Deriving the suffix
-# locally would republish `-beta.0` forever and every push after the first would 403 on an
-# already-published version. So the step below asks npm what is on the channel's dist-tag and
-# increments THAT — the registry is the state, which is also what makes a re-run of a failed job
-# correct rather than a duplicate.
+# locally would republish `-beta.0` forever and every push after the first would fail on an
+# already-published version. So the step below reads the registry's VERSION LIST, takes the highest N
+# already published for THIS base on this channel, and adds one. The registry being the state is also
+# what makes a re-run of a failed job correct rather than a duplicate.
 #
-# ── Credentials: npm OIDC trusted publishing, NOT a token ───────────────────────────────────────
+# The channel's dist-tag is NOT the counter, because one dist-tag serves every base: a single push to
+# `beta-0.1.1` moves `beta` to 0.1.1-beta.0, and from then on every push to a still-open `beta-0.1.0`
+# reads a base that is not its own, falls back to "first prerelease of 0.1.0", and 409s on
+# 0.1.0-beta.0 forever. Per-base, from the version list, there is no shared cursor to hijack.
+#
+# ── Credentials: no token is stored ─────────────────────────────────────────────────────────────
 # There is no NPM_TOKEN. The runner mints a short-lived OIDC identity that npm verifies against the
 # trusted publisher configured on the package (npmjs.com → the package → Settings → Trusted
 # publishers), which pins three things that must all keep matching: this repository, this workflow's
@@ -73,13 +73,15 @@ name: Release
 on:
   release:
     types: [published]
-  # Prerelease publishing, suspended. Uncomment to ship a X.Y.Z-beta.N on every push to the branch.
-  # push:
-  #   branches:
-  #     - beta-*.*.*
-  #     - alpha-*.*.*
+  # Every push to a prerelease branch ships an installable X.Y.Z-beta.N, so a fix under review is
+  # something a consumer can pull rather than a commit they have to build.
+  push:
+    branches:
+      - beta-*.*.*
+      - alpha-*.*.*
 
 # `contents: read` — the release notes are written by hand on the GitHub Release, not generated here.
+# `id-token: write` is npm's OIDC.
 permissions:
   id-token: write
   contents: read
@@ -99,13 +101,21 @@ jobs:
     runs-on: ubuntu-latest
     # REQUIRED, not decorative: the npm trusted publisher is configured with the environment name, so
     # the OIDC token has to carry a matching `environment` claim or npm rejects the publish. Removing
-    # this line does not loosen the workflow, it breaks it.
+    # this key does not loosen the workflow, it breaks it — and each name below needs its own trusted
+    # publisher entry on the package (npm allows several; the repository and workflow FILENAME are the
+    # same on both).
     #
-    # It also gates the publish on a human: the environment requires a review from one of the three
-    # maintainers, and self-review is disabled — whoever cuts the release is not the one who approves
-    # it. The job pauses at this step until someone else clicks approve.
+    # Which environment depends on what a failure costs. A tag is a stable version that can never be
+    # withdrawn or reused, so `release` requires a review from one of the three maintainers and forbids
+    # self-review: whoever cuts the release is not the one who approves it, and the job pauses until
+    # someone else clicks approve. A prerelease costs one `-beta.N`, so `prerelease` has no reviewer at
+    # all and publishes on push.
+    #
+    # A branch cannot reach `release` and a tag cannot reach `prerelease`: each environment's deployment
+    # branch policy admits only its own refs, so the gate does not depend on this expression being
+    # right.
     environment:
-      name: release
+      name: ${{ startsWith(github.ref, 'refs/heads/') && 'prerelease' || 'release' }}
       url: https://www.npmjs.com/package/@mega-yfue/eufy-sdk
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -154,10 +164,9 @@ jobs:
             *)                  echo "tag=latest" >> "$GITHUB_OUTPUT" ;;
           esac
 
-      # `beta-1.2.3` → 1.2.3-beta.N, where N continues from whatever is on the `beta` dist-tag rather
-      # than restarting at 0 on every push (see the header). `npm version pre` is the right verb, not
-      # `prerelease`: on 1.2.3 the latter bumps the patch first and yields 1.2.3-beta.0 → 1.2.4-beta.0,
-      # silently releasing a version ahead of the branch it came from.
+      # `beta-1.2.3` → 1.2.3-beta.N, where N continues from the highest 1.2.3-beta.* already on the
+      # registry rather than restarting at 0 on every push (see the header). Per-base and not from the
+      # `beta` dist-tag, which one push to a different beta branch is enough to point elsewhere.
       #
       # --no-git-tag-version keeps all of it local to the runner: nothing is committed or tagged.
       - name: Apply the prerelease version
@@ -167,19 +176,20 @@ jobs:
         run: |
           set -euo pipefail
           base="${GITHUB_REF_NAME#*-}"
-          # A brand-new package, or a channel with nothing on it yet, prints an empty string here
-          # rather than failing — hence the `|| true` and the emptiness check.
-          published="$(npm view "$(npm pkg get name --workspaces=false | tr -d '"')@$TAG" version 2>/dev/null || true)"
+          name="$(npm pkg get name --workspaces=false | tr -d '"')"
+          # `versions` is a packument field, so it lists every version regardless of which one the
+          # spec resolves to — but a spec there must be: bare `npm view <name> <field>` means
+          # `@latest`, which every published package has.
+          #
+          # A brand-new package prints an empty string rather than failing — hence the `|| true`.
+          versions="$(npm view "$name" versions --json 2>/dev/null || true)"
 
-          if [ -n "$published" ] && [ "${published%%-*}" = "$base" ]; then
-            # Same base still in flight on this channel: continue its counter.
-            npm version "$published" --no-git-tag-version --allow-same-version
-            npm version pre --preid="$TAG" --no-git-tag-version
-          else
-            # First prerelease of this base, or the branch moved on to a new base version.
-            npm version "$base" --no-git-tag-version --allow-same-version
-            npm version pre --preid="$TAG" --no-git-tag-version
-          fi
+          # Highest N among this base's prereleases on this channel; empty when there are none, which
+          # `${n:--1} + 1` turns into the first, `.0`.
+          n="$(printf '%s' "$versions" | tr -d '[]" ' | tr ',' '\n' \
+            | sed -n "s/^${base//./\\.}-$TAG\.\([0-9]\{1,\}\)$/\1/p" | sort -n | tail -1)"
+
+          npm version "$base-$TAG.$(( ${n:--1} + 1 ))" --no-git-tag-version --allow-same-version
           echo "publishing $(npm pkg get version | tr -d '"') to the $TAG channel"
 
       # `v1.2.3` → publish 1.2.3. The tag is the version, so a release is a tag and nothing else — no
@@ -209,5 +219,5 @@ jobs:
       - name: Inspect the tarball
         run: npm pack --dry-run
 
-      - name: Publish to npm
+      - name: Publish to npmjs
         run: npm publish --tag ${{ steps.channel.outputs.tag }} --provenance --access public

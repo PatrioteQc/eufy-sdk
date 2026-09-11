@@ -1,7 +1,9 @@
-/**
- * Shared primitives: crypto, cross-layer contracts, value types, session store, logging, utilities.
- *
- * `core/` is the only layer both `model/` and `transport/` may depend on, which is what keeps the
- * two decorrelated.
- */
-export {};
+export * from "./crypto.js";
+export * from "./types.js";
+export * from "./contracts.js";
+export * from "./raw-dp-writer.js";
+export * from "./raw-dp-hex.js";
+export * from "./logger.js";
+export * from "./store.js";
+export * from "./util.js";
+export * from "./lz4-block.js";
