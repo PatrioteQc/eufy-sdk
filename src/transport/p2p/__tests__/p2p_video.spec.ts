@@ -120,6 +120,20 @@ describe("VideoFrameDecoder", () => {
     expect(pOut?.h264.equals(pPlain)).toBe(true);
   });
 
+  test("a frame whose plaintext spans several update() blocks still decodes whole", () => {
+    // The decrypt returns `update()`'s buffer directly and only concatenates when `final()` has bytes
+    // to add — the allocation the video path pays per frame, and AES-GCM's contract says `final()` is
+    // empty. This covers the fallback that contract does not guarantee: a body long enough that the
+    // cipher could split it, which must come back identical either way.
+    const { decoder, camPub } = newCamera();
+    const mediaKey = randomBytes(32);
+    const plain = Buffer.concat([Buffer.from("\x00\x00\x00\x01"), randomBytes(300_000)]);
+    const out = decoder.decodeFrame(
+      assembleFrame({ keyframe: true, envelope: wrapEnvelope(mediaKey, camPub), ...sealBody(mediaKey, plain) }),
+    );
+    expect(out?.h264.equals(plain)).toBe(true);
+  });
+
   test("keyframe-key-reuse: one keyframe then several P-frames decode with the cached key", () => {
     const { decoder, camPub } = newCamera();
     const mediaKey = randomBytes(32);
