@@ -55,21 +55,12 @@ code path and an unlisted or future device resolves the same way as a known one.
 
 ## Install
 
-Releases go to **GitHub Packages** while this repository is private. That registry serves whoever can
-already read the repo, so installing needs a `.npmrc` telling npm where the scope lives and a token to
-authenticate with — a personal access token with `read:packages` is enough:
-
-```ini
-# .npmrc
-@mega-yfue:registry=https://npm.pkg.github.com
-//npm.pkg.github.com/:_authToken=${GITHUB_TOKEN}
-```
-
 ```bash
 npm install @mega-yfue/eufy-sdk
 ```
 
-Once the repository is public, releases also go to npmjs and the `.npmrc` becomes unnecessary.
+Releases go to **npmjs**, published from CI with provenance. Prereleases ship on the `beta` channel
+(`npm install @mega-yfue/eufy-sdk@beta`) while a version is still under review.
 
 **Node.js ≥ 24.5.0** is required, not just recommended (see [`.nvmrc`](./.nvmrc)). `ffmpeg` is
 optional — only the live JPEG snapshot and one-shot mp4 record paths use it,
@@ -123,8 +114,8 @@ Security issues go through [SECURITY.md](./SECURITY.md), never a public issue.
 
 ## Thanks
 
-Huge thanks to the testers who run this against real hardware and make sure it's ready —
-see [THANKS.md](./THANKS.md).
+Huge thanks to the testers who run this against real hardware and make sure it's ready — they are
+credited in the release notes for the version their work landed in.
 
 ## License
 

@@ -3,14 +3,10 @@
 # Two triggers: a published GitHub Release on tag vX.Y.Z ships to `latest`, and a push to a
 # `beta-X.Y.Z` / `alpha-X.Y.Z` branch ships a prerelease to that channel.
 #
-# ── Two registries, one of them conditional ─────────────────────────────────────────────────────
-# GitHub Packages every time. It grants read to whoever can already read the repository, so while this
-# repository is private that is an authenticated registry with no credential to manage — the job's own
-# GITHUB_TOKEN is the whole auth story.
-#
-# npmjs only while the repository is PUBLIC, decided by the event payload rather than a switch someone
-# has to remember to flip. Publishing a private repository's build to a public registry would undo the
-# reason it is private.
+# ── One registry: npmjs ─────────────────────────────────────────────────────────────────────────
+# Every channel publishes to npmjs, public, with provenance. The repository is public, so the built
+# library and the source it is built from are readable by the same people, and a second registry would
+# only be a second place for the same tarball to be out of date.
 #
 # ── The REF names the version, on all three channels ────────────────────────────────────────────
 # The tag `v1.2.3` publishes 1.2.3; the branch `beta-1.2.3` publishes 1.2.3-beta.N. package.json's
@@ -32,23 +28,16 @@
 # nothing is committed, so package.json still says the base version on every run. Deriving the suffix
 # locally would republish `-beta.0` forever and every push after the first would fail on an
 # already-published version. So the step below reads the registry's VERSION LIST, takes the highest N
-# already published for THIS base on this channel, and adds one — and it reads the registry it
-# PUBLISHES to, which is GitHub Packages. Querying the default registry would read npmjs, where these
-# prereleases do not exist, and compute `-beta.0` every time. The registry being the state is also what
-# makes a re-run of a failed job correct rather than a duplicate.
+# already published for THIS base on this channel, and adds one. The registry being the state is also
+# what makes a re-run of a failed job correct rather than a duplicate.
 #
 # The channel's dist-tag is NOT the counter, because one dist-tag serves every base: a single push to
 # `beta-0.1.1` moves `beta` to 0.1.1-beta.0, and from then on every push to a still-open `beta-0.1.0`
 # reads a base that is not its own, falls back to "first prerelease of 0.1.0", and 409s on
 # 0.1.0-beta.0 forever. Per-base, from the version list, there is no shared cursor to hijack.
 #
-# ── Credentials: no token is stored for either registry ─────────────────────────────────────────
-# GitHub Packages authenticates with the job's own GITHUB_TOKEN, written into ~/.npmrc for that host —
-# setup-node's line covers `//registry.npmjs.org/` alone, so a second host needs its own. The
-# repository is private, so even READING its package needs that token, which is why the line is
-# written before the version query and not just before the publish.
-#
-# For npmjs there is no NPM_TOKEN either. The runner mints a short-lived OIDC identity that npm verifies against the
+# ── Credentials: no token is stored ─────────────────────────────────────────────────────────────
+# There is no NPM_TOKEN. The runner mints a short-lived OIDC identity that npm verifies against the
 # trusted publisher configured on the package (npmjs.com → the package → Settings → Trusted
 # publishers), which pins three things that must all keep matching: this repository, this workflow's
 # FILENAME, and the `release` environment. Rename this file or drop the `environment:` key below and
@@ -84,19 +73,18 @@ name: Release
 on:
   release:
     types: [published]
-  # Every push to a prerelease branch ships an installable X.Y.Z-beta.N to GitHub Packages, so a fix
-  # under review is something a consumer can pull rather than a commit they have to build.
+  # Every push to a prerelease branch ships an installable X.Y.Z-beta.N, so a fix under review is
+  # something a consumer can pull rather than a commit they have to build.
   push:
     branches:
       - beta-*.*.*
       - alpha-*.*.*
 
 # `contents: read` — the release notes are written by hand on the GitHub Release, not generated here.
-# `packages: write` is what lets GITHUB_TOKEN push to GitHub Packages; `id-token: write` is npm's OIDC.
+# `id-token: write` is npm's OIDC.
 permissions:
   id-token: write
   contents: read
-  packages: write
 
 # Never cancel an in-flight publish: a killed job can leave the registry half-updated.
 concurrency:
@@ -168,25 +156,6 @@ jobs:
             *)                  echo "tag=latest" >> "$GITHUB_OUTPUT" ;;
           esac
 
-      # Written once, before anything reads or writes a registry. setup-node's .npmrc binds
-      # NODE_AUTH_TOKEN to `//registry.npmjs.org/` alone, so a different host needs its own line — and
-      # this repository is private, which means even READING its package needs the token.
-      #
-      # It has to go in the file npm ACTUALLY reads. setup-node points NPM_CONFIG_USERCONFIG at a temp
-      # .npmrc, and that supersedes ~/.npmrc — appending to the home file looks right, changes nothing,
-      # and fails as ENEEDAUTH at the publish step.
-      - name: Authenticate to GitHub Packages
-        env:
-          GH_PACKAGES_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          npmrc="${NPM_CONFIG_USERCONFIG:-$HOME/.npmrc}"
-          # A leading newline, because `>>` does not add one: setup-node's file may not end in a
-          # newline, and the line would then be glued onto the previous entry and silently ignored.
-          printf '\n//npm.pkg.github.com/:_authToken=%s\n' "$GH_PACKAGES_TOKEN" >> "$npmrc"
-          echo "auth written to $npmrc; entries now:"
-          sed 's/=.*/=<redacted>/' "$npmrc"
-
       # `beta-1.2.3` → 1.2.3-beta.N, where N continues from the highest 1.2.3-beta.* already on the
       # registry rather than restarting at 0 on every push (see the header). Per-base and not from the
       # `beta` dist-tag, which one push to a different beta branch is enough to point elsewhere.
@@ -200,20 +169,12 @@ jobs:
           set -euo pipefail
           base="${GITHUB_REF_NAME#*-}"
           name="$(npm pkg get name --workspaces=false | tr -d '"')"
-          # Ask the registry this actually publishes to. Without --registry the query goes to npmjs,
-          # where these prereleases do not exist, so every run would compute `-beta.0` afresh and the
-          # second push would 409 on a version already there.
-          #
           # `versions` is a packument field, so it lists every version regardless of which one the
           # spec resolves to — but a spec there must be: bare `npm view <name> <field>` means
-          # `@latest`, and GitHub Packages has no `latest` dist-tag while only prereleases exist, so
-          # it prints nothing at all. `@$TAG` is the one tag a prerelease channel is guaranteed to
-          # have set, on its own previous publish.
+          # `@latest`, which every published package has.
           #
-          # A brand-new package, or a channel with nothing on it yet, prints an empty string rather
-          # than failing — hence the `|| true`.
-          versions="$(npm view "$name@$TAG" versions --json \
-            --registry=https://npm.pkg.github.com 2>/dev/null || true)"
+          # A brand-new package prints an empty string rather than failing — hence the `|| true`.
+          versions="$(npm view "$name" versions --json 2>/dev/null || true)"
 
           # Highest N among this base's prereleases on this channel; empty when there are none, which
           # `${n:--1} + 1` turns into the first, `.0`.
@@ -250,24 +211,5 @@ jobs:
       - name: Inspect the tarball
         run: npm pack --dry-run
 
-      # GitHub Packages, always. It serves whoever can already read the repository, so a private
-      # repository gets an authenticated registry for free — no trusted publisher to configure, no
-      # long-lived credential, just the job's own GITHUB_TOKEN. The scope has to equal the repository
-      # owner, which `@mega-yfue/eufy-sdk` already does.
-      #
-      # `--registry` on the command line rather than `publishConfig.registry` in package.json: the
-      # latter would redirect the npmjs publish below to the same place.
-      #
-      - name: Publish to GitHub Packages
-        run: npm publish --tag ${{ steps.channel.outputs.tag }} --registry=https://npm.pkg.github.com
-
-      # npmjs, only once the repository is public. Publishing there while the source is private would
-      # put the built library on a public registry with nothing to read it against — the opposite of
-      # the reason the repository was made private.
-      #
-      # The condition reads the repository's CURRENT visibility from the event payload, so flipping the
-      # repository public is all it takes. There is no second switch to remember here, which is the
-      # point: a manual re-enable is a step that gets skipped, and the failure would be silent.
       - name: Publish to npmjs
-        if: github.event.repository.private == false
         run: npm publish --tag ${{ steps.channel.outputs.tag }} --provenance --access public
