@@ -101,13 +101,21 @@ jobs:
     runs-on: ubuntu-latest
     # REQUIRED, not decorative: the npm trusted publisher is configured with the environment name, so
     # the OIDC token has to carry a matching `environment` claim or npm rejects the publish. Removing
-    # this line does not loosen the workflow, it breaks it.
+    # this key does not loosen the workflow, it breaks it — and each name below needs its own trusted
+    # publisher entry on the package (npm allows several; the repository and workflow FILENAME are the
+    # same on both).
     #
-    # It also gates the publish on a human: the environment requires a review from one of the three
-    # maintainers, and self-review is disabled — whoever cuts the release is not the one who approves
-    # it. The job pauses at this step until someone else clicks approve.
+    # Which environment depends on what a failure costs. A tag is a stable version that can never be
+    # withdrawn or reused, so `release` requires a review from one of the three maintainers and forbids
+    # self-review: whoever cuts the release is not the one who approves it, and the job pauses until
+    # someone else clicks approve. A prerelease costs one `-beta.N`, so `prerelease` has no reviewer at
+    # all and publishes on push.
+    #
+    # A branch cannot reach `release` and a tag cannot reach `prerelease`: each environment's deployment
+    # branch policy admits only its own refs, so the gate does not depend on this expression being
+    # right.
     environment:
-      name: release
+      name: ${{ startsWith(github.ref, 'refs/heads/') && 'prerelease' || 'release' }}
       url: https://www.npmjs.com/package/@mega-yfue/eufy-sdk
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
