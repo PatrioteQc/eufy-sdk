@@ -121,6 +121,11 @@ PRs welcome. [CONTRIBUTING.md](./CONTRIBUTING.md) covers setup, the dev workflow
 [AGENTS.md](./AGENTS.md) is the code practice — the architecture invariants and the rules CI enforces.
 Security issues go through [SECURITY.md](./SECURITY.md), never a public issue.
 
+## Thanks
+
+Huge thanks to the testers who run this against real hardware and make sure it's ready —
+see [THANKS.md](./THANKS.md).
+
 ## License
 
 [Apache-2.0](./LICENSE). Contributions are accepted under the same license (inbound = outbound).
