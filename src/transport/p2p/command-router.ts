@@ -55,7 +55,6 @@ import {
   type PowerTier,
   type SessionManagerOpts,
 } from "./session-manager.js";
-import { Fmp4Muxer } from "./fmp4.js";
 import { openReadableFromConsumer } from "./readable-egress.js";
 import { Talkback } from "./talkback.js";
 import { FragmentRecording } from "./fragment-recording.js";
@@ -972,7 +971,7 @@ export class P2PCommandRouter {
   /**
    * **Continuous fragmented-MP4 recording** — attach a consumer to the device's shared live source and
    * yield CMAF fragments (init segment first, then a `moof`+`mdat` per keyframe boundary) muxed by the
-   * dependency-free {@link Fmp4Muxer}. The returned recording handle exposes battery-budget notices
+   * dependency-free internal fMP4 muxer. The returned recording handle exposes battery-budget notices
    * and detaches its consumer on `stop`, iterator return, or iterator throw. No ffmpeg.
    */
   recordFragments(
