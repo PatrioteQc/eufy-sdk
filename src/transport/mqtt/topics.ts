@@ -35,6 +35,9 @@ export type MqttScope = "default" | "eufy_life";
 /** The `eufy_life` category string, as the cloud record reports it and as the topic segment. */
 const EUFY_LIFE = "eufy_life";
 
+/** The app name the default credential is issued under, as it appears in that certificate's CN. */
+const EUFY_MEGA = "eufy_mega";
+
 /**
  * The fixed topic prefix for clean-line devices (vacuum/mower) — `eufy_home` — regardless of what
  * `device.category` carries in the cloud record. Confirmed live against a T2351 (2026-07-30): the
@@ -68,6 +71,15 @@ export function mqttScopeFor(device: EufyDevice): MqttScope {
  */
 export function mqttAppName(scope: MqttScope): string | undefined {
   return scope === EUFY_LIFE ? EUFY_LIFE : undefined;
+}
+
+/**
+ * The `{app_name}` segment a scope's credential is issued under — the default line's is `eufy_mega`,
+ * which is the same segment the certificate CN carries (`{user_id}-{app_name}`). Unlike
+ * {@link mqttAppName} this is total: it answers the name itself, not the optional request header.
+ */
+export function mqttClientAppName(scope: MqttScope): string {
+  return scope === EUFY_LIFE ? EUFY_LIFE : EUFY_MEGA;
 }
 
 /**

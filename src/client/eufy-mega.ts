@@ -16,7 +16,8 @@
 import { EventEmitter } from "node:events";
 import { MegaHttpClient, LoginStatus, SessionExpiredError, type LoginResult } from "../transport/http/mega-client.js";
 import { SecureMqtt, type SecureMqttCredentials } from "../transport/mqtt/secure-mqtt.js";
-import { mqttAppName, mqttScopeFor, type MqttScope } from "../transport/mqtt/topics.js";
+import { mqttAppName, mqttClientAppName, mqttScopeFor, type MqttScope } from "../transport/mqtt/topics.js";
+import { buildAppShapedClientId, mqttUuidFrom } from "../transport/mqtt/app-client-id.js";
 import { parseStateInfoSignal } from "../transport/mqtt/availability.js";
 import { parseDpMessage, parseAiotDpReport } from "../transport/mqtt/dp-codec.js";
 import { parseBizMapFrame } from "../transport/mqtt/biz-stream.js";
@@ -1707,9 +1708,13 @@ export class EufyMega extends EventEmitter {
    * {@link ensureMqttStarted} owns installing it, subscribing devices, and the epoch check, so that
    * lifecycle lives in exactly one place. Only ever called through {@link ensureMqttStarted}.
    *
-   * The inbound decode is gated by the reporting device's own capabilities, so one line's decoder never
-   * runs against another's traffic, and the DP frame is unwrapped here — the layer that may import the
-   * transport — so a capability reads tags without owning any framing.
+   * Identified by a client id carrying this install's own `openudid`, not by the certificate's name:
+   * that name is `{user_id}-{app_name}`, which every client on the account shares per line, and a
+   * duplicate client id is a takeover the broker resolves by evicting the incumbent. The id shape is
+   * the app's own (`android-{app_name}-{uid}-{uuid}-{ts}`, see {@link buildAppShapedClientId}), which
+   * the broker grants on the `eufy_security` credential; a credential whose policy refuses it falls
+   * back to the certificate's name, since a shared connection beats none. The fallback is not
+   * remembered — the next bring-up asks under this install's own id again.
    */
   private async startMqtt(scope: MqttScope): Promise<SecureMqtt> {
     const auth = this.mega.auth;
@@ -1717,7 +1722,37 @@ export class EufyMega extends EventEmitter {
     if (!this.registry.list().length) await this.getDevices();
 
     const creds = await this.getUserMqttInfo(mqttAppName(scope));
-    const transport = new SecureMqtt({ credentials: creds, logger: this.opts.logger });
+    const perInstall = buildAppShapedClientId({
+      appName: creds.app_name ?? mqttClientAppName(scope),
+      uid: creds.user_id ?? auth.userId,
+      mqttUuid: mqttUuidFrom(this.mega.openudid),
+    });
+    try {
+      return await this.connectMqtt(creds, perInstall);
+    } catch (e) {
+      this.opts.logger?.warn(
+        "[smqtt] the broker refused a per-install client id; connecting under the certificate's own name, " +
+          "which another client signed in to this account will take over",
+        e,
+      );
+      return await this.connectMqtt(creds);
+    }
+  }
+
+  /**
+   * Build one secure-MQTT transport, wire its decode and fan-out, and connect it.
+   *
+   * `clientId` overrides the certificate's own name (`{user_id}-{app_name}`), which identifies the
+   * ACCOUNT and the line rather than this install: the broker treats a second connection under the
+   * same client id as a takeover and evicts the incumbent, so two installs on one account hold the
+   * channel from each other indefinitely. Omitting it connects under that shared name.
+   *
+   * The inbound decode is gated by the reporting device's own capabilities, so one line's decoder never
+   * runs against another's traffic, and the DP frame is unwrapped here — the layer that may import the
+   * transport — so a capability reads tags without owning any framing.
+   */
+  private async connectMqtt(creds: SecureMqttCredentials, clientId?: string): Promise<SecureMqtt> {
+    const transport = new SecureMqtt({ credentials: creds, clientId, logger: this.opts.logger });
 
     transport.on("connect", () => this.emit("connect"));
     transport.on("disconnect", (r) => this.emit("disconnect", r));
