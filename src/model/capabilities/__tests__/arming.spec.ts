@@ -57,21 +57,20 @@ describe("arming capability module", () => {
     it("buildCommand returns undefined for an unrelated action, and throws for an unknown mode name", () => {
       expect(buildCommand("nope", "home", ctx)).toBeUndefined();
       expect(() => buildCommand("armingMode", "not-a-mode", ctx)).toThrow(
-        /mode: "not-a-mode" is not a valid value \(must be one of 0\/1\/63\)/,
+        /mode: "not-a-mode" is not a valid value \(must be one of 0\/1\/3\/63\)/,
       );
     });
 
     /**
-     * The six uncaptured modes are the whole reason the write domain is narrower than the read one. A
+     * The five uncaptured modes are the whole reason the write domain is narrower than the read one. A
      * mode the station reports must still READ (it has a label), and the same value must refuse on the way
-     * back out — by naming the three that work, not by reporting the capability as missing.
+     * back out — by naming the four that work, not by reporting the capability as missing.
      *
      * Both entry points are checked: the fluent setter and the intent path share one domain check, and it
      * was them disagreeing that put a guessed `mode_type` on a fire-and-forget wire in the first place.
      */
     it.each([
       ["schedule", 2],
-      ["custom1", 3],
       ["custom2", 4],
       ["custom3", 5],
       ["off", 6],
@@ -82,9 +81,19 @@ describe("arming capability module", () => {
         read: (p) => (p === "armingMode" ? { value: wire } : undefined),
       });
       expect(acts.mode).toBe(wire);
-      await expect(acts.setMode(acts.mode! as never)).rejects.toThrow(/must be one of 0\/1\/63/);
-      expect(() => buildCommand("armingMode", name, ctx)).toThrow(/must be one of 0\/1\/63/);
+      await expect(acts.setMode(acts.mode! as never)).rejects.toThrow(/must be one of 0\/1\/3\/63/);
+      expect(() => buildCommand("armingMode", name, ctx)).toThrow(/must be one of 0\/1\/3\/63/);
       expect(sent).toEqual([]);
+    });
+
+    it("sends custom1 (mode_type 3) — confirmed live on a T8030 2026-09-12", async () => {
+      const readCtx: CommandContext = { ...ctx, paramIds: new Set([ARMING_CMD.SET_ARMING]) };
+      const { acts, sent } = bind<ArmingActions>("arming", readCtx, {
+        read: (p) => (p === "armingMode" ? { value: 0 } : undefined),
+      });
+      await acts.setMode("custom1");
+      expect(sent).toHaveLength(1);
+      expect(sent[0]).toMatchObject({ payload: { mode_type: 3 } });
     });
 
     it("names every reportable mode, and offers only the settable ones", () => {
@@ -100,7 +109,7 @@ describe("arming capability module", () => {
         "geo",
         "disarmed",
       ]);
-      expect(mode.args[0].values).toEqual([0, 1, 63]);
+      expect(mode.args[0].values).toEqual([0, 1, 3, 63]);
     });
 
     it("setMode round-trips the wire integer the mode getter answers", async () => {

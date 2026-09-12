@@ -13,7 +13,7 @@ const STATION_CHANNEL = 255;
  * real station. `ArmingMode` is both the const value-object (`ArmingMode.home`) and the union type of its
  * values, so callers pass the named constant: `setMode(ArmingMode.home)`.
  *
- * Deliberately NARROWER than the set a device may report. The other six modes are ones the app itself
+ * Deliberately NARROWER than the set a device may report. The remaining five modes are ones the app itself
  * defines and the `mode` read still names them, but no capture shows one being SENT — and
  * on a fire-and-forget wire a wrong one looks exactly like success. Leaving them out of this union is the
  * compile-time half of the refusal; `mode`'s published argument and the generated rejection are the
@@ -24,6 +24,8 @@ export const ArmingMode = {
   away: "away",
   /** Armed for occupancy — reduced/perimeter protection while home (wire value 1). */
   home: "home",
+  /** Custom 1 — a user-defined posture configured in the app (wire value 3). */
+  custom1: "custom1",
   /** Disarmed — no alarms; sensors still report state (wire value 63). */
   disarmed: "disarmed",
 } as const;
@@ -92,7 +94,11 @@ export const ARMING_CMD = {
  *
  * ✅ WRITE WIRE-CAPTURED (byte-exact, a T8030 2026-07-23; all three re-confirmed live 2026-08-05, each
  * reporting its own MODE_SWITCH push within ~5s): `away` 0, `home` 1, `disarmed` 63.
- * ⚠️ WRITE NEVER CAPTURED: `schedule` 2, `custom1` 3, `custom2` 4, `custom3` 5, `off` 6, `geo` 47. The app
+ * ✅ WRITE CONFIRMED LIVE (not byte-captured): `custom1` 3 — a T8030 2026-09-12, accepted and reporting
+ * its own MODE_SWITCH push within the convergence window on each of two writes, cycling
+ * custom1→home→custom1. Weaker evidence than a byte-exact capture, and recorded as such: the station
+ * confirming the mode it landed in is what distinguishes this from a fire-and-forget write.
+ * ⚠️ WRITE NEVER CAPTURED: `schedule` 2, `custom2` 4, `custom3` 5, `off` 6, `geo` 47. The app
  * defines each, but no capture shows one leaving the app, so sending one would be a fire-and-forget write
  * that looks like success whatever the device does with it. Add the mode to {@link ArmingMode} (and flip
  * this note plus {@link ARMING_CMD.SET_ARMING}) as each is captured.
@@ -101,7 +107,7 @@ const ARMING_MODE_WIRE: Record<ArmingMode, number> & Record<string, number> = {
   away: 0,
   home: 1,
   schedule: 2, // ⚠️ reportable, NOT settable — see the doc comment above
-  custom1: 3, // ⚠️ reportable, NOT settable — see the doc comment above
+  custom1: 3, // ✅ settable — confirmed live 2026-09-12, see the doc comment above
   custom2: 4, // ⚠️ reportable, NOT settable — see the doc comment above
   custom3: 5, // ⚠️ reportable, NOT settable — see the doc comment above
   off: 6, // ⚠️ reportable, NOT settable — see the doc comment above
