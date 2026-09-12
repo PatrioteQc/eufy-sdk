@@ -16,10 +16,11 @@
 import { EventEmitter } from "node:events";
 import { randomBytes } from "node:crypto";
 
-import { SecureMqtt, type SecureMqttCredentials } from "../transport/mqtt/secure-mqtt.js";
-import { walkFf09Tlv } from "../transport/ff09.js";
-import { buildAppShapedClientId, generateMqttUuid } from "../transport/mqtt/app-client-id.js";
-import { genId, type Logger } from "../core/index.js";
+import { SecureMqtt, type SecureMqttCredentials } from "./secure-mqtt.js";
+import { walkFf09Tlv } from "../ff09.js";
+import { buildAppShapedClientId, generateMqttUuid } from "./app-client-id.js";
+import { solixDeviceTopics, solixUserTopics } from "./topics.js";
+import { genId, type Logger } from "../../core/index.js";
 
 /** A decoded telemetry channel: the raw value plus float/uint interpretations of a 4-byte payload. */
 export interface SolixChannel {
@@ -234,12 +235,14 @@ export class SolixMqtt extends EventEmitter {
    */
   async watch(device: SolixMqttDevice): Promise<void> {
     await this.transport.connect();
-    const dt = `dt/${this.appName}/${device.product_code}/${device.device_sn}`;
-    const cmd = `cmd/${this.appName}/${device.product_code}/${device.device_sn}`;
+    const topics = solixDeviceTopics(this.appName, device.product_code, device.device_sn);
+    // SUBSCRIBE only to what the device SENDS: its telemetry (param_info) + command replies, plus the
+    // account reply channel. NOT the device/account `…/req` channels — those are the app→device request
+    // side that we PUBLISH to when arming (subscribing there would echo our own requests back).
     await this.transport.subscribe([
-      `${dt}/#`, // param_info + basic_info + state_info
-      `${cmd}/app/res`, // this device's command replies
-      ...(this.userId ? [`cmd/${this.appName}/${this.userId}/res`, `cmd/${this.appName}/${this.userId}/req`] : []),
+      topics.paramInfo, // ff09 telemetry frames (the only thing we decode)
+      topics.cmdRes, // this device's command replies
+      ...(this.userId ? [solixUserTopics(this.appName, this.userId).cmdRes] : []),
     ]);
     this.watched.set(device.device_sn, device);
     if (this.armIntervalMs > 0) {
@@ -278,7 +281,7 @@ export class SolixMqtt extends EventEmitter {
     }
     if (this.userId) {
       try {
-        await this.transport.publish(`dt/${this.appName}/${this.userId}/power_site`, this.heartbeatEnvelope(), {
+        await this.transport.publish(solixUserTopics(this.appName, this.userId).powerSite, this.heartbeatEnvelope(), {
           qos: 1,
         });
       } catch (e) {
@@ -289,7 +292,7 @@ export class SolixMqtt extends EventEmitter {
 
   /** Publish the device-info arming request (both the "info" and "realtime" ff09 variants the app sends). */
   private async arm(device: SolixMqttDevice): Promise<void> {
-    const topic = `cmd/${this.appName}/${device.product_code}/${device.device_sn}/req`;
+    const topic = solixDeviceTopics(this.appName, device.product_code, device.device_sn).req;
     for (const variant of ["info", "realtime"] as const) {
       const body = this.commandEnvelope(
         device,

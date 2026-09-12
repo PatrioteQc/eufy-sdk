@@ -26,43 +26,21 @@ import {
   nowSec,
   prepareKeyExchange,
   signRequest,
+  SOLIX_LOCAL_KEY_HEX,
   type SessionEntry,
   type SessionStore,
 } from "../core/index.js";
 import type { SecureMqttCredentials } from "../transport/mqtt/secure-mqtt.js";
+import { SolixDevice, type SolixDeviceRecord } from "../model/solix-device.js";
+import type { SolixProductCategory } from "../model/solix-catalog.js";
 
-import {
-  SOLIX_APP_NAME,
-  SOLIX_DEFAULT_API_HOST,
-  SOLIX_ENDPOINTS,
-  SOLIX_ESTIMATE_HOST,
-  SOLIX_LOCAL_KEY_HEX,
-} from "./constants.js";
-import { SolixDevice, type SolixDeviceRecord } from "./device.js";
+import { SOLIX_APP_NAME, SOLIX_DEFAULT_API_HOST, SOLIX_ENDPOINTS, SOLIX_ESTIMATE_HOST } from "./solix-constants.js";
 
 /** The vendor envelope every Solix endpoint answers with (`data` shape varies per endpoint). */
 interface SolixEnvelope<T = unknown> {
   code: number;
   msg: string;
   data?: T;
-}
-
-/** One product in the pairable-product catalog. Extra vendor fields (images, guides) are preserved. */
-export interface SolixProduct {
-  /** SKU / model code, e.g. `A1782`. */
-  product_code: string;
-  /** Marketing name, e.g. `SOLIX F3000`. */
-  name: string;
-  /** Variant/sub-model codes under this product, when present. */
-  p_codes?: unknown[];
-  [k: string]: unknown;
-}
-
-/** A catalog category (e.g. "Portable Power Station") and its products. */
-export interface SolixProductCategory {
-  name: string;
-  products: SolixProduct[];
-  [k: string]: unknown;
 }
 
 /** An authenticated Solix session — the token + the derived `gtoken` + the resolved API host. */
@@ -410,23 +388,3 @@ export class SolixClient {
  * the same device and does not re-prompt 2FA), and a live session is reused until it expires.
  */
 export class FileSolixSessionStore extends FileSessionStore<SolixPersisted> {}
-
-/**
- * Flatten a {@link SolixClient.getProductCatalog} result into a `product_code → { name, category }`
- * lookup for labelling discovered devices. Every variant code in `p_codes` maps to its parent product
- * too, so a device reporting a sub-model resolves to the same marketing name.
- */
-export function buildModelIndex(categories: SolixProductCategory[]): Map<string, { name: string; category: string }> {
-  const index = new Map<string, { name: string; category: string }>();
-  for (const category of categories) {
-    for (const product of category.products ?? []) {
-      const entry = { name: product.name, category: category.name };
-      if (product.product_code) index.set(product.product_code, entry);
-      for (const variant of product.p_codes ?? []) {
-        const code = typeof variant === "string" ? variant : (variant as { product_code?: string })?.product_code;
-        if (code) index.set(code, entry);
-      }
-    }
-  }
-  return index;
-}

@@ -4,8 +4,8 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { SolixDevice, type SolixDeviceRecord } from "../device.js";
-import type { SolixProductCategory } from "../solix-client.js";
+import { SolixDevice, type SolixDeviceRecord } from "../solix-device.js";
+import type { SolixProductCategory } from "../solix-catalog.js";
 
 const CATALOG: SolixProductCategory[] = [
   { name: "Accessory", products: [{ product_code: "AE1X0", name: "Smart Meter Gen 2" }] },

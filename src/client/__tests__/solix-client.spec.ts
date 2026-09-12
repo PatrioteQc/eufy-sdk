@@ -9,9 +9,9 @@ import { createCipheriv, createDecipheriv, createECDH, createHash, randomBytes }
 
 import { describe, expect, it } from "vitest";
 
-import { encryptBody } from "../../core/index.js";
-import { SolixClient, buildModelIndex, type SolixPersisted, type SolixSessionStore } from "../solix-client.js";
-import { SOLIX_LOCAL_KEY_HEX } from "../constants.js";
+import { encryptBody, SOLIX_LOCAL_KEY_HEX } from "../../core/index.js";
+import { SolixClient, type SolixPersisted, type SolixSessionStore } from "../solix-client.js";
+import { buildModelIndex } from "../../model/solix-catalog.js";
 
 const LOCALKEY = Buffer.from(SOLIX_LOCAL_KEY_HEX, "hex");
 const USER_ID = "0123456789abcdef0123456789abcdef01234567";

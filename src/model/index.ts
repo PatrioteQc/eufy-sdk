@@ -119,3 +119,17 @@ export {
   NotificationStyle,
   detectionName,
 } from "./push-events.js";
+// Anker Solix device model: the capability-driven SolixDevice + the product catalog it resolves names from.
+export {
+  SolixDevice,
+  CATEGORY_CAPABILITIES,
+  SOLIX_METER_MODELS,
+  SOLARBANK_MODELS,
+  type SolixCapability,
+  type SolixDeviceRecord,
+  type SolixIdentity,
+  type SolixConnectivity,
+  type SolixEnergyMeter,
+  type SolixDeviceOptions,
+} from "./solix-device.js";
+export { buildModelIndex, type SolixProduct, type SolixProductCategory } from "./solix-catalog.js";

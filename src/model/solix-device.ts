@@ -14,9 +14,7 @@
  * {@link SolixDevice.telemetry} (raw decoded channels), and per-field accessors get added together with
  * a decoder once a real frame lands.
  */
-import type { SolixProductCategory } from "./solix-client.js";
-import { buildModelIndex } from "./solix-client.js";
-import type { SolixReading } from "./solix-mqtt.js";
+import { buildModelIndex, type SolixProductCategory } from "./solix-catalog.js";
 
 /** Every capability a Solix device may carry. `has(...)` gates each; only some have value accessors. */
 export type SolixCapability =
@@ -155,8 +153,8 @@ export class SolixDevice {
     return this.caps.has(capability);
   }
 
-  /** Merge a live telemetry reading (from `SolixMqtt`) so the value accessors reflect it. */
-  applyReading(reading: Pick<SolixReading, "values">): void {
+  /** Merge a live telemetry reading (a `SolixMqtt` `reading` event's `{ values }`) so accessors reflect it. */
+  applyReading(reading: { values: Record<string, number> }): void {
     this.values = { ...this.values, ...reading.values };
   }
 
