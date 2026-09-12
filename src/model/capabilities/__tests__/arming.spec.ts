@@ -25,11 +25,15 @@ describe("arming capability module", () => {
     expect(ARMING.detection?.evidenceParams).toContain(1224);
   });
 
+  // away/home/disarmed are byte-exact captures (T8030, 2026-07-23); custom1 is a live confirmation
+  // (T8030, 2026-09-12) of the same frame shape with mode_type 3. The frame asserted here is the captured
+  // one either way — see ARMING_MODE_WIRE for the evidence split.
   describe("setMode / buildCommand (wire captured live on a T8030, 2026-07-23)", () => {
     it.each([
       [ArmingMode.away, 0],
       [ArmingMode.disarmed, 63],
       [ArmingMode.home, 1],
+      [ArmingMode.custom1, 3],
     ])("%s → set-payload cmd 1224, {mode_type:%i, user_name}, explicit mValue3:0", async (mode, modeType) => {
       const { acts, sent } = bind<ArmingActions>("arming", ctx);
       await acts.setMode(mode);
@@ -84,16 +88,6 @@ describe("arming capability module", () => {
       await expect(acts.setMode(acts.mode! as never)).rejects.toThrow(/must be one of 0\/1\/3\/63/);
       expect(() => buildCommand("armingMode", name, ctx)).toThrow(/must be one of 0\/1\/3\/63/);
       expect(sent).toEqual([]);
-    });
-
-    it("sends custom1 (mode_type 3) — confirmed live on a T8030 2026-09-12", async () => {
-      const readCtx: CommandContext = { ...ctx, paramIds: new Set([ARMING_CMD.SET_ARMING]) };
-      const { acts, sent } = bind<ArmingActions>("arming", readCtx, {
-        read: (p) => (p === "armingMode" ? { value: 0 } : undefined),
-      });
-      await acts.setMode("custom1");
-      expect(sent).toHaveLength(1);
-      expect(sent[0]).toMatchObject({ payload: { mode_type: 3 } });
     });
 
     it("names every reportable mode, and offers only the settable ones", () => {
