@@ -93,7 +93,7 @@ export function readSolixChannel(value: Buffer | undefined): SolixChannel | unde
  * buffer, a length field that doesn't fit, or a bad checksum. Validates the trailing XOR checksum first
  * (so a corrupted frame is rejected rather than yielding plausible floats), then walks `tag|len|value`
  * from the first `0xa1` tag to the declared length minus the checksum byte via the shared
- * {@link walkFf09Tlv} (bounded by `end`, so a field length can't overrun into the checksum).
+ * `walkFf09Tlv` (bounded by `end`, so a field length can't overrun into the checksum).
  */
 export function decodeSolixParamFrame(buf: Buffer): SolixParamFrame | null {
   if (buf.length < 10 || buf[0] !== 0xff || buf[1] !== 0x09) return null;

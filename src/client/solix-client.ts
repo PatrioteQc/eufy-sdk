@@ -5,7 +5,7 @@
  * Why this is separate from the eufy device client: Solix shares Anker's `algo_ecdh` passport (so
  * {@link prepareKeyExchange} / {@link encryptLoginPassword} / {@link signRequest} are reused verbatim
  * for the login handshake) but exposes a different device backend — its own `app-name`, host, and
- * bootstrap key ({@link SOLIX_APP_NAME}, {@link SOLIX_DEFAULT_API_HOST}, {@link SOLIX_LOCAL_KEY_HEX}) —
+ * bootstrap key (`SOLIX_APP_NAME`, `SOLIX_DEFAULT_API_HOST`, {@link SOLIX_LOCAL_KEY_HEX}) —
  * and its authenticated resource reads are PLAIN JSON, carrying only the auth token and a
  * `gtoken = md5(user_id)`, with no per-request encryption or signature. This client therefore does
  * the encrypted passport handshake to obtain a token, then makes plain authenticated reads.
@@ -67,7 +67,7 @@ export interface SolixClientOptions {
   password: string;
   /** ISO-3166 alpha-2; defaults to "US". Sent as `country` and `ab`. */
   countryCode?: string;
-  /** Override the API host (skips domain-estimate). Defaults to estimate → {@link SOLIX_DEFAULT_API_HOST}. */
+  /** Override the API host (skips domain-estimate). Defaults to estimate → `SOLIX_DEFAULT_API_HOST`. */
   apiHost?: string;
   /** App version reported to the cloud. */
   appVersion?: string;

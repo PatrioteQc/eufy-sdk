@@ -34,8 +34,8 @@ export interface PersistedSession {
 
 /**
  * A place to persist a session record across runs. Parameterised on the record shape so other Anker
- * lines (e.g. Solix, whose record is not a {@link PersistedSession}) can reuse the same file/memory
- * stores rather than re-implementing them. Defaults to {@link PersistedSession} for the eufy path.
+ * lines (e.g. Solix, whose record is not a `PersistedSession`) can reuse the same file/memory
+ * stores rather than re-implementing them. Defaults to `PersistedSession` for the eufy path.
  */
 export interface SessionStore<T = PersistedSession> {
   load(): T | null;
