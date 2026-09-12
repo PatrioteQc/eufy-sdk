@@ -14,11 +14,10 @@
  * type `0x05` = float32 LE. Field `a2` is the device serial (ASCII after a leading type byte).
  */
 import { EventEmitter } from "node:events";
-import { randomBytes } from "node:crypto";
 
 import { SecureMqtt, type SecureMqttCredentials } from "./secure-mqtt.js";
 import { walkFf09Tlv } from "../ff09.js";
-import { buildAppShapedClientId, generateMqttUuid } from "./app-client-id.js";
+import { buildAppShapedClientId, deriveMqttUuid } from "./app-client-id.js";
 import { solixDeviceTopics, solixUserTopics } from "./topics.js";
 import { genId, type Logger } from "../../core/index.js";
 
@@ -173,9 +172,10 @@ export interface SolixMqttOptions {
    */
   appClientId?: string;
   /**
-   * Stable 16-hex install UUID for the app-shaped client id. Generate it ONCE per identity and persist
-   * it — a fresh value each run makes every restart look like a new broker client. Defaults to a random
-   * one ({@link generateMqttUuid}) when neither this nor {@link appClientId} is given.
+   * Stable 16-hex install UUID for the app-shaped client id. Defaults to one derived deterministically
+   * from the user id ({@link deriveMqttUuid}) — the same no-storage trick `SolixClient` uses for
+   * `openudid`, so the broker sees one stable client across restarts without any persistence. Pass this
+   * to pin an explicit value.
    */
   mqttUuid?: string;
   /** The account's `site_id` for the `power_site` heartbeat. Omitted from the frame when unknown. */
@@ -211,13 +211,15 @@ export class SolixMqtt extends EventEmitter {
     this.siteId = opts.siteId;
     this.logger = opts.logger;
     // The app's client_id shape (android-{app}-{uid}-{mqttUuid}-{ts}); the mqttUuid must be stable
-    // across restarts, so generate it once and persist it via opts.mqttUuid rather than per instance.
+    // across restarts or every restart looks like a new broker client. Default it deterministically
+    // from the user id (no storage needed) rather than a fresh random per instance.
+    const uid = this.userId ?? "anonymous";
     this.appClientId =
       opts.appClientId ??
       buildAppShapedClientId({
         appName: this.appName,
-        uid: this.userId ?? "anonymous",
-        mqttUuid: opts.mqttUuid ?? generateMqttUuid(),
+        uid,
+        mqttUuid: opts.mqttUuid ?? deriveMqttUuid(`anker-solix-mqtt:${uid}`),
       });
     this.transport = new SecureMqtt({
       credentials: opts.mqttInfo,
@@ -239,11 +241,22 @@ export class SolixMqtt extends EventEmitter {
     // SUBSCRIBE only to what the device SENDS: its telemetry (param_info) + command replies, plus the
     // account reply channel. NOT the device/account `…/req` channels — those are the app→device request
     // side that we PUBLISH to when arming (subscribing there would echo our own requests back).
-    await this.transport.subscribe([
+    const granted = await this.transport.subscribe([
       topics.paramInfo, // ff09 telemetry frames (the only thing we decode)
       topics.cmdRes, // this device's command replies
       ...(this.userId ? [solixUserTopics(this.appName, this.userId).cmdRes] : []),
     ]);
+    // A scope-denied filter comes back as SUBACK_FAILURE, not an error (AWS IoT quirk — see
+    // SecureMqtt.subscribe), so an unusable subscription otherwise looks like success: watch() would
+    // resolve, arming would publish every armIntervalMs, and no telemetry would ever arrive. paramInfo
+    // is the one topic whose denial makes the whole call pointless, so fail loudly if it wasn't granted.
+    if (!granted.includes(topics.paramInfo)) {
+      const scope = this.appName;
+      throw new Error(
+        `watch ${device.device_sn}: telemetry topic "${topics.paramInfo}" denied on credential scope ` +
+          `"${scope}" — the subscription would arm but never deliver a reading`,
+      );
+    }
     this.watched.set(device.device_sn, device);
     if (this.armIntervalMs > 0) {
       await this.armAll();
@@ -322,7 +335,7 @@ export class SolixMqtt extends EventEmitter {
     this.seq += 1;
     return JSON.stringify({
       head: this.makeHead(17, {
-        sess_id: randomBytes(2).toString("hex"),
+        sess_id: genId(),
         msg_seq: this.seq,
         seed: genId(),
         device_pn: device.product_code,

@@ -10,7 +10,7 @@
  * dash-stripped endpoint address there instead; the two disagree and were never reconciled. This
  * builder follows the timestamp form, the one that actually earned a granted SUBSCRIBE.
  */
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 
 export interface AppClientIdInput {
   /** Topic scope, e.g. "eufy_security". */
@@ -34,4 +34,15 @@ export function buildAppShapedClientId(input: AppClientIdInput): string {
  * (a new random value on every connect defeats the point of "stable"). */
 export function generateMqttUuid(): string {
   return randomBytes(8).toString("hex");
+}
+
+/**
+ * Derive a STABLE install UUID (16 hex chars) deterministically from a per-identity seed (e.g. the
+ * user id or email) — the same lazy trick `SolixClient` uses for `openudid`. Unlike
+ * {@link generateMqttUuid} this needs no storage: the same seed always yields the same UUID, so the
+ * broker sees one stable client across restarts. Use a seed distinct from any other derived id (a
+ * salt prefix) so the values don't collide.
+ */
+export function deriveMqttUuid(seed: string): string {
+  return createHash("md5").update(seed).digest("hex").slice(0, 16);
 }
