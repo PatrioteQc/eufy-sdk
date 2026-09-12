@@ -17,7 +17,9 @@ import { EventEmitter } from "node:events";
 import { randomBytes } from "node:crypto";
 
 import { SecureMqtt, type SecureMqttCredentials } from "../transport/mqtt/secure-mqtt.js";
-import type { Logger } from "../core/index.js";
+import { walkFf09Tlv } from "../transport/ff09.js";
+import { buildAppShapedClientId, generateMqttUuid } from "../transport/mqtt/app-client-id.js";
+import { genId, type Logger } from "../core/index.js";
 
 /** A decoded telemetry channel: the raw value plus float/uint interpretations of a 4-byte payload. */
 export interface SolixChannel {
@@ -87,25 +89,23 @@ export function readSolixChannel(value: Buffer | undefined): SolixChannel | unde
 
 /**
  * Decode an ff09 Solix param frame into its serial + TLV field map. Returns `null` for a non-ff09
- * buffer. Walks `tag|len|value` from the first `0xa1` tag to the frame's declared length (minus the
- * trailing XOR checksum byte), stopping at a `0x00` tag (padding).
+ * buffer, a length field that doesn't fit, or a bad checksum. Validates the trailing XOR checksum first
+ * (so a corrupted frame is rejected rather than yielding plausible floats), then walks `tag|len|value`
+ * from the first `0xa1` tag to the declared length minus the checksum byte via the shared
+ * {@link walkFf09Tlv} (bounded by `end`, so a field length can't overrun into the checksum).
  */
 export function decodeSolixParamFrame(buf: Buffer): SolixParamFrame | null {
   if (buf.length < 10 || buf[0] !== 0xff || buf[1] !== 0x09) return null;
   const declaredLen = buf.readUInt16LE(2);
-  const end = Math.min(buf.length, declaredLen > 0 ? declaredLen : buf.length) - 1; // last byte = XOR checksum
+  if (declaredLen < 5 || declaredLen > buf.length) return null; // length field must fit the buffer
+  // Trailing byte is the XOR of every preceding byte, so XOR over the whole declared frame is 0.
+  let xor = 0;
+  for (let i = 0; i < declaredLen; i++) xor ^= buf[i]!;
+  if (xor !== 0) return null;
+  const end = declaredLen - 1; // exclusive of the trailing XOR checksum byte
   const start = buf.indexOf(0xa1, 4);
-  if (start < 0) return { fields: new Map() };
-  const fields = new Map<number, Buffer>();
-  let i = start;
-  while (i + 2 <= end) {
-    const tag = buf[i]!;
-    if (tag === 0) break;
-    const len = buf[i + 1]!;
-    if (i + 2 + len > buf.length) break;
-    fields.set(tag, buf.subarray(i + 2, i + 2 + len));
-    i += 2 + len;
-  }
+  if (start < 0 || start >= end) return { fields: new Map() };
+  const fields = walkFf09Tlv(buf, start, end);
   let deviceSn: string | undefined;
   const a2 = fields.get(0xa2);
   if (a2 && a2.length > 1) deviceSn = a2.subarray(1).toString("latin1").replace(/\0+$/, "") || undefined;
@@ -166,10 +166,19 @@ export interface SolixMqttOptions {
    */
   armIntervalMs?: number;
   /**
-   * The `head.client_id` stamped into the command/heartbeat envelopes — the app uses
-   * `android-{app_name}-{user_id}-{mqttUUID}`. Defaults to that shape with a random per-instance UUID.
+   * The `head.client_id` stamped into the command/heartbeat envelopes — the app-shaped
+   * `android-{app_name}-{user_id}-{mqttUuid}-{ts}` (see {@link buildAppShapedClientId}). Defaults to
+   * that shape built from {@link mqttUuid}. Pass this to pin the whole string.
    */
   appClientId?: string;
+  /**
+   * Stable 16-hex install UUID for the app-shaped client id. Generate it ONCE per identity and persist
+   * it — a fresh value each run makes every restart look like a new broker client. Defaults to a random
+   * one ({@link generateMqttUuid}) when neither this nor {@link appClientId} is given.
+   */
+  mqttUuid?: string;
+  /** The account's `site_id` for the `power_site` heartbeat. Omitted from the frame when unknown. */
+  siteId?: string;
   logger?: Logger;
 }
 
@@ -188,6 +197,7 @@ export class SolixMqtt extends EventEmitter {
   private readonly appClientId: string;
   private readonly armIntervalMs: number;
   private readonly logger?: Logger;
+  private readonly siteId?: string;
   private readonly watched = new Map<string, SolixMqttDevice>();
   private seq = 0;
   private armTimer?: ReturnType<typeof setInterval>;
@@ -197,9 +207,17 @@ export class SolixMqtt extends EventEmitter {
     this.appName = opts.mqttInfo.app_name ?? "anker_power";
     this.userId = opts.userId ?? opts.mqttInfo.user_id;
     this.armIntervalMs = opts.armIntervalMs ?? 25_000;
+    this.siteId = opts.siteId;
     this.logger = opts.logger;
+    // The app's client_id shape (android-{app}-{uid}-{mqttUuid}-{ts}); the mqttUuid must be stable
+    // across restarts, so generate it once and persist it via opts.mqttUuid rather than per instance.
     this.appClientId =
-      opts.appClientId ?? `android-${this.appName}-${this.userId ?? "anonymous"}-${randomBytes(16).toString("hex")}`;
+      opts.appClientId ??
+      buildAppShapedClientId({
+        appName: this.appName,
+        uid: this.userId ?? "anonymous",
+        mqttUuid: opts.mqttUuid ?? generateMqttUuid(),
+      });
     this.transport = new SecureMqtt({
       credentials: opts.mqttInfo,
       clientId: opts.clientId ?? opts.mqttInfo.thing_name,
@@ -226,7 +244,11 @@ export class SolixMqtt extends EventEmitter {
     this.watched.set(device.device_sn, device);
     if (this.armIntervalMs > 0) {
       await this.armAll();
-      this.armTimer ??= setInterval(() => void this.armAll(), this.armIntervalMs);
+      if (!this.armTimer) {
+        this.armTimer = setInterval(() => void this.armAll(), this.armIntervalMs);
+        // Don't hold the event loop open: a caller that watches and returns can still exit.
+        this.armTimer.unref?.();
+      }
     }
   }
 
@@ -279,23 +301,30 @@ export class SolixMqtt extends EventEmitter {
     this.logger?.debug?.(`[solix] armed ${device.device_sn} (param_info reporting requested)`);
   }
 
+  /** The common `head` fields for every cmd envelope; callers add `cmd` + the per-message variable bits. */
+  private makeHead(cmd: number, extra: Record<string, unknown>): Record<string, unknown> {
+    return {
+      version: "1.0.0.1",
+      client_id: this.appClientId,
+      timestamp: Math.floor(Date.now() / 1000),
+      cmd_status: 2,
+      sign_code: 1,
+      cmd,
+      ...extra,
+    };
+  }
+
   /** Build the `{head, payload}` cmd-17 (requestDeviceInfo) envelope carrying a base64 ff09 request. */
   private commandEnvelope(device: SolixMqttDevice, frame: Buffer, extra: Record<string, unknown>): string {
     this.seq += 1;
     return JSON.stringify({
-      head: {
-        version: "1.0.0.1",
-        client_id: this.appClientId,
+      head: this.makeHead(17, {
         sess_id: randomBytes(2).toString("hex"),
         msg_seq: this.seq,
-        seed: randomBytes(16).toString("hex"),
-        timestamp: Math.floor(Date.now() / 1000),
-        cmd_status: 2,
-        cmd: 17,
-        sign_code: 1,
+        seed: genId(),
         device_pn: device.product_code,
         device_sn: device.device_sn,
-      },
+      }),
       payload: JSON.stringify({
         device_sn: device.device_sn,
         account_id: this.userId ?? "",
@@ -308,18 +337,10 @@ export class SolixMqtt extends EventEmitter {
   /** The `power_site` heartbeat (cmd 10) envelope the app sends on a timer to keep the session alive. */
   private heartbeatEnvelope(): string {
     return JSON.stringify({
-      head: {
-        version: "1.0.0.1",
-        client_id: this.appClientId,
-        sess_id: "1",
-        msg_seq: 1,
-        cmd: 10,
-        cmd_status: 2,
-        sign_code: 1,
-        seed: "1",
-        timestamp: Math.floor(Date.now() / 1000),
-      },
-      payload: JSON.stringify({ user_id: this.userId ?? "", site_id: "" }),
+      head: this.makeHead(10, { sess_id: "1", msg_seq: 1, seed: "1" }),
+      // Only include site_id when known — an empty placeholder to a live broker can't be told from a
+      // real one (fire-and-forget), so omit it rather than send "".
+      payload: JSON.stringify({ user_id: this.userId ?? "", ...(this.siteId ? { site_id: this.siteId } : {}) }),
     });
   }
 
@@ -375,9 +396,9 @@ export function extractFf09Payload(raw: unknown): Buffer | null {
  * `fe` carries a fresh unix-timestamp nonce; the trailing byte is XOR of every preceding byte (the same
  * checksum the meter's telemetry frames use — verified to reproduce the captured frames exactly).
  */
-export function buildFf09Request(variant: "info" | "realtime"): Buffer {
+export function buildFf09Request(variant: "info" | "realtime", atUnixSec?: number): Buffer {
   const ts = Buffer.alloc(4);
-  ts.writeUInt32LE(Math.floor(Date.now() / 1000) >>> 0);
+  ts.writeUInt32LE((atUnixSec ?? Math.floor(Date.now() / 1000)) >>> 0);
   const body =
     variant === "info"
       ? Buffer.concat([Buffer.from([0x03, 0x00, 0x0f, 0x00, 0x40, 0xa1, 0x01, 0x22, 0xfe, 0x04]), ts])

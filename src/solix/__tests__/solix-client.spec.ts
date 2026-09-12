@@ -158,7 +158,11 @@ describe("SolixClient", () => {
 
   it("persists the session to a store and reuses it on a warm start without re-logging in", async () => {
     const mem: { v?: SolixPersisted } = {};
-    const store: SolixSessionStore = { load: () => mem.v, save: (d) => (mem.v = d) };
+    const store: SolixSessionStore = {
+      load: () => mem.v ?? null,
+      save: (d) => (mem.v = d),
+      clear: () => (mem.v = undefined),
+    };
     const s1 = makeServer();
     await new SolixClient({ email: "a@b.co", password: "pw", store, fetchImpl: s1.fetchImpl }).login();
     expect(mem.v?.session?.authToken).toBeTruthy();

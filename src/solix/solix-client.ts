@@ -14,19 +14,22 @@
  * model's job for eufy hardware); it returns the vendor's typed JSON so a caller can consume it.
  */
 import { createHash } from "node:crypto";
-import { readFileSync, writeFileSync } from "node:fs";
 
 import {
   decryptBody,
   encryptBody,
   encryptLoginPassword,
+  FileSessionStore,
   finishKeyExchange,
   genId,
+  gtoken,
   nowSec,
   prepareKeyExchange,
   signRequest,
   type SessionEntry,
+  type SessionStore,
 } from "../core/index.js";
+import type { SecureMqttCredentials } from "../transport/mqtt/secure-mqtt.js";
 
 import {
   SOLIX_APP_NAME,
@@ -108,13 +111,20 @@ export interface SolixPersisted {
   session?: SolixSession;
 }
 
-/** A place to persist a Solix session across process runs. See {@link FileSolixSessionStore}. */
-export interface SolixSessionStore {
-  load(): SolixPersisted | undefined;
-  save(data: SolixPersisted): void;
-}
+/**
+ * A place to persist a Solix session across process runs. Reuses the core {@link SessionStore}
+ * parameterised on the Solix record shape — see {@link FileSolixSessionStore}.
+ */
+export type SolixSessionStore = SessionStore<SolixPersisted>;
 
 const md5Hex = (s: string): string => createHash("md5").update(s).digest("hex");
+
+/** A Solix session is usable if it has a token that isn't (near-)expired — mirrors core `isSessionValid`'s 300s skew. */
+function solixSessionFresh(s: SolixSession | undefined): s is SolixSession {
+  if (!s?.authToken) return false;
+  if (s.tokenExpiresAt > 0) return Math.floor(Date.now() / 1000) < s.tokenExpiresAt - 300;
+  return true;
+}
 
 /** Format 32 hex chars as a UUID (8-4-4-4-12) — used to derive a stable openudid from the email. */
 const uuidFromHex = (hex: string): string =>
@@ -150,7 +160,7 @@ export class SolixClient {
     // Device id: explicit → stored → a deterministic id from the email (stable, avoids re-2FA).
     this.openudid = opts.openudid ?? saved?.openudid ?? uuidFromHex(md5Hex(`anker-solix:${opts.email}`));
     // Adopt a stored session that has not expired, so a warm start skips login entirely.
-    if (saved?.session && (!saved.session.tokenExpiresAt || saved.session.tokenExpiresAt * 1000 > Date.now())) {
+    if (saved?.session && solixSessionFresh(saved.session)) {
       this.session_ = saved.session;
       this.apiHost = saved.session.apiHost;
     }
@@ -193,26 +203,31 @@ export class SolixClient {
     };
   }
 
-  private async post(
+  /** One request path for every Solix call (GET or POST) — always parses through the non-JSON guard. */
+  private async send(
+    method: "GET" | "POST",
     host: string,
     path: string,
-    body: string,
     headers: Record<string, string>,
+    body?: string,
   ): Promise<SolixEnvelope> {
     const res = await this.doFetch(`https://${host}${path}`, {
-      method: "POST",
+      method,
       headers,
       body,
       signal: AbortSignal.timeout(20_000),
     });
     const text = await res.text();
-    let json: SolixEnvelope;
     try {
-      json = JSON.parse(text) as SolixEnvelope;
+      return JSON.parse(text) as SolixEnvelope;
     } catch {
       throw new Error(`Solix ${path} → HTTP ${res.status}, non-JSON: ${text.slice(0, 120)}`);
     }
-    return json;
+  }
+
+  /** POST helper for the login/key-exchange path (which builds its own bespoke headers per request). */
+  private post(host: string, path: string, body: string, headers: Record<string, string>): Promise<SolixEnvelope> {
+    return this.send("POST", host, path, headers, body);
   }
 
   /** Resolve the regional API host via domain-estimate (best-effort; keeps the default on failure). */
@@ -277,7 +292,7 @@ export class SolixClient {
   }
 
   /** Turn a decrypted `/passport/login` payload into an `ok`/`2fa` result, establishing the session on `ok`. */
-  private classifyLogin(kx: SessionEntry, data: Record<string, unknown>, isVerify: boolean): SolixLoginResult {
+  private classifyLogin(data: Record<string, unknown>, isVerify: boolean): SolixLoginResult {
     const userId = (data.ap_cloud_user_id ?? data.user_id) as string | undefined;
     const authToken = data.auth_token as string | undefined;
     if (!userId || !authToken)
@@ -286,14 +301,13 @@ export class SolixClient {
     const faInfo = (data.fa_info ?? {}) as { info?: string };
     if (!isVerify && faInfo.info) {
       this.pending2fa = { limitedToken: authToken, userId, geoKey: data.geo_key as string | undefined };
-      void kx;
       return { status: "2fa", method: "code sent by the passport" };
     }
     this.pending2fa = undefined;
     this.session_ = {
       authToken,
       userId,
-      gtoken: md5Hex(userId),
+      gtoken: gtoken(userId),
       apiHost: this.apiHost,
       tokenExpiresAt: Number(data.token_expires_at ?? 0) || 0,
     };
@@ -313,13 +327,13 @@ export class SolixClient {
    */
   async login(): Promise<SolixLoginResult> {
     // A warm session (from a store) that has not expired skips the handshake entirely.
-    if (this.session_ && (!this.session_.tokenExpiresAt || this.session_.tokenExpiresAt * 1000 > Date.now())) {
+    if (solixSessionFresh(this.session_)) {
       return { status: "ok", session: this.session_ };
     }
     await this.estimateHost();
     const kx = await this.keyExchange();
     const env = await this.postLogin(kx);
-    return this.classifyLogin(kx, this.decryptLogin(env, kx), false);
+    return this.classifyLogin(this.decryptLogin(env, kx), false);
   }
 
   /** Complete a `2fa` login with the code the passport sent. */
@@ -327,20 +341,21 @@ export class SolixClient {
     if (!this.pending2fa) throw new Error("no 2FA login is pending");
     const kx = await this.keyExchange();
     const env = await this.postLogin(kx, code, this.pending2fa.limitedToken);
-    return this.classifyLogin(kx, this.decryptLogin(env, kx), true);
+    return this.classifyLogin(this.decryptLogin(env, kx), true);
   }
 
-  /** POST an authenticated PLAIN JSON read (no per-request encryption); returns the parsed envelope. */
-  private async authedRead<T = unknown>(path: string, body: Record<string, unknown> = {}): Promise<T> {
+  /**
+   * One authenticated PLAIN read for both GET and POST endpoints (no per-request encryption; carries
+   * the auth token + `gtoken` only). Routes through {@link send} so every read keeps the non-JSON guard.
+   */
+  private async authed<T = unknown>(method: "GET" | "POST", path: string, body?: Record<string, unknown>): Promise<T> {
     if (!this.session_) throw new Error("not authenticated — call login() first");
-    const env = await this.post(
+    const env = await this.send(
+      method,
       this.session_.apiHost,
       path,
-      JSON.stringify(body),
-      this.baseHeaders({
-        gtoken: this.session_.gtoken,
-        "x-auth-token": this.session_.authToken,
-      }),
+      this.baseHeaders({ gtoken: this.session_.gtoken, "x-auth-token": this.session_.authToken }),
+      body ? JSON.stringify(body) : undefined,
     );
     if (env.code !== 0) throw new Error(`Solix ${path} failed (${env.code}): ${env.msg}`);
     return (env.data ?? null) as T;
@@ -348,19 +363,23 @@ export class SolixClient {
 
   /** The account's bound Solix devices (flat list; may be empty when devices live under sites). */
   async getDevices(): Promise<unknown[]> {
-    const data = await this.authedRead<{ data?: unknown[] } | unknown[]>(SOLIX_ENDPOINTS.getRelateAndBindDevices);
+    const data = await this.authed<{ data?: unknown[] } | unknown[]>(
+      "POST",
+      SOLIX_ENDPOINTS.getRelateAndBindDevices,
+      {},
+    );
     return Array.isArray(data) ? data : (data?.data ?? []);
   }
 
   /** The account's sites (systems); devices are typically grouped under a site. */
   async getSites(): Promise<unknown[]> {
-    const data = await this.authedRead<{ site_list?: unknown[] }>(SOLIX_ENDPOINTS.getSiteList);
+    const data = await this.authed<{ site_list?: unknown[] }>("POST", SOLIX_ENDPOINTS.getSiteList, {});
     return data?.site_list ?? [];
   }
 
   /** Per-user AWS-IoT MQTT credentials (cert/key/endpoint/thing) for the real-time device plane. */
-  async getUserMqttInfo(): Promise<Record<string, unknown>> {
-    return this.authedRead<Record<string, unknown>>(SOLIX_ENDPOINTS.getUserMqttInfo);
+  async getUserMqttInfo(): Promise<SecureMqttCredentials> {
+    return this.authed<SecureMqttCredentials>("POST", SOLIX_ENDPOINTS.getUserMqttInfo, {});
   }
 
   /**
@@ -373,19 +392,6 @@ export class SolixClient {
     return (records as SolixDeviceRecord[]).map((r) => new SolixDevice(r, { catalog }));
   }
 
-  /** GET an authenticated PLAIN read (catalog endpoints are GET). */
-  private async authedGet<T = unknown>(path: string): Promise<T> {
-    if (!this.session_) throw new Error("not authenticated — call login() first");
-    const res = await this.doFetch(`https://${this.session_.apiHost}${path}`, {
-      method: "GET",
-      headers: this.baseHeaders({ gtoken: this.session_.gtoken, "x-auth-token": this.session_.authToken }),
-      signal: AbortSignal.timeout(20_000),
-    });
-    const env = JSON.parse(await res.text()) as SolixEnvelope<T>;
-    if (env.code !== 0) throw new Error(`Solix ${path} failed (${env.code}): ${env.msg}`);
-    return (env.data ?? null) as T;
-  }
-
   /**
    * The pairable-product catalog (categories → products). This is Anker's product registry, not the
    * account's devices — fetch it to label a discovered device's model code with a marketing name and
@@ -393,35 +399,17 @@ export class SolixClient {
    * baked-in table.
    */
   async getProductCatalog(): Promise<SolixProductCategory[]> {
-    return (await this.authedGet<SolixProductCategory[]>(SOLIX_ENDPOINTS.productCategories)) ?? [];
-  }
-
-  /** The pairable-accessory catalog (same shape family as {@link getProductCatalog}). */
-  async getProductAccessories(): Promise<unknown[]> {
-    return (await this.authedGet<unknown[]>(SOLIX_ENDPOINTS.productAccessories)) ?? [];
+    return (await this.authed<SolixProductCategory[]>("GET", SOLIX_ENDPOINTS.productCategories)) ?? [];
   }
 }
 
 /**
- * A {@link SolixSessionStore} backed by a JSON file, mirroring the eufy client's file store: the
- * device id survives token expiry (so the account keeps seeing the same device and does not re-prompt
- * 2FA), and a live session is reused until it expires. Reads tolerate a missing/corrupt file.
+ * A {@link SolixSessionStore} backed by a JSON file — the core {@link FileSessionStore} parameterised on
+ * the Solix record shape, so it inherits the `mkdirSync` on save (nested paths work) and `clear()` (an
+ * invalidated token can be dropped). The device id survives token expiry (so the account keeps seeing
+ * the same device and does not re-prompt 2FA), and a live session is reused until it expires.
  */
-export class FileSolixSessionStore implements SolixSessionStore {
-  constructor(private readonly path: string) {}
-
-  load(): SolixPersisted | undefined {
-    try {
-      return JSON.parse(readFileSync(this.path, "utf-8")) as SolixPersisted;
-    } catch {
-      return undefined;
-    }
-  }
-
-  save(data: SolixPersisted): void {
-    writeFileSync(this.path, JSON.stringify(data, null, 2), { mode: 0o600 });
-  }
-}
+export class FileSolixSessionStore extends FileSessionStore<SolixPersisted> {}
 
 /**
  * Flatten a {@link SolixClient.getProductCatalog} result into a `product_code → { name, category }`

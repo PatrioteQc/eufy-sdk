@@ -17,7 +17,7 @@ const FRAME_HEX =
   "ff09a00003010f0405a10134a2120041453158304558414d504c453030303031a3020100a6050309000001" +
   "a8050500000000a9050500000000aa050500000000ab050500000000ac050500806d43ad050500000000" +
   "ae050500000000af050500000000b0050500000000b1050500000000b2050500000000b3050500000000" +
-  "b4050500000000b5050500000000b6050500000000b7050500000000b802010332";
+  "b4050500000000b5050500000000b6050500000000b7050500000000b802010344";
 const FRAME = Buffer.from(FRAME_HEX, "hex");
 
 describe("Solix MQTT param decoding", () => {
@@ -62,14 +62,23 @@ describe("Solix MQTT param decoding", () => {
 const xorAll = (b: Buffer): number => b.reduce((a, x) => a ^ x, 0);
 
 describe("Solix requestDeviceInfo ff09 request builder", () => {
+  // From cmd/anker_power/AE1X0/<sn>/req, payload.data (base64), captured live. The fe-nonce carries a
+  // unix timestamp at frame offset 14 ('info') / 24 ('realtime'), just before the trailing XOR byte.
+  const infoCaptured = Buffer.from("/wkTAAMADwBAoQEi/gSau6NqOQ==", "base64");
+  const realtimeCaptured = Buffer.from("/wkdAAMADwBXoQEiogIBAaMDAiwB/gUDmrujag0=", "base64");
+
   it("the checksum convention matches the real captured arming frames", () => {
-    // From cmd/anker_power/AE1X0/AE1X0EXAMPLE00001/req, payload.data (base64), captured live.
-    const infoCaptured = Buffer.from("/wkTAAMADwBAoQEi/gSau6NqOQ==", "base64");
-    const realtimeCaptured = Buffer.from("/wkdAAMADwBXoQEiogIBAaMDAiwB/gUDmrujag0=", "base64");
     expect(xorAll(infoCaptured)).toBe(0); // trailing byte IS the XOR of all the rest
     expect(xorAll(realtimeCaptured)).toBe(0);
     expect(infoCaptured.subarray(0, 2).toString("hex")).toBe("ff09");
     expect(infoCaptured.readUInt16LE(2)).toBe(infoCaptured.length); // declared len = total bytes
+  });
+
+  it("rebuilds the captured arming frames byte-for-byte at their captured timestamps", () => {
+    // Inject each capture's own timestamp so the only variable is fixed → full byte-equality settles
+    // that the builder reproduces the real frames exactly (not just length/checksum/tag presence).
+    expect(buildFf09Request("info", infoCaptured.readUInt32LE(14)).equals(infoCaptured)).toBe(true);
+    expect(buildFf09Request("realtime", realtimeCaptured.readUInt32LE(24)).equals(realtimeCaptured)).toBe(true);
   });
 
   it("builds a well-formed 'info' request (a1=0x22, valid ff09 + checksum)", () => {
