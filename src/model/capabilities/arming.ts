@@ -14,8 +14,8 @@ const STATION_CHANNEL = 255;
  * evidence. `ArmingMode` is both the const value-object (`ArmingMode.home`) and the union type of its
  * values, so callers pass the named constant: `setMode(ArmingMode.home)`.
  *
- * The domain of `setMode` (cmd 1224) alone. {@link ARMING_CMD.ALARM_DELAY_CONFIG} carries its own mode
- * integer on a separate wire and takes {@link AlarmDelayMode}.
+ * The domain of `setMode` (cmd 1224) alone. The alarm-delay write (cmd 1255) carries its own mode integer
+ * on a separate wire and takes {@link AlarmDelayMode}.
  *
  * Deliberately NARROWER than the set a device may report. The remaining five modes are ones the app itself
  * defines and the `mode` read still names them, but no capture shows one being SENT — and
@@ -36,8 +36,8 @@ export const ArmingMode = {
 export type ArmingMode = (typeof ArmingMode)[keyof typeof ArmingMode];
 
 /**
- * The modes {@link ARMING_CMD.ALARM_DELAY_CONFIG} accepts a `mode_id` for — the three guard modes whose
- * wire integer is byte-captured.
+ * The modes the alarm-delay write (cmd 1255) accepts a `mode_id` for — the three guard modes whose wire
+ * integer is byte-captured.
  *
  * A domain of its own, because the two mode integers ride different commands: `setMode` writes `mode_type`
  * on cmd 1224, and cmd 1255 carries `mode_id`. Neither wire validates the integer, so each union IS its
