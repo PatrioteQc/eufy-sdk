@@ -140,15 +140,15 @@ different command rather than a failure.
 ### Whole-floor verbs
 
 ```ts
-const clean = dev.vacuumClean();
+const clean = dev.vacuumClean?.();
 
 await clean?.startCleaning?.(); // whole-floor auto clean
 await clean?.pauseCleaning?.();
 await clean?.resumeCleaning?.(); // resumes where it stopped, unlike a fresh start
 await clean?.returnToDock?.();
 
-await dev.suction()?.setSuctionLevel?.(2); // raw level, see above
-await dev.suction()?.setBoostIq?.(true);
+await dev.suction?.()?.setSuctionLevel?.(2); // raw level, see above
+await dev.suction?.()?.setBoostIq?.(true);
 ```
 
 ### Cleaning part of a floor
@@ -167,6 +167,8 @@ A scene the robot reports invalid is still reportable and still a well-formed re
 `VacuumScene.invalidReason` says why it will be refused.
 
 Room and zone cleans name the area themselves:
+
+<!-- typecheck: host mapId, p0, p1, p2, p3 -->
 
 ```ts
 await clean?.cleanRooms?.(

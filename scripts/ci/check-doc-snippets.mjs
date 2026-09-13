@@ -70,6 +70,7 @@ declare const cam: NonNullable<ReturnType<NonNullable<Sdk.Device["camera"]>>>;
 // The SMART light (\`dev.smartLight?.()\`), which is the only \`light\` the guides introduce by that name;
 // a camera's floodlight is reached through \`cam\` and never bound to a bare \`light\`.
 declare const light: NonNullable<ReturnType<NonNullable<Sdk.Device["smartLight"]>>>;
+declare const clean: NonNullable<ReturnType<NonNullable<Sdk.Device["vacuumClean"]>>>;
 declare const ptz: NonNullable<ReturnType<NonNullable<Sdk.Device["ptz"]>>>;
 declare const rtsp: NonNullable<ReturnType<NonNullable<Sdk.Device["rtsp"]>>>;
 declare const manifest: Sdk.DeviceManifest;
