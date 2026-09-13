@@ -757,7 +757,7 @@ export interface DeviceActionMap {
   lock: LockActions;
   /** Siren: reads `active`, `volume`, `alarmDuration`, `doNotDisturb`; writes `setVolume`, `setAlarmDuration`, `test`, `stop` (config setters present when the param is reported). No direct "sound the alarm" wire — a real alarm is driven by the `arming` system; `test` is the on-demand trigger. */
   siren: SirenActions;
-  /** Guard mode: `setMode(ArmingMode)` + `setAlarmDelayConfig(mode, config)`. Of the 8 `ArmingMode` values only `away`/`home`/`disarmed` are confirmed on-device. */
+  /** Guard mode: `setMode(ArmingMode)` + `setAlarmDelayConfig(mode, config)`. Of the 9 modes a station reports, only `away`/`home`/`custom1`/`disarmed` are confirmed as writes (`ArmingMode`); the alarm-delay write takes the narrower byte-captured `AlarmDelayMode`. */
   arming: ArmingActions;
   /** Doorbell: `playQuickResponse(voiceId)` (the canned voice replies). */
   doorbell: DoorbellActions;
@@ -1067,7 +1067,7 @@ export type { PtzPresetActions, ZoomRegion, PtzPreset, PtzPresetImage } from "./
 
 // Named argument constants for the fluent actions (value + companion type): `ArmingMode.home`,
 // `PtzDirection.left`. The on-wire `PTZ_ROTATE` map stays private — not re-exported here.
-export { ArmingMode } from "./arming.js";
+export { AlarmDelayMode, ArmingMode } from "./arming.js";
 export type { AlarmDelayConfig, AlarmDelayCountdown, AlarmDelayDeviceAction, AlarmDelaySeconds } from "./arming.js";
 export { PtzDirection } from "./ptz.js";
 export { AiDetectType, encodeAiDetectType, decodeAiDetectType, type AiDetectFlags } from "./motion.js";

@@ -1,4 +1,12 @@
-import { ARMING, ARMING_CMD, ARMING_MEMBERS, ArmingMode, AlarmDelaySeconds, type ArmingActions } from "../arming.js";
+import {
+  ARMING,
+  ARMING_CMD,
+  ARMING_MEMBERS,
+  AlarmDelayMode,
+  AlarmDelaySeconds,
+  ArmingMode,
+  type ArmingActions,
+} from "../arming.js";
 import { buildCommand } from "../index.js";
 import { bind } from "./bind.js";
 import type { CommandContext } from "../types.js";
@@ -25,11 +33,17 @@ describe("arming capability module", () => {
     expect(ARMING.detection?.evidenceParams).toContain(1224);
   });
 
+  /**
+   * away/home/disarmed are byte-exact captures (T8030, 2026-07-23); custom1 is a live confirmation
+   * (T8030, 2026-09-12) of the same frame shape with mode_type 3. The frame asserted below is the
+   * captured one either way — see ARMING_MODE_WIRE for the evidence split.
+   */
   describe("setMode / buildCommand (wire captured live on a T8030, 2026-07-23)", () => {
     it.each([
       [ArmingMode.away, 0],
       [ArmingMode.disarmed, 63],
       [ArmingMode.home, 1],
+      [ArmingMode.custom1, 3],
     ])("%s → set-payload cmd 1224, {mode_type:%i, user_name}, explicit mValue3:0", async (mode, modeType) => {
       const { acts, sent } = bind<ArmingActions>("arming", ctx);
       await acts.setMode(mode);
@@ -57,21 +71,20 @@ describe("arming capability module", () => {
     it("buildCommand returns undefined for an unrelated action, and throws for an unknown mode name", () => {
       expect(buildCommand("nope", "home", ctx)).toBeUndefined();
       expect(() => buildCommand("armingMode", "not-a-mode", ctx)).toThrow(
-        /mode: "not-a-mode" is not a valid value \(must be one of 0\/1\/63\)/,
+        /mode: "not-a-mode" is not a valid value \(must be one of 0\/1\/3\/63\)/,
       );
     });
 
     /**
-     * The six uncaptured modes are the whole reason the write domain is narrower than the read one. A
+     * The five uncaptured modes are the whole reason the write domain is narrower than the read one. A
      * mode the station reports must still READ (it has a label), and the same value must refuse on the way
-     * back out — by naming the three that work, not by reporting the capability as missing.
+     * back out — by naming the four that work, not by reporting the capability as missing.
      *
      * Both entry points are checked: the fluent setter and the intent path share one domain check, and it
      * was them disagreeing that put a guessed `mode_type` on a fire-and-forget wire in the first place.
      */
     it.each([
       ["schedule", 2],
-      ["custom1", 3],
       ["custom2", 4],
       ["custom3", 5],
       ["off", 6],
@@ -82,8 +95,8 @@ describe("arming capability module", () => {
         read: (p) => (p === "armingMode" ? { value: wire } : undefined),
       });
       expect(acts.mode).toBe(wire);
-      await expect(acts.setMode(acts.mode! as never)).rejects.toThrow(/must be one of 0\/1\/63/);
-      expect(() => buildCommand("armingMode", name, ctx)).toThrow(/must be one of 0\/1\/63/);
+      await expect(acts.setMode(acts.mode! as never)).rejects.toThrow(/must be one of 0\/1\/3\/63/);
+      expect(() => buildCommand("armingMode", name, ctx)).toThrow(/must be one of 0\/1\/3\/63/);
       expect(sent).toEqual([]);
     });
 
@@ -100,7 +113,7 @@ describe("arming capability module", () => {
         "geo",
         "disarmed",
       ]);
-      expect(mode.args[0].values).toEqual([0, 1, 63]);
+      expect(mode.args[0].values).toEqual([0, 1, 3, 63]);
     });
 
     it("setMode round-trips the wire integer the mode getter answers", async () => {
@@ -137,6 +150,16 @@ describe("arming capability module", () => {
     expect(AlarmDelaySeconds).toEqual({ off: 0, sec15: 15, sec30: 30, sec45: 45, sec60: 60, min3: 180, min5: 300 });
   });
 
+  /**
+   * The type pin for the two mode domains. `setMode` accepts `custom1`; this command does not, because
+   * the confirmation for mode 3 was gathered on cmd 1224 and cmd 1255 has no capture carrying it and no
+   * readback. Nothing else enforces that: the narrowing is type-level, vitest does not typecheck, and
+   * `tsc --noEmit` covers this file, so merging the domains back into one union passes every runtime
+   * assertion. This line fails that merge with an unused `@ts-expect-error`.
+   */
+  // @ts-expect-error custom1 is confirmed on cmd 1224 only — the alarm-delay domain excludes it
+  void ((): AlarmDelayMode => ArmingMode.custom1)();
+
   describe("setAlarmDelayConfig (wire captured live on a T8030, 2026-07-23)", () => {
     const config = {
       countDownAlarm: { channelList: [6], delaySeconds: AlarmDelaySeconds.sec45 },
@@ -155,7 +178,7 @@ describe("arming capability module", () => {
 
     it("→ set-json-raw cmd 1255, bare plaintext (no 1350/1700 envelope), pinned to station ch 255", async () => {
       const { acts, sent } = bind<ArmingActions>("arming", ctx);
-      await acts.setAlarmDelayConfig(ArmingMode.away, config);
+      await acts.setAlarmDelayConfig(AlarmDelayMode.away, config);
       expect(sent).toEqual([
         {
           kind: "set-json-raw",
@@ -182,7 +205,7 @@ describe("arming capability module", () => {
 
     it("maps every ArmingMode name to its captured mode_id", async () => {
       const { acts, sent } = bind<ArmingActions>("arming", ctx);
-      await acts.setAlarmDelayConfig(ArmingMode.home, config);
+      await acts.setAlarmDelayConfig(AlarmDelayMode.home, config);
       const cmd = sent[0] as Extract<Command, { kind: "set-json-raw" }>;
       expect(cmd.data.mode_id).toBe(1);
     });
@@ -190,7 +213,7 @@ describe("arming capability module", () => {
     it("channel 255 is PINNED — independent of ctx.channel, not just coincidentally matching it", async () => {
       const oddCtx: CommandContext = { ...ctx, channel: 7 };
       const { acts, sent } = bind<ArmingActions>("arming", oddCtx);
-      await acts.setAlarmDelayConfig(ArmingMode.away, config);
+      await acts.setAlarmDelayConfig(AlarmDelayMode.away, config);
       const cmd = sent[0] as Extract<Command, { kind: "set-json-raw" }>;
       expect(cmd.channel).toBe(255);
     });
@@ -200,7 +223,7 @@ describe("arming capability module", () => {
       // Deliberately malformed at runtime (a caller ignoring/bypassing types) — missing countDownAlarm,
       // so alarmDelayCommand() throws synchronously reading `.channelList` off `undefined`.
       const malformed = {} as any;
-      await expect(acts.setAlarmDelayConfig(ArmingMode.away, malformed)).rejects.toThrow();
+      await expect(acts.setAlarmDelayConfig(AlarmDelayMode.away, malformed)).rejects.toThrow();
       expect(sent).toEqual([]);
     });
   });
