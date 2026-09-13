@@ -358,8 +358,14 @@ export interface ActionSpec {
  * A capability module: property schema + detection + inbound decode + outbound commands. Written
  * once, reused by every device that lists the capability.
  */
-export interface CapabilityModule {
-  capability: Capability;
+/**
+ * The module contract, generic over its capability-id type. Defaults to eufy's {@link Capability}, so
+ * every eufy module and every `Record<Capability, CapabilityModule>` consumer is unchanged. A separate
+ * ecosystem parameterises it with its own id union (e.g. Solix: `CapabilityModule<SolixCapability>`) —
+ * the SAME module shape and members engine, not a parallel capability system.
+ */
+export interface CapabilityModule<C extends string = Capability> {
+  capability: C;
   /**
    * Properties this capability contributes.
    *
