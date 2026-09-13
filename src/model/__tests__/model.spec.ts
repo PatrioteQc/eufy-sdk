@@ -52,9 +52,10 @@ describe("classify (device_type → codec)", () => {
     // not the cloud `category` ("eufy_mega") — see classify.ts's `T87A` arm for why.
     expect(classify({ model: "T87A0", deviceType: 1 })).toBe("display");
     // Shaped like the real captured record (2026-09-04, redacted): `name` matters here because it's
-    // the one field `hintHaystack` feeds into inference — a security capability whose `modelHints`
-    // regex happened to match this text is exactly the risk `display`'s security-line grouping opens
-    // (see `namespaceForCodec`'s doc comment). It doesn't, so the only capability is `info`.
+    // the one field `hintHaystack` feeds into inference — and a security capability whose `modelHints`
+    // regex matched this text was exactly the risk while `display` was grouped into the security line.
+    // It no longer can be: `display` is its own line with its own param namespace, so the only
+    // capabilities are its own and the universal `info`.
     const r = resolveDevice({
       category: "eufy_mega",
       model: "T87A0",
@@ -71,7 +72,9 @@ describe("classify (device_type → codec)", () => {
     } as never);
     expect(r.codec).toBe("display");
     expect(r.name).toBe("Smart Display E10"); // curated registry row
-    expect(r.capabilities).toEqual(["info"]); // no camera-line (or other security-line) capability leaks in
+    // `display` itself, from the codec, plus the universal `info`. No camera-line (or other
+    // security-line) capability leaks in — see line-partition.spec.ts for the adversarial case.
+    expect(r.capabilities).toEqual(["display", "info"]);
   });
 });
 
