@@ -52,8 +52,10 @@ Worth knowing:
 
 The direct escape hatch — raw frames as they arrive.
 
+<!-- typecheck: host consumeAudio -->
+
 ```ts
-const stream = await cam.live();
+const stream = await cam.live!();
 
 stream.on("video", (frame) => {
   // frame.data    Annex-B bytes (ONE whole access unit, start-code-prefixed NAL units)
@@ -95,6 +97,8 @@ surface rather than measured against a device.
 
 An encoder cannot change input geometry mid-stream, so a caller adapting this source to a fixed output
 has to tear down and rebuild on every change. `video-config` is how it learns:
+
+<!-- typecheck: host Encoder, openEncoder -->
 
 ```ts
 let encoder: Encoder | undefined;
@@ -167,7 +171,7 @@ video/audio frames or `recordFragments()` for a muxed stream; raw elementary aud
 interleaved into the Annex-B byte stream.
 
 ```ts
-const r = await cam.openReadable?.(); // Annex-B byte stream
+const r = await cam.openReadable!(); // Annex-B byte stream
 r.pipe(fs.createWriteStream("out.h264"));
 // ...
 r.destroy(); // releases this consumer (and the pull if it was the last)
@@ -340,6 +344,8 @@ noise. Stop the open one first.
 To push raw PCM instead, supply an encoder. The SDK ships none: every AAC encoder is either a native
 dependency or an external process, both of which belong to the host rather than to a protocol SDK.
 
+<!-- typecheck: host myAacEncoder -->
+
 ```ts
 const talk = await cam.talkback!({ encoder: myAacEncoder }); // write() now takes 16-bit LE mono PCM
 ```
@@ -376,6 +382,8 @@ session stops on schedule and every consumer ends with it.
 When the budget elapses on a battery camera, live streams and fragmented recording handles emit
 `budget` with an `extend()` handle:
 
+<!-- typecheck: host keepWatching -->
+
 ```ts
 stream.on("budget", (notice) => {
   if (keepWatching) notice.extend(); // re-push another full budget, cancel the auto-stop
@@ -386,7 +394,7 @@ stream.on("budget", (notice) => {
 Defaults: 45 s budget, 10 s grace. A host tunes only the **timings** (not the power decision):
 
 ```ts
-await cam.live({ batteryBudgetMs: 8000, budgetGraceMs: 5000, keepAliveMs: 3000 });
+await cam.live!({ batteryBudgetMs: 8000, budgetGraceMs: 5000, keepAliveMs: 3000 });
 ```
 
 A wired camera ignores all of this and streams until you `stop()`.

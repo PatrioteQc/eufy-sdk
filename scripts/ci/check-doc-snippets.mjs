@@ -38,13 +38,23 @@
 
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join, relative } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
-const DOCS = join(ROOT, "docs");
-const OUT = join(ROOT, "docs", ".snippets");
 const keep = process.argv.includes("--keep");
+
+/**
+ * Which tree to scan, so the checker can be pointed at a FIXTURE and thereby tested itself.
+ *
+ * A guard nobody checks is a guard nobody can trust: this one exists because two broken snippets shipped,
+ * and it would be the same mistake to take on faith that it catches them. `--docs <dir>` lets a spec hand
+ * it a guide with a known bug and assert on what comes back. Defaults to the real guides.
+ */
+const docsArg = process.argv.indexOf("--docs");
+const DOCS = docsArg === -1 ? join(ROOT, "docs") : resolve(process.argv[docsArg + 1]);
+// Generated files live beside the tree being scanned, so a fixture run cannot disturb the real one.
+const OUT = join(DOCS, ".snippets");
 
 /**
  * The names a guide may use without declaring them, and what each is.
@@ -60,7 +70,7 @@ const PRELUDE = `
 // \`import { EufyMega } from "@mega-yfue/eufy-sdk"\` without colliding with anything declared here.
 // Naming the classes directly made every such snippet fail twice over — once as a duplicate identifier,
 // once as "cannot be used as a value because it was imported using import type".
-import type * as Sdk from "../../src/index.ts";
+import type * as Sdk from "${relative(OUT, join(ROOT, "src", "index.ts")).replace(/\\\\/g, "/")}";
 
 // The shared vocabulary of the guides: names the prose introduces and the snippets then use. Ambient,
 // so none of this is a value at runtime and none of it can be wrong about behaviour — only about TYPE,
@@ -93,7 +103,8 @@ declare const secret: string;
 // file system. Typed loosely on purpose — the claim a snippet makes about them is not this SDK's to
 // check, and a precise type here would only invent an interface the reader does not have.
 declare const myLog: Sdk.Logger;
-declare const promptUser: (question: string) => Promise<string>;
+// Called with the captcha image and again with nothing, so its argument is optional here.
+declare const promptUser: (question?: unknown) => Promise<string>;
 declare const fs: typeof import("node:fs");
 declare const kind: string;
 
@@ -259,6 +270,21 @@ function markdownFiles(dir) {
 const SKIP = /^<!--\s*typecheck:\s*skip\s*(?:[—-]\s*(?<reason>.+?))?\s*-->$/;
 
 /**
+ * `<!-- typecheck: host foo, bar -->` — names in this snippet that belong to the READER, not to us.
+ *
+ * Several guides illustrate wiring the SDK into something the reader already has: an event bus, an audio
+ * encoder, a UI slider, a function that registers an accessory with their own framework. Those names have
+ * no type this library could supply, and inventing an interface for each would put fiction in the
+ * checker and teach the reader nothing.
+ *
+ * So they are declared `any` — which types NOTHING about them and leaves every SDK call around them
+ * checked exactly as before. Naming them in the markdown rather than adding them to the shared prelude
+ * keeps the prelude to the vocabulary the guides really share, and makes the snippet say out loud which
+ * half of itself is the reader's.
+ */
+const HOST_NAMES = /^<!--\s*typecheck:\s*host\s+(?<names>[^>]+?)\s*-->$/;
+
+/**
  * Every ```ts block in one file: its body, the line its first code line sits on, and any skip marker.
  *
  * Hand-rolled rather than pulled from a markdown parser: the only structure needed is a fence, and a
@@ -268,6 +294,7 @@ function snippetsIn(markdown) {
   const lines = markdown.split("\n");
   const found = [];
   let skip;
+  let host = [];
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].trim();
     const marker = SKIP.exec(line);
@@ -275,11 +302,22 @@ function snippetsIn(markdown) {
       skip = { reason: marker.groups?.reason, line: i + 1 };
       continue;
     }
+    const hosts = HOST_NAMES.exec(line);
+    if (hosts) {
+      host = hosts.groups.names
+        .split(",")
+        .map((n) => n.trim())
+        .filter(Boolean);
+      continue;
+    }
     if (line !== "```ts") {
       // A blank line between the marker and its fence is fine; anything else means the marker was
       // orphaned, which is worth reporting rather than silently applying to a later snippet.
       if (line !== "" && skip) found.push({ orphanedSkip: skip });
-      if (line !== "") skip = undefined;
+      if (line !== "") {
+        skip = undefined;
+        host = [];
+      }
       continue;
     }
     const start = i + 1;
@@ -293,8 +331,9 @@ function snippetsIn(markdown) {
         break;
       }
     }
-    found.push({ body: lines.slice(start, close).join("\n"), firstLine: start + 1, skip });
+    found.push({ body: lines.slice(start, close).join("\n"), firstLine: start + 1, skip, host });
     skip = undefined;
+    host = [];
     i = close;
   }
   return found;
@@ -326,10 +365,16 @@ for (const file of markdownFiles(DOCS)) {
     // The body goes inside a function so its own `const`s shadow the prelude and `await` is legal.
     const { hoisted, body, hoistedCount } = hoistDeclarations(expandElisions(snippet.body));
     const bound = importedNames(hoisted);
-    const shadow = Object.entries(AMBIENT_VALUES)
-      .filter(([n]) => !bound.has(n))
-      .map(([, decl]) => decl)
-      .join("\n");
+    const shadow = [
+      ...Object.entries(AMBIENT_VALUES)
+        .filter(([n]) => !bound.has(n))
+        .map(([, decl]) => decl),
+      // `any` on purpose: see HOST_NAMES. A host name the snippet also imports is left to the import.
+      // A value AND a type alias, because a host name can be either: `openEncoder` is called and
+      // `Encoder` annotates a variable, and the two live in separate declaration spaces so one name can
+      // legally be both.
+      ...(snippet.host ?? []).filter((n) => !bound.has(n)).flatMap((n) => [`let ${n}: any;`, `type ${n} = any;`]),
+    ].join("\n");
     // Hoisted lines keep their own order but move above the wrapper, so a line number inside the body
     // is offset by however many left it. The shadow block sits on ONE line for the same reason: a fixed,
     // known height keeps the markdown line mapping arithmetic honest.
@@ -348,7 +393,9 @@ writeFileSync(
     {
       compilerOptions: {
         target: "ES2024",
-        lib: ["ES2024", "DOM"],
+        // No "DOM": adding it re-types global `fetch` and made `src/transport/push/fcm.ts` fail on a
+        // `BodyInit` overload that the library's own tsconfig accepts. The snippets are Node code.
+        lib: ["ES2024"],
         module: "NodeNext",
         moduleResolution: "NodeNext",
         strict: true,
@@ -365,7 +412,7 @@ writeFileSync(
         // to the source so a snippet is checked against what this commit actually exports rather than
         // against whatever version happens to be installed in node_modules.
         // No `baseUrl` — TypeScript 7 removed it, and `paths` is resolved relative to this tsconfig.
-        paths: { "@mega-yfue/eufy-sdk": ["../../src/index.ts"] },
+        paths: { "@mega-yfue/eufy-sdk": [relative(OUT, join(ROOT, "src", "index.ts")).replace(/\\/g, "/")] },
       },
       include: ["*.ts"],
     },

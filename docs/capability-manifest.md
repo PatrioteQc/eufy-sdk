@@ -36,7 +36,7 @@ See `examples/10-describe-device.ts` for the runnable version, which also reads 
   details: [
     {
       capability: "battery",
-      accessor: "battery",         // dev.battery()
+      accessor: "battery",         // dev.battery?.()
       reads: [
         { accessor: "level", property: "battery", type: "number",
           kind: "percent", unit: "%", writable: false, description: "…" },
