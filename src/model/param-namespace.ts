@@ -26,7 +26,7 @@ const TABLES: Record<ParamNamespace, Record<number, ParamDef>> = {
   // (printer-support plan Stage 3). Present so the printer codec resolves to its OWN namespace rather
   // than falling through to `security` and decoding another line's dictionary.
   print: {},
-  // Smart Display (T87Ax) — ids 8001-8006, three of them mapped. Same reason as `print`: its own
+  // Smart Display (T87Ax) — ids 8001-8006, four of them named. Same reason as `print`: its own
   // dictionary rather than a corner of another line's.
   display: DISPLAY_PARAMS,
 };

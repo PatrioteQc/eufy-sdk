@@ -4,15 +4,28 @@ The eufy Smart Display (T87A0, "Smart Display E10") is the smallest surface in t
 reason is worth stating before the API: **almost nothing about it is on a wire anyone here has read.**
 
 ```ts
-const display = dev.display();
+const display = dev.display?.();
 
-display?.modelCode; // "T87A0" — the device's own model code
-display?.modelName; // "Smart Display E10" — its retail name, as it reports it
-display?.softwareVersion; // "2.9.05" — version-shaped; see the warning below
+display?.battery; // 0-100 — the screen's charge
 ```
 
 That is the whole capability. There is no screen control, no volume, no assistant — not because they
 are unimplemented, but because the one captured unit reported no parameter for any of them.
+
+Three more params ARE named, and readable without a typed getter:
+
+```ts
+const props = dev.getProperties();
+props.modelName?.value; // "Smart Display E10"
+props.modelCode?.value; // "T87A0"
+props.softwareVersion?.value; // "2.9.05" — version-shaped; see the warning below
+```
+
+A dictionary entry is what makes a param readable by name; a typed getter is a recommendation on top of
+that, and these three do not earn one. `modelName` and `modelCode` restate what `dev.info?.()` already
+answers from the curated registry and the cloud record — their whole evidence is that agreement, so a
+getter beside `info` would offer a second spelling of what you just read. `softwareVersion` is a guess,
+and a guess must not reach a surface where a caller cannot see the label.
 
 ## What the device actually reported
 
@@ -20,14 +33,14 @@ One T87A0, captured 2026-09-04. It connects over **secure MQTT with no `p2p_did`
 P2P at all, and it reported six parameters in the ids `8001`-`8006` — an id range no other eufy line
 uses.
 
-| Param | Value on the capture   | Modelled as                              |
-| ----- | ---------------------- | ---------------------------------------- |
-| 8001  | `"100"`                | `battery` (identified by the maintainer) |
-| 8002  | `"1"`                  | —                                        |
-| 8003  | `"2.9.05"`             | `softwareVersion` (a guess — see below)  |
-| 8004  | a serial-shaped string | —                                        |
-| 8005  | `"Smart Display E10"`  | `modelName`                              |
-| 8006  | `"T87A0"`              | `modelCode`                              |
+| Param | Value on the capture   | Modelled as                             |
+| ----- | ---------------------- | --------------------------------------- |
+| 8001  | `"100"`                | `battery` — the one typed getter        |
+| 8002  | `"1"`                  | —                                       |
+| 8003  | `"2.9.05"`             | `softwareVersion` (a guess — see below) |
+| 8004  | a serial-shaped string | —                                       |
+| 8005  | `"Smart Display E10"`  | `modelName`                             |
+| 8006  | `"T87A0"`              | `modelCode`                             |
 
 **Two of the six are deliberately unnamed.** `1` fits any enum or flag, and a serial-shaped value could
 be the display's own or the station it is bound to. One value does not settle either, and a name here
@@ -46,13 +59,13 @@ reading both from one capability would be a claim that the ecosystems share a pa
 door this line was split to close.
 
 ::: warning `softwareVersion` is an inference
-Its provenance is `guessed`, alone among the three. The device sent a dotted version-shaped string and
+Its provenance is `guessed`, alone among the four, and why it has no typed getter. The device sent a dotted version-shaped string and
 nothing corroborates what the id means. `modelName` and `modelCode` are `mega` for a different reason:
 their VALUES were facts already known from elsewhere — the retail name and the model code — so the match
 is evidence about the id, not a shape that suggests one.
 
 Where the cloud record carries a firmware version, `dev.info()?.firmwareVersion` is the field to trust.
-This device's record did not.
+This device's record did not, which is the only reason 8003 is named at all.
 :::
 
 ## Why it is not part of the security line

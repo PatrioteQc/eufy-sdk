@@ -786,7 +786,7 @@ export interface DeviceActionMap {
   suction: SuctionActions;
   /** RoboVac locate (find-robot beep): `locating`; `locate(on?)`. */
   locate: LocateActions;
-  /** Smart Display reads (read-only): `modelCode`, `modelName`, `softwareVersion`. No write is captured. */
+  /** Smart Display (read-only): `battery`. No display write is captured. */
   display: DisplayActions;
   /** Identity metadata (read-only): `{ manufacturer, model, serialNumber, name, deviceType?, firmwareVersion?, hardwareVersion? }`. */
   info: DeviceInfo;
@@ -1037,7 +1037,7 @@ export { RTSP_MEMBERS } from "./rtsp.js";
 export { SIREN_MEMBERS } from "./siren.js";
 export { SMART_LIGHT_MEMBERS } from "./smart-light.js";
 export { SMOKE_MEMBERS } from "./smoke.js";
-export { DISPLAY_MEMBERS, DISPLAY_PARAM, type DisplayActions } from "./display.js";
+export { DISPLAY_MEMBERS, type DisplayActions } from "./display.js";
 export { SUCTION_MEMBERS } from "./suction.js";
 export { VACUUM_CLEAN_MEMBERS } from "./vacuum-clean.js";
 // The read-only identity metadata object returned by `dev.info()` — a public consumer type.

@@ -1720,53 +1720,40 @@ export const CLEAN_PARAMS: Record<number, ParamDef> = {
  * security param in this range to be read off a Smart Display as something it is not.
  *
  * Every id here was REPORTED by a live T87A0 (captured 2026-09-04), which is what `mega` provenance
- * means: the device sent it. Whether each id's MEANING is equally certain varies, and the two are
- * recorded separately below — a value whose content identifies it beyond doubt is not the same claim as
- * one whose shape merely suggests a name.
+ * means: the device sent it. Whether each id's MEANING is equally certain varies, and that is what
+ * separates the provenance labels below — `battery` and the two identity strings are known, `8003` is
+ * named for its shape alone.
  *
- * **Two of the six are not here, and that is deliberate.** The device also reported 8002 (`"1"`) and
- * 8004 (a serial-shaped string), and neither meaning is legible from one value: `1` fits any enum or
- * flag, and a serial-shaped value could be the display's own or the station's it is bound to. Naming
- * either would be a guess a consumer would then read as a fact. They are left undecoded, which reports
- * them as raw ids. What would settle them: the vendor app's own display settings screen moved one
- * control at a time, with the reported params diffed after each.
+ * A dictionary entry is what makes a param readable by name off `getProperties()`. Only `battery` also
+ * has a typed getter, for reasons `capabilities/display.ts` states: the identity strings restate what
+ * `info` already answers, and a `guessed` id does not belong in the typed surface.
  *
- * 8001 was the third of those until the maintainer identified it as the BATTERY. Worth recording how
- * that went, because the value alone could not have said so: `"100"` fits a percentage of brightness,
- * volume or charge equally well, and picking one would have been a coin toss shown to users as a fact.
- * It took someone who knows the device; it did not take another capture.
+ * **8002 (`"1"`) and 8004 (a serial-shaped string) are absent, deliberately.** Neither meaning is
+ * legible from one value: `1` fits any enum or flag, and a serial could be the display's own or the
+ * station's it is bound to. 8001 was a third until the maintainer identified it — `"100"` fits
+ * brightness, volume or charge equally, so the capture could not have said which — which is the measure
+ * of this list: it holds what is unknown, not what is unknowable. What would settle the remaining two:
+ * the vendor app's own display settings screen, one control at a time, params diffed after each.
  */
 export const DISPLAY_PARAMS: Record<number, ParamDef> = {
   8001: {
     name: "battery",
     type: "number",
-    // Identified by the maintainer, not inferred from the capture — `"100"` on a mains-powered screen is
-    // as consistent with a brightness or a volume as with a charge level. `mega` because the id is one
-    // the device really reports and its meaning comes from someone who knows the hardware; what is NOT
-    // claimed is a scale, since a single reading of 100 cannot distinguish 0-100 from anything else.
     provenance: "mega",
   },
   8003: {
     name: "softwareVersion",
     type: "string",
-    // `guessed` on purpose, against `mega` for the other two. The device sent `"2.9.05"`, which is
-    // version-shaped and nothing else on this record looks like a version — but a single dotted value
-    // is circumstantial, not a mapping anyone confirmed. It reads as a version because it looks like
-    // one, which is the definition of this tier.
     provenance: "guessed",
   },
   8005: {
     name: "modelName",
     type: "string",
-    // Self-evidencing: the value was exactly "Smart Display E10", the model's retail name, which the
-    // registry row for T87A0 already carried from another source. A value that matches a fact known
-    // independently is not an inference about what the id means.
     provenance: "mega",
   },
   8006: {
     name: "modelCode",
     type: "string",
-    // Self-evidencing in the same way: the value was "T87A0", the device's own model code.
     provenance: "mega",
   },
 };

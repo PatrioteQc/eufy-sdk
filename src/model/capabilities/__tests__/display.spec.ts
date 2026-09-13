@@ -12,9 +12,15 @@ import type { ValueMember } from "../members.js";
  * here is absence — that nothing was invented, and that nothing from another line can reach it.
  */
 describe("display capability", () => {
-  it("reports only the params whose meaning is actually known", () => {
-    expect(Object.keys(DISPLAY_MEMBERS).sort()).toEqual(["battery", "modelCode", "modelName", "softwareVersion"]);
-    expect(DISPLAY.properties?.map((p) => p.paramType).sort()).toEqual([8001, 8003, 8005, 8006]);
+  it("publishes one typed read, and names the rest in the dictionary only", () => {
+    // A typed getter is a recommendation, not just a decoding. Only the charge earns one: it is the sole
+    // read a caller could not get another way. The identity strings restate what `info` already answers
+    // from the registry and the cloud record — their whole evidence is that agreement — and 8003 is
+    // `guessed`, which must not reach a surface where a caller cannot see the label.
+    expect(Object.keys(DISPLAY_MEMBERS)).toEqual(["battery"]);
+    expect(DISPLAY.properties?.map((p) => p.paramType)).toEqual([8001]);
+    // Named in the dictionary all the same, which is what keeps them readable off `getProperties()`.
+    for (const id of [8003, 8005, 8006]) expect(DISPLAY_PARAMS[id]).toBeDefined();
   });
 
   it("names no param whose meaning one value cannot settle", () => {
@@ -26,6 +32,9 @@ describe("display capability", () => {
       expect(DISPLAY_PARAMS[id]).toBeUndefined();
       expect(DISPLAY.properties?.some((p) => p.paramType === id)).toBe(false);
     }
+    // An unnamed id is not lost — it arrives as `unknown_8002`, which is what makes the next capture
+    // able to identify it the way 8001 was identified.
+    expect(Object.keys(DISPLAY_PARAMS).map(Number).sort()).toEqual([8001, 8003, 8005, 8006]);
   });
 
   it("reads the display's battery off its own id, not the security line's", () => {
@@ -51,13 +60,15 @@ describe("display capability", () => {
     }
   });
 
-  it("labels the version-shaped string as the guess it is", () => {
-    // Its value was "2.9.05" on one device and nothing corroborates the mapping. The two identity reads
-    // are `mega` because their VALUES were independently known facts — the retail name and the model
-    // code — which is evidence about what the id means, not a shape that suggests it.
-    expect((DISPLAY_MEMBERS.softwareVersion as ValueMember).provenance).toBe("guessed");
-    expect((DISPLAY_MEMBERS.modelName as ValueMember).provenance).toBe("mega");
-    expect((DISPLAY_MEMBERS.modelCode as ValueMember).provenance).toBe("mega");
+  it("labels the version-shaped string as the guess it is, in the dictionary", () => {
+    // "2.9.05" on one device and nothing corroborates the mapping. The two identity ids are `mega`
+    // because their VALUES were independently known facts — the retail name and the model code — which
+    // is evidence about what an id means, not a shape that suggests it.
+    expect(DISPLAY_PARAMS[8003]?.provenance).toBe("guessed");
+    expect(DISPLAY_PARAMS[8005]?.provenance).toBe("mega");
+    expect(DISPLAY_PARAMS[8006]?.provenance).toBe("mega");
+    // And the guess has no typed getter, which is the rule it would otherwise break.
+    expect(Object.keys(DISPLAY_MEMBERS)).not.toContain("softwareVersion");
   });
 
   it("reads its own id space, not the security dictionary", () => {
