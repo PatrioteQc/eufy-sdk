@@ -107,6 +107,28 @@ export class CameraDisabledError extends Error {
 }
 
 /**
+ * Work on a station was refused: the station did not provide the session key that work requires.
+ *
+ * A station reached over its HomeBase encrypts what it is sent under a key negotiated once per connection, and
+ * a media start for an attached camera has no unencrypted form at all — so without that key there is nothing
+ * to send, however reachable the station is. Naming this apart from a source that failed is what separates an
+ * account whose cipher material could not be resolved from a camera that is off, a station that is busy, or a
+ * stream that produced nothing: they share no next step.
+ *
+ * The `level2-unavailable` trace states WHY the key is not coming. This states only that it is not, because
+ * that is what the refusal itself knows.
+ */
+export class StationKeyUnavailableError extends Error {
+  /** Always true: the negotiation is per connection, so a later one may still produce a key. */
+  readonly retryable = true;
+
+  constructor(options?: { cause?: unknown }) {
+    super("the station did not provide its session key, so nothing that requires one could be sent", options);
+    this.name = "StationKeyUnavailableError";
+  }
+}
+
+/**
  * Work on a station was refused: its session did not connect within the wait it was given.
  *
  * A station is reached over its own session, and nothing addressed to it — a media start, a property read, a

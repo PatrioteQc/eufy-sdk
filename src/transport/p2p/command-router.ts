@@ -22,7 +22,7 @@ import type {
   AbortableCall,
   TalkbackHandle,
 } from "../../core/contracts.js";
-import { StationBusyError, StationUnreachableError } from "../../core/contracts.js";
+import { StationBusyError, StationKeyUnavailableError, StationUnreachableError } from "../../core/contracts.js";
 import { noopLogger, type Logger } from "../../core/logger.js";
 import { assertNever } from "../../core/util.js";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -1081,7 +1081,7 @@ export class P2PCommandRouter {
         },
         l2: async ({ session: s, channel: ch }) => {
           if (!(await s.awaitLevel2Key(LEVEL2_GRACE_MS, "call"))) {
-            throw new Error(`level-2 key not ready for ${sn} — cannot query`);
+            throw new StationKeyUnavailableError();
           }
           s.sendRawLevel2(json, ch, P2P_ENVELOPE.CONTROL_PAYLOAD);
         },
@@ -1298,7 +1298,7 @@ export class P2PCommandRouter {
       if (!ready && session.repromptLevel2Key()) {
         ready = await abortable(session.awaitLevel2Key(LEVEL2_GRACE_MS, "call"), opts.signal);
       }
-      if (!ready) throw new Error(`level-2 key not ready for ${parentSn}`);
+      if (!ready) throw new StationKeyUnavailableError();
     }
     return { session, parentSn, channel, accountId, homeBaseAttached };
   }

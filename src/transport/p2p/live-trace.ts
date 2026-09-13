@@ -64,6 +64,20 @@ export type LiveTrace =
   | { phase: "level2-ready"; cipherId: number }
   /** The level-2 key did not arrive in its grace, so the start proceeds at level 1 or not at all. */
   | { phase: "level2-absent"; waitedMs: number }
+  /**
+   * The station's key is not coming, and why — answered without waiting, because nothing is still pending.
+   *
+   * The negotiation is one-shot per connection, so a caller asking after it has concluded is told at once
+   * rather than held for a grace. That immediacy is what makes this the only record of the outcome: no grace
+   * elapses to report, and a caller reading a refused call cannot otherwise tell a station that never
+   * negotiated from one whose cloud cipher lookup answered nothing, from one whose reply would not derive.
+   * Each calls for a different next step, and only `no-cipher-key` and `derivation-failed` are about this
+   * account's own cipher material.
+   */
+  | {
+      phase: "level2-unavailable";
+      reason: "no-cipher-key" | "derivation-failed" | "not-negotiating" | "session-closed";
+    }
   /** A shared source began warming, with the interval it re-issues on and the deadline it fails at. */
   | { phase: "warming"; retryMs: number; deadlineMs: number }
   /**

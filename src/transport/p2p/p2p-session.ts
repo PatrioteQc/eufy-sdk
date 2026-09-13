@@ -480,9 +480,15 @@ export class P2PSession extends EventEmitter {
    * separates nothing on this path, and a start failure on such a session is not evidence about it.
    */
   async awaitLevel2Key(graceMs: number, graceFrom: "call" | "session" = "call"): Promise<boolean> {
-    if (this.closed) return false;
+    if (this.closed) {
+      this.trace({ phase: "level2-unavailable", reason: "session-closed" });
+      return false;
+    }
     if (this.level2Key) return true;
-    if (!this.level2Pending) return false;
+    if (!this.level2Pending) {
+      this.trace({ phase: "level2-unavailable", reason: "not-negotiating" });
+      return false;
+    }
     const since = graceFrom === "call" ? Date.now() : (this.connectedAtMs ?? Date.now());
     const remaining = graceMs - (Date.now() - since);
     if (remaining <= 0) {
@@ -571,11 +577,13 @@ export class P2PSession extends EventEmitter {
         if (this.closed || generation !== this.connectionGeneration) return;
         if (!eccPrivHex) {
           this.logger.debug(`[p2p] ${this.cfg.stationSn} no ECC key for cipher_id ${cipherId}`);
+          this.trace({ phase: "level2-unavailable", reason: "no-cipher-key" });
           this.settleLevel2();
           return;
         }
         const key = deriveLevel2KeyFromGatewayInfo(gwPayload, eccPrivHex);
         if (!key) {
+          this.trace({ phase: "level2-unavailable", reason: "derivation-failed" });
           this.settleLevel2();
           this.emit("error", new Error(`level-2 key derivation failed (cipher_id ${cipherId})`));
           return;

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { StationKeyUnavailableError } from "../../../core/contracts.js";
 import { P2PCommandRouter, type P2PRouterDeps } from "../command-router.js";
 import { connectedSession, type FakeP2PSession } from "./session-fixtures.js";
 
@@ -97,7 +98,7 @@ describe("resolving a session defers the level-2 wait to the session", () => {
    */
   it("refuses an attached camera's source where the session reports no key", async () => {
     const { router } = setup(false);
-    await expect(router.sharedLiveSourceFor(DEVICE_SN)).rejects.toThrow(/level-2 key not ready/);
+    await expect(router.sharedLiveSourceFor(DEVICE_SN)).rejects.toBeInstanceOf(StationKeyUnavailableError);
   });
 
   it("hands over an attached camera's source once the key is held", async () => {
@@ -114,7 +115,7 @@ describe("resolving a session defers the level-2 wait to the session", () => {
   /** A requirement the session reports it cannot meet is a refusal now, not a wait that ends in one. */
   it("refuses a command that requires a key the session answers it will not have", async () => {
     const { router } = setup(false);
-    await expect(router.p2pQuery(DEVICE_SN, 6237, { timeoutMs: 5 })).rejects.toThrow(/level-2 key not ready/);
+    await expect(router.p2pQuery(DEVICE_SN, 6237, { timeoutMs: 5 })).rejects.toBeInstanceOf(StationKeyUnavailableError);
   });
 
   /** Most commands ride level 1 and never need the key, so nothing may make them wait for it. */
@@ -138,7 +139,9 @@ describe("a required level-2 key is asked for twice before refusing", () => {
     const { router, session } = setup(false);
     session.keyArrivesOnReprompt = true;
 
-    await expect(router.p2pQuery(DEVICE_SN, 6237, { timeoutMs: 5 })).rejects.not.toThrow(/level-2 key not ready/);
+    await expect(router.p2pQuery(DEVICE_SN, 6237, { timeoutMs: 5 })).rejects.not.toBeInstanceOf(
+      StationKeyUnavailableError,
+    );
 
     expect(session.repromptLevel2Key).toHaveBeenCalledTimes(1);
     expect(session.awaitLevel2Key).toHaveBeenCalledTimes(2);
@@ -147,7 +150,7 @@ describe("a required level-2 key is asked for twice before refusing", () => {
   it("still refuses when there is no second ask to be had", async () => {
     const { router, session } = setup(false);
 
-    await expect(router.p2pQuery(DEVICE_SN, 6237, { timeoutMs: 5 })).rejects.toThrow(/level-2 key not ready/);
+    await expect(router.p2pQuery(DEVICE_SN, 6237, { timeoutMs: 5 })).rejects.toBeInstanceOf(StationKeyUnavailableError);
 
     expect(session.repromptLevel2Key).toHaveBeenCalledTimes(1);
   });
