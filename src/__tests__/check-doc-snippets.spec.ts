@@ -1,4 +1,6 @@
 import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -60,3 +62,49 @@ describe("the doc-snippet checker", () => {
     expect(code).toBe(0);
   }, 120_000);
 });
+
+test("the generated API reference is not documentation this gate owns", () => {
+  // TypeDoc writes `docs/<out>/` — gitignored, and full of ```ts SIGNATURE fragments that are not
+  // statements. Walking them turned a green `verify` into thousands of failures for any contributor
+  // who had built the docs site; CI never generates them, which is the only reason it was not felt
+  // there. The fixture mirrors the shape: a bad fence inside `api/`, and a good one beside it.
+  const dir = mkdtempSync(join(tmpdir(), "doc-snippets-generated-"));
+  try {
+    mkdirSync(join(dir, "api"), { recursive: true });
+    writeFileSync(
+      join(dir, "api", "Device.md"),
+      "# Device\n\n```ts\ngetProperty(name): undefined | PropertyValue\n```\n",
+    );
+    writeFileSync(join(dir, "guide.md"), "# Guide\n\n```ts\nconst sn2: string = sn;\nvoid sn2;\n```\n");
+    const { code, output } = run(dir);
+    assert.equal(code, 0, output);
+    assert.match(output, /documented snippets typecheck \(1 checked\)/, "only the hand-written guide");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}, 120_000);
+
+test("an orphaned host marker is reported, like an orphaned skip", () => {
+  // The asymmetry that hid it: a dropped `skip` fails loudly on the snippet it meant to exempt, while a
+  // dropped `host` leaves the snippet compiling WITHOUT the reader's names — so it fails with "Cannot
+  // find name 'bus'", which reads as a mistake in correct documentation and says nothing about why.
+  //
+  // Outside the repo on purpose. `rel` is relative to the REPO, so a tree above it produced names
+  // starting with `..`, tsc's `*.ts` include skipped them as hidden files, and the run compiled ZERO
+  // snippets and failed with "No inputs were found" — a naming bug wearing a broken-config message.
+  const dir = mkdtempSync(join(tmpdir(), "doc-snippets-orphan-"));
+  try {
+    writeFileSync(
+      join(dir, "guide.md"),
+      "<!-- typecheck: host bus -->\n\nProse, which orphans it.\n\n```ts\nbus.emit('x');\n```\n",
+    );
+    const { code, output } = run(dir);
+    assert.notEqual(code, 0);
+    assert.match(output, /guide\.md:1 typecheck:host marker is not above a ```ts fence/);
+    // The error it causes is reported too, so the two lines explain each other.
+    assert.match(output, /Cannot find name 'bus'/);
+    assert.ok(!/No inputs were found/.test(output), "a tree outside the repo still compiles");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}, 120_000);

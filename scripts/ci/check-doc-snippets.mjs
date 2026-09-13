@@ -202,13 +202,39 @@ function hoistDeclarations(lines) {
   return { hoisted, body };
 }
 
-/** Markdown files to scan, deepest-first so a nested guide is found too. */
-function markdownFiles(dir) {
+/**
+ * The TypeDoc output directory under `docs/`, named by the config that generates it.
+ *
+ * Read rather than hardcoded, because "where the reference is generated" is a fact `typedoc.json`
+ * already owns, and spelling it twice is how two copies of one fact come to disagree. Falls back to
+ * TypeDoc's own default if the config is missing or unreadable — the scan is better off skipping a
+ * directory that turns out not to exist than walking one that does.
+ */
+const GENERATED_DOCS = (() => {
+  try {
+    const { out } = JSON.parse(readFileSync(join(ROOT, "docs", "typedoc.json"), "utf8"));
+    return typeof out === "string" && out ? out : "api";
+  } catch {
+    return "api";
+  }
+})();
+
+/**
+ * Markdown files to scan, deepest-first so a nested guide is found too.
+ *
+ * `docs/<GENERATED_DOCS>` is skipped: it is TypeDoc's output, gitignored, and its ```ts blocks are
+ * SIGNATURE fragments — `getProperty(name): undefined | PropertyValue` — which are not statements and
+ * do not compile. Nobody wrote them, so there is nothing there to hold to this gate, and walking them
+ * turns a green `verify` into thousands of failures for any contributor who has built the docs site.
+ * CI never generates them before `verify`, which is the only reason this was not felt there first.
+ */
+function markdownFiles(dir, root = dir) {
   const out = [];
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     if (entry.name.startsWith(".") || entry.name === "node_modules") continue;
+    if (entry.isDirectory() && dir === root && entry.name === GENERATED_DOCS) continue;
     const path = join(dir, entry.name);
-    if (entry.isDirectory()) out.push(...markdownFiles(path));
+    if (entry.isDirectory()) out.push(...markdownFiles(path, root));
     else if (entry.name.endsWith(".md")) out.push(path);
   }
   return out;
@@ -261,7 +287,7 @@ function snippetsIn(text, strip = (l) => l) {
   const lines = text.split("\n").map(strip);
   const found = [];
   let skip;
-  let host = [];
+  let host;
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].trim();
     if (SKIP.test(line)) {
@@ -270,19 +296,28 @@ function snippetsIn(text, strip = (l) => l) {
     }
     const hosts = HOST_NAMES.exec(line);
     if (hosts) {
-      host = hosts.groups.names
-        .split(",")
-        .map((n) => n.trim())
-        .filter(Boolean);
+      host = {
+        names: hosts.groups.names
+          .split(",")
+          .map((n) => n.trim())
+          .filter(Boolean),
+        line: i + 1,
+      };
       continue;
     }
     if (line !== "```ts") {
-      // A blank line between the marker and its fence is fine; anything else means the marker was
-      // orphaned, which is worth reporting rather than silently applying to a later snippet.
-      if (line !== "" && skip) found.push({ orphanedSkip: skip });
+      // A blank line between a marker and its fence is fine; anything else orphans it, which is worth
+      // reporting rather than silently dropping.
+      //
+      // BOTH markers, because an orphaned `host` is the harder of the two to diagnose. A dropped `skip`
+      // fails loudly on the snippet it was meant to exempt; a dropped `host` leaves the snippet
+      // compiling WITHOUT the reader's own names, so it fails with "Cannot find name 'bus'" — which
+      // reads as a mistake in correct documentation, and says nothing about the marker.
       if (line !== "") {
+        if (skip) found.push({ orphanedMarker: { kind: "skip", line: skip.line } });
+        if (host) found.push({ orphanedMarker: { kind: "host", line: host.line } });
         skip = undefined;
-        host = [];
+        host = undefined;
       }
       continue;
     }
@@ -297,9 +332,9 @@ function snippetsIn(text, strip = (l) => l) {
         break;
       }
     }
-    if (!skip) found.push({ lines: lines.slice(start, close), firstLine: start + 1, host });
+    if (!skip) found.push({ lines: lines.slice(start, close), firstLine: start + 1, host: host?.names });
     skip = undefined;
-    host = [];
+    host = undefined;
     i = close;
   }
   return found;
@@ -330,12 +365,18 @@ for (const { path, strip } of sources()) {
   const snippets = snippetsIn(readFileSync(path, "utf8"), strip);
   let n = 0;
   for (const snippet of snippets) {
-    if (snippet.orphanedSkip) {
-      problems.push(`${rel}:${snippet.orphanedSkip.line} typecheck:skip marker is not above a \`\`\`ts fence`);
+    if (snippet.orphanedMarker) {
+      const { kind, line } = snippet.orphanedMarker;
+      problems.push(`${rel}:${line} typecheck:${kind} marker is not above a \`\`\`ts fence`);
       continue;
     }
     n += 1;
-    const name = `${rel.replace(/[/\\]/g, "__").replace(/\.(md|ts)$/, "")}-${n}.ts`;
+    // Sanitised, not just separator-swapped. `rel` is relative to the REPO, so a `--docs` tree outside
+    // it starts `../../`, the name then starts `..`, and tsc's `*.ts` include treats a leading dot as a
+    // hidden file and matches nothing — the whole run compiled zero snippets and failed with "No inputs
+    // were found", which reads like a broken config rather than a naming bug. The name only has to be
+    // unique; `rel` is what gets REPORTED, and that is unaffected.
+    const name = `${rel.replace(/[^A-Za-z0-9_-]+/g, "_").replace(/^_+/, "")}-${n}.ts`;
     const { hoisted, body } = hoistDeclarations(snippet.lines.map(expandElisions));
     const shadow = [
       ...AMBIENT_VALUES,
