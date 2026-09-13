@@ -17,7 +17,7 @@ import { EventEmitter } from "node:events";
 
 import { SecureMqtt, type SecureMqttCredentials } from "./secure-mqtt.js";
 import { walkFf09Tlv } from "../ff09.js";
-import { buildAppShapedClientId, deriveMqttUuid } from "./app-client-id.js";
+import { buildAppShapedClientId, mqttUuidFrom } from "./app-client-id.js";
 import { solixDeviceTopics, solixUserTopics } from "./topics.js";
 import { genId, type Logger } from "../../core/index.js";
 
@@ -159,8 +159,8 @@ export interface SolixMqttOptions {
   appClientId?: string;
   /**
    * Stable 16-hex install UUID for the app-shaped client id. Defaults to one derived deterministically
-   * from the user id ({@link deriveMqttUuid}) — the same no-storage trick `SolixClient` uses for
-   * `openudid`, so the broker sees one stable client across restarts without any persistence.
+   * from the user id ({@link mqttUuidFrom}) — no storage needed, so the broker sees one stable client
+   * across restarts.
    *
    * The trade this makes: the default seed is the **account** id, which every client on that account
    * shares, so two clients on one account derive the same uuid → the same `client_id`, and the broker
@@ -210,7 +210,7 @@ export class SolixMqtt extends EventEmitter {
       buildAppShapedClientId({
         appName: this.appName,
         uid,
-        mqttUuid: opts.mqttUuid ?? deriveMqttUuid(`anker-solix-mqtt:${uid}`),
+        mqttUuid: opts.mqttUuid ?? mqttUuidFrom(`anker-solix-mqtt:${uid}`),
       });
     this.transport = new SecureMqtt({
       credentials: opts.mqttInfo,

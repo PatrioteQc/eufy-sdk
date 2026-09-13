@@ -43,7 +43,7 @@ import {
 } from "../ff09.js";
 import { SecureMqtt, type SecureMqttCredentials } from "./secure-mqtt.js";
 import { secureTopic } from "./topics.js";
-import { buildAppShapedClientId, generateMqttUuid } from "./app-client-id.js";
+import { buildAppShapedClientId, mqttUuidFrom } from "./app-client-id.js";
 import { discoverReachableInstance } from "./broker-discovery.js";
 import { buildDpFrame, buildDpEnvelope } from "./dp-codec.js";
 import { dpPresetFields, dpLevelFields, type DpPresetSpec } from "../dp-preset.js";
@@ -249,10 +249,6 @@ export interface MqttRouterDeps {
 export class MqttCommandRouter {
   private readonly deps: MqttRouterDeps;
   private readonly logger: Logger;
-  /** Stable per-process install id for the app-shaped MQTT client_id (see {@link buildAppShapedClientId}) —
-   * generated once, reused for every security-MQTT connect this router makes. */
-  private mqttUuid?: string;
-
   constructor(deps: MqttRouterDeps) {
     this.deps = deps;
     this.logger = deps.logger ?? noopLogger;
@@ -369,8 +365,7 @@ export class MqttCommandRouter {
    */
   private async ensureSecurityMqttFor(dev: EufyDevice): Promise<{ mqtt: SecureMqtt; instanceIp: string }> {
     const creds: SecureMqttCredentials = await this.deps.mega.getUserMqttInfo("eufy_security");
-    if (!this.mqttUuid) this.mqttUuid = generateMqttUuid();
-    const mqttUuid = this.mqttUuid;
+    const mqttUuid = mqttUuidFrom(this.deps.mega.openudid);
     const clientIdFor = () => buildAppShapedClientId({ appName: "eufy_security", uid: creds.user_id ?? "", mqttUuid });
     const results = await discoverReachableInstance(
       {

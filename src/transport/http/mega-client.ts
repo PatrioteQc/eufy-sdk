@@ -292,8 +292,16 @@ export class MegaHttpClient {
    *  restored-session short-circuit must NOT treat it as a usable session. Cleared on Ok/reset. */
   private pending2fa = false;
   private tokenExpiresAt = 0;
-  /** Stable per-install device id — the auth token is bound to it. */
-  private openudid: string;
+  /**
+   * Stable per-install device id: `openudid` as configured, as restored from the session store, or as
+   * derived from the ACCOUNT when neither supplied one — two clients that configure none therefore
+   * share it, and are one install as far as everything keyed on this is concerned.
+   *
+   * Two things are keyed on it, and both fail the same way when it is shared: the auth token is bound
+   * to it, so each login displaces the other's session, and the secure-MQTT client id is built from it,
+   * so each connection evicts the other's channel.
+   */
+  readonly openudid: string;
   /** The device model reported to the cloud (explicit `phoneModel`, else a stable random one). */
   private readonly phoneModel: string;
   /** The `user-agent` for the media-download path (explicit `mediaUserAgent`, else derived from the model). */

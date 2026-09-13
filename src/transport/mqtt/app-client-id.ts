@@ -10,7 +10,7 @@
  * dash-stripped endpoint address there instead; the two disagree and were never reconciled. This
  * builder follows the timestamp form, the one that actually earned a granted SUBSCRIBE.
  */
-import { createHash, randomBytes } from "node:crypto";
+import { createHash } from "node:crypto";
 
 export interface AppClientIdInput {
   /** Topic scope, e.g. "eufy_security". */
@@ -30,23 +30,14 @@ export function buildAppShapedClientId(input: AppClientIdInput): string {
   return `android-${input.appName}-${input.uid}-${input.mqttUuid}-${ts}`;
 }
 
-/** A fresh stable-looking install UUID (16 hex chars) — generate ONCE per identity and persist it
- * (a new random value on every connect defeats the point of "stable"). */
-export function generateMqttUuid(): string {
-  return randomBytes(8).toString("hex");
-}
-
 /**
- * Derive a STABLE install UUID (16 hex chars) deterministically from a seed — the same lazy trick
- * `SolixClient` uses for `openudid`. Unlike {@link generateMqttUuid} this needs no storage: the same
- * seed always yields the same UUID, so the broker sees one stable client across restarts. Use a seed
- * distinct from any other derived id (a salt prefix) so the values don't collide.
+ * The `mqttUuid` segment for a client bound to `installId`, hashed to the 16-hex shape
+ * {@link buildAppShapedClientId} expects. Deterministic, so a client keeps its id across restarts and
+ * takes its own stale session over rather than doubling up beside it; one-way, so the id it is derived
+ * from is not recoverable from a client_id that travels the wire in clear.
  *
- * It separates two clients exactly as far as their seed does. The seeds available on these lines are
- * per-ACCOUNT (a user id, or `openudid` = `md5("anker-solix:" + email)`), so two clients seeded the same
- * way on one account derive the SAME uuid and collide at the broker (one evicts the other). Where more
- * than one client shares an account, seed this with something per-host/per-install, not the account id.
+ * Two clients are distinguished exactly as far as their `installId` is: equal ids in, equal ids out.
  */
-export function deriveMqttUuid(seed: string): string {
-  return createHash("md5").update(seed).digest("hex").slice(0, 16);
+export function mqttUuidFrom(installId: string): string {
+  return createHash("sha256").update(installId).digest("hex").slice(0, 16);
 }
