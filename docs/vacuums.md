@@ -121,8 +121,84 @@ advance throughout a run: since the realtime feed is the only place a robot's st
 also the only way to follow a clean in progress. They are payload-backed on the AIoT line, so those
 announcements name the property with no value — re-read it through the accessor.
 
-**Controls** — start / pause / return-to-dock, suction, volume — are not implemented; the robot surface
-is read-only today.
+## Controls
+
+Every write below is **AIoT-only**. The legacy Tuya clean line dispatches nothing at all — that
+direction has no live capture behind it — so a Tuya robot binds the reads and none of the verbs, and
+the missing method is the signal.
+
+Each verb is also optional on the surface, because whether a device has it is a runtime fact. The `?.`
+is not defensive style — it is the type telling you to check.
+
+**Every mode-control verb below was run on a T2351 and did what it says** — the whole-floor four, and
+the three that take an argument. The two suction setters rest on something different: a data-point write
+the SKU's own catalog confirms, rather than a watched run.
+
+Worth separating, because a mode-control write carries a command NUMBER, and a wrong number is a
+different command rather than a failure.
+
+### Whole-floor verbs
+
+```ts
+const clean = dev.vacuumClean();
+
+await clean?.startCleaning?.(); // whole-floor auto clean
+await clean?.pauseCleaning?.();
+await clean?.resumeCleaning?.(); // resumes where it stopped, unlike a fresh start
+await clean?.returnToDock?.();
+
+await dev.suction()?.setSuctionLevel?.(2); // raw level, see above
+await dev.suction()?.setBoostIq?.(true);
+```
+
+### Cleaning part of a floor
+
+Three verbs take an argument, and each argument comes from a read the robot already publishes rather than
+from anything you have to invent. Running a **saved scene** is the simplest: the argument is the robot's
+own scene id.
+
+```ts
+const scenes = clean?.scenes?.(); // decoded off the robot's own scene report
+const first = scenes?.find((s) => s.valid);
+if (first) await clean?.startScene?.(first.id);
+```
+
+A scene the robot reports invalid is still reportable and still a well-formed request;
+`VacuumScene.invalidReason` says why it will be refused.
+
+Room and zone cleans name the area themselves:
+
+```ts
+await clean?.cleanRooms?.(
+  mapId,
+  [
+    { id: 4, order: 1 },
+    { id: 5, order: 2 },
+  ],
+  2,
+);
+await clean?.cleanZones?.(mapId, [{ corners: [p0, p1, p2, p3] }]);
+```
+
+`mapId` has no default and that is deliberate: room ids are per map, so assuming the map a
+single-floor home would have sends a two-floor home's ids against the wrong floor. A scene carries the
+map it belongs to, and a scheduled rooms-clean carries one too — those are the two real map ids a robot
+reports.
+
+Zone corners are **signed centimetres** in the map's own frame, whose origin sits wherever the robot
+first mapped from. Negative coordinates are ordinary and are encoded as such; passing them as unsigned
+values sends the robot somewhere real and wrong.
+
+### What is still missing
+
+The **clean parameters** — clean type, mop level, water level, clean extent, cleaning strength — are
+read-only. They decode out of one payload the robot reports, and no capture pins a write for any of
+them, so there is no setter to offer. Reading them back after changing them in the vendor's app works
+as it always did.
+
+**Driving to a point** (`START_GOTO_CLEAN`, method 4) has no encoder either, and for a different
+reason: its argument is a coordinate, and no read published here hands you one. A scene id and a map id
+both arrive on the scene report; a goto point would have to come from map data this SDK does not decode.
 
 See [Devices & capabilities](/devices) for how capability resolution works, and the
 [device gallery](/devices-gallery) for the Clean line.

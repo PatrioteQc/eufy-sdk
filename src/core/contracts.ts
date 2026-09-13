@@ -107,6 +107,68 @@ export class CameraDisabledError extends Error {
 }
 
 /**
+ * Work on a station was refused: the station did not provide the session key that work requires.
+ *
+ * A station reached over its HomeBase encrypts what it is sent under a key negotiated once per connection, and
+ * a media start for an attached camera has no unencrypted form at all — so without that key there is nothing
+ * to send, however reachable the station is. Naming this apart from a source that failed is what separates an
+ * account whose cipher material could not be resolved from a camera that is off, a station that is busy, or a
+ * stream that produced nothing: they share no next step.
+ *
+ * The `level2-unavailable` trace states WHY the key is not coming. This states only that it is not, because
+ * that is what the refusal itself knows.
+ *
+ * `stationSn` is the station that owed the key, which is the parent for an attached camera and therefore not
+ * the serial the refused call was made about: several cameras refused at once are one station's outcome, and
+ * nothing else in the refusal says so.
+ */
+export class StationKeyUnavailableError extends Error {
+  /** Always true: the negotiation is per connection, so a later one may still produce a key. */
+  readonly retryable = true;
+
+  constructor(
+    /** The station whose session key did not arrive. */
+    readonly stationSn: string,
+    options?: { cause?: unknown },
+  ) {
+    super(`station ${stationSn} did not provide its session key, so nothing that requires one could be sent`, options);
+    this.name = "StationKeyUnavailableError";
+  }
+}
+
+/**
+ * Work on a station was refused: its session did not connect within the wait it was given.
+ *
+ * A station is reached over its own session, and nothing addressed to it — a media start, a property read, a
+ * still — can be attempted before that session is up. Naming this apart from every other failure is what tells
+ * a station that could not be reached at all from one that answered and then refused, or one that served media
+ * a caller could not use: those call for opposite next steps, and a caller cannot infer which it had from a
+ * message.
+ *
+ * `waitedMs` is how long was actually waited, which a caller compares against its own deadline to know whether
+ * this SDK concluded or its own bound expired first. `stationSn` is the station that could not be reached —
+ * the parent for an attached camera, so it is not derivable from the serial the call was made about.
+ */
+export class StationUnreachableError extends Error {
+  /** Always true: a station unreachable now may answer on a later attempt. */
+  readonly retryable = true;
+
+  constructor(
+    /** The station whose session did not connect. */
+    readonly stationSn: string,
+    /** How long the session was waited on before this was raised. */
+    readonly waitedMs: number,
+    options?: { cause?: unknown },
+  ) {
+    super(
+      `station ${stationSn}'s P2P session did not connect within ${waitedMs}ms, so nothing could be sent to it`,
+      options,
+    );
+    this.name = "StationUnreachableError";
+  }
+}
+
+/**
  * A live stream was refused: the station is already serving another of its cameras to a viewer.
  *
  * A station fans several cameras out over one session and serves ONE of them at a time. Accepting a second
