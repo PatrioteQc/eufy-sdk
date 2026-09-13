@@ -1081,6 +1081,11 @@ export type { PtzPresetActions, ZoomRegion, PtzPreset, PtzPresetImage } from "./
 // Named argument constants for the fluent actions (value + companion type): `ArmingMode.home`,
 // `PtzDirection.left`. The on-wire `PTZ_ROTATE` map stays private — not re-exported here.
 export { AlarmDelayMode, ArmingMode } from "./arming.js";
+// The complement of that `ArmingMode` union: the guard modes the app names and this SDK will not SET.
+// Published because `qualifyMode` is the one member whose whole domain is the modes NOT in a union — a
+// caller building a surface for it has no other way to name them, and deriving the complement itself
+// would be a second list to drift from `ARMING_MODE_WIRE`.
+export { UNQUALIFIED_MODES } from "./arming.js";
 export type { AlarmDelayConfig, AlarmDelayCountdown, AlarmDelayDeviceAction, AlarmDelaySeconds } from "./arming.js";
 export { PtzDirection } from "./ptz.js";
 export { AiDetectType, encodeAiDetectType, decodeAiDetectType, type AiDetectFlags } from "./motion.js";
