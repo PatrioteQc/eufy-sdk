@@ -23,11 +23,6 @@
 
 ---
 
-> [!IMPORTANT]
-> **Not usable yet.** This repository is being set up: the scaffold, the CI gate and the docs pipeline
-> are in place, the library source lands next. `0.0.1` exists on npm only to prove the release
-> pipeline works — it is an empty package. Wait for `0.1.0`.
-
 ## What it is
 
 A TypeScript SDK for the Anker eufy cloud that the current eufy app speaks. It logs in (captcha and 2FA
@@ -37,13 +32,17 @@ you drive through a **typed, fluent API**:
 ```ts
 const dev = await eufy.getDevice(sn);
 
-const stored = await dev.camera()?.snapshotStored?.(); // latest retained push JPEG
-const fresh = await dev.camera()?.snapshotLive(); // explicit fresh live capture
-await dev.panTilt()?.rotate(PtzDirection.left);
-await dev.light()?.setBrightness(60);
+const stored = await dev.camera?.()?.snapshotStored?.(); // latest retained push JPEG
+const fresh = await dev.camera?.()?.snapshotLive?.(); // explicit fresh live capture
+await dev.ptz?.()?.rotate(PtzDirection.left);
+await dev.light?.()?.setBrightness(60);
 
-eufy.on("motion", (e) => console.log(e.device.name, "saw something"));
+eufy.on("motion", (e) => console.log(e.deviceSn, "saw something"));
 ```
+
+Accessors and methods are optional because both are **evidence-gated**: a device exposes exactly the
+features it reported, so the optionality states that one may be absent. An **unverified write path
+throws** rather than send a frame it cannot stand behind.
 
 Realtime arrives over **P2P** (cameras and HomeBases), **secure MQTT** (appliances) and **push**
 (events), all surfaced as typed semantic events. Live **video streaming** works, with one shared pull
@@ -56,11 +55,9 @@ code path and an unlisted or future device resolves the same way as a known one.
 ## Install
 
 ```bash
-npm install @mega-yfue/eufy-sdk
+npm install @mega-yfue/eufy-sdk         # latest stable
+npm install @mega-yfue/eufy-sdk@beta    # the prerelease of the version in review
 ```
-
-Releases go to **npmjs**, published from CI with provenance. Prereleases ship on the `beta` channel
-(`npm install @mega-yfue/eufy-sdk@beta`) while a version is still under review.
 
 **Node.js ≥ 24.5.0** is required, not just recommended (see [`.nvmrc`](./.nvmrc)). `ffmpeg` is
 optional — only the live JPEG snapshot and one-shot mp4 record paths use it,
@@ -69,34 +66,13 @@ one on `PATH`.
 
 ## Documentation
 
-The guides at **<https://mega-yfue.github.io/>** are the source of truth; this README stays a thin
-landing page. They cover installing and logging in, devices and capabilities, events and realtime
-transports, consuming live media, and the generated API reference. Runnable, typechecked samples live
-in [`examples/`](./examples/).
+The guides at **<https://mega-yfue.github.io/>** cover installing and logging in, devices and
+capabilities, events and realtime transports, consuming live media, and the generated API reference.
+Runnable, typechecked samples live in [`examples/`](./examples/).
 
-## Design
-
-Four layers, one dependency direction — `core` → `transport` → `model` → `client`:
-
-```
-src/
-  core/         shared floor: crypto, cross-layer contracts, value types, session store
-  transport/    every byte-on-a-wire module: http, mqtt, p2p, push, tuya
-  model/        Device + one self-contained module per capability
-  client/       the facade: login, device registry, event fan-out
-  index.ts      public surface — one `export *` per layer barrel
-```
-
-**Capability ↔ transport decorrelation is a hard, CI-enforced rule:** `model/` never imports
-`transport/` and vice versa. A capability describes what a value MEANS; a transport moves bytes and
-never names a feature. Anything genuinely shared is a contract in `core/`. That rule and the rest of
-the code practice are in [AGENTS.md](./AGENTS.md).
-
-Three runtime dependencies — `mqtt`, `protobufjs`, `jpeg-js` — and that is deliberate. HTTP is native
-`fetch`, hashing and ciphers are `node:crypto`, 64-bit integers are `BigInt`.
-
-**Unverified write paths throw rather than guess.** Some writes are fire-and-forget, so a guessed
-frame looks exactly like success; the SDK refuses instead of pretending.
+The architecture — four layers with one dependency direction, and the CI-enforced rule that keeps
+capabilities and transports from importing each other — is in [AGENTS.md](./AGENTS.md), with the rest of
+the code practice.
 
 ## Develop
 

@@ -15,8 +15,9 @@
  */
 import { EventEmitter } from "node:events";
 import { MegaHttpClient, LoginStatus, SessionExpiredError, type LoginResult } from "../transport/http/mega-client.js";
-import { SecureMqtt, type SecureMqttCredentials } from "../transport/mqtt/secure-mqtt.js";
+import { SecureMqtt, isNotAuthorized, type SecureMqttCredentials } from "../transport/mqtt/secure-mqtt.js";
 import { mqttAppName, mqttScopeFor, type MqttScope } from "../transport/mqtt/topics.js";
+import { buildAppShapedClientId, mqttUuidFrom } from "../transport/mqtt/app-client-id.js";
 import { parseStateInfoSignal } from "../transport/mqtt/availability.js";
 import { parseDpMessage, parseAiotDpReport } from "../transport/mqtt/dp-codec.js";
 import { parseBizMapFrame } from "../transport/mqtt/biz-stream.js";
@@ -1707,9 +1708,21 @@ export class EufyMega extends EventEmitter {
    * {@link ensureMqttStarted} owns installing it, subscribing devices, and the epoch check, so that
    * lifecycle lives in exactly one place. Only ever called through {@link ensureMqttStarted}.
    *
-   * The inbound decode is gated by the reporting device's own capabilities, so one line's decoder never
-   * runs against another's traffic, and the DP frame is unwrapped here — the layer that may import the
-   * transport — so a capability reads tags without owning any framing.
+   * Identified by a client id built from this client's `openudid`, not by the certificate's name:
+   * that name is `{user_id}-{app_name}`, which every client on the account shares per line, and a
+   * duplicate client id is a takeover the broker resolves by evicting the incumbent. The id shape is
+   * the app's own (`android-{app_name}-{uid}-{uuid}-{ts}`, see {@link buildAppShapedClientId}), which
+   * the broker grants on the `eufy_security` credential.
+   *
+   * It separates two clients exactly as far as their `openudid` does: a caller that supplies none
+   * gets the value derived from the account, which every such client shares — the same condition
+   * under which their logins already displace each other (`MegaClientConfig.openudid`).
+   *
+   * A client id the broker REFUSES falls back to the certificate's name, since a shared channel beats
+   * none, and that transport then keeps that name until {@link disconnect}. Only a refusal: a connect
+   * that fails for any other reason rejects the bring-up, which clears its memo in
+   * {@link ensureMqttStarted} so the next one asks under this client's own id again — a dropped
+   * socket must not be what moves a process onto the shared name for good.
    */
   private async startMqtt(scope: MqttScope): Promise<SecureMqtt> {
     const auth = this.mega.auth;
@@ -1717,7 +1730,46 @@ export class EufyMega extends EventEmitter {
     if (!this.registry.list().length) await this.getDevices();
 
     const creds = await this.getUserMqttInfo(mqttAppName(scope));
-    const transport = new SecureMqtt({ credentials: creds, logger: this.opts.logger });
+    const ownClientId = buildAppShapedClientId({
+      appName: creds.app_name ?? mqttAppName(scope) ?? "eufy_mega",
+      uid: creds.user_id ?? auth.userId,
+      mqttUuid: mqttUuidFrom(this.mega.openudid),
+    });
+    try {
+      return await this.connectMqtt(creds, ownClientId);
+    } catch (e) {
+      if (!isNotAuthorized(e)) throw e;
+      this.opts.logger?.warn(
+        "[smqtt] the broker refused this client's own id; connecting under the certificate's name, which " +
+          "another client signed in to this account takes over",
+        e,
+      );
+      return await this.connectMqtt(creds);
+    }
+  }
+
+  /**
+   * Connect one secure-MQTT transport under `clientId`, or under the certificate's own name when it is
+   * omitted, and wire its decode and fan-out. See {@link startMqtt} for which id is used and why.
+   *
+   * The fan-out is wired once the connection stands, so an attempt that is discarded — a client id the
+   * broker refuses, a socket that dies mid-handshake — never reports a connection a consumer never had;
+   * the connect it just completed is announced here instead. Errors raised while connecting are held
+   * only to keep an emitter without an `error` listener from throwing, and are reported once the
+   * transport is one a consumer owns.
+   *
+   * The inbound decode is gated by the reporting device's own capabilities, so one line's decoder never
+   * runs against another's traffic, and the DP frame is unwrapped here — the layer that may import the
+   * transport — so a capability reads tags without owning any framing.
+   */
+  private async connectMqtt(creds: SecureMqttCredentials, clientId?: string): Promise<SecureMqtt> {
+    const transport = new SecureMqtt({ credentials: creds, clientId, logger: this.opts.logger });
+
+    const whileConnecting: unknown[] = [];
+    const hold = (e: unknown): void => void whileConnecting.push(e);
+    transport.on("error", hold);
+    await transport.connect();
+    transport.off("error", hold);
 
     transport.on("connect", () => this.emit("connect"));
     transport.on("disconnect", (r) => this.emit("disconnect", r));
@@ -1759,7 +1811,8 @@ export class EufyMega extends EventEmitter {
     });
     transport.on("error", (e) => this.reportError(e));
 
-    await transport.connect();
+    this.emit("connect");
+    for (const e of whileConnecting) this.reportError(e);
     return transport;
   }
 

@@ -27,6 +27,19 @@ import { parseSecureTopic, subscribeTopics } from "./topics.js";
 const SUBACK_FAILURE = 0x80;
 
 /**
+ * Whether a connect failed because the broker REFUSED the client — a CONNACK return code the client
+ * cannot retry its way out of, as `mqtt.js` words it (`Connection refused: not authorized`). A socket
+ * that dies without an answer is not this: it is the same request, unanswered, and retrying it is the
+ * only way to learn which of the two happened.
+ *
+ * A refusal that arrives as a dropped connection instead of a CONNACK reads here as the transport
+ * failure it is indistinguishable from.
+ */
+export function isNotAuthorized(err: unknown): boolean {
+  return err instanceof Error && /connection refused/i.test(err.message) && /not authori[sz]ed/i.test(err.message);
+}
+
+/**
  * Per-user mTLS credentials as returned by get_user_mqtt_info.
  *
  * Broker credentials as the cloud returns them — internal transport detail.
@@ -146,6 +159,7 @@ export class SecureMqtt extends EventEmitter implements RealtimeTransport {
         }
         this.emit("connect");
       });
+      client.on("connect", () => this.logger.info(`[smqtt] connected (${c.app_name ?? "default"})`));
       client.on("reconnect", () => this.logger.warn("[smqtt] reconnecting"));
       client.on("close", () => this.emit("disconnect", "close"));
       client.on("error", (err) => {
