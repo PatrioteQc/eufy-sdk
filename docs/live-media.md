@@ -32,10 +32,18 @@ Consequences a host should rely on:
 
 ## Several cameras behind one station
 
-A camera behind a HomeBase shares that station's session with every other camera on it, and every stream
-opened over it reads the same inbound feed. The station **tags each media frame with the camera it belongs
-to**, and the SDK matches on that — so each handle receives only its own camera's video and audio, and two
-or three cameras on one HomeBase can stream at the same time.
+A camera behind a HomeBase reads the station's inbound feed, and the station **tags each media frame with
+the camera it belongs to**; the SDK matches on that, so each handle receives only its own camera's video and
+audio.
+
+One session serves one camera at a time — a station answers the most recent media start on it — so a live
+pull that finds the station's own session already carrying one gets **a connection of its own**, and several
+cameras on one HomeBase stream at full rate together. Measured on two attached cameras, one at 3840×2160:
+both held ~15 fps for the length of the run, where the same pair down one session could only take turns.
+
+A **still** never opens a connection of its own: it wants one frame, and a socket plus a key negotiation per
+thumbnail is not worth it. So a still asked for while a sibling is being watched still yields, and the
+retained image answers it.
 
 Worth knowing:
 

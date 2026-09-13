@@ -767,8 +767,9 @@ export interface MediaProvider {
     /**
      * Present and `true` only when these bytes are the RETAINED still rather than a fresh capture.
      *
-     * A live still is refused while a sibling camera on the same station is being watched, because a
-     * station serves one camera at a time and the live view is the picture someone is looking at. Answering
+     * A live still is refused while a sibling camera on the same station is being watched, because one
+     * session serves one camera at a time, a still does not open a connection of its own, and the live view
+     * is the picture someone is looking at. Answering
      * the retained still there answers the call instead of failing it, and this says the bytes are not
      * current. Absent means freshly captured.
      */

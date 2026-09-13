@@ -69,7 +69,7 @@ export interface SharedLiveSourceOptions {
    * `.start()` itself.
    *
    * `ctx.reassertWanted` answers whether this pull still has anyone attached. A stream that re-asserts a
-   * channel to hold it open should consult it, so a pull nothing is watching stops competing for a station
+   * channel to hold it open should consult it, so a pull nothing is watching stops competing for a session
    * that serves one camera at a time.
    */
   makeStream: (ctx: { reassertWanted: () => boolean }) => LiveStreamHandle;

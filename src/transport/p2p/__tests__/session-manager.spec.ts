@@ -32,7 +32,7 @@ describe("SessionManager lifecycle", () => {
     const mgr = managerFor("battery");
     const session = fakeSession();
     await mgr.acquire("ST", async () => session);
-    mgr.retain("ST");
+    mgr.retain("ST", "ST");
     mgr.release("ST");
     expect(session.close).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(1000);
@@ -44,7 +44,7 @@ describe("SessionManager lifecycle", () => {
     const mgr = managerFor("wired");
     const session = fakeSession();
     await mgr.acquire("ST", async () => session);
-    mgr.retain("ST");
+    mgr.retain("ST", "ST");
     mgr.release("ST");
     await vi.advanceTimersByTimeAsync(10 * 60_000);
     expect(session.close).not.toHaveBeenCalled();
@@ -55,10 +55,10 @@ describe("SessionManager lifecycle", () => {
     const mgr = managerFor("battery");
     const session = fakeSession();
     await mgr.acquire("ST", async () => session);
-    mgr.retain("ST");
+    mgr.retain("ST", "ST");
     mgr.release("ST");
     await vi.advanceTimersByTimeAsync(500);
-    mgr.retain("ST");
+    mgr.retain("ST", "ST");
     await vi.advanceTimersByTimeAsync(1000);
     expect(session.close).not.toHaveBeenCalled();
   });
@@ -67,9 +67,9 @@ describe("SessionManager lifecycle", () => {
     const mgr = managerFor("battery");
     const session = fakeSession();
     await mgr.acquire("ST", async () => session);
-    mgr.bumpCommand("ST");
+    mgr.bumpCommand("ST", "ST");
     await vi.advanceTimersByTimeAsync(50);
-    mgr.bumpCommand("ST");
+    mgr.bumpCommand("ST", "ST");
     await vi.advanceTimersByTimeAsync(100);
     expect(session.close).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(50);
@@ -81,7 +81,7 @@ describe("SessionManager lifecycle", () => {
     const mgr = managerFor("battery");
     const session = fakeSession();
     await mgr.acquire("ST", async () => session);
-    mgr.retain("ST");
+    mgr.retain("ST", "ST");
     mgr.release("ST");
     mgr.remove("ST");
     await vi.advanceTimersByTimeAsync(1000);
@@ -94,7 +94,7 @@ describe("SessionManager lifecycle", () => {
     const first = fakeSession("first");
     const second = fakeSession("second");
     await mgr.acquire("ST", async () => first);
-    mgr.retain("ST");
+    mgr.retain("ST", "ST");
     mgr.release("ST");
 
     await mgr.close("ST");
@@ -132,8 +132,8 @@ describe("SessionManager lifecycle", () => {
     const mgr = managerFor("battery");
     const session = fakeSession();
     await mgr.acquire("ST", async () => session);
-    mgr.retain("ST");
-    mgr.bumpCommand("ST");
+    mgr.retain("ST", "ST");
+    mgr.bumpCommand("ST", "ST");
 
     const reset = mgr.resetWhenUnused("ST");
     let resetFinished = false;
@@ -154,7 +154,7 @@ describe("SessionManager lifecycle", () => {
   it("hands every caller of a pending reset the same promise, so waiters cannot pile up", async () => {
     const mgr = managerFor("battery");
     mgr.register("ST", fakeSession());
-    mgr.retain("ST");
+    mgr.retain("ST", "ST");
 
     const first = mgr.resetWhenUnused("ST");
     expect(mgr.resetWhenUnused("ST")).toBe(first);
@@ -167,7 +167,7 @@ describe("SessionManager lifecycle", () => {
     const mgr = managerFor("battery");
     const session = fakeSession();
     await mgr.acquire("ST", async () => session);
-    mgr.bumpCommand("ST");
+    mgr.bumpCommand("ST", "ST");
 
     await mgr.resetWhenUnused("ST");
 
@@ -193,7 +193,7 @@ describe("SessionManager lifecycle", () => {
     const session = fakeSession();
     vi.mocked(session.close).mockRejectedValue(failure);
     await mgr.acquire("ST", async () => session);
-    mgr.retain("ST");
+    mgr.retain("ST", "ST");
     const reset = mgr.resetWhenUnused("ST");
 
     const resetResult = expect(reset).rejects.toBe(failure);
@@ -210,8 +210,8 @@ describe("SessionManager lifecycle", () => {
     vi.mocked(failed.close).mockRejectedValue(failure);
     await mgr.acquire("A", async () => failed);
     await mgr.acquire("B", async () => closed);
-    mgr.retain("A");
-    mgr.retain("B");
+    mgr.retain("A", "A");
+    mgr.retain("B", "B");
     const failedReset = mgr.resetWhenUnused("A");
     const closedReset = mgr.resetWhenUnused("B");
 
@@ -237,15 +237,15 @@ describe("SessionManager lifecycle", () => {
     const mgr = managerFor("battery");
     mgr.register("ST", fakeSession("first"));
 
-    mgr.bumpCommand("ST");
-    mgr.bumpCommand("ST");
+    mgr.bumpCommand("ST", "ST");
+    mgr.bumpCommand("ST", "ST");
     await mgr.resetWhenUnused("ST");
     expect(mgr.get("ST") !== undefined).toBe(false);
 
     const second = fakeSession("second");
     mgr.register("ST", second);
-    mgr.retain("ST");
-    mgr.retain("ST");
+    mgr.retain("ST", "ST");
+    mgr.retain("ST", "ST");
 
     await vi.advanceTimersByTimeAsync(100 + 1000);
     expect(second.close).not.toHaveBeenCalled();
@@ -257,7 +257,7 @@ describe("SessionManager lifecycle", () => {
     const session = fakeSession();
     mgr.register("ST", session);
 
-    mgr.retain("ST");
+    mgr.retain("ST", "ST");
     mgr.release("ST");
     await vi.advanceTimersByTimeAsync(600);
     mgr.release("ST");
@@ -272,15 +272,66 @@ describe("SessionManager lifecycle", () => {
     const session = fakeSession();
     mgr.register("ST", session);
 
-    mgr.retain("ST");
+    mgr.retain("ST", "ST");
     mgr.release("ST");
     await vi.advanceTimersByTimeAsync(5000);
     expect(session.close).not.toHaveBeenCalled();
 
     tier = "battery";
-    mgr.retain("ST");
+    mgr.retain("ST", "ST");
     mgr.release("ST");
     await vi.advanceTimersByTimeAsync(1000);
     expect(session.close).toHaveBeenCalledOnce();
+  });
+
+  /**
+   * A key is not always a station serial, and the power tier is a property of the hardware. Asked about the
+   * key, `poweredFor` would be given a serial that does not exist, answer with its default of `wired`, and
+   * leave a battery station's second connection running its 5 s heartbeat forever — the drain this class
+   * exists to prevent, invisible until the battery is flat.
+   */
+  it("asks for the power tier of the STATION, never of the key the session is filed under", async () => {
+    const asked: string[] = [];
+    const mgr = new SessionManager({
+      poweredFor: (sn) => {
+        asked.push(sn);
+        return "battery";
+      },
+      batteryIdleMs: 1000,
+    });
+    mgr.retain("ST#live:2", "ST");
+    mgr.release("ST#live:2");
+
+    expect(asked).toEqual(["ST"]);
+  });
+
+  /** And the registered session really does close on the station's window, not the default one. */
+  it("gives a media session on a battery station that station's idle window", async () => {
+    const mgr = new SessionManager({ poweredFor: () => "battery", batteryIdleMs: 1000 });
+    const session = fakeSession();
+    mgr.register("ST#live:2", session, "ST");
+
+    mgr.retain("ST#live:2", "ST");
+    mgr.release("ST#live:2");
+    await vi.advanceTimersByTimeAsync(1000);
+
+    expect(session.close).toHaveBeenCalledOnce();
+  });
+
+  /** A hold is the one path that CREATES an entry — a pre-warm takes it before the open. */
+  it("files a held-open session under its station, so a pre-warm cannot mis-tier it", async () => {
+    const asked: string[] = [];
+    const mgr = new SessionManager({
+      poweredFor: (sn) => {
+        asked.push(sn);
+        return "battery";
+      },
+      batteryIdleMs: 1000,
+    });
+
+    mgr.hold("ST#live:2", 100, "ST");
+    await vi.advanceTimersByTimeAsync(200);
+
+    expect(asked).toEqual(["ST"]);
   });
 });

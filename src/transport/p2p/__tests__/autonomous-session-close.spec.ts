@@ -67,7 +67,7 @@ describe("a station's session closing without a caller", () => {
     manager.register(STATION, fakeSession());
     const { dispose, stop } = seedRiders(sources, talkbacks);
 
-    manager.retain(STATION);
+    manager.retain(STATION, STATION);
     manager.release(STATION);
     await vi.advanceTimersByTimeAsync(1000);
 
@@ -83,7 +83,7 @@ describe("a station's session closing without a caller", () => {
     manager.register(STATION, fakeSession());
     const { dispose } = seedRiders(sources, talkbacks);
 
-    manager.retain(STATION);
+    manager.retain(STATION, STATION);
     const reset = manager.resetWhenUnused(STATION);
     manager.release(STATION);
     await reset;
@@ -97,7 +97,7 @@ describe("a station's session closing without a caller", () => {
     manager.register(STATION, fakeSession());
     const { dispose } = seedRiders(sources, talkbacks);
 
-    manager.bumpCommand(STATION);
+    manager.bumpCommand(STATION, STATION);
     await manager.resetWhenUnused(STATION);
 
     expect(dispose, "a source lingering with no viewer survives over the dead session otherwise").toHaveBeenCalled();
@@ -108,7 +108,7 @@ describe("a station's session closing without a caller", () => {
     const { manager, sources, talkbacks, closedStations } = routerFor();
     seedRiders(sources, talkbacks);
 
-    manager.hold(STATION, 100);
+    manager.hold(STATION, 100, STATION);
     await vi.advanceTimersByTimeAsync(100 + 1000);
 
     expect(closedStations).toEqual([]);

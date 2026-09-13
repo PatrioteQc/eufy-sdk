@@ -65,16 +65,19 @@ interface Manager {
   get(key: string): unknown;
 }
 
+/** The live egress is the only one allowed a connection of its own; a still deliberately is not. */
+const live = (r: P2PCommandRouter, sn: string) => r.sharedLiveSourceFor(sn, {}, true);
+
 const sources = (r: P2PCommandRouter) => (r as unknown as { liveSources: Map<string, unknown> }).liveSources;
 const sessionKeys = (r: P2PCommandRouter) => (r as unknown as { liveSessionKeys: Map<string, string> }).liveSessionKeys;
 
 describe("a second camera on a station already serving one", () => {
   it("is admitted, on a connection of its own", async () => {
     const r = router();
-    const held = await r.sharedLiveSourceFor(SIBLING);
+    const held = await live(r, SIBLING);
     held.attach();
 
-    const second = await r.sharedLiveSourceFor(DOORBELL);
+    const second = await live(r, DOORBELL);
 
     expect(second).toBeDefined();
     expect(sources(r).has(`${STATION_SN}:0`)).toBe(true);
@@ -88,12 +91,12 @@ describe("a second camera on a station already serving one", () => {
    */
   it("leaves the camera already being served on the station's own session", async () => {
     const r = router();
-    const held = await r.sharedLiveSourceFor(SIBLING);
+    const held = await live(r, SIBLING);
     held.attach();
 
-    await r.sharedLiveSourceFor(DOORBELL);
+    await live(r, DOORBELL);
 
-    expect(sessionKeys(r).has(`${STATION_SN}:0`)).toBe(false);
+    expect(sessionKeys(r).get(`${STATION_SN}:0`)).toBe(STATION_SN);
   });
 
   /**
@@ -102,10 +105,10 @@ describe("a second camera on a station already serving one", () => {
    */
   it("uses the station's own session when the station is serving nobody", async () => {
     const r = router();
-    const only = await r.sharedLiveSourceFor(DOORBELL);
+    const only = await live(r, DOORBELL);
     only.attach();
 
-    expect(sessionKeys(r).has(`${STATION_SN}:2`)).toBe(false);
+    expect(sessionKeys(r).get(`${STATION_SN}:2`)).toBe(STATION_SN);
   });
 
   /**
@@ -115,17 +118,17 @@ describe("a second camera on a station already serving one", () => {
    */
   it("hands the station's own session to the next camera once the first stops", async () => {
     const r = router();
-    const first = await r.sharedLiveSourceFor(SIBLING);
+    const first = await live(r, SIBLING);
     const held = first.attach();
-    (await r.sharedLiveSourceFor(DOORBELL)).attach();
+    (await live(r, DOORBELL)).attach();
     expect(sessionKeys(r).get(`${STATION_SN}:2`)).toBe(`${STATION_SN}#live:2`);
 
     held.detach();
     (r as unknown as { dropLiveSource(k: string): void }).dropLiveSource(`${STATION_SN}:0`);
-    const third = await r.sharedLiveSourceFor(SIBLING);
+    const third = await live(r, SIBLING);
 
     expect(third).toBeDefined();
-    expect(sessionKeys(r).has(`${STATION_SN}:0`)).toBe(false);
+    expect(sessionKeys(r).get(`${STATION_SN}:0`)).toBe(STATION_SN);
   });
 
   /**
@@ -134,9 +137,9 @@ describe("a second camera on a station already serving one", () => {
    */
   it("closes the extra connection when its camera is dropped", async () => {
     const r = router();
-    (await r.sharedLiveSourceFor(SIBLING)).attach();
-    await r.sharedLiveSourceFor(DOORBELL);
-    expect(sessionKeys(r).has(`${STATION_SN}:2`)).toBe(true);
+    (await live(r, SIBLING)).attach();
+    await live(r, DOORBELL);
+    expect(sessionKeys(r).get(`${STATION_SN}:2`)).toBe(`${STATION_SN}#live:2`);
 
     (r as unknown as { dropLiveSource(k: string): void }).dropLiveSource(`${STATION_SN}:2`);
 
@@ -149,10 +152,10 @@ describe("a second camera on a station already serving one", () => {
    */
   it("does not apply to the same camera, which shares one pull however many hold it", async () => {
     const r = router();
-    const opened = await r.sharedLiveSourceFor(DOORBELL);
+    const opened = await live(r, DOORBELL);
     opened.attach();
 
-    const joined = await r.sharedLiveSourceFor(DOORBELL);
+    const joined = await live(r, DOORBELL);
 
     expect(joined).toBe(opened);
     joined.attach();
@@ -161,17 +164,36 @@ describe("a second camera on a station already serving one", () => {
   });
 
   /**
-   * A pull nothing is attached to is not the station being served, it is a linger nobody asked to keep. It is
-   * released rather than counted, because the alternative is paying for a second connection for the sake of a
-   * camera nobody is using — and then leaving the newcomer on the worse of the two arrangements.
+   * A pull whose viewers have all left is a linger nobody asked to keep. It is released rather than counted,
+   * because the alternative is paying for a second connection for the sake of a camera nobody is using.
    */
-  it("releases a sibling pull nothing is attached to, rather than opening a connection beside it", async () => {
+  it("releases a sibling pull whose viewers have left, and takes the station's own session", async () => {
     const r = router();
-    const lingering = await r.sharedLiveSourceFor(SIBLING);
-    expect(lingering.consumerCount).toBe(0);
+    const consumer = (await live(r, SIBLING)).attach();
+    consumer.detach();
 
-    expect(await r.sharedLiveSourceFor(DOORBELL)).toBeDefined();
+    expect(await live(r, DOORBELL)).toBeDefined();
     expect(sources(r).has(`${STATION_SN}:0`)).toBe(false);
+    expect(sessionKeys(r).get(`${STATION_SN}:2`)).toBe(STATION_SN);
+  });
+
+  /**
+   * A source that has never been attached to is NOT that: it is a start already handed to a caller who has
+   * not attached yet, and two cameras opened together are in exactly that state when they look at each
+   * other. Releasing it would dispose a source someone is holding, so it holds the station's own session and
+   * the newcomer opens its own.
+   *
+   * The cost, paid knowingly: a pull genuinely abandoned before its first attach keeps that session, and the
+   * next camera pays for a connection instead of reclaiming it. One socket, against destroying a start.
+   */
+  it("does not release a sibling that has never been attached to, and gives the newcomer its own", async () => {
+    const r = router();
+    const neverAttached = await live(r, SIBLING);
+    expect(neverAttached.consumerCount).toBe(0);
+
+    expect(await live(r, DOORBELL)).toBeDefined();
+    expect(sources(r).has(`${STATION_SN}:0`)).toBe(true);
+    expect(sessionKeys(r).get(`${STATION_SN}:2`)).toBe(`${STATION_SN}#live:2`);
   });
 
   /**
@@ -181,12 +203,12 @@ describe("a second camera on a station already serving one", () => {
    */
   it("does not let a stopped sibling hold the station, even with consumers still attached", async () => {
     const r = router();
-    const dead = await r.sharedLiveSourceFor(SIBLING);
+    const dead = await live(r, SIBLING);
     dead.attach();
     dead.dispose();
     expect(dead.state).toBe("stopped");
 
-    expect(await r.sharedLiveSourceFor(DOORBELL)).toBeDefined();
+    expect(await live(r, DOORBELL)).toBeDefined();
   });
 });
 
@@ -198,10 +220,10 @@ describe("a second camera on a station already serving one", () => {
 describe("a standalone camera", () => {
   it("is never refused for another standalone camera, having no station to share", async () => {
     const r = router();
-    const other = await r.sharedLiveSourceFor(SOLO_B);
+    const other = await live(r, SOLO_B);
     other.attach();
 
-    expect(await r.sharedLiveSourceFor(SOLO_A)).toBeDefined();
+    expect(await live(r, SOLO_A)).toBeDefined();
     expect(sources(r).has(`${SOLO_B}:0`)).toBe(true);
   });
 });

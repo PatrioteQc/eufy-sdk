@@ -238,10 +238,18 @@ export class P2PCommandRouter {
   /** The options each live source was built from, so a later caller's conflicting ones can be reported. */
   private readonly liveSourceOpts = new Map<string, SharedLiveOpts>();
   /**
-   * The media session a live source owns, for the sources that have one — a camera admitted while its
-   * station was already serving another. A source on the station's own session is absent rather than
-   * mapped to it: what this records is a connection to CLOSE with the source, and closing the station's
-   * would take every other camera and the station's events down with it.
+   * The session each live source pulls over — the station's own serial, or the source's own media
+   * session key.
+   *
+   * Written the instant the choice is made and BEFORE the connection is opened, which is what makes it
+   * a reservation rather than a record. Two cameras started together (the four-tile case this feature
+   * exists for) would otherwise both find the station's session free: a consumer attaches only after
+   * `sharedLiveSourceFor` returns, so neither is visible to the other through consumer counts, and both
+   * would take the shared connection and contend on it.
+   *
+   * A station entry is kept as well as a media one, because "is the station's own session already
+   * claimed" is the question being asked, and an entry that is present but not yet in
+   * {@link liveSources} is a claim in flight.
    */
   private readonly liveSessionKeys = new Map<string, string>();
   /**
@@ -257,7 +265,8 @@ export class P2PCommandRouter {
     this.manager = new SessionManager({
       poweredFor: deps.poweredFor,
       logger: deps.logger,
-      onAutoClose: (parentSn) => this.tearDownStation(parentSn),
+      onAutoClose: (key) =>
+        P2PCommandRouter.isMediaSessionKey(key) ? this.tearDownMediaSession(key) : this.tearDownStation(key),
       ...deps.sessionIdle,
     });
   }
@@ -309,16 +318,16 @@ export class P2PCommandRouter {
    *
    * One hold, taken before the open so a slow connect can't idle-close mid-flight. It expires on its
    * own, which arms the station's idle window rather than closing the session, per {@link PREWARM_MS}.
-   * A second hold after the open would buy nothing: {@link openStation} returns once the socket is bound
+   * A second hold after the open would buy nothing: {@link openSession} returns once the socket is bound
    * and the lookups are away, not once the peer has answered, so both would expire together.
    *
    * Best-effort — a failed open surfaces via `onError`. A {@link SessionSupersededError} does not: the
    * session was deliberately closed underneath a speculative open, which is not a fault to report.
    */
   async prewarm(parentSn: string, ms: number = PREWARM_MS): Promise<void> {
-    this.manager.hold(parentSn, ms);
+    this.manager.hold(parentSn, ms, parentSn);
     try {
-      await this.openStation(parentSn);
+      await this.openSession(parentSn, parentSn);
     } catch (e) {
       if (e instanceof SessionSupersededError) return;
       this.deps.onError(e instanceof Error ? e : new Error(String(e)));
@@ -378,10 +387,6 @@ export class P2PCommandRouter {
    * when present, else the freshest private IP in the record ({@link freshestLanIp}) — so P2P works
    * on-LAN even when broadcast is blocked (AP isolation) or the record's `ip_addr` went stale.
    */
-  private async openStation(parentSn: string): Promise<P2PSession> {
-    return this.openSession(parentSn, parentSn);
-  }
-
   /**
    * The key a camera's own media session is filed under, distinct from every station serial because a
    * serial contains no `#`.
@@ -408,9 +413,21 @@ export class P2PCommandRouter {
    * wired to the same fan-out would report every event a second time; {@link makeSession} leaves this one
    * unannounced, and the station's own session stays the single source of connection state, control
    * notifications and frames.
+   *
+   * The level-2 key is waited for here on the same terms the station's own session gets, because a
+   * connection is not usable for this without one: an attached camera's media start has no level-1 form,
+   * so a start issued before the key arrives is dropped as `media-command-unsent`, and the stream then
+   * shows nothing until a later keepalive tick happens to find the key. A connected session that cannot
+   * carry the start is not a connected session, so this refuses rather than returning one.
    */
-  private async openMediaSession(parentSn: string, channel: number): Promise<P2PSession> {
-    return this.openSession(P2PCommandRouter.mediaSessionKey(parentSn, channel), parentSn);
+  private async openMediaSession(parentSn: string, channel: number, signal?: AbortSignal): Promise<P2PSession> {
+    const session = await this.openSession(P2PCommandRouter.mediaSessionKey(parentSn, channel), parentSn);
+    let ready = await abortable(session.awaitLevel2Key(LEVEL2_GRACE_MS, "call"), signal);
+    if (!ready && session.repromptLevel2Key()) {
+      ready = await abortable(session.awaitLevel2Key(LEVEL2_GRACE_MS, "call"), signal);
+    }
+    if (!ready) throw new StationKeyUnavailableError(parentSn);
+    return session;
   }
 
   /** Open (or reuse) the session filed under `key`, dialling `parentSn`'s endpoint. */
@@ -430,7 +447,7 @@ export class P2PCommandRouter {
           this.deps.onError(e instanceof Error ? e : new Error(String(e)));
         }
         const localAddress = this.deps.localAddresses?.[parentSn] ?? freshestLanIp(raw);
-        const session = this.makeSession(parentSn, did, raw, dskKey, localAddress, key);
+        const session = this.makeSession(parentSn, did, raw, dskKey, localAddress, key, key === parentSn);
         register(session);
         await session.connect();
         return session;
@@ -463,9 +480,9 @@ export class P2PCommandRouter {
     raw: Record<string, any>,
     dskKey: string | undefined,
     localAddress: string | undefined,
-    key: string = stationSn,
+    key: string,
+    announces: boolean,
   ): P2PSession {
-    const announces = !P2PCommandRouter.isMediaSessionKey(key);
     const conn = (raw?.p2p_conn ?? raw?.app_conn) as string | undefined;
     const adminUserId = ((raw?.member as any)?.admin_user_id as string) || this.deps.mega.auth?.userId || "";
     const session = new P2PSession({
@@ -522,7 +539,7 @@ export class P2PCommandRouter {
    */
   async ensureStation(parentSn: string, signal?: AbortSignal): Promise<void> {
     try {
-      const session = await this.openStation(parentSn);
+      const session = await this.openSession(parentSn, parentSn);
       if (session.isConnected) return;
       await new Promise<void>((resolve, reject) => {
         const cleanup = () => {
@@ -565,7 +582,7 @@ export class P2PCommandRouter {
     if (!this.deps.listDevices().length) await this.deps.ensureDevices();
     const dev = this.recordFor(sn);
     if (!dev) throw new Error(`device ${sn} not found`);
-    await this.openStation(this.stationKeyFor(dev));
+    await this.openSession(this.stationKeyFor(dev), this.stationKeyFor(dev));
     return dev;
   }
 
@@ -659,11 +676,11 @@ export class P2PCommandRouter {
         });
       },
       live: async (opts) => {
-        const source = await this.sharedLiveSourceFor(sn, opts as SharedLiveOpts);
+        const source = await this.sharedLiveSourceFor(sn, opts as SharedLiveOpts, true);
         return this.attachUnlessAborted(source, (opts as SharedLiveOpts | undefined)?.signal);
       },
       openReadable: async (opts) => {
-        const source = await this.sharedLiveSourceFor(sn, opts ?? {});
+        const source = await this.sharedLiveSourceFor(sn, opts ?? {}, true);
         return openReadableFromConsumer(this.attachUnlessAborted(source, opts?.signal), opts);
       },
       recordFragments: (opts) => this.recordFragments(sn, opts),
@@ -808,10 +825,21 @@ export class P2PCommandRouter {
    * {@link releaseLingeringSiblings}. A pull with consumers is never touched. The release runs before the
    * reuse branch, so a reuse frees the station as a cold start does.
    *
+   * `mayOpenOwnSession` decides whether a camera that finds the station's own session claimed may open a
+   * connection of its own for it. Only the continuous-pull egresses pass it. A still must not: it wants one
+   * frame, and a socket plus a level-2 negotiation per thumbnail is a cost a tile refresh cannot justify —
+   * so a still asked for while a sibling is being watched contends as it always did, and the caller's
+   * retained image answers it. A live view still outranks a tile; what changed is that two live views no
+   * longer have to outrank each other.
+   *
    * The session goes into a {@link HeldSession} cell, so it can be replaced under a source that stays in
    * place.
    */
-  async sharedLiveSourceFor(sn: string, opts: SharedLiveOpts = {}): Promise<SharedLiveSource> {
+  async sharedLiveSourceFor(
+    sn: string,
+    opts: SharedLiveOpts = {},
+    mayOpenOwnSession = false,
+  ): Promise<SharedLiveSource> {
     const { session, parentSn, channel, accountId, homeBaseAttached } = await this.resolveSession(sn, {
       waitLevel2: "soft",
       requireLevel2ForAttached: true,
@@ -827,12 +855,19 @@ export class P2PCommandRouter {
     if (!source) {
       const logger = this.deps.logger ?? noopLogger;
       const sessionKey =
-        homeBaseAttached && this.stationSessionInUse(parentSn, key)
+        mayOpenOwnSession && homeBaseAttached && this.stationSessionInUse(parentSn, key)
           ? P2PCommandRouter.mediaSessionKey(parentSn, channel)
           : parentSn;
-      const held: HeldSession = {
-        session: sessionKey === parentSn ? session : await this.openMediaSession(parentSn, channel),
-      };
+      this.liveSessionKeys.set(key, sessionKey);
+      let held: HeldSession;
+      try {
+        held = {
+          session: sessionKey === parentSn ? session : await this.openMediaSession(parentSn, channel, opts.signal),
+        };
+      } catch (error) {
+        this.liveSessionKeys.delete(key);
+        throw error;
+      }
       source = new SharedLiveSource({
         makeStream: (ctx) =>
           new LiveStream(held.session, {
@@ -851,14 +886,13 @@ export class P2PCommandRouter {
         budgetGraceMs: opts.budgetGraceMs,
         logger,
         label: key,
-        onActive: () => this.manager.retain(sessionKey),
+        onActive: () => this.manager.retain(sessionKey, parentSn),
         onIdle: () => this.manager.release(sessionKey),
         onStartFailed: () => this.onLiveStartFailed(sn, key),
         onSessionUnreachable: () => this.replaceUnreachableSession(sn, key, held),
       });
       this.liveSources.set(key, source);
       this.liveSourceOpts.set(key, opts);
-      if (sessionKey !== parentSn) this.liveSessionKeys.set(key, sessionKey);
       return source;
     }
     this.warnIgnoredLiveOpts(key, opts);
@@ -869,13 +903,19 @@ export class P2PCommandRouter {
    * Tear down any pull on this station that is lingering for ANOTHER camera, before starting this one.
    *
    * A lingering pull has no consumers but is still held open, and on an attached camera holding it open means
-   * re-sending the full media start every keepalive tick. Two channels doing that at once on a station that
-   * serves one camera at a time leaves the new stream receiving nothing but the old camera's frames for as
-   * long as the linger lasts.
+   * re-sending the full media start every keepalive tick. Two channels doing that at once over ONE session,
+   * which serves one camera at a time, leaves the new stream receiving nothing but the old camera's frames
+   * for as long as the linger lasts.
    *
    * Several cameras genuinely being WATCHED together are never disturbed — the linger exists to make
    * re-opening the SAME camera cheap, and it keeps doing that. What it may not do is keep a camera nobody is
    * looking at competing with one somebody just asked for.
+   *
+   * An `idle` source is skipped, because it is not a linger and holds nothing: it has never warmed, so it
+   * has sent no media start and is competing for nothing. Without that, two cameras opened at the same
+   * moment destroy each other — the second finds the first's source built but not yet attached to, reads
+   * zero consumers as a linger, and disposes the source its caller is holding. Which is the four-tile case
+   * this whole path exists for.
    *
    * A snapshot tile is nobody looking. Opening a live view in the Home app takes that cell fullscreen, so the
    * pulls refreshing the other cells are off screen, yet each goes on re-issuing its own media start every
@@ -889,21 +929,30 @@ export class P2PCommandRouter {
     const own = `${parentSn}:${channel}`;
     for (const [key, source] of [...this.liveSources]) {
       if (!key.startsWith(`${parentSn}:`) || key === own || source.consumerCount > 0) continue;
+      if (source.state === "idle") continue;
       (this.deps.logger ?? noopLogger).debug(
         `[live ${key}] releasing a pull nothing is attached to so ${own} can start — ` +
-          `one station serves one camera at a time`,
+          `one session serves one camera at a time`,
       );
       this.dropLiveSource(key);
     }
   }
 
   /**
-   * Whether another camera is already being served over this station's OWN session, ignoring `key`.
+   * Whether another camera has already claimed this station's OWN session, ignoring `key`.
    *
    * The question a newcomer has to answer is not whether the station is busy — it can serve one camera
    * per connection — but whether the connection it would otherwise share is taken. A camera on a media
    * session of its own does not hold this one, so a station whose first camera has since stopped hands
    * its own session to the next arrival rather than opening a socket beside an idle one.
+   *
+   * A claim counts while its source is still `idle`, source or no source. That is a start that has been
+   * handed to its caller but not yet attached to, and it is the only state in which two cameras asked for
+   * at the same moment can see each other: consumers attach after this method has already run for both.
+   *
+   * The cost is that a pull genuinely abandoned before its first attach goes on holding the station's own
+   * session, and the next camera pays for a connection of its own rather than reclaiming it. That is one
+   * socket against destroying a start someone is waiting on, which is not a close trade.
    *
    * A stopped source is skipped even when consumers are still attached to it. A failed start fails its
    * consumers without detaching them, so a caller still holding a dead handle leaves the count non-zero,
@@ -911,10 +960,13 @@ export class P2PCommandRouter {
    * client restarted. Only a source that can still deliver holds a place.
    */
   private stationSessionInUse(parentSn: string, key: string): boolean {
-    for (const [siblingKey, sibling] of this.liveSources) {
-      if (siblingKey === key || !siblingKey.startsWith(`${parentSn}:`)) continue;
-      if (sibling.state === "stopped" || sibling.consumerCount === 0) continue;
-      if (!this.liveSessionKeys.has(siblingKey)) return true;
+    for (const [siblingKey, sessionKey] of this.liveSessionKeys) {
+      if (siblingKey === key || sessionKey !== parentSn) continue;
+      const sibling = this.liveSources.get(siblingKey);
+      if (!sibling) return true;
+      if (sibling.state === "stopped") continue;
+      if (sibling.state !== "idle" && sibling.consumerCount === 0) continue;
+      return true;
     }
     return false;
   }
@@ -928,8 +980,8 @@ export class P2PCommandRouter {
    *  - Nothing attached: no. There is nobody to take the station for.
    *  - A live viewer attached: yes. That is the picture someone is looking at.
    *  - Held only for stills, while a sibling on this station has a live viewer: no. A still refreshes a
-   *    tile that is off screen while the live view is on it, and a station serving one camera at a time
-   *    cannot satisfy both. Measured: a still on a sibling halved a live view's frame rate for as long as
+   *    tile that is off screen while the live view is on it, and one session serving one camera at a time
+   *    cannot satisfy both — and a still does not open a connection of its own. Measured: a still on a sibling halved a live view's frame rate for as long as
    *    it took, and its own capture then took fifteen seconds because it was contending.
    *
    * A still with no live sibling re-asserts, so a tile refreshing on a quiet station is
@@ -954,9 +1006,11 @@ export class P2PCommandRouter {
   }
 
   /**
-   * Dispose one cached live source and forget it, so the next acquisition builds a fresh one. A media
-   * session opened for this source alone goes with it: nothing else can reach that connection, so
-   * leaving it open would hold a socket and a station keepalive for a camera no longer being pulled.
+   * Dispose one cached live source and forget it, so the next acquisition builds a fresh one. Its claim
+   * on a session goes with it, and a media session opened for this source alone is closed: nothing else
+   * can reach that connection, so leaving it open would hold a socket and a station keepalive for a
+   * camera no longer being pulled. A claim on the STATION's own session is released without closing
+   * anything — that connection carries the station's control traffic and outlives any one camera.
    */
   private dropLiveSource(key: string): void {
     const source = this.liveSources.get(key);
@@ -972,6 +1026,7 @@ export class P2PCommandRouter {
     const sessionKey = this.liveSessionKeys.get(key);
     if (sessionKey === undefined) return;
     this.liveSessionKeys.delete(key);
+    if (!P2PCommandRouter.isMediaSessionKey(sessionKey)) return;
     void this.manager
       .close(sessionKey)
       .catch((error) => this.reportError(error instanceof Error ? error : new Error(String(error))));
@@ -1013,13 +1068,6 @@ export class P2PCommandRouter {
     this.manager.remove(stationSn);
     for (const key of [...this.liveSources.keys()]) {
       if (key.startsWith(`${stationSn}:`)) this.dropLiveSource(key);
-    }
-    for (const key of this.manager.keys()) {
-      if (P2PCommandRouter.isMediaSessionKey(key) && key.startsWith(`${stationSn}#`)) {
-        void this.manager
-          .close(key)
-          .catch((error) => this.reportError(error instanceof Error ? error : new Error(String(error))));
-      }
     }
     for (const [key, talk] of this.talkbacks) {
       if (key.startsWith(`${stationSn}:`)) {
@@ -1395,7 +1443,7 @@ export class P2PCommandRouter {
         .catch((error) => this.reportError(error instanceof Error ? error : new Error(String(error))));
       return await this.resolveSession(sn, opts, true);
     }
-    this.manager.bumpCommand(parentSn);
+    this.manager.bumpCommand(parentSn, parentSn);
     const channel = typeof raw.device_channel === "number" ? (raw.device_channel as number) : 0;
     const stationAdminId = (raw.member as any)?.admin_user_id;
     const accountId = (stationAdminId as string) ?? this.deps.mega.auth?.userId ?? "";
