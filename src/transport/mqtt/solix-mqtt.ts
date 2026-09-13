@@ -40,39 +40,25 @@ export interface SolixParamFrame {
 }
 
 /**
- * Telemetry field tags for the Smart Meter (AE1X0), keyed by ff09 tag byte. Names are the app's own
- * (recovered from the Anker app's compiled-Dart strings in `libapp.so` — module
- * `package:third_device/src/module/ae1x0/…`): the meter is 3-phase-capable and reports each quantity
- * per line (L1/L2/L3) plus an aggregate total.
+ * Telemetry field tags for the Smart Meter (AE1X0) that we emit under a stable NAME, keyed by ff09 tag
+ * byte. Only tags whose tag→name binding is CONFIRMED against a live frame live here:
  *
- * Confidence:
- * - `0xac` = `meterVoltageL1` is CONFIRMED against live single-phase data (a nominal mains voltage).
- * - The rest are a STRUCTURAL INFERENCE from a quantity-major-by-phase layout that is consistent with
- *   every observation to date: on a single-phase / single-CT install only the L1 and total slots move
- *   (a8==ab because PowerL1==PowerTotal), the L2/L3 slots read 0, and the load-responsive tags
- *   (a8/ab/af/b3) line up with PowerL1/PowerTotal/CurrentL1/ImportEnergy. Bind them hard with one
- *   known-load capture and adjust here if a magnitude disagrees.
- * - Tags 0xb5–0xb7 are left unnamed (surface as `channel_b5`..`channel_b7`). The app's Dart decoder
- *   names NO field beyond the 14 above (no frequency / power-factor / reactive / temperature field
- *   exists in libapp.so), so these are reserved/unused in the app. `b7` sits at ~0.1 at idle — a
- *   firmware-level power-factor candidate (would climb toward ~1.0 under a resistive load); unconfirmed.
+ * - `0xac` = `meterVoltageL1` — confirmed against live single-phase data (a nominal mains voltage).
  *
- * Unnamed measurement tags always still surface as `channel_<tag>`, so nothing is lost.
+ * Every other measurement tag still surfaces as `channel_<hex tag>` (see {@link solixReadings}), so
+ * nothing on the wire is lost — a caller reads unconfirmed tags there. The names are deliberately NOT
+ * asserted for the rest: the app's compiled-Dart decoder (`libapp.so`, module
+ * `package:third_device/src/module/ae1x0/…`) gives the field *list*, but the tag→name *binding* below
+ * is a structural inference until a known-load capture pins it, and a mislabelled live float is worse
+ * than an honest `channel_<tag>`. The recovered candidates, to re-add one line each (moving the tag from
+ * this comment to the map above) as a known-load capture confirms each binding:
+ *
+ *   0xa8 meterPowerL1   0xa9 meterPowerL2   0xaa meterPowerL3   0xab meterPowerTotal
+ *   0xad meterVoltageL2 0xae meterVoltageL3 0xaf meterCurrentL1 0xb0 meterCurrentL2
+ *   0xb1 meterCurrentL3 0xb2 meterCurrentTotal 0xb3 meterImportEnergy 0xb4 meterExportEnergy
  */
 export const SOLIX_METER_FIELD_NAMES: Readonly<Record<number, string>> = {
-  0xa8: "meterPowerL1",
-  0xa9: "meterPowerL2",
-  0xaa: "meterPowerL3",
-  0xab: "meterPowerTotal",
-  0xac: "meterVoltageL1", // CONFIRMED live
-  0xad: "meterVoltageL2",
-  0xae: "meterVoltageL3",
-  0xaf: "meterCurrentL1",
-  0xb0: "meterCurrentL2",
-  0xb1: "meterCurrentL3",
-  0xb2: "meterCurrentTotal",
-  0xb3: "meterImportEnergy",
-  0xb4: "meterExportEnergy",
+  0xac: "meterVoltageL1", // CONFIRMED live — the only tag whose name is asserted
 };
 
 /** Interpret one TLV value as a telemetry channel (leading type byte + payload). */

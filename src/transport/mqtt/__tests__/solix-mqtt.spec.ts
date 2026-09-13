@@ -38,13 +38,14 @@ describe("Solix MQTT param decoding", () => {
     expect(ch.float).toBeCloseTo(237.5, 1);
   });
 
-  it("emits named meter fields (tag 0xac = meterVoltageL1) and raw float channels, only for float-typed fields", () => {
+  it("names only the confirmed tag (0xac = meterVoltageL1) and emits every float tag as channel_<hex>", () => {
     const values = solixReadings(decodeSolixParamFrame(FRAME)!);
     expect(values.meterVoltageL1).toBeCloseTo(237.5, 1);
     expect(values["channel_ac"]).toBeCloseTo(237.5, 1);
-    // idle channels read 0, and get their structural name too (power L1)
+    // idle channels read 0 and surface raw as channel_<hex>...
     expect(values["channel_a8"]).toBe(0);
-    expect(values.meterPowerL1).toBe(0);
+    // ...but their inferred name is NOT asserted on the wire until a capture confirms the binding.
+    expect(values.meterPowerL1).toBeUndefined();
     // a6 is a non-float type (0x03) → excluded from readings
     expect(values["channel_a6"]).toBeUndefined();
   });

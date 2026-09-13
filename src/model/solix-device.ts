@@ -5,9 +5,10 @@
  * its model. Callers branch on {@link SolixDevice.has}(capability), never on the product code.
  *
  * Grounding: `identity`, `firmware`, `connectivity`, and `energyMeter` expose typed accessors backed
- * by data we can read today — the meter field NAMES are the app's own (recovered from the Anker app's
- * compiled-Dart strings in `libapp.so`), and `energyMeter`'s `meterVoltageL1` is additionally confirmed
- * against a live ff09 frame. Every other capability (`battery`, `solarInput`, `acOutput`, `evCharger`,
+ * by data we can read today. `energyMeter` names only the ONE meter field confirmed against a live ff09
+ * frame (`meterVoltageL1`); every other decoded tag is reachable raw via `channels()`, and a named
+ * accessor is added per field once a known-load capture pins its tag→name binding. Every other
+ * capability (`battery`, `solarInput`, `acOutput`, `evCharger`,
  * `charger`, `cooler`) is DETECTED so `has(...)` is correct, but carries NO typed value accessors: no
  * telemetry frame has been captured for those families, and there is no decode path emitting their
  * fields, so a typed getter could only ever return `undefined`. Callers use `has(cap)` +
@@ -81,33 +82,19 @@ export interface SolixConnectivity {
   ssid?: string;
 }
 /**
- * Grid/energy-meter live values (Smart Meter AE1X0). The field NAMES are the app's own, recovered from
- * the Anker app's compiled-Dart decoder (`libapp.so`, module `package:third_device/src/module/ae1x0`) —
- * they are not invented. The meter is 3-phase-capable and reports each quantity per line (L1/L2/L3) plus
- * a total; on a single-phase / single-CT install only L1 + total carry data. `meterVoltageL1` is
- * additionally confirmed against a live ff09 frame; the tag→name binding for the rest is a structural
- * inference consistent with the app's field list (see {@link SOLIX_METER_FIELD_NAMES}). `channels`
- * carries every decoded float, including tags with no name yet (`channel_b5`..`channel_b7`).
+ * Grid/energy-meter live values (Smart Meter AE1X0). Only `meterVoltageL1` is exposed as a named
+ * accessor: its tag→name binding is confirmed against a live ff09 frame (`SOLIX_METER_FIELD_NAMES`).
+ * The meter reports many more quantities (per-line power/current/voltage, totals, import/export energy),
+ * but their tag→name bindings are a structural inference from the app's field list, not yet pinned to a
+ * known-load capture — so rather than assert a name that could mislabel a live float, they are left
+ * reachable raw via {@link channels} (keyed `channel_<hex tag>`). A named accessor is added per field,
+ * one line each, as captures confirm each binding.
  */
 export interface SolixEnergyMeter {
-  /** Latest line voltage (V). L1 is confirmed; L2/L3 read 0 on a single-phase supply. */
+  /** Latest L1 line voltage (V) — the one confirmed meter field. */
   meterVoltageL1(): number | undefined;
-  meterVoltageL2(): number | undefined;
-  meterVoltageL3(): number | undefined;
-  /** Latest line current (A). */
-  meterCurrentL1(): number | undefined;
-  meterCurrentL2(): number | undefined;
-  meterCurrentL3(): number | undefined;
-  meterCurrentTotal(): number | undefined;
-  /** Latest active power (W) per line and aggregate total. */
-  meterPowerL1(): number | undefined;
-  meterPowerL2(): number | undefined;
-  meterPowerL3(): number | undefined;
-  meterPowerTotal(): number | undefined;
-  /** Cumulative imported / exported energy. */
-  meterImportEnergy(): number | undefined;
-  meterExportEnergy(): number | undefined;
-  /** All decoded float channels from the latest reading, keyed `channel_<tag>` (+ any named ones). */
+  /** Every decoded float channel from the latest reading, keyed `channel_<hex tag>` (+ any named ones).
+   * This is where every not-yet-named meter quantity is read until its binding is confirmed. */
   channels(): Record<string, number>;
 }
 
@@ -188,18 +175,6 @@ export class SolixDevice {
     const v = this.values;
     return {
       meterVoltageL1: () => v.meterVoltageL1,
-      meterVoltageL2: () => v.meterVoltageL2,
-      meterVoltageL3: () => v.meterVoltageL3,
-      meterCurrentL1: () => v.meterCurrentL1,
-      meterCurrentL2: () => v.meterCurrentL2,
-      meterCurrentL3: () => v.meterCurrentL3,
-      meterCurrentTotal: () => v.meterCurrentTotal,
-      meterPowerL1: () => v.meterPowerL1,
-      meterPowerL2: () => v.meterPowerL2,
-      meterPowerL3: () => v.meterPowerL3,
-      meterPowerTotal: () => v.meterPowerTotal,
-      meterImportEnergy: () => v.meterImportEnergy,
-      meterExportEnergy: () => v.meterExportEnergy,
       channels: () => ({ ...v }),
     };
   }
