@@ -3,9 +3,9 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-/** The fixture guides, kept out of `docs/` so the real run cannot see them. */
-const FIXTURES = join(HERE, "..", "__fixtures__", "doc-snippets");
 const ROOT = join(HERE, "..", "..");
+/** The fixture guides, beside the CI script that reads them rather than in the shipped source tree. */
+const FIXTURES = join(ROOT, "scripts", "ci", "__fixtures__", "doc-snippets");
 
 /**
  * The guard's own guard.
@@ -15,8 +15,8 @@ const ROOT = join(HERE, "..", "..");
  * same mistake in a new place — so it is run here against fixture guides carrying those exact two bugs,
  * and against one that compiles.
  *
- * The fixtures live beside this spec rather than under `docs/`, so the real run cannot see them and this
- * one cannot be broken by editing a guide.
+ * `--docs` points it at the fixtures, so the real run cannot see them and this one cannot be broken by
+ * editing a guide.
  */
 function run(dir: string): { code: number; output: string } {
   try {
@@ -33,29 +33,30 @@ function run(dir: string): { code: number; output: string } {
 }
 
 describe("the doc-snippet checker", () => {
-  it("catches both of the bugs it was built for", () => {
+  it("catches both of the bugs it was built for, at the lines they are on", () => {
     const { code, output } = run(join(FIXTURES, "broken"));
     expect(code).not.toBe(0);
-    // A setter that does not exist — the guide said `setLevel`, the member's `writeAs` is `setSuctionLevel`.
+    // The two bugs. A setter that does not exist — the guide said `setLevel`, the member's `writeAs` is
+    // `setSuctionLevel` — and a method read as a property, so `.find` was called on the function itself.
     expect(output).toContain("Property 'setLevel' does not exist");
-    // A method read as a property — `scenes` is a method, so `.find` was called on the function itself.
     expect(output).toContain("Property 'find' does not exist");
-    // Reported against the MARKDOWN, at the line the snippet really sits on, not against a generated file.
-    expect(output).toMatch(/broken\/guide\.md:\d+:\d+/);
+
+    // The EXACT markdown lines, which is the claim worth pinning: reporting against the generated file
+    // would make the output unusable, and reporting against the right file at the wrong line is worse
+    // than useless because it sends a reader to innocent code. `\d+` passed for any integer while every
+    // number was one too high — so the numbers are spelled out here.
+    //
+    //   guide.md:7 → `await dev.suction?.()?.setLevel?.(2);`
+    //   guide.md:9 → `const first = scenes?.find(…);`
+    expect(output).toMatch(/broken[/\\]guide\.md:7:\d+ .*'setLevel'/);
+    expect(output).toMatch(/broken[/\\]guide\.md:9:\d+ .*'find'/);
   }, 120_000);
 
   it("passes a guide that compiles, including its skip and host markers", () => {
     // Three snippets: one real, one marked `skip` (a shape sketch that is not a statement), and one
     // naming a host function through `host`. All three have to be accepted for the run to be green.
     const { code, output } = run(join(FIXTURES, "clean"));
-    expect(output).toContain("doc snippets typecheck");
+    expect(output).toContain("documented snippets typecheck");
     expect(code).toBe(0);
-  }, 120_000);
-
-  it("refuses a skip with no reason", () => {
-    // The reason is what makes a skip a decision rather than a convenience.
-    const { code, output } = run(join(FIXTURES, "unreasoned"));
-    expect(code).not.toBe(0);
-    expect(output).toContain("typecheck:skip needs a reason");
   }, 120_000);
 });

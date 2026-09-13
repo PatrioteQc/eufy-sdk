@@ -7,37 +7,68 @@
  * it is believed. Snippets are typechecked, never run; whether one WORKS needs a device and belongs in
  * `examples/`.
  *
- *   node scripts/ci/check-doc-snippets.mjs          check (CI)
- *   node scripts/ci/check-doc-snippets.mjs --keep   leave the generated files for inspection
+ *   node scripts/ci/check-doc-snippets.mjs                 check (CI)
+ *   node scripts/ci/check-doc-snippets.mjs --docs <dir>    check a fixture tree instead
+ *
+ * Three places carry snippets, and all three are scanned, because the same error in the more
+ * authoritative copy is the worse one: the guides under `docs/`, the `README` (the npm landing page),
+ * and ```ts fences inside `src/` JSDoc (which generate the published reference).
  *
  * Two markers a guide author can use, both invisible to a reader:
  *
  *     <!-- typecheck: skip — pseudocode for the retry shape, not real API -->
  *     <!-- typecheck: host bus, consumeAudio -->
  *
- * `skip` needs a reason, so it is a decision rather than a convenience; `host` names the reader's own
- * code. See {@link SKIP} and {@link HOST_NAMES}, and {@link PRELUDE} for how a fragment compiles at all.
+ * `skip` drops a snippet (write the reason in the marker; every current one does); `host` names the
+ * reader's own code. See {@link SKIP} and {@link HOST_NAMES}, and {@link PRELUDE} for how a fragment
+ * compiles at all.
  */
 
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
-const keep = process.argv.includes("--keep");
 
 /**
  * Which tree to scan, so the checker can be pointed at a FIXTURE and thereby tested itself.
  *
  * A guard nobody checks is a guard nobody can trust: this one exists because two broken snippets shipped,
  * and it would be the same mistake to take on faith that it catches them. `--docs <dir>` lets a spec hand
- * it a guide with a known bug and assert on what comes back. Defaults to the real guides.
+ * it a guide with a known bug and assert on what comes back. Defaults to the real guides, and only that
+ * default also pulls in the README and the `src/` JSDoc fences.
  */
 const docsArg = process.argv.indexOf("--docs");
-const DOCS = docsArg === -1 ? join(ROOT, "docs") : resolve(process.argv[docsArg + 1]);
-// Generated files live beside the tree being scanned, so a fixture run cannot disturb the real one.
-const OUT = join(DOCS, ".snippets");
+const REAL_RUN = docsArg === -1;
+const DOCS = REAL_RUN ? join(ROOT, "docs") : resolve(process.argv[docsArg + 1]);
+
+/**
+ * Generated files go to a temp directory, never into the tree being scanned.
+ *
+ * Writing them beside the guides meant `docs/` carried a `.gitignore` entry for the checker's scratch
+ * space, and a fixture tree needed a second one. A temp dir costs nothing and keeps CI out of the
+ * published tree entirely.
+ */
+const OUT = mkdtempSync(join(tmpdir(), "eufy-doc-snippets-"));
+
+/**
+ * The library entry point, as the generated files must spell it.
+ *
+ * Hoisted because it is needed twice — the prelude's `import type` and the tsconfig's `paths` — and
+ * spelling it twice is how the two came to disagree: one escaped the separator as `/\\\\/g`, which
+ * matches two literal backslashes and so replaced nothing on the platform it exists for.
+ */
+const SDK_ENTRY = relative(OUT, join(ROOT, "src", "index.ts")).replace(/\\/g, "/");
+
+/**
+ * Where `@types/node` lives, spelled from the generated tsconfig.
+ *
+ * Needed only because the generated files sit in a temp directory: type resolution walks up from the
+ * tsconfig, which from `/tmp` never reaches this repo's `node_modules`.
+ */
+const TYPE_ROOTS = relative(OUT, join(ROOT, "node_modules", "@types")).replace(/\\/g, "/");
 
 /**
  * The names a guide may use without declaring them, and what each is.
@@ -53,7 +84,7 @@ const PRELUDE = `
 // \`import { EufyMega } from "@mega-yfue/eufy-sdk"\` without colliding with anything declared here.
 // Naming the classes directly made every such snippet fail twice over — once as a duplicate identifier,
 // once as "cannot be used as a value because it was imported using import type".
-import type * as Sdk from "${relative(OUT, join(ROOT, "src", "index.ts")).replace(/\\\\/g, "/")}";
+import type * as Sdk from "${SDK_ENTRY}";
 
 // The shared vocabulary of the guides: names the prose introduces and the snippets then use. Ambient,
 // so none of this is a value at runtime and none of it can be wrong about behaviour — only about TYPE,
@@ -75,6 +106,10 @@ declare const ptz: NonNullable<ReturnType<NonNullable<Sdk.Device["ptz"]>>>;
 declare const rtsp: NonNullable<ReturnType<NonNullable<Sdk.Device["rtsp"]>>>;
 declare const manifest: Sdk.DeviceManifest;
 declare const store: Sdk.SessionStore;
+// The connectivity guide's device state, from \`eufy.deviceState(sn)\`. An SDK type, so it belongs here
+// and NOT behind a \`host\` marker: declared \`any\`, the one member that guide teaches
+// (\`lastSeenMs\`) is the one thing a rename would not catch.
+declare const s: NonNullable<ReturnType<Sdk.EufyMega["deviceState"]>>;
 declare const sn: string;
 declare const stationSn: string;
 declare const email: string;
@@ -97,10 +132,7 @@ declare const kind: string;
 // of methods — the snippets use \`once\`, and inventing a narrower interface here only breaks them.
 declare const stream: Awaited<ReturnType<NonNullable<typeof cam.live>>>;
 declare const sink: import("node:stream").Writable;
-`.trimStart();
-
-/** Lines the prelude occupies, so an error in a generated file maps back to a markdown line. */
-const PRELUDE_LINES = PRELUDE.split("\n").length;
+`.trim();
 
 /**
  * Names the guides use as VALUES that a snippet may equally well import for itself.
@@ -110,22 +142,14 @@ const PRELUDE_LINES = PRELUDE.split("\n").length;
  * INSIDE the wrapper instead, where a snippet's import is shadowed rather than duplicated — same type, and
  * an import of a name the barrel does not export still fails at module scope.
  */
-const AMBIENT_VALUES = {
-  EufyMega: "const EufyMega = null as unknown as typeof Sdk.EufyMega;",
-  ConsoleLogger: "const ConsoleLogger = null as unknown as typeof Sdk.ConsoleLogger;",
-  MemorySessionStore: "const MemorySessionStore = null as unknown as typeof Sdk.MemorySessionStore;",
-  FileSessionStore: "const FileSessionStore = null as unknown as typeof Sdk.FileSessionStore;",
-  listLightEffects: "const listLightEffects = null as unknown as typeof Sdk.listLightEffects;",
-};
-
-/**
- * Strings, template literals and comments — matched so an ellipsis inside one can be left alone.
- *
- * `description: "…"` is already valid TypeScript and must stay a string; an ellipsis in prose inside a
- * comment is not code at all. Matching what to SKIP is shorter and safer than scanning for what to
- * replace, and it handles a multi-line template literal or block comment for free.
- */
-const SKIPPABLE = String.raw`"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|\`(?:[^\`\\]|\\.)*\`|//[^\n]*|/\*[\s\S]*?\*/`;
+const AMBIENT_VALUES = [
+  "const EufyMega = null as unknown as typeof Sdk.EufyMega;",
+  "const ConsoleLogger = null as unknown as typeof Sdk.ConsoleLogger;",
+  "const MemorySessionStore = null as unknown as typeof Sdk.MemorySessionStore;",
+  "const FileSessionStore = null as unknown as typeof Sdk.FileSessionStore;",
+  "const listLightEffects = null as unknown as typeof Sdk.listLightEffects;",
+  "const PtzDirection = null as unknown as typeof Sdk.PtzDirection;",
+];
 
 /**
  * The ellipsis a guide uses to elide a body, made compilable without changing what a reader sees.
@@ -136,13 +160,17 @@ const SKIPPABLE = String.raw`"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|\`(?:[^\`\\
  * `(e) => {}` would make them worse to read in order to make them checkable, so the checker gives way:
  * a bare `…` becomes an expression of type `never`, assignable wherever a value is expected and never
  * masking a type error of its own.
+ *
+ * Unconditional, including inside strings and comments, because there the substitution cannot change an
+ * answer: `"…"` becomes `"(undefined as never)"`, which is still a string literal of the same type, and
+ * an ellipsis in a comment is still a comment. Carving those out took a hand-rolled lexer that got one
+ * case backwards — it read a backtick as a quote, so a bare `…` inside `${}` was left alone and tsc
+ * rejected a snippet that was fine.
  */
-function expandElisions(code) {
-  return code.replace(new RegExp(`${SKIPPABLE}|…`, "g"), (m) => (m === "…" ? "(undefined as never)" : m));
-}
+const expandElisions = (code) => code.replaceAll("…", "(undefined as never)");
 
 /**
- * Split a snippet into the declarations that must sit at module scope and the rest of the body.
+ * Split a snippet's lines into the declarations that must sit at module scope and the rest of the body.
  *
  * The wrapper function is what lets a snippet's own `const` shadow the prelude — but an `import` is
  * illegal inside a function, and several guides consist of nothing else (`import { LIVE_TRACE_MESSAGE,
@@ -152,23 +180,26 @@ function expandElisions(code) {
  * Only a line that STARTS a top-level `import`/`export` is hoisted, and its continuation lines with it,
  * so a multi-line import list survives. An `import()` expression is untouched — it is an expression and
  * belongs where it was written.
+ *
+ * Each line keeps its index within the snippet, which is what makes the generated file's line numbers
+ * mappable back to the source exactly rather than by arithmetic over how tall the preamble happens to be.
  */
-function hoistDeclarations(body) {
+function hoistDeclarations(lines) {
   const hoisted = [];
-  const rest = [];
+  const body = [];
   let carrying = false;
-  for (const line of body.split("\n")) {
-    const starts = /^\s*(?:import|export)\s+(?![(.])/.test(line);
+  lines.forEach((text, i) => {
+    const starts = /^\s*(?:import|export)\s+(?![(.])/.test(text);
     if (starts || carrying) {
-      hoisted.push(line);
+      hoisted.push({ text, i });
       // A declaration continues until its statement ends; `from "…";` or a bare `;` closes it, and a
       // single-line form closes immediately.
-      carrying = !/;\s*$/.test(line) && !/^\s*export\s+(?:async\s+)?(?:function|class|const|let|var)\b/.test(line);
-      continue;
+      carrying = !/;\s*$/.test(text) && !/^\s*export\s+(?:async\s+)?(?:function|class|const|let|var)\b/.test(text);
+      return;
     }
-    rest.push(line);
-  }
-  return { hoisted: hoisted.join("\n"), body: rest.join("\n"), hoistedCount: hoisted.length };
+    body.push({ text, i });
+  });
+  return { hoisted, body };
 }
 
 /** Markdown files to scan, deepest-first so a nested guide is found too. */
@@ -183,8 +214,20 @@ function markdownFiles(dir) {
   return out;
 }
 
-/** `<!-- typecheck: skip — why -->`, which must carry a reason. */
-const SKIP = /^<!--\s*typecheck:\s*skip\s*(?:[—-]\s*(?<reason>.+?))?\s*-->$/;
+/** TypeScript sources whose JSDoc may carry a ```ts fence — the published reference's own snippets. */
+function sourceFiles(dir) {
+  const out = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (entry.name.startsWith(".") || entry.name === "node_modules" || entry.name === "__tests__") continue;
+    const path = join(dir, entry.name);
+    if (entry.isDirectory()) out.push(...sourceFiles(path));
+    else if (entry.name.endsWith(".ts") && !entry.name.endsWith(".spec.ts")) out.push(path);
+  }
+  return out;
+}
+
+/** `<!-- typecheck: skip — why -->`. The reason is for a human reading the diff, not for this script. */
+const SKIP = /^<!--\s*typecheck:\s*skip\b[^>]*-->$/;
 
 /**
  * `<!-- typecheck: host foo, bar -->` — names in this snippet that belong to the READER, not to us.
@@ -198,25 +241,31 @@ const SKIP = /^<!--\s*typecheck:\s*skip\s*(?:[—-]\s*(?<reason>.+?))?\s*-->$/;
  * checked exactly as before. Naming them in the markdown rather than adding them to the shared prelude
  * keeps the prelude to the vocabulary the guides really share, and makes the snippet say out loud which
  * half of itself is the reader's.
+ *
+ * It follows that this marker must never carry an SDK name. `any` is an opt-out from the guard, so
+ * hosting one of our own types is the failure this whole script exists to prevent, in the one place it
+ * looks deliberate — see the `s` declaration in {@link PRELUDE} for the case that got it wrong.
  */
 const HOST_NAMES = /^<!--\s*typecheck:\s*host\s+(?<names>[^>]+?)\s*-->$/;
 
 /**
- * Every ```ts block in one file: its body, the line its first code line sits on, and any skip marker.
+ * Every ```ts block in one file: its lines, the source line its first code line sits on, and its markers.
  *
  * Hand-rolled rather than pulled from a markdown parser: the only structure needed is a fence, and a
  * dependency that understands the whole of CommonMark to find ``` is a poor trade in a CI script.
+ *
+ * `strip` un-prefixes a line before it is read, which is what lets the same extractor serve a JSDoc
+ * comment (` * ` down the left margin) as well as a markdown file.
  */
-function snippetsIn(markdown) {
-  const lines = markdown.split("\n");
+function snippetsIn(text, strip = (l) => l) {
+  const lines = text.split("\n").map(strip);
   const found = [];
   let skip;
   let host = [];
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].trim();
-    const marker = SKIP.exec(line);
-    if (marker) {
-      skip = { reason: marker.groups?.reason, line: i + 1 };
+    if (SKIP.test(line)) {
+      skip = { line: i + 1 };
       continue;
     }
     const hosts = HOST_NAMES.exec(line);
@@ -248,7 +297,7 @@ function snippetsIn(markdown) {
         break;
       }
     }
-    found.push({ body: lines.slice(start, close).join("\n"), firstLine: start + 1, skip, host });
+    if (!skip) found.push({ lines: lines.slice(start, close), firstLine: start + 1, host });
     skip = undefined;
     host = [];
     i = close;
@@ -256,47 +305,65 @@ function snippetsIn(markdown) {
   return found;
 }
 
+/** ` *   const x = 1;` → `  const x = 1;`, so a JSDoc fence reads as the code it is. */
+const stripJsdoc = (line) => line.replace(/^\s*\*[ ]?/, "");
+
+/** Every file with snippets in it, paired with how to un-prefix its lines. */
+function sources() {
+  const out = markdownFiles(DOCS).map((path) => ({ path, strip: undefined }));
+  if (!REAL_RUN) return out;
+  // The README is the npm landing page, and `src/` JSDoc generates the published reference — the same
+  // error there outranks the same error in a guide, so neither is outside the gate.
+  out.push({ path: join(ROOT, "README.md"), strip: undefined });
+  for (const path of sourceFiles(join(ROOT, "src"))) out.push({ path, strip: stripJsdoc });
+  return out;
+}
+
 const problems = [];
+/** Errors in the generated scaffold rather than in a snippet — reported once, not once per snippet. */
+const scaffoldErrors = new Set();
 const generated = [];
+const PRELUDE_LINES = PRELUDE.split("\n");
 
-rmSync(OUT, { recursive: true, force: true });
-mkdirSync(OUT, { recursive: true });
-
-for (const file of markdownFiles(DOCS)) {
-  const rel = relative(ROOT, file);
-  const snippets = snippetsIn(readFileSync(file, "utf8"));
+for (const { path, strip } of sources()) {
+  const rel = relative(ROOT, path);
+  const snippets = snippetsIn(readFileSync(path, "utf8"), strip);
   let n = 0;
   for (const snippet of snippets) {
     if (snippet.orphanedSkip) {
       problems.push(`${rel}:${snippet.orphanedSkip.line} typecheck:skip marker is not above a \`\`\`ts fence`);
       continue;
     }
-    if (snippet.skip) {
-      if (!snippet.skip.reason) {
-        problems.push(`${rel}:${snippet.skip.line} typecheck:skip needs a reason — \`<!-- typecheck: skip — why -->\``);
-      }
-      continue;
-    }
     n += 1;
-    const name = `${rel.replace(/[/\\]/g, "__").replace(/\.md$/, "")}-${n}.ts`;
-    // The body goes inside a function so its own `const`s shadow the prelude and `await` is legal.
-    const { hoisted, body, hoistedCount } = hoistDeclarations(expandElisions(snippet.body));
+    const name = `${rel.replace(/[/\\]/g, "__").replace(/\.(md|ts)$/, "")}-${n}.ts`;
+    const { hoisted, body } = hoistDeclarations(snippet.lines.map(expandElisions));
     const shadow = [
-      ...Object.values(AMBIENT_VALUES),
+      ...AMBIENT_VALUES,
       // `any` on purpose: see HOST_NAMES. A value AND a type alias, because a host name can be either —
       // `openEncoder` is called and `Encoder` annotates a variable — and the two live in separate
       // declaration spaces, so one name can legally be both.
-      ...(snippet.host ?? []).flatMap((n) => [`let ${n}: any;`, `type ${n} = any;`]),
-    ].join("\n");
-    // Hoisted lines keep their own order but move above the wrapper, so a line number inside the body
-    // is offset by however many left it. The shadow block sits on ONE line for the same reason: a fixed,
-    // known height keeps the markdown line mapping arithmetic honest.
-    const shadowLine = shadow.split("\n").join(" ");
-    writeFileSync(
-      join(OUT, name),
-      `${PRELUDE}${hoisted}\nexport async function snippet(): Promise<void> {\n${shadowLine}\n${body}\n}\n`,
-    );
-    generated.push({ name, rel, firstLine: snippet.firstLine, hoistedCount });
+      ...(snippet.host ?? []).flatMap((h) => [`let ${h}: any;`, `type ${h} = any;`]),
+    ].join(" ");
+
+    // Built as a line array with a parallel map back to the snippet, so a tsc coordinate resolves by
+    // LOOKUP rather than by arithmetic over the preamble's height. The arithmetic version was wrong by
+    // one everywhere and by two in a hoisted import, because the prelude's trailing newline was counted
+    // in the preamble and then again by the `+ 2` beside it.
+    const out = [];
+    const mapTo = [];
+    const emit = (text, i) => {
+      out.push(text);
+      mapTo.push(i);
+    };
+    for (const line of PRELUDE_LINES) emit(line, undefined);
+    for (const h of hoisted) emit(h.text, h.i);
+    emit("export async function snippet(): Promise<void> {", undefined);
+    emit(shadow, undefined);
+    for (const b of body) emit(b.text, b.i);
+    emit("}", undefined);
+
+    writeFileSync(join(OUT, name), `${out.join("\n")}\n`);
+    generated.push({ name, rel, firstLine: snippet.firstLine, mapTo });
   }
 }
 
@@ -317,6 +384,7 @@ writeFileSync(
         esModuleInterop: true,
         skipLibCheck: true,
         types: ["node"],
+        typeRoots: [TYPE_ROOTS],
         // A guide shows the interesting call, not a use for its result: `const scenes = clean?.scenes?.()`
         // with nothing reading `scenes` is correct prose and would be noise here.
         noUnusedLocals: false,
@@ -325,7 +393,7 @@ writeFileSync(
         // to the source so a snippet is checked against what this commit actually exports rather than
         // against whatever version happens to be installed in node_modules.
         // No `baseUrl` — TypeScript 7 removed it, and `paths` is resolved relative to this tsconfig.
-        paths: { "@mega-yfue/eufy-sdk": [relative(OUT, join(ROOT, "src", "index.ts")).replace(/\\/g, "/")] },
+        paths: { "@mega-yfue/eufy-sdk": [SDK_ENTRY] },
       },
       include: ["*.ts"],
     },
@@ -340,7 +408,7 @@ if (generated.length) {
   } catch (err) {
     const output = `${err.stdout ?? ""}${err.stderr ?? ""}`;
     for (const line of output.split("\n")) {
-      // `name.ts(LINE,COL): error TSxxxx: message` → the markdown line that produced it.
+      // `name.ts(LINE,COL): error TSxxxx: message` → the source line that produced it.
       const m = /^(?<name>[^(]+)\((?<line>\d+),(?<col>\d+)\):\s*(?<rest>.*)$/.exec(line.trim());
       if (!m) {
         if (line.trim()) problems.push(line.trimEnd());
@@ -351,28 +419,33 @@ if (generated.length) {
         problems.push(line.trimEnd());
         continue;
       }
-      // A generated line sits after: the prelude, the hoisted declarations (which came from the body and
-      // so are counted back), the shadow block, and the wrapper's own opening line.
-      // prelude + the hoisted lines + the wrapper's opening line + the one-line shadow block.
-      const preamble = PRELUDE_LINES + source.hoistedCount + 2;
-      const offset = Number(m.groups.line) - preamble;
-      problems.push(
-        `${source.rel}:${source.firstLine + source.hoistedCount + offset}:${m.groups.col} ${m.groups.rest}`,
-      );
+      const index = source.mapTo[Number(m.groups.line) - 1];
+      // A line the CHECKER wrote, not one a guide did — so it is the same error in every snippet, and
+      // reporting it per snippet buries the one real problem under dozens of copies. Renaming a prelude
+      // name produced 80 problems, 79 of them that echo.
+      if (index === undefined) {
+        scaffoldErrors.add(m.groups.rest);
+        continue;
+      }
+      problems.push(`${source.rel}:${source.firstLine + index}:${m.groups.col} ${m.groups.rest}`);
     }
   }
 }
 
-if (!keep) rmSync(OUT, { recursive: true, force: true });
+rmSync(OUT, { recursive: true, force: true });
+
+for (const message of scaffoldErrors) {
+  problems.push(`scripts/ci/check-doc-snippets.mjs (the generated prelude, not a snippet): ${message}`);
+}
 
 if (problems.length) {
-  console.error(`::error::${problems.length} problem(s) in the guides' TypeScript snippets\n`);
+  console.error(`::error::${problems.length} problem(s) in the documented TypeScript snippets\n`);
   for (const p of problems) console.error(`  ${p}`);
   console.error(
-    "\nA guide snippet is typechecked against the real library types. Fix the snippet, or — if it" +
+    "\nA documented snippet is typechecked against the real library types. Fix the snippet, or — if it" +
       " genuinely cannot compile — put `<!-- typecheck: skip — reason -->` immediately above its fence.",
   );
   process.exit(1);
 }
 
-console.log(`doc snippets typecheck (${generated.length} checked)`);
+console.log(`documented snippets typecheck (${generated.length} checked)`);

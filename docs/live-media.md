@@ -55,7 +55,8 @@ The direct escape hatch — raw frames as they arrive.
 <!-- typecheck: host consumeAudio -->
 
 ```ts
-const stream = await cam.live!();
+const stream = await cam?.live?.();
+if (!stream) return; // this device has no camera, or no live path bound yet
 
 stream.on("video", (frame) => {
   // frame.data    Annex-B bytes (ONE whole access unit, start-code-prefixed NAL units)
@@ -171,10 +172,10 @@ video/audio frames or `recordFragments()` for a muxed stream; raw elementary aud
 interleaved into the Annex-B byte stream.
 
 ```ts
-const r = await cam.openReadable!(); // Annex-B byte stream
-r.pipe(fs.createWriteStream("out.h264"));
+const r = await cam?.openReadable?.(); // Annex-B byte stream
+r?.pipe(fs.createWriteStream("out.h264"));
 // ...
-r.destroy(); // releases this consumer (and the pull if it was the last)
+r?.destroy(); // releases this consumer (and the pull if it was the last)
 ```
 
 Backpressure is handled per-consumer, on the same policy `live()` exposes: a slow reader drops to the next
@@ -223,8 +224,8 @@ reconstruct time before the source started. **Retention is fixed when the pull i
 can set it**, because whichever call opens the pull is the one that decides:
 
 ```ts
-await cam.snapshotLive!({ preBufferSeconds: 10 });
-const stream = await cam.live!({ preBufferSeconds: 10 });
+await cam?.snapshotLive?.({ preBufferSeconds: 10 });
+const stream = await cam?.live?.({ preBufferSeconds: 10 });
 ```
 
 An egress that omits it is not opting out — it leaves the choice to whoever got there first, so a still
@@ -242,7 +243,7 @@ there is no automatic stored-to-live fallback.
 import { StoredSnapshotUnavailableError } from "@mega-yfue/eufy-sdk";
 
 try {
-  const jpeg: Buffer = await cam.snapshotStored!();
+  const jpeg: Buffer | undefined = await cam?.snapshotStored?.();
 } catch (error) {
   if (error instanceof StoredSnapshotUnavailableError) console.log(error.reason);
 }
@@ -303,7 +304,8 @@ parameters, so anything else is rejected rather than resampled (it would play at
 speed). Chunk boundaries don't matter; frames are recovered from the stream.
 
 ```ts
-const talk = await cam.talkback!();
+const talk = await cam?.talkback?.();
+if (!talk) return; // this camera has no two-way audio
 
 talk.on("error", (err) => console.error(err.message));
 talk.on("finished", () => void talk.stop());
@@ -394,7 +396,7 @@ stream.on("budget", (notice) => {
 Defaults: 45 s budget, 10 s grace. A host tunes only the **timings** (not the power decision):
 
 ```ts
-await cam.live!({ batteryBudgetMs: 8000, budgetGraceMs: 5000, keepAliveMs: 3000 });
+await cam?.live?.({ batteryBudgetMs: 8000, budgetGraceMs: 5000, keepAliveMs: 3000 });
 ```
 
 A wired camera ignores all of this and streams until you `stop()`.
