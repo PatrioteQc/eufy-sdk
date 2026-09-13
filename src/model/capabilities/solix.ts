@@ -44,6 +44,9 @@ export type SolixCapabilityModule = CapabilityModule<SolixCapability>;
  * than assert a name that could mislabel a live float, those stay reachable raw as `channel_<hex>` via
  * the bespoke `channels()` method on the bound surface (a static members table cannot enumerate dynamic
  * hex tags); each is promoted to a member here, one line, as a capture confirms its binding.
+ *
+ * @internal — the declaration `SolixEnergyMeterReads` derives from; exported (like the eufy `*_MEMBERS`
+ * tables) so it is a known symbol, but excluded from the rendered API reference.
  */
 export const SOLIX_ENERGY_METER_MEMBERS = {
   /**
