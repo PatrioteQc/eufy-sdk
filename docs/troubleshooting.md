@@ -86,6 +86,8 @@ eufy.on("sessionExpired", async () => {
   A host that bounds or redacts what it retains should key its phase allowlist off the union, so a phase
   added here fails to compile rather than being discarded:
 
+  <!-- typecheck: skip — the tail of a larger expression, shown alone to make the `satisfies` clause the point -->
+
   ```ts
   } satisfies Record<LiveTrace["phase"], true>;
   ```
