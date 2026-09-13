@@ -1,6 +1,7 @@
 import {
   BATTERY,
   BATTERY_PARAM,
+  CELL_PARAMS,
   resolveWorkingMode,
   resolveWorkingModeValue,
   WORKING_MODE_MAPS,
@@ -71,7 +72,17 @@ describe("battery capability module", () => {
     // sentinels, so gating the level alone left it a cell temperature, a state of health and a solar
     // harvest — on a device with no cell and, for the last two, no panel to attach one to. The
     // temperature is the one that showed: a constant 30 on every mains camera at once.
-    const cell = ["battery", "charging", "batteryTemperature", "batteryHealth", "solarIntensity", "solarConnected24h"];
+    const cell = [
+      "battery",
+      "charging",
+      "batteryTemperature",
+      "batteryHealth",
+      "solarIntensity",
+      "solarConnected24h",
+      // The seventh, and the one `unexposed` hid: suppressing the fluent getter says nothing about the
+      // schema, which is where a "battery power history" on a cell-less camera was still being published.
+      "batteryPowerStats",
+    ];
     // T8425 Floodlight, T8419 Indoor, T8410 Indoor Pan & Tilt — all mains-only.
     for (const model of ["T8425P00", "T8419P00", "T8410P00"]) {
       for (const name of cell) expect(namesFor(model), `${model} still publishes ${name}`).not.toContain(name);
@@ -82,6 +93,34 @@ describe("battery capability module", () => {
     // Real battery cams (and unknown models) keep every one of them.
     for (const name of cell) expect(namesFor("T8114P00")).toContain(name);
     expect(namesFor(undefined)).toContain("battery");
+    // And the list above is the whole of it, so a cell read added later cannot slip past this test by
+    // simply not being named here — see the bidirectional check below.
+    expect(cell.length).toBe(CELL_PARAMS.length);
+  });
+
+  it("gates every cell read and nothing else, so the next one cannot be forgotten", () => {
+    // The omission this guards is the one that produced the bug twice over: the first pass gated 2 of 7
+    // reads, and `batteryPowerStats` was then missed again because `unexposed: true` looked like enough.
+    // A per-member `available` cannot be checked by reading the table, so the table is checked against
+    // `CELL_PARAMS` instead — in BOTH directions, which is what makes it a gate rather than a reminder.
+    const mains = { model: "T8410P00" } as AvailabilityContext;
+    const battery = { model: "T8114P00" } as AvailabilityContext;
+    const publishedOn = (ctx: AvailabilityContext) =>
+      new Set(propertiesOf(BATTERY.members!, ctx).map((p) => p.paramType));
+    const onMains = publishedOn(mains);
+    const onBattery = publishedOn(battery);
+
+    for (const param of CELL_PARAMS) {
+      expect(onBattery, `${param} is a cell param that no member reads`).toContain(param);
+      expect(onMains, `${param} is a cell read with no notMainsCamera gate`).not.toContain(param);
+    }
+    // The other direction: a gate on something that is not a cell read would be withholding a reading a
+    // mains camera genuinely answers — `powerSource` says which supply is in use, and the recording
+    // settings describe how hard the camera works. Both are why the capability stays attached at all.
+    for (const param of onBattery) {
+      if (CELL_PARAMS.includes(param)) continue;
+      expect(onMains, `${param} is gated but is not in CELL_PARAMS`).toContain(param);
+    }
   });
 
   it("writes recordAutoStop as an INVERTED station-scalar on the device channel (wire-verified T8170)", () => {

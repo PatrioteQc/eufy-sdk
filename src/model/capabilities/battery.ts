@@ -127,10 +127,12 @@ function recordSetting(param: number, value: number, ctx: CommandContext): Comma
  * {@link notMainsCamera}, so they don't sprout a bogus battery %, a cell temperature, a state of
  * health or a solar harvest.
  *
- * The guard covers `level`, `charging`, `temperature`, `health`, `solarIntensity` and
- * `solarConnected24h`: a device with no cell has no charge, no cell temperature, no ageing figure and
- * nothing for a panel to charge. The settings beside them are deliberately NOT gated, and that split
- * is the whole reason the capability stays attached.
+ * The guard covers `level`, `charging`, `temperature`, `health`, `solarIntensity`, `solarConnected24h`
+ * and `batteryPowerStats`: a device with no cell has no charge, no cell temperature, no ageing figure,
+ * no power history and nothing for a panel to charge. The settings beside them are deliberately NOT
+ * gated, and that split is the whole reason the capability stays attached. Which reads are which is
+ * {@link CELL_PARAMS}, held against this table in both directions by the spec — the per-member gate is
+ * where this was first got wrong, so it is not left to memory.
  *
  * An explicit list, NOT a `device-family.ts` predicate (`isFloodLight`/`isIndoorCamera`): composing
  * those would over-reach — not every floodlight or indoor cam is mains-only, and this must assert mains
@@ -152,6 +154,33 @@ const notMainsCamera = (ctx: AvailabilityContext): boolean => {
   const model = (ctx.model ?? "").toUpperCase();
   return !MAINS_CAMERA_MODELS.some((prefix) => model.startsWith(prefix));
 };
+
+/**
+ * The params whose subject IS the physical cell — so every member reading one must carry
+ * {@link notMainsCamera}.
+ *
+ * Here because the per-member gate is where this went wrong: the first pass covered two of the seven,
+ * and the eighth member to read a cell param would have been the next omission. Naming the params once
+ * turns "remember the gate" into a fact the table is held against — `battery.spec.ts` checks it BOTH
+ * ways, so a cell read declared without the gate fails, and a gate put on something that is not a cell
+ * read fails too. Neither list can drift from the other without CI saying so.
+ *
+ * What is NOT here matters as much. `powerSource` (1293) says which supply is in use, which a mains
+ * camera genuinely answers; `workingMode` and the three `record*` settings describe how hard the camera
+ * works, not what powers it; and `cameraInfo` (1103) is a number whose meaning is unevidenced — gating
+ * it would assert it is a battery fact, which is the kind of claim this guard exists to stop making.
+ * The two solar params ARE here: a panel exists to charge a cell, so a device without one has no solar
+ * harvest to report either.
+ */
+export const CELL_PARAMS: readonly number[] = [
+  BATTERY_PARAM.BATTERY,
+  BATTERY_PARAM.BATTERY_STATUS,
+  BATTERY_PARAM.BATTERY_TEMP,
+  BATTERY_PARAM.BATTERY_HEALTH,
+  BATTERY_PARAM.SOLAR_INTENSITY,
+  BATTERY_PARAM.SOLAR_CONNECT_24H,
+  BATTERY_PARAM.BATTERY_POWER_DATAS,
+];
 
 /**
  * Every `battery` feature, declared once — the property schema, the evidence-gated getters, the derived
@@ -389,9 +418,16 @@ export const BATTERY_MEMBERS = {
    * Reported, so it stays in the schema and answers through `getProperty` — but given no typed getter:
    * the payload's fields have never been decoded, and a getter would hand back an opaque blob typed as
    * though it meant something.
+   *
+   * `unexposed` is NOT a substitute for the cell gate, which is how this one came to be missed. It
+   * suppresses the fluent GETTER; `propertiesOf` filters `writeOnly` and `available` and deliberately
+   * not `unexposed`, because a schema entry reachable through `getProperty` is the whole point of the
+   * mark. So without {@link notMainsCamera} a mains camera still publishes "battery power history" and
+   * still answers it — a phantom cell read by the other door.
    */
   batteryPowerStats: {
     param: BATTERY_PARAM.BATTERY_POWER_DATAS,
+    available: notMainsCamera,
     type: "string",
     kind: "text",
     provenance: "apk",

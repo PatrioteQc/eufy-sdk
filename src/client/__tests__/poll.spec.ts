@@ -56,7 +56,10 @@ function liveContactSensor(eufy: EufyMega, sn = "T8000P0000000000"): Device {
 function liveCamera(eufy: EufyMega, sn = "T8000P0000000000"): Device {
   const record = {
     deviceType: 9,
-    model: "T8410",
+    // A real battery camera, because the fixture reports a battery level (1101) and is described as one.
+    // It said `T8410` until this PR established that model is mains-only — which made the caption, the
+    // level and the model three claims that could not all be true at once.
+    model: "T8114",
     params: { 1101: "88", 1035: "0", 1045: "1", 1277: "1" },
     paramUpdatedAt: {},
   };
