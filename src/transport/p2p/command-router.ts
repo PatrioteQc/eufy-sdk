@@ -586,15 +586,12 @@ export class P2PCommandRouter {
     return {
       snapshotLive: async (opts) => {
         const source = await this.sharedLiveSourceFor(sn, opts ?? {});
-        return abortable(
-          captureSnapshotFromShared(source, {
-            ...opts,
-            logger: this.deps.logger ?? noopLogger,
-            ffmpegLevel: this.deps.ffmpegLogLevel,
-            ffmpegPath: this.deps.ffmpegPath,
-          }),
-          opts?.signal,
-        );
+        return captureSnapshotFromShared(source, {
+          ...opts,
+          logger: this.deps.logger ?? noopLogger,
+          ffmpegLevel: this.deps.ffmpegLogLevel,
+          ffmpegPath: this.deps.ffmpegPath,
+        });
       },
       live: async (opts) => {
         const source = await this.sharedLiveSourceFor(sn, opts as SharedLiveOpts);
