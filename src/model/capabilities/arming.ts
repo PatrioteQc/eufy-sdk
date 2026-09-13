@@ -3,7 +3,7 @@ import { describeDevice, setJsonRaw, setPayload } from "./access.js";
 import { accepts, method, propertiesOf, type Members, type Surface } from "./members.js";
 import type { CapabilityModule, CommandContext } from "./types.js";
 import { CusPushEvent } from "../push-events.js";
-import type { Command } from "../../core/contracts.js";
+import { observeCommand, type Command, type CommandObservation } from "../../core/contracts.js";
 
 /** The station broadcast channel the HomeBase's own controls ride (not a device channel). */
 const STATION_CHANNEL = 255;
@@ -182,13 +182,54 @@ function armingModeOf(v: boolean | number | string): ArmingMode | undefined {
  * just attribution (e.g. "who armed the system" in event history), not a value the device checks
  * against anything.
  */
-function armingCommand(mode: ArmingMode, ctx: CommandContext): Command {
-  const modeType = ARMING_MODE_WIRE[mode];
+function armingFrame(modeType: number, ctx: CommandContext): Command {
   if (!ctx.accountName) {
     throw new Error(`arming: missing account identity (user_name) [${describeDevice(ctx)}]`);
   }
   return setPayload(ARMING_CMD.SET_ARMING, { mode_type: modeType, user_name: ctx.accountName }, ctx, 0);
 }
+
+function armingCommand(mode: ArmingMode, ctx: CommandContext): Command {
+  return armingFrame(ARMING_MODE_WIRE[mode], ctx);
+}
+
+/**
+ * How long a mode write is given to show up in a readback before it counts as unconfirmed.
+ *
+ * Shared by the `mode` setter and {@link ARMING_MEMBERS.qualifyMode} so the two are observed on the same
+ * terms: a qualification given a longer window than the real write would promote a mode the setter then
+ * appears to fail at, and a shorter one would report a working mode as dead.
+ */
+const MODE_CONVERGENCE_MS = 20_000;
+
+/**
+ * The command-level observation for a qualification: MODE_SWITCH, then a bounded readback that has to
+ * land on the mode that was asked for.
+ *
+ * The member's own `observation` is a different shape — it resolves `expected` from the value through
+ * `reflects`, because a setter is handed a name and this is handed the integer — so the two are built
+ * separately and kept honest by sharing the param and the window rather than by sharing an object.
+ */
+function armingObservation(modeType: number): CommandObservation {
+  return {
+    event: "armingModeChanged",
+    expected: modeType,
+    param: ARMING_CMD.SET_ARMING,
+    property: "armingMode",
+    resetStandaloneSession: true,
+    timeoutMs: MODE_CONVERGENCE_MS,
+  };
+}
+
+/**
+ * The modes the app names and this SDK will not SET — the five with no captured write.
+ *
+ * Derived by subtracting {@link SETTABLE_MODES} from the wire table rather than listed again, so it
+ * cannot drift: promoting a mode into {@link ArmingMode} removes it from here in the same edit.
+ */
+export const UNQUALIFIED_MODES: readonly number[] = Object.values(ARMING_MODE_WIRE).filter(
+  (wire) => !SETTABLE_MODES.includes(wire),
+);
 
 /**
  * Alarm-delay durations the app's OWN picker UI offers — `AlarmDelaySeconds` is both the const
@@ -286,6 +327,52 @@ export type ArmingActions = Surface<typeof ARMING_MEMBERS>;
  */
 export const ARMING_MEMBERS = {
   /**
+   * Send a guard mode this SDK will not SET, to find out whether the device takes it.
+   *
+   * **A qualification tool, not a setter, and the difference is the whole point.** `setMode` offers four
+   * modes because four are all that have been confirmed; the rule that keeps it to four ("unverified write
+   * wires throw, never guess") also says to promote each mode AS IT IS CAPTURED — and nothing here
+   * captured one. This is the missing half: the instrument that produces the evidence the rule asks for.
+   *
+   * It is honest because it sends the SAME FRAME. `armingFrame` builds the one 1224 payload the confirmed
+   * modes ride on and only the `mode_type` integer differs, so a mode that converges here converges on a
+   * wire already proven on this hardware — which is what makes the result mean anything. A separate
+   * hand-built frame would have proven only that the frame was wrong.
+   *
+   * **How to read the outcome.** This resolves when the frame is ACKNOWLEDGED, which says nothing about
+   * whether the mode took: an AIoT-style write to a device that ignores it looks exactly like one it
+   * honours. The answer arrives as the `armingModeChanged` event, and that event is trustworthy here
+   * because the client emits it only after the bounded readback CONVERGED on the mode that was asked for
+   * — a station that ignores the write stays silent. So:
+   *
+   *  - `armingModeChanged` fires, and `mode` now reads the requested value → the write works. Promote it:
+   *    add the name to {@link ArmingMode}, and update {@link ARMING_MODE_WIRE}'s note.
+   *  - nothing within the observation window → no evidence it works. NOT proof it does not: a station can
+   *    be slow, offline, or between P2P sessions. Repeat before concluding.
+   *
+   * Deliberately takes the WIRE INTEGER rather than a name. A name would read like an API for a mode the
+   * SDK supports, and these are exactly the modes it does not; the integer keeps the caller in the
+   * vocabulary of the thing being investigated. Refuses an integer the app does not define, because
+   * sending a number nobody has seen the vendor send is a guess rather than a qualification — and refuses
+   * the four that are already settable, which belong to `setMode`.
+   */
+  qualifyMode: method(
+    ({ ctx, sink }) =>
+      async (modeType: number): Promise<void> => {
+        if (!UNQUALIFIED_MODES.includes(modeType)) {
+          throw new Error(
+            `arming: ${modeType} is not a mode to qualify — the app defines ` +
+              `${UNQUALIFIED_MODES.join(", ")} without a captured write; ` +
+              `${SETTABLE_MODES.join(", ")} are already settable through setMode [${describeDevice(ctx)}]`,
+          );
+        }
+        await sink.dispatch(observeCommand(armingFrame(modeType, ctx), armingObservation(modeType)));
+      },
+    "Send an unconfirmed guard mode (a wire integer) to find out whether the station accepts it. A " +
+      "qualification tool: `armingModeChanged` firing afterwards is the evidence it worked, since the " +
+      "client emits that only once the readback converged. Silence is no evidence either way.",
+  ),
+  /**
    * The one member whose write domain is NARROWER than its read: `enumValues` names all nine modes a
    * station can report, and the argument's `values` publishes only the four whose write is confirmed. That
    * argument IS the domain the derived setter enforces and the refusal names, so an unconfirmed mode is
@@ -319,7 +406,7 @@ export const ARMING_MEMBERS = {
       event: "armingModeChanged",
       reflects: (value) => ({ param: ARMING_CMD.SET_ARMING, expected: ARMING_MODE_WIRE[armingModeOf(value)!] }),
       resetStandaloneSession: true,
-      timeoutMs: 20_000,
+      timeoutMs: MODE_CONVERGENCE_MS,
     },
     write: (v, ctx) => {
       const mode = armingModeOf(v);

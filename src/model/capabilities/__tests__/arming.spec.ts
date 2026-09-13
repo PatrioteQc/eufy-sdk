@@ -5,12 +5,13 @@ import {
   AlarmDelayMode,
   AlarmDelaySeconds,
   ArmingMode,
+  UNQUALIFIED_MODES,
   type ArmingActions,
 } from "../arming.js";
 import { buildCommand } from "../index.js";
 import { bind } from "./bind.js";
 import type { CommandContext } from "../types.js";
-import type { Command } from "../../../core/contracts.js";
+import { commandObservation, type Command } from "../../../core/contracts.js";
 
 const ctx: CommandContext = {
   channel: 0,
@@ -21,6 +22,8 @@ const ctx: CommandContext = {
   paramIds: new Set(),
   accountName: "someone+tag",
 };
+const SETTABLE_MODES_FOR_TEST = [0, 1, 3, 63];
+
 const noIdentityCtx: CommandContext = { channel: 0, codec: "station", paramIds: new Set() };
 
 describe("arming capability module", () => {
@@ -226,5 +229,52 @@ describe("arming capability module", () => {
       await expect(acts.setAlarmDelayConfig(AlarmDelayMode.away, malformed)).rejects.toThrow();
       expect(sent).toEqual([]);
     });
+  });
+});
+
+describe("qualifyMode — the instrument, not a setter", () => {
+  it("sends the SAME frame the confirmed modes ride on, with only mode_type differing", async () => {
+    // This is the whole basis for a qualification meaning anything. If the probe built its own frame,
+    // a mode that failed would tell you nothing (wrong bytes?) and one that worked would tell you less.
+    const { acts, sent } = bind<ArmingActions>("arming", ctx);
+    await acts.qualifyMode!(2); // schedule — named by the app, never captured
+
+    const confirmed = buildCommand("armingMode", ArmingMode.home, ctx)!;
+    const probe = sent[0]!;
+    expect(probe.kind).toBe(confirmed.kind);
+    // Identical but for the one integer under investigation.
+    expect({ ...probe, payload: undefined }).toEqual({ ...confirmed, payload: undefined });
+    expect((probe as unknown as { payload: { mode_type: number; user_name: string } }).payload).toEqual({
+      mode_type: 2,
+      user_name: ctx.accountName,
+    });
+  });
+
+  it("carries the same observation the real write is judged by", async () => {
+    // A qualification observed more loosely than the setter would promote a mode the setter then seems
+    // to fail at. `armingModeChanged` is only emitted once the readback converged, so this IS the verdict.
+    const { acts, sent } = bind<ArmingActions>("arming", ctx);
+    await acts.qualifyMode!(47); // geo
+    const observation = commandObservation(sent[0]!)!;
+    expect(observation.event).toBe("armingModeChanged");
+    expect(observation.expected).toBe(47);
+    expect(observation.param).toBe(ARMING_CMD.SET_ARMING);
+    expect(observation.timeoutMs).toBe(20_000);
+  });
+
+  it("refuses a mode that is already settable, and one the app never defines", async () => {
+    const { acts, sent } = bind<ArmingActions>("arming", ctx);
+    // 1 is `home` — settable, so it belongs to setMode and is not a thing to qualify.
+    await expect(acts.qualifyMode!(1)).rejects.toThrow(/already settable|setMode/);
+    // 99 is nobody's mode. Sending it would be a guess, which is the opposite of a qualification.
+    await expect(acts.qualifyMode!(99)).rejects.toThrow(/not a mode to qualify/);
+    expect(sent).toEqual([]);
+  });
+
+  it("offers exactly the five the app names and this SDK will not set", () => {
+    // Derived from the wire table minus the settable four, so promoting a mode removes it here in the
+    // same edit rather than leaving a second list to forget.
+    expect([...UNQUALIFIED_MODES].sort((a, b) => a - b)).toEqual([2, 4, 5, 6, 47]);
+    for (const wire of UNQUALIFIED_MODES) expect(SETTABLE_MODES_FOR_TEST).not.toContain(wire);
   });
 });
