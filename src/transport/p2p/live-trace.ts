@@ -83,6 +83,29 @@ export type LiveTrace =
       reason: "no-cipher-key" | "derivation-failed" | "not-negotiating" | "session-closed";
       cipherId?: number;
     }
+  /**
+   * The station answered its gateway-info prompt, so a key derivation has begun under the cipher it named.
+   *
+   * What separates a station that never answered the prompt from one that answered and produced no usable key:
+   * without it, `level2-unavailable` with `not-negotiating` covers both, and they are a station or network
+   * problem and an account cipher-material problem respectively.
+   */
+  | { phase: "level2-negotiating"; cipherId: number }
+  /**
+   * A station was resolved for a call, stating what the caller's device is on it and whose station it is.
+   *
+   * Emitted before anything is sent, so it is the only account of the intended topology on a call that fails
+   * during resolution: an attached camera's media start has no unencrypted form, so whether a device was taken
+   * as attached decides what its failure means. `stationAdmin` states whether the signed-in account is the
+   * station's administrator, which is what a key the account cannot resolve turns on; `unstated` is a device
+   * record that names no administrator, which is not the same as naming another.
+   */
+  | {
+      phase: "station-resolved";
+      topology: "attached" | "own";
+      channel: number;
+      stationAdmin: "self" | "other" | "unstated";
+    }
   /** A shared source began warming, with the interval it re-issues on and the deadline it fails at. */
   | { phase: "warming"; retryMs: number; deadlineMs: number }
   /**

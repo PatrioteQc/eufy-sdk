@@ -1287,6 +1287,18 @@ export class P2PCommandRouter {
     }
     opts.signal?.throwIfAborted();
     if (!session.isConnected) throw new StationUnreachableError(Date.now() - t0);
+    const stationAdmin =
+      typeof (raw.member as any)?.admin_user_id !== "string"
+        ? "unstated"
+        : (raw.member as any).admin_user_id === this.deps.mega.auth?.userId
+          ? "self"
+          : "other";
+    session.trace({
+      phase: "station-resolved",
+      topology: homeBaseAttached ? "attached" : "own",
+      channel,
+      stationAdmin,
+    });
     if (opts.waitLevel2) {
       if (opts.waitLevel2 === "settle") {
         await abortable(session.awaitLevel2Key(LEVEL2_SETTLE_MS, "session"), opts.signal);

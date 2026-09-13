@@ -45,6 +45,8 @@ describe("live-trace vocabulary at the package entry point", () => {
       "level2-ready": true,
       "level2-absent": true,
       "level2-unavailable": true,
+      "level2-negotiating": true,
+      "station-resolved": true,
       warming: true,
       "media-command-unsent": true,
       "path-stale": true,
