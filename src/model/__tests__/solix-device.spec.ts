@@ -52,24 +52,27 @@ describe("SolixDevice", () => {
     expect(c.ssid).toBe("example-ssid");
   });
 
-  it("populates the energyMeter values from an applied telemetry reading", () => {
+  it("evidence-gates the meterVoltageL1 getter: absent until a frame carrying tag 0xAC lands", () => {
     const d = new SolixDevice(METER, { catalog: CATALOG });
-    expect(d.energyMeter()!.meterVoltageL1()).toBeUndefined(); // no reading yet
+    // No frame yet → the members engine installs no getter (not merely `undefined`): the property is absent.
+    expect(d.energyMeter()!.meterVoltageL1).toBeUndefined();
+    expect("meterVoltageL1" in d.energyMeter()!).toBe(false);
+    // A frame carrying tag 0xAC (channel_ac) is the evidence; the decoder emits meterVoltageL1 + channel_ac.
     d.applyReading({ values: { meterVoltageL1: 236.8, channel_ac: 236.8, channel_a8: 0 } });
-    expect(d.energyMeter()!.meterVoltageL1()).toBeCloseTo(236.8, 1);
-    // Only meterVoltageL1 is named; every other decoded tag is read raw via channels()/telemetry().
+    expect(d.energyMeter()!.meterVoltageL1).toBeCloseTo(236.8, 1);
+    // Every other decoded tag is read raw via channels()/telemetry(), never a named getter.
     expect(d.energyMeter()!.channels().channel_a8).toBe(0);
     expect(d.telemetry().channel_a8).toBe(0);
   });
 
-  it("a meter handle held across a reading reflects the new values (reads live, not a snapshot)", () => {
+  it("a meter handle reflects later readings live (the getter reads state, not a snapshot)", () => {
     const d = new SolixDevice(METER, { catalog: CATALOG });
-    const meter = d.energyMeter()!; // handle taken BEFORE any reading
-    expect(meter.meterVoltageL1()).toBeUndefined();
-    expect(meter.channels()).toEqual({});
-    d.applyReading({ deviceSn: METER.device_sn, values: { meterVoltageL1: 236.8, channel_a8: 12 } });
-    // The same handle must now see the applied reading — applyReading rebinds the values object.
-    expect(meter.meterVoltageL1()).toBeCloseTo(236.8, 1);
+    d.applyReading({ deviceSn: METER.device_sn, values: { meterVoltageL1: 236.8, channel_ac: 236.8 } });
+    const meter = d.energyMeter()!; // handle taken after the getter is installed
+    expect(meter.meterVoltageL1).toBeCloseTo(236.8, 1);
+    d.applyReading({ deviceSn: METER.device_sn, values: { meterVoltageL1: 231.2, channel_ac: 231.2, channel_a8: 12 } });
+    // The SAME handle sees the new reading — applyReading rebinds the store; the getter reads it live.
+    expect(meter.meterVoltageL1).toBeCloseTo(231.2, 1);
     expect(meter.channels().channel_a8).toBe(12);
   });
 
@@ -77,11 +80,11 @@ describe("SolixDevice", () => {
     const a = new SolixDevice(METER, { catalog: CATALOG });
     const b = new SolixDevice({ device_sn: "AE1X0EXAMPLE00002", product_code: "AE1X0" }, { catalog: CATALOG });
     // One SolixMqtt stream carries every watched meter; each device must keep only its own readings.
-    const readingForB = { deviceSn: b.serial, values: { meterVoltageL1: 120.1 } };
+    const readingForB = { deviceSn: b.serial, values: { meterVoltageL1: 120.1, channel_ac: 120.1 } };
     a.applyReading(readingForB); // wired as mqtt.on("reading", r => a.applyReading(r)) would deliver it
     b.applyReading(readingForB);
-    expect(a.energyMeter()!.meterVoltageL1()).toBeUndefined(); // B's reading must not land on A
-    expect(b.energyMeter()!.meterVoltageL1()).toBeCloseTo(120.1, 1);
+    expect(a.energyMeter()!.meterVoltageL1).toBeUndefined(); // B's reading must not land on A
+    expect(b.energyMeter()!.meterVoltageL1).toBeCloseTo(120.1, 1);
   });
 
   it("detects a power station's capabilities from its catalog category", () => {
