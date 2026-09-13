@@ -129,6 +129,13 @@ export interface SharedLiveSourceOptions {
    * Not called by {@link SharedLiveSource.dispose}: the owner asked for that one, and it is the very thing
    * an owner does in response to this callback.
    */
+  /**
+   * Called once this source has stopped pulling — its linger elapsed, its budget ran out, or it was
+   * torn down. Distinct from {@link onIdle}, which fires when the last consumer leaves and the linger
+   * is still holding the pull open for a quick re-attach: a caller that owns a connection for this
+   * source alone must release it here, not there, or it pays for the linger with the connection closed.
+   */
+  onStopped?: () => void;
   onStartFailed?: () => void;
   /**
    * A media start was abandoned unacknowledged before anything was delivered, so this session is not being
@@ -923,6 +930,7 @@ export class SharedLiveSource {
     this.configuredFrom = undefined;
     this.ring = [];
     this._state = state;
+    if (state === "stopped") this.opts.onStopped?.();
     if (startFailed && report) this.opts.onStartFailed?.();
   }
 

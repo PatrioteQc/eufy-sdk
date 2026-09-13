@@ -405,9 +405,14 @@ export class P2PCommandRouter {
    *
    * One session serves one camera: a station fans its cameras over a session and answers the most recent
    * start on it, so two cameras down one tunnel take it from each other in turn. Another connection is
-   * how a station serves another camera — measured on a base carrying two attached cameras, one at
-   * 3840x2160, both holding full frame rate at once over a session each, where the same pair down one
-   * session could only take turns.
+   * how a station serves another camera.
+   *
+   * The hardware was shown to do this before the SDK did. A first-party display showing four tiles was
+   * captured opening one PPCS session per camera, with three cameras' video arriving in the same second
+   * at 2304x1296, 1600x1200 and 3840x2160 — three geometries at once, which no composed stream can be.
+   * Reproduced here afterwards on a base carrying two attached cameras, one at 3840x2160, both holding
+   * full frame rate at once over a session each, where the same pair down one session could only take
+   * turns.
    *
    * It carries media alone. The station announces its state to every client that connects, so a session
    * wired to the same fan-out would report every event a second time; {@link makeSession} leaves this one
@@ -888,6 +893,7 @@ export class P2PCommandRouter {
         label: key,
         onActive: () => this.manager.retain(sessionKey, parentSn),
         onIdle: () => this.manager.release(sessionKey),
+        onStopped: () => this.closeMediaSession(key),
         onStartFailed: () => this.onLiveStartFailed(sn, key),
         onSessionUnreachable: () => this.replaceUnreachableSession(sn, key, held),
       });

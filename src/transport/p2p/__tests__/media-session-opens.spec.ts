@@ -84,7 +84,9 @@ function router() {
 /** The live egress is the only one allowed a connection of its own, so drive the router as `live()` does. */
 const openLive = (r: Router, sn: string) =>
   (
-    r as unknown as { sharedLiveSourceFor(s: string, o: object, m: boolean): Promise<{ attach(): unknown }> }
+    r as unknown as {
+      sharedLiveSourceFor(s: string, o: object, m: boolean): Promise<{ attach(): unknown; dispose(): void }>;
+    }
   ).sharedLiveSourceFor(sn, {}, true);
 
 const sessionKeys = (r: Router) => (r as unknown as { liveSessionKeys: Map<string, string> }).liveSessionKeys;
@@ -158,6 +160,24 @@ describe("a second live camera on a claimed station session", () => {
 
     nextSessionHasNoKey = true;
     await expect(openLive(r, CAM_B)).rejects.toMatchObject({ name: "StationKeyUnavailableError" });
+  });
+
+  /**
+   * A wired station's idle window is infinite by design, so a media session left retained by a stopped
+   * source is never reclaimed by the lifecycle: its socket and 5 s heartbeat stay up until that same
+   * camera is asked for again, a sibling opens, or the station goes. The connection exists for one pull
+   * and must go when the pull does.
+   */
+  it("closes its connection when the pull stops, which a wired station would never reclaim", async () => {
+    const r = router();
+    (await openLive(r, CAM_A)).attach();
+    const b = await openLive(r, CAM_B);
+    b.attach();
+    expect(sessionKeys(r).get(`${STATION_SN}:2`)).toBe(`${STATION_SN}#live:2`);
+
+    b.dispose();
+
+    expect(sessionKeys(r).has(`${STATION_SN}:2`)).toBe(false);
   });
 
   /**
