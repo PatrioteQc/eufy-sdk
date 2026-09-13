@@ -232,12 +232,14 @@ export class LiveStream extends EventEmitter {
       this.stallTimer = undefined;
       if (!this.listening || this.kaTimer) return;
       if (this.opts.reassertWanted?.() === false) {
+        this.trace({ phase: "channel-silent", silentMs: stallMs, outcome: "declined" });
         this.logger.debug(
           `[live ch${this.channel}] no own media for ${stallMs}ms, and its owner does not want this channel re-asserted — staying quiet`,
         );
         this.armStallWatch();
         return;
       }
+      this.trace({ phase: "channel-silent", silentMs: stallMs, outcome: "reasserted" });
       this.logger.debug(`[live ch${this.channel}] no own media for ${stallMs}ms — re-asserting this camera's channel`);
       this.sendStart();
       this.kaTimer = setInterval(() => this.sendStart(), keepAliveMs);
