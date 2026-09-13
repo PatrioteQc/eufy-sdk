@@ -75,9 +75,14 @@ export function nowSec(): string {
   return Math.floor(Date.now() / 1000).toString();
 }
 
+/** md5 hex digest — the one place this derivation lives (gtoken, openudid seeds, …). */
+export function md5Hex(input: string): string {
+  return createHash("md5").update(input, "utf-8").digest("hex");
+}
+
 /** gtoken header = md5(user_id) hex. */
 export function gtoken(userId: string): string {
-  return createHash("md5").update(userId, "utf-8").digest("hex");
+  return md5Hex(userId);
 }
 
 /* ---- (B) body encryption + (C) signing — VERIFIED ----------------- */

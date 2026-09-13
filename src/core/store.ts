@@ -84,11 +84,20 @@ export class FileSessionStore<T = PersistedSession> implements SessionStore<T> {
   }
 }
 
+/**
+ * A token is still usable if it has no known expiry, or expires more than `skewSec` from now. The one
+ * place the expiry/skew rule lives — reused by {@link isSessionValid} and by other lines' session checks
+ * (e.g. Solix) whose session shape differs but whose freshness rule is identical.
+ */
+export function tokenNotExpired(tokenExpiresAt: number | undefined, skewSec = 300): boolean {
+  if (tokenExpiresAt && tokenExpiresAt > 0) {
+    return Math.floor(Date.now() / 1000) < tokenExpiresAt - skewSec;
+  }
+  return true;
+}
+
 /** A persisted session is usable if it has a token that isn't (near-)expired. */
 export function isSessionValid(s: PersistedSession | null, skewSec = 300): boolean {
   if (!s?.authToken || !s.shareKey || !s.keyIdent) return false;
-  if (s.tokenExpiresAt && s.tokenExpiresAt > 0) {
-    return Math.floor(Date.now() / 1000) < s.tokenExpiresAt - skewSec;
-  }
-  return true;
+  return tokenNotExpired(s.tokenExpiresAt, skewSec);
 }

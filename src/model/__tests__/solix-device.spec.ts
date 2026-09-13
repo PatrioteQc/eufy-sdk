@@ -67,10 +67,21 @@ describe("SolixDevice", () => {
     const meter = d.energyMeter()!; // handle taken BEFORE any reading
     expect(meter.meterVoltageL1()).toBeUndefined();
     expect(meter.channels()).toEqual({});
-    d.applyReading({ values: { meterVoltageL1: 236.8, channel_a8: 12 } });
+    d.applyReading({ deviceSn: METER.device_sn, values: { meterVoltageL1: 236.8, channel_a8: 12 } });
     // The same handle must now see the applied reading — applyReading rebinds the values object.
     expect(meter.meterVoltageL1()).toBeCloseTo(236.8, 1);
     expect(meter.channels().channel_a8).toBe(12);
+  });
+
+  it("drops a reading addressed to a DIFFERENT device (no cross-feed on a shared MQTT stream)", () => {
+    const a = new SolixDevice(METER, { catalog: CATALOG });
+    const b = new SolixDevice({ device_sn: "AE1X0EXAMPLE00002", product_code: "AE1X0" }, { catalog: CATALOG });
+    // One SolixMqtt stream carries every watched meter; each device must keep only its own readings.
+    const readingForB = { deviceSn: b.serial, values: { meterVoltageL1: 120.1 } };
+    a.applyReading(readingForB); // wired as mqtt.on("reading", r => a.applyReading(r)) would deliver it
+    b.applyReading(readingForB);
+    expect(a.energyMeter()!.meterVoltageL1()).toBeUndefined(); // B's reading must not land on A
+    expect(b.energyMeter()!.meterVoltageL1()).toBeCloseTo(120.1, 1);
   });
 
   it("detects a power station's capabilities from its catalog category", () => {

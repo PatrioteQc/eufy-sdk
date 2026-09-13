@@ -22,7 +22,6 @@ export const SOLIX_ENDPOINTS = {
   estimateDomain: "/passport/estimate_domain",
   keyExchange: "/openapi/oauth/key/exchange",
   login: "/passport/login",
-  getProfile: "/passport/get_profile",
   /** Bound devices for the account (flat list). */
   getRelateAndBindDevices: "/power_service/v1/app/get_relate_and_bind_devices",
   /** Sites (systems) the account owns; devices are grouped under a site. */

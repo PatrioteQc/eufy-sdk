@@ -14,8 +14,6 @@
  * received; `discoverDevices()` builds on them, resolving each record into a {@link SolixDevice}
  * capability model (with `has(cap)` gating) the way the eufy Device model does for eufy hardware.
  */
-import { createHash } from "node:crypto";
-
 import {
   decryptBody,
   encryptBody,
@@ -24,10 +22,12 @@ import {
   finishKeyExchange,
   genId,
   gtoken,
+  md5Hex,
   nowSec,
   prepareKeyExchange,
   signRequest,
   SOLIX_LOCAL_KEY_HEX,
+  tokenNotExpired,
   type SessionEntry,
   type SessionStore,
 } from "../core/index.js";
@@ -96,13 +96,9 @@ export interface SolixPersisted {
  */
 export type SolixSessionStore = SessionStore<SolixPersisted>;
 
-const md5Hex = (s: string): string => createHash("md5").update(s).digest("hex");
-
-/** A Solix session is usable if it has a token that isn't (near-)expired — mirrors core `isSessionValid`'s 300s skew. */
+/** A Solix session is usable if it has a token that isn't (near-)expired (core's 300s skew rule). */
 function solixSessionFresh(s: SolixSession | undefined): s is SolixSession {
-  if (!s?.authToken) return false;
-  if (s.tokenExpiresAt > 0) return Math.floor(Date.now() / 1000) < s.tokenExpiresAt - 300;
-  return true;
+  return !!s?.authToken && tokenNotExpired(s.tokenExpiresAt);
 }
 
 /** Format 32 hex chars as a UUID (8-4-4-4-12) — used to derive a stable openudid from the email. */
@@ -343,14 +339,18 @@ export class SolixClient {
     return (env.data ?? null) as T;
   }
 
-  /** The account's bound Solix devices (flat list; may be empty when devices live under sites). */
-  async getDevices(): Promise<unknown[]> {
+  /**
+   * The account's bound Solix devices (flat list; may be empty when devices live under sites). The
+   * gateway's JSON is asserted to {@link SolixDeviceRecord} here, at the one trust boundary — every field
+   * beyond `device_sn`/`product_code` is optional on the record, so a caller reads them defensively.
+   */
+  async getDevices(): Promise<SolixDeviceRecord[]> {
     const data = await this.authed<{ data?: unknown[] } | unknown[]>(
       "POST",
       SOLIX_ENDPOINTS.getRelateAndBindDevices,
       {},
     );
-    return Array.isArray(data) ? data : (data?.data ?? []);
+    return (Array.isArray(data) ? data : (data?.data ?? [])) as SolixDeviceRecord[];
   }
 
   /** The account's sites (systems); devices are typically grouped under a site. */
@@ -371,7 +371,7 @@ export class SolixClient {
    */
   async discoverDevices(): Promise<SolixDevice[]> {
     const [records, catalog] = await Promise.all([this.getDevices(), this.getProductCatalog().catch(() => [])]);
-    return (records as SolixDeviceRecord[]).map((r) => new SolixDevice(r, { catalog }));
+    return records.map((r) => new SolixDevice(r, { catalog }));
   }
 
   /**

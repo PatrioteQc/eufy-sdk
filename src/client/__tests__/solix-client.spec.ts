@@ -57,8 +57,6 @@ function makeServer(opts: { devices?: unknown[]; twoFactor?: boolean } = {}): {
       return reply({ code: 0, msg: "success!", data: { server_public_key: serverPublicKey } });
     }
     if (u.pathname.endsWith("/passport/login")) {
-      const hasVerify = new Headers(init?.headers).has("x-request-ts"); // login is always signed; use body to detect verify
-      void hasVerify;
       const isVerify = body.length > 0 && JSON.parse(safeDecrypt(body, shareKey)).verify_code;
       const faInfo = opts.twoFactor && !isVerify ? { info: "pending", step: 1 } : { info: "", step: 0 };
       const loginData = {

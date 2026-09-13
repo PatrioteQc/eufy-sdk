@@ -140,8 +140,15 @@ export class SolixDevice {
     return this.caps.has(capability);
   }
 
-  /** Merge a live telemetry reading (a `SolixMqtt` `reading` event's `{ values }`) so accessors reflect it. */
-  applyReading(reading: { values: Record<string, number> }): void {
+  /**
+   * Merge a live telemetry reading (a `SolixMqtt` `reading` event) so accessors reflect it. Takes the
+   * WHOLE reading, not just its values, and drops one addressed to a different device: the documented
+   * wiring is `mqtt.on("reading", r => device.applyReading(r))`, and one MQTT stream carries every
+   * watched meter on the account — so without this filter two meters would cross-feed each other's floats.
+   * A reading with no `deviceSn` (a hand-built one) is accepted as-is.
+   */
+  applyReading(reading: { deviceSn?: string; values: Record<string, number> }): void {
+    if (reading.deviceSn && reading.deviceSn !== this.serial) return;
     this.values = { ...this.values, ...reading.values };
   }
 
@@ -176,7 +183,7 @@ export class SolixDevice {
     // in the decoder is the single source of truth for the names.
     return {
       meterVoltageL1: () => this.values.meterVoltageL1,
-      channels: () => ({ ...this.values }),
+      channels: () => this.telemetry(), // same raw channel map as telemetry(), under the meter handle
     };
   }
 }

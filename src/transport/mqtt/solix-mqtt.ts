@@ -47,11 +47,10 @@ export interface SolixParamFrame {
  *
  * Every other measurement tag still surfaces as `channel_<hex tag>` (see {@link solixReadings}), so
  * nothing on the wire is lost — a caller reads unconfirmed tags there. The names are deliberately NOT
- * asserted for the rest: the app's compiled-Dart decoder (`libapp.so`, module
- * `package:third_device/src/module/ae1x0/…`) gives the field *list*, but the tag→name *binding* below
- * is a structural inference until a known-load capture pins it, and a mislabelled live float is worse
- * than an honest `channel_<tag>`. The recovered candidates, to re-add one line each (moving the tag from
- * this comment to the map above) as a known-load capture confirms each binding:
+ * asserted for the rest: the app exposes the field *list*, but the tag→name *binding* below is a
+ * structural inference until a known-load capture pins it, and a mislabelled live float is worse than an
+ * honest `channel_<tag>`. The recovered candidates, to re-add one line each (moving the tag from this
+ * comment to the map above) as a known-load capture confirms each binding:
  *
  *   0xa8 meterPowerL1   0xa9 meterPowerL2   0xaa meterPowerL3   0xab meterPowerTotal
  *   0xad meterVoltageL2 0xae meterVoltageL3 0xaf meterCurrentL1 0xb0 meterCurrentL2
@@ -272,8 +271,9 @@ export class SolixMqtt extends EventEmitter {
   /**
    * Re-arm every watched device and send the site heartbeat. The device only pushes `param_info` while
    * a client keeps requesting it — this replays the app's `requestDeviceInfo` (cmd 17) + `power_site`
-   * heartbeat (cmd 10), the exact envelopes captured live (see docs). Best-effort: a publish failure is
-   * emitted, not thrown, so one bad device doesn't stop the rest or kill the timer.
+   * heartbeat (cmd 10); the request frames are reproduced byte-for-byte by {@link buildFf09Request}
+   * (checksum-verified against captured frames in its spec). Best-effort: a publish failure is emitted,
+   * not thrown, so one bad device doesn't stop the rest or kill the timer.
    */
   private async armAll(): Promise<void> {
     for (const device of this.watched.values()) {
@@ -334,7 +334,9 @@ export class SolixMqtt extends EventEmitter {
       }),
       payload: JSON.stringify({
         device_sn: device.device_sn,
-        account_id: this.userId ?? "",
+        // Only send account_id when known — an empty placeholder to a live broker can't be told from a
+        // real one (same reason heartbeatEnvelope omits an unknown site_id), so omit it rather than "".
+        ...(this.userId ? { account_id: this.userId } : {}),
         data: frame.toString("base64"),
         ...extra,
       }),
