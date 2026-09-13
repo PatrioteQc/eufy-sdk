@@ -62,6 +62,17 @@ describe("SolixDevice", () => {
     expect(d.telemetry().channel_a8).toBe(0);
   });
 
+  it("a meter handle held across a reading reflects the new values (reads live, not a snapshot)", () => {
+    const d = new SolixDevice(METER, { catalog: CATALOG });
+    const meter = d.energyMeter()!; // handle taken BEFORE any reading
+    expect(meter.meterVoltageL1()).toBeUndefined();
+    expect(meter.channels()).toEqual({});
+    d.applyReading({ values: { meterVoltageL1: 236.8, channel_a8: 12 } });
+    // The same handle must now see the applied reading — applyReading rebinds the values object.
+    expect(meter.meterVoltageL1()).toBeCloseTo(236.8, 1);
+    expect(meter.channels().channel_a8).toBe(12);
+  });
+
   it("detects a power station's capabilities from its catalog category", () => {
     const ps = new SolixDevice({ device_sn: "X", product_code: "A1782" }, { catalog: CATALOG });
     expect(ps.identity().category).toBe("Portable Power Station");

@@ -387,7 +387,8 @@ export function extractFf09Payload(raw: unknown): Buffer | null {
       return null;
     }
   }
-  const data = (payload as { data?: unknown; trans?: unknown } | undefined)?.data ?? env.data;
+  const p = payload as { data?: unknown; trans?: unknown } | undefined;
+  const data = p?.data ?? p?.trans ?? env.data; // some frames carry the base64 body under `trans`
   if (typeof data !== "string") return null;
   const buf = Buffer.from(data, "base64");
   return buf.length ? buf : null;

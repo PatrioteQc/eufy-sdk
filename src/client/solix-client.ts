@@ -10,8 +10,9 @@
  * `gtoken = md5(user_id)`, with no per-request encryption or signature. This client therefore does
  * the encrypted passport handshake to obtain a token, then makes plain authenticated reads.
  *
- * It intentionally does NOT model Solix devices as capability objects (that is the eufy Device
- * model's job for eufy hardware); it returns the vendor's typed JSON so a caller can consume it.
+ * The read methods (`getDevices` / `getSiteList` / `getUserMqttInfo`) return the vendor's typed JSON as
+ * received; `discoverDevices()` builds on them, resolving each record into a {@link SolixDevice}
+ * capability model (with `has(cap)` gating) the way the eufy Device model does for eufy hardware.
  */
 import { createHash } from "node:crypto";
 
@@ -140,7 +141,10 @@ export class SolixClient {
     // Adopt a stored session that has not expired, so a warm start skips login entirely.
     if (saved?.session && solixSessionFresh(saved.session)) {
       this.session_ = saved.session;
-      this.apiHost = saved.session.apiHost;
+      // An explicit apiHost still wins over the stored session's host (it's an override that also skips
+      // domain-estimate); the stored host is only the fallback. authed() reads this.apiHost, so a warm
+      // start honours the pin too.
+      this.apiHost = opts.apiHost ?? saved.session.apiHost;
     }
   }
 
@@ -330,7 +334,7 @@ export class SolixClient {
     if (!this.session_) throw new Error("not authenticated — call login() first");
     const env = await this.send(
       method,
-      this.session_.apiHost,
+      this.apiHost, // single source of truth for the host — honours an explicit opts.apiHost on warm starts too
       path,
       this.baseHeaders({ gtoken: this.session_.gtoken, "x-auth-token": this.session_.authToken }),
       body ? JSON.stringify(body) : undefined,

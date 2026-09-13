@@ -170,12 +170,13 @@ export class SolixDevice {
 
   energyMeter(): SolixEnergyMeter | undefined {
     if (!this.has("energyMeter")) return undefined;
-    // The decoder (solixReadings) already writes each mapped tag under its named key, so read those
-    // directly — one source of truth for the names is SOLIX_METER_FIELD_NAMES in the decoder.
-    const v = this.values;
+    // The accessors read through `this.values` (NOT a captured snapshot): `applyReading` rebinds that
+    // field, so a handle held across a reading must see the new object, not the one present at call time.
+    // The decoder (solixReadings) already writes each mapped tag under its named key — SOLIX_METER_FIELD_NAMES
+    // in the decoder is the single source of truth for the names.
     return {
-      meterVoltageL1: () => v.meterVoltageL1,
-      channels: () => ({ ...v }),
+      meterVoltageL1: () => this.values.meterVoltageL1,
+      channels: () => ({ ...this.values }),
     };
   }
 }
