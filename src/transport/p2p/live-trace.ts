@@ -73,10 +73,15 @@ export type LiveTrace =
    * negotiated from one whose cloud cipher lookup answered nothing, from one whose reply would not derive.
    * Each calls for a different next step, and only `no-cipher-key` and `derivation-failed` are about this
    * account's own cipher material.
+   *
+   * `cipherId` states which cipher the station asked for, where a station asked at all: it is what says whether
+   * the account was resolved for the cipher in question. The two reasons answered without a negotiation have
+   * none to name.
    */
   | {
       phase: "level2-unavailable";
       reason: "no-cipher-key" | "derivation-failed" | "not-negotiating" | "session-closed";
+      cipherId?: number;
     }
   /** A shared source began warming, with the interval it re-issues on and the deadline it fails at. */
   | { phase: "warming"; retryMs: number; deadlineMs: number }

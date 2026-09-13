@@ -577,13 +577,13 @@ export class P2PSession extends EventEmitter {
         if (this.closed || generation !== this.connectionGeneration) return;
         if (!eccPrivHex) {
           this.logger.debug(`[p2p] ${this.cfg.stationSn} no ECC key for cipher_id ${cipherId}`);
-          this.trace({ phase: "level2-unavailable", reason: "no-cipher-key" });
+          this.trace({ phase: "level2-unavailable", reason: "no-cipher-key", cipherId });
           this.settleLevel2();
           return;
         }
         const key = deriveLevel2KeyFromGatewayInfo(gwPayload, eccPrivHex);
         if (!key) {
-          this.trace({ phase: "level2-unavailable", reason: "derivation-failed" });
+          this.trace({ phase: "level2-unavailable", reason: "derivation-failed", cipherId });
           this.settleLevel2();
           this.emit("error", new Error(`level-2 key derivation failed (cipher_id ${cipherId})`));
           return;
