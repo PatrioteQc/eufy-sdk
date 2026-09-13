@@ -58,6 +58,7 @@ import {
 import { openReadableFromConsumer } from "./readable-egress.js";
 import { Talkback } from "./talkback.js";
 import { FragmentRecording } from "./fragment-recording.js";
+import { traceLiveStart } from "./live-trace.js";
 
 /**
  * How many times each idempotent "direct" control command (camera on/off 1035, spotlight
@@ -408,13 +409,19 @@ export class P2PCommandRouter {
       noBroadcast: this.deps.noBroadcast,
       resolveCipherKey: async (cipherId: number) => {
         if (this.cipherKeyCache.has(cipherId)) return this.cipherKeyCache.get(cipherId);
+        const logger = this.deps.logger ?? noopLogger;
         let ecc: string | undefined;
+        let outcome: "exact" | "fallback" | "none" | "failed" = "none";
         try {
           const ciphers = await this.deps.mega.getCiphers([cipherId], adminUserId, stationSn);
-          ecc = ciphers.find((c) => Number(c.cipher_id) === cipherId)?.ecc_private_key ?? ciphers[0]?.ecc_private_key;
+          const named = ciphers.find((c) => Number(c.cipher_id) === cipherId)?.ecc_private_key;
+          ecc = named ?? ciphers[0]?.ecc_private_key;
+          outcome = named !== undefined ? "exact" : ecc !== undefined ? "fallback" : "none";
         } catch (e) {
+          outcome = "failed";
           this.deps.onError(e instanceof Error ? e : new Error(String(e)));
         }
+        traceLiveStart(logger, { phase: "cipher-lookup", outcome, cipherId });
         if (ecc !== undefined) this.cipherKeyCache.set(cipherId, ecc);
         return ecc;
       },

@@ -84,6 +84,16 @@ export type LiveTrace =
       cipherId?: number;
     }
   /**
+   * The cloud lookup for a station's cipher material answered, and what it answered with.
+   *
+   * A key that never arrives has three causes on this side and they are not each other's: the account holds no
+   * material for the cipher the station named, the lookup itself failed, or material for a DIFFERENT cipher was
+   * used because the named one was absent from the answer — which then derives to nothing and looks like a
+   * station fault. `cipherId` is the cipher the station asked for, so this pairs with the negotiation that
+   * asked for it.
+   */
+  | { phase: "cipher-lookup"; outcome: "exact" | "fallback" | "none" | "failed"; cipherId: number }
+  /**
    * The station answered its gateway-info prompt, so a key derivation has begun under the cipher it named.
    *
    * What separates a station that never answered the prompt from one that answered and produced no usable key:
