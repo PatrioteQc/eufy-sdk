@@ -127,6 +127,17 @@ Every write below is **AIoT-only**. The legacy Tuya clean line dispatches nothin
 direction has no live capture behind it — so a Tuya robot binds the reads and none of the verbs, and
 the missing method is the signal.
 
+Each verb is also optional on the surface, because whether a device has it is a runtime fact. The `?.`
+is not defensive style — it is the type telling you to check.
+
+The verbs are grouped below by **what is known about the command number they send**, because that is
+the distinction that decides how much to trust one. Every frame here is byte-proven against the same
+captured `ModeCtrlRequest`; what differs is whether the number inside it has been watched doing what it
+claims. A robot acknowledges nothing, so a wrong number is a different command arriving and looking
+exactly like success.
+
+### Confirmed on hardware
+
 ```ts
 const clean = dev.vacuumClean();
 
@@ -135,23 +146,35 @@ await clean?.pauseCleaning?.();
 await clean?.resumeCleaning?.(); // resumes where it stopped, unlike a fresh start
 await clean?.returnToDock?.();
 
-await dev.suction()?.setLevel?.(2); // raw level, see above
+await dev.suction()?.setSuctionLevel?.(2); // raw level, see above
 await dev.suction()?.setBoostIq?.(true);
 ```
 
-Each verb is optional on the surface, because whether a device has it is a runtime fact. The `?.` is
-not defensive style — it is the type telling you to check.
-
-### Cleaning part of a floor
-
-Three verbs take an argument, and each argument comes from a read the robot already publishes rather
-than from anything you have to invent:
+Running a **saved scene** belongs here too, and it is the one argument-taking verb that does: the
+argument is the robot's own scene id, straight out of the scene report, so there is nothing for a
+caller to invent.
 
 ```ts
-const scenes = clean?.scenes; // decoded off the robot's own scene report
+const scenes = clean?.scenes?.(); // decoded off the robot's own scene report
 const first = scenes?.find((s) => s.valid);
 if (first) await clean?.startScene?.(first.id);
+```
 
+Method 24 is here because it was run against a live robot and the named scene started — the wire
+claim is that observation, not the vendor's definition of the number.
+
+A scene the robot reports invalid is still reportable and still a well-formed request;
+`VacuumScene.invalidReason` says why it will be refused.
+
+### Number taken from the vendor's enum
+
+Room and zone cleans send `ModeCtrlRequest.Method` 1 and 2. Those values are read off the vendor's own
+message definition and have **not** been watched on a wire, which is a weaker claim than everything
+above: 1 and 2 are low numbers in a space whose confirmed verbs sit at 6, 13 and 14, and both carry a
+payload, so a mis-numbered frame is some other command arriving with a room set attached. They ship
+callable as a maintainer decision with that trade-off in view, not because the evidence is equal.
+
+```ts
 await clean?.cleanRooms?.(
   mapId,
   [
@@ -178,6 +201,10 @@ The **clean parameters** — clean type, mop level, water level, clean extent, c
 read-only. They decode out of one payload the robot reports, and no capture pins a write for any of
 them, so there is no setter to offer. Reading them back after changing them in the vendor's app works
 as it always did.
+
+**Driving to a point** (`START_GOTO_CLEAN`, method 4) has no encoder either, and for a different
+reason: its argument is a coordinate, and no read published here hands you one. A scene id and a map id
+both arrive on the scene report; a goto point would have to come from map data this SDK does not decode.
 
 See [Devices & capabilities](/devices) for how capability resolution works, and the
 [device gallery](/devices-gallery) for the Clean line.

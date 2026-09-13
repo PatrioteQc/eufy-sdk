@@ -264,40 +264,22 @@ export const ModeCtrlMethod = {
 } as const;
 
 /**
- * The methods that carry a `Param` oneof — room, zone, goto, schedule, cruise and scene cleans.
- *
- * Kept out of {@link ModeCtrlMethod} because each is meaningless without an argument, and listing its
- * number beside the parameterless verbs would invite a caller to send it with an empty payload — a
- * well-formed frame meaning something nobody intended. Each verb built on one of these therefore takes
- * its argument in the signature: {@link VACUUM_CLEAN_MEMBERS.startScene},
- * {@link VACUUM_CLEAN_MEMBERS.cleanRooms} and {@link VACUUM_CLEAN_MEMBERS.cleanZones}.
- *
- * The numbers are the vendor's own `ModeCtrlRequest.Method` values and are NOT capture-confirmed; the
- * outer frame they ride in is, byte for byte, on a live T2351. `GOTO` carries no encoder because a
- * goto point is a coordinate no read on this SDK supplies, where a scene id and a map id both arrive
- * on DP 180.
- */
-
-/**
- * Encode a `ModeCtrlRequest` protobuf (DP 152) as a DP value: `varint(bodyLen) ++ {method:1, seq:2}`.
- *
- * Built on {@link RawDpWriter} rather than hand-rolled bytes. The frame is unchanged and the existing
- * byte-level test is what proves it — that test was written against a live T2351 capture, so it holds
- * the writer to the wire rather than to this function's own idea of the wire.
- *
- * Method 0 (START_AUTO_CLEAN) is omitted rather than written as an explicit zero, per the proto3
- * default-field rule and confirmed on that same capture. The writer deliberately does not apply that
- * rule itself: whether an explicit zero and an absent field mean the same thing is the
- * message's business, not the encoder's.
- * @internal
- */
-/**
  * The area-selecting `ModeCtrlRequest` methods, and the `Param` field each one's payload rides in.
  *
  * Kept apart from {@link ModeCtrlMethod} because these are a different kind of thing: a parameterless
  * verb is complete on its own, whereas each of these is meaningless without an argument the caller has
  * to supply. Sending one with an empty payload is a well-formed frame that means something nobody
- * intended, which is exactly why the numbers do not sit beside the others.
+ * intended, which is exactly why the numbers do not sit beside the others. Each verb built on one takes
+ * its argument in the signature: {@link VACUUM_CLEAN_MEMBERS.startScene},
+ * {@link VACUUM_CLEAN_MEMBERS.cleanRooms} and {@link VACUUM_CLEAN_MEMBERS.cleanZones}.
+ *
+ * The outer frame all four ride in is byte-verified on a live T2351. The NUMBERS are the vendor's own
+ * `ModeCtrlRequest.Method` values, and only `SCENE` has since been watched doing what it claims: method
+ * 24 was run against a live robot and started the named scene. `SELECT_ROOMS` and `SELECT_ZONES` rest on
+ * the vendor's definition alone — see the note on each member for what that costs.
+ *
+ * `GOTO` carries no encoder because a goto point is a coordinate no read on this SDK supplies, where a
+ * scene id and a map id both arrive on DP 180.
  */
 export const ModeCtrlParamMethod = {
   /** `START_SELECT_ROOMS_CLEAN` — clean the named rooms of a named map. */
@@ -451,6 +433,19 @@ function nextModeCtrlSeq(): number {
   return ++modeCtrlSeq;
 }
 
+/**
+ * Encode a `ModeCtrlRequest` protobuf (DP 152) as a DP value: `varint(bodyLen) ++ {method:1, seq:2}`.
+ *
+ * Built on {@link RawDpWriter} rather than hand-rolled bytes. The frame is unchanged and the existing
+ * byte-level test is what proves it — that test was written against a live T2351 capture, so it holds
+ * the writer to the wire rather than to this function's own idea of the wire.
+ *
+ * Method 0 (START_AUTO_CLEAN) is omitted rather than written as an explicit zero, per the proto3
+ * default-field rule and confirmed on that same capture. The writer deliberately does not apply that
+ * rule itself: whether an explicit zero and an absent field mean the same thing is the
+ * message's business, not the encoder's.
+ * @internal
+ */
 export function encodeModeCtrl(method: number, seq: number): string {
   return rawDp((w) => {
     if (method !== 0) w.int(MODE_CTRL_FIELD.METHOD, method);
@@ -2923,10 +2918,10 @@ export const VACUUM_CLEAN_MEMBERS = {
    * off the `SceneResponse` on DP 180. A scene the device reports invalid stays reportable and running
    * it is still a well-formed request; `VacuumScene.invalidReason` says why the device will refuse.
    *
-   * Frame shape is byte-proven against the shared outer `ModeCtrlRequest`. The method NUMBER is the
-   * vendor's own `ModeCtrlRequest.Method` value and is not capture-confirmed; on a fire-and-forget DP
-   * write a wrong number is a different command, so it is a maintainer decision that this ships
-   * callable rather than as an unverified write.
+   * Frame shape is byte-proven against the shared outer `ModeCtrlRequest`, and method 24 has since been
+   * WATCHED: run against a live robot, it started the named scene. So this verb's number rests on
+   * observed behaviour rather than on the vendor's enum, which is what separates it from
+   * {@link VACUUM_CLEAN_MEMBERS.cleanRooms} and {@link VACUUM_CLEAN_MEMBERS.cleanZones} below.
    */
   startScene: method(
     ({ sink }) =>
@@ -2944,8 +2939,15 @@ export const VACUUM_CLEAN_MEMBERS = {
    * on DP 180 and a scheduled rooms-clean's `map_id` are the two real map ids the device reports.
    *
    * `cleanTimes` is how many passes to make over the set; rooms with no `order` are visited in the
-   * order given. Same evidence position as {@link VACUUM_CLEAN_MEMBERS.startScene}: the frame is
-   * byte-proven, the method number is the vendor's and uncaptured.
+   * order given.
+   *
+   * **Weaker evidence than {@link VACUUM_CLEAN_MEMBERS.startScene}.** The frame is byte-proven, but
+   * method 1 is the vendor's own `ModeCtrlRequest.Method` value and has not been watched on a wire — and
+   * 1 is a low number in a space whose confirmed verbs sit at 6, 13, 14 and 24. Because it carries a
+   * payload, a mis-numbered frame is some other command arriving with a room set attached, and an AIoT
+   * DP write is fire-and-forget, so that would look exactly like success. It ships callable as a
+   * maintainer decision with that in view; a capture of the vendor app running a room clean settles it,
+   * and contradicting evidence makes this one word.
    */
   cleanRooms: method(
     ({ sink }) =>
@@ -2960,8 +2962,9 @@ export const VACUUM_CLEAN_MEMBERS = {
    *
    * Corners are SIGNED centimetres in the map's own frame, whose origin sits wherever the robot first
    * mapped from — negative coordinates are ordinary and are ZigZag-encoded, not written as plain
-   * varints. Same `mapId` reasoning and same evidence position as
-   * {@link VACUUM_CLEAN_MEMBERS.cleanRooms}.
+   * varints. Same `mapId` reasoning and the same weaker evidence position as
+   * {@link VACUUM_CLEAN_MEMBERS.cleanRooms}: method 2 is the vendor's number, unwatched, carrying a
+   * payload.
    */
   cleanZones: method(
     ({ sink }) =>
