@@ -9,9 +9,8 @@ import { createCipheriv, createDecipheriv, createECDH, createHash, randomBytes }
 
 import { describe, expect, it } from "vitest";
 
-import { encryptBody, SOLIX_LOCAL_KEY_HEX } from "../../core/index.js";
+import { encryptBody, SOLIX_LOCAL_KEY_HEX } from "../../../core/index.js";
 import { SolixClient, type SolixPersisted, type SolixSessionStore } from "../solix-client.js";
-import { buildModelIndex } from "../../model/solix-catalog.js";
 
 const LOCALKEY = Buffer.from(SOLIX_LOCAL_KEY_HEX, "hex");
 const USER_ID = "0123456789abcdef0123456789abcdef01234567";
@@ -174,15 +173,15 @@ describe("SolixClient", () => {
     expect(warm.session?.gtoken).toBe(md5(USER_ID));
   });
 
-  it("fetches the product catalog and indexes model codes (incl. variants) to name + category", async () => {
+  it("fetches the product catalog as the vendor's typed JSON (categories → products)", async () => {
     const { fetchImpl } = makeServer();
     const client = new SolixClient({ email: "a@b.co", password: "pw", fetchImpl });
     await client.login();
     const catalog = await client.getProductCatalog();
-    const index = buildModelIndex(catalog);
-    expect(index.get("A1782")).toEqual({ name: "SOLIX F3000", category: "Portable Power Station" });
-    // both the string and object variant codes resolve to the parent product
-    expect(index.get("2301")?.name).toBe("SOLIX F3000");
-    expect(index.get("2302")?.name).toBe("SOLIX F3000");
+    expect(catalog).toHaveLength(1);
+    expect(catalog[0].name).toBe("Portable Power Station");
+    expect(catalog[0].products[0].product_code).toBe("A1782");
+    // Resolving model codes (incl. variants) to a name/category is the MODEL layer's job — see
+    // buildModelIndex's coverage in model/__tests__/solix-device.spec.ts (transport ⊥ model).
   });
 });

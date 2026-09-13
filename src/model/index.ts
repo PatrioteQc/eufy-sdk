@@ -122,6 +122,8 @@ export {
 // Anker Solix device model: the capability-driven SolixDevice + the product catalog it resolves names from.
 export {
   SolixDevice,
+  discoverSolixDevices,
+  type SolixDeviceReader,
   type SolixDeviceRecord,
   type SolixIdentity,
   type SolixConnectivity,

@@ -20,20 +20,12 @@ import {
   type SolixCapability,
   type SolixEnergyMeterReads,
 } from "./capabilities/solix.js";
-import { buildModelIndex, type SolixProductCategory } from "./solix-catalog.js";
+import { buildModelIndex } from "./solix-catalog.js";
+import type { SolixDeviceRecord, SolixProductCategory } from "../core/solix-types.js";
 
-/** A discovered Solix device record, as returned by `SolixClient.getDevices()`. */
-export interface SolixDeviceRecord {
-  device_sn: string;
-  product_code: string;
-  device_name?: string;
-  alias_name?: string;
-  device_sw_version?: string;
-  wifi_online?: boolean;
-  wifi_name?: string;
-  rssi?: string | number;
-  [k: string]: unknown;
-}
+// Re-exported for callers that import the record shape from the model surface (it lives in core so the
+// transport client can return it without crossing the transport↔model line — see core/solix-types).
+export type { SolixDeviceRecord } from "../core/solix-types.js";
 
 export interface SolixIdentity {
   serial: string;
@@ -171,4 +163,32 @@ export class SolixDevice {
     }
     return tags;
   }
+}
+
+/**
+ * The minimum a client must offer to be discovered against — the two wire reads {@link discoverSolixDevices}
+ * composes. Typed STRUCTURALLY (not as `SolixClient`) so the model layer never imports the transport
+ * client: the hard `transport ⊥ model` rule forbids it, and a structural shape needs no import.
+ */
+export interface SolixDeviceReader {
+  getDevices(): Promise<SolixDeviceRecord[]>;
+  getProductCatalog(): Promise<SolixProductCategory[]>;
+}
+
+/**
+ * Discover an account's Solix devices as capability-driven {@link SolixDevice} objects — the wire+model
+ * composition (a transport read + the product catalog) that used to be `SolixClient.discoverDevices()`.
+ * It lives in the model layer because it builds `SolixDevice`; the wire client (now `transport/http`)
+ * cannot, and passing it structurally keeps the layers decorrelated. Feed live telemetry to each result
+ * via `SolixDevice.applyReading`.
+ */
+export async function discoverSolixDevices(
+  client: SolixDeviceReader,
+  opts: { catalog?: SolixProductCategory[] } = {},
+): Promise<SolixDevice[]> {
+  const [records, catalog] = await Promise.all([
+    client.getDevices(),
+    opts.catalog ? Promise.resolve(opts.catalog) : client.getProductCatalog().catch(() => [] as SolixProductCategory[]),
+  ]);
+  return records.map((r) => new SolixDevice(r, { catalog }));
 }

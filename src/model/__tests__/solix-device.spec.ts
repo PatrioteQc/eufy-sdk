@@ -4,12 +4,15 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { SolixDevice, type SolixDeviceRecord } from "../solix-device.js";
-import type { SolixProductCategory } from "../solix-catalog.js";
+import { SolixDevice, discoverSolixDevices, type SolixDeviceRecord } from "../solix-device.js";
+import { buildModelIndex, type SolixProductCategory } from "../solix-catalog.js";
 
 const CATALOG: SolixProductCategory[] = [
   { name: "Accessory", products: [{ product_code: "AE1X0", name: "Smart Meter Gen 2" }] },
-  { name: "Portable Power Station", products: [{ product_code: "A1782", name: "SOLIX F3000" }] },
+  {
+    name: "Portable Power Station",
+    products: [{ product_code: "A1782", name: "SOLIX F3000", p_codes: ["2301", { product_code: "2302" }] }],
+  },
 ];
 
 const METER: SolixDeviceRecord = {
@@ -110,5 +113,26 @@ describe("SolixDevice", () => {
     expect(sb.has("energyMeter")).toBe(false);
     // battery has no typed accessors (no decode path captured yet) — callers use has() + telemetry().
     expect(sb.energyMeter()).toBeUndefined();
+  });
+
+  it("buildModelIndex resolves model codes and their variant codes to name + category", () => {
+    const index = buildModelIndex(CATALOG);
+    expect(index.get("A1782")).toEqual({ name: "SOLIX F3000", category: "Portable Power Station" });
+    // both the string and object variant codes resolve to the parent product
+    expect(index.get("2301")?.name).toBe("SOLIX F3000");
+    expect(index.get("2302")?.name).toBe("SOLIX F3000");
+  });
+
+  it("discoverSolixDevices composes a wire client's reads into resolved SolixDevice models", async () => {
+    // A structural stand-in for the transport SolixClient — discoverSolixDevices never imports it.
+    const client = {
+      getDevices: async (): Promise<SolixDeviceRecord[]> => [METER, { device_sn: "X", product_code: "A1782" }],
+      getProductCatalog: async (): Promise<SolixProductCategory[]> => CATALOG,
+    };
+    const devices = await discoverSolixDevices(client);
+    expect(devices.map((d) => d.serial)).toEqual(["AE1X0EXAMPLE00001", "X"]);
+    expect(devices[0].has("energyMeter")).toBe(true);
+    expect(devices[1].identity().name).toBe("SOLIX F3000");
+    expect(devices[1].has("battery")).toBe(true);
   });
 });

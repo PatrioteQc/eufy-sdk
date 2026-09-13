@@ -10,9 +10,9 @@
  * `gtoken = md5(user_id)`, with no per-request encryption or signature. This client therefore does
  * the encrypted passport handshake to obtain a token, then makes plain authenticated reads.
  *
- * The read methods (`getDevices` / `getSiteList` / `getUserMqttInfo`) return the vendor's typed JSON as
- * received; `discoverDevices()` builds on them, resolving each record into a {@link SolixDevice}
- * capability model (with `has(cap)` gating) the way the eufy Device model does for eufy hardware.
+ * This is the wire client (transport layer): it returns the vendor's typed JSON as received. Building
+ * those records into capability-driven `SolixDevice` models is the model layer's job — see
+ * `discoverSolixDevices()` — so the two stay decorrelated (transport never imports model).
  */
 import {
   decryptBody,
@@ -30,10 +30,10 @@ import {
   tokenNotExpired,
   type SessionEntry,
   type SessionStore,
-} from "../core/index.js";
-import type { SecureMqttCredentials } from "../transport/mqtt/secure-mqtt.js";
-import { SolixDevice, type SolixDeviceRecord } from "../model/solix-device.js";
-import type { SolixProductCategory } from "../model/solix-catalog.js";
+  type SolixDeviceRecord,
+  type SolixProductCategory,
+} from "../../core/index.js";
+import type { SecureMqttCredentials } from "../mqtt/secure-mqtt.js";
 
 import { SOLIX_APP_NAME, SOLIX_DEFAULT_API_HOST, SOLIX_ENDPOINTS, SOLIX_ESTIMATE_HOST } from "./solix-constants.js";
 
@@ -362,16 +362,6 @@ export class SolixClient {
   /** Per-user AWS-IoT MQTT credentials (cert/key/endpoint/thing) for the real-time device plane. */
   async getUserMqttInfo(): Promise<SecureMqttCredentials> {
     return this.authed<SecureMqttCredentials>("POST", SOLIX_ENDPOINTS.getUserMqttInfo, {});
-  }
-
-  /**
-   * Discover the account's devices as capability-driven {@link SolixDevice} objects — each already
-   * carrying its catalog category + resolved capabilities. Combines `getDevices()` with the product
-   * catalog (one fetch) so names/categories resolve; feed live telemetry via `SolixDevice.applyReading`.
-   */
-  async discoverDevices(): Promise<SolixDevice[]> {
-    const [records, catalog] = await Promise.all([this.getDevices(), this.getProductCatalog().catch(() => [])]);
-    return records.map((r) => new SolixDevice(r, { catalog }));
   }
 
   /**

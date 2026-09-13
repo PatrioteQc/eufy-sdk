@@ -8,23 +8,9 @@
  * `SolixDevice` resolve a name/category without reaching across the capability↔transport boundary.
  */
 
-/** One product in the pairable-product catalog. Extra vendor fields (images, guides) are preserved. */
-export interface SolixProduct {
-  /** SKU / model code, e.g. `A1782`. */
-  product_code: string;
-  /** Marketing name, e.g. `SOLIX F3000`. */
-  name: string;
-  /** Variant/sub-model codes under this product, when present. */
-  p_codes?: unknown[];
-  [k: string]: unknown;
-}
-
-/** A catalog category (e.g. "Portable Power Station") and its products. */
-export interface SolixProductCategory {
-  name: string;
-  products: SolixProduct[];
-  [k: string]: unknown;
-}
+// The vendor-JSON catalog shapes are a transport↔model contract, so they live in core (see solix-types).
+export type { SolixProduct, SolixProductCategory } from "../core/solix-types.js";
+import type { SolixProductCategory } from "../core/solix-types.js";
 
 /**
  * Flatten a product catalog into a `product_code → { name, category }` lookup for labelling
