@@ -1,6 +1,6 @@
 /**
- * P2P session lifecycle manager — owns the per-station {@link P2PSession} registry and decides WHEN a
- * session is open. It exists to stop battery-powered cameras draining: a persistent P2P session runs a
+ * P2P session lifecycle manager — owns the {@link P2PSession} registry and decides WHEN a session is
+ * open. It exists to stop battery-powered cameras draining: a persistent P2P session runs a
  * 5 s PING heartbeat forever (keeping the device awake), so instead of opening every station eagerly
  * and holding it open, this opens a station's session **on demand** (first command / stream / pre-warm)
  * and **auto-closes** it after an idle window whose length depends on the station's power tier.
@@ -55,9 +55,12 @@ export const PREWARM_MS = 28_000;
  * `retained` is zero; `connecting` coalesces concurrent cold opens.
  *
  * The power tier is deliberately NOT stored: it is resolved per idle-arm, so a station whose battery
- * evidence arrives after its first session still gets the right window.
+ * evidence arrives after its first session still gets the right window. `station` IS stored, because a
+ * key is not always a station serial and the tier is a property of the hardware rather than of the
+ * connection: every session to one station shares its power tier and its idle window length.
  */
 interface SessionEntry {
+  station: string;
   session?: P2PSession;
   retained: number;
   holdTimers: Set<ReturnType<typeof setTimeout>>;
@@ -71,25 +74,36 @@ export interface SessionManagerOpts {
   batteryIdleMs?: number;
   /** Keepalive a single command holds after dispatch (ms). Default {@link COMMAND_KEEPALIVE_MS}. */
   commandKeepAliveMs?: number;
-  /** Power tier per station serial — injected by the facade (no model import). Default: everything `wired`. */
+  /**
+   * Power tier per station serial — injected by the facade (no model import). Default: everything
+   * `wired`. Asked about the STATION a session connects to, never the key it is filed under, so every
+   * session to one station gets that station's idle window.
+   */
   poweredFor?: (parentSn: string) => PowerTier;
   /**
-   * Called after the manager closes a station on its OWN initiative — an elapsed idle window, or a
-   * deferred reset falling due.
+   * Called with the KEY of a session the manager closed on its OWN initiative — an elapsed idle window,
+   * or a deferred reset falling due. The key, not the station: several sessions can share a station and
+   * only the one that closed is stale, so an owner told the station would tear down connections that are
+   * still serving.
    *
    * Those two are the only closes with no caller to follow up: everything riding the session is stale the
    * moment it goes, and only the owner knows what that is. A close a caller asked for is that caller's to
    * clean up after, which is why this does not fire for {@link SessionManager.close},
    * {@link SessionManager.closeAll}, or a superseded open.
    */
-  onAutoClose?: (parentSn: string) => void;
+  onAutoClose?: (key: string) => void;
   /** Diagnostics sink for the lifecycle transitions (open / idle-arm / detach). Omit for silence. */
   logger?: Logger;
 }
 
 /**
- * Manages P2P sessions keyed by **parent station serial**. The router builds/wires the actual
- * `P2PSession` (it owns the socket + event fan-out); this decides open/close timing.
+ * Manages P2P sessions by **key**, each recording the station it connects to. The router builds and
+ * wires the actual `P2PSession` (it owns the socket and event fan-out); this decides open/close timing.
+ *
+ * A key is the station's serial for the one session that carries its control traffic and its events.
+ * Where a station has to serve more than one camera at once it also holds a session per camera, filed
+ * under a key of the router's choosing and recording the same station — so each has its own refcount and
+ * its own idle window, and releasing one never disturbs another.
  */
 export class SessionManager {
   private readonly entries = new Map<string, SessionEntry>();
@@ -106,31 +120,35 @@ export class SessionManager {
     return this.entries.get(parentSn)?.session;
   }
 
-  /** Serials of stations with a live session. */
+  /** Keys of the open sessions. */
   keys(): string[] {
     return [...this.entries].filter(([, e]) => e.session).map(([sn]) => sn);
   }
 
-  /** A plain `Map<parentSn, P2PSession>` snapshot of the live sessions (for `getSessions()` / tests). */
+  /** A plain `Map<key, P2PSession>` snapshot of the open sessions (for `getSessions()` / tests). */
   liveSessions(): Map<string, P2PSession> {
     const m = new Map<string, P2PSession>();
     for (const [sn, e] of this.entries) if (e.session) m.set(sn, e.session);
     return m;
   }
 
-  /** Get or create the lifecycle entry for a station. */
-  private entry(parentSn: string): SessionEntry {
-    let e = this.entries.get(parentSn);
+  /**
+   * Get or create the lifecycle entry under `key`, recording which station it connects to. An existing
+   * entry keeps the station it was opened with — the key owns one connection for its lifetime, and a
+   * later caller passing a different station would otherwise re-point a live entry's power tier.
+   */
+  private entry(key: string, station: string = key): SessionEntry {
+    let e = this.entries.get(key);
     if (!e) {
-      e = { retained: 0, holdTimers: new Set(), idle: new Timer() };
-      this.entries.set(parentSn, e);
+      e = { station, retained: 0, holdTimers: new Set(), idle: new Timer() };
+      this.entries.set(key, e);
     }
     return e;
   }
 
   /** Register an already-built session for test seeding or an externally assembled connection. */
-  register(parentSn: string, session: P2PSession): void {
-    this.entry(parentSn).session = session;
+  register(key: string, session: P2PSession, station: string = key): void {
+    this.entry(key, station).session = session;
   }
 
   /**
@@ -139,10 +157,12 @@ export class SessionManager {
    * `connect()` and resolves the connected session.
    */
   async acquire(
-    parentSn: string,
+    key: string,
     factory: (register: (session: P2PSession) => void) => Promise<P2PSession>,
+    station: string = key,
   ): Promise<P2PSession> {
-    const e = this.entry(parentSn);
+    const parentSn = key;
+    const e = this.entry(key, station);
     if (e.connecting) {
       this.logger.debug(`[session ${parentSn}] connecting — joining in-flight open`);
       return e.connecting;
@@ -233,7 +253,7 @@ export class SessionManager {
    */
   private armIdle(parentSn: string, e: SessionEntry): void {
     e.idle.cancel();
-    if ((this.opts.poweredFor?.(parentSn) ?? "wired") !== "battery") {
+    if ((this.opts.poweredFor?.(e.station) ?? "wired") !== "battery") {
       this.logger.debug(`[session ${parentSn}] idle (nothing retained) — staying persistent (wired)`);
       return;
     }
