@@ -89,6 +89,7 @@ import { VACUUM_CLEAN } from "./vacuum-clean.js";
 import { VACUUM_DOCK } from "./vacuum-dock.js";
 import { SUCTION } from "./suction.js";
 export { type DpCatalog, EMPTY_DP_CATALOG } from "./dp-catalog.js";
+import { DISPLAY } from "./display.js";
 import { LOCATE } from "./locate.js";
 import { INFO } from "./info.js";
 
@@ -113,6 +114,7 @@ import type { KeypadActions } from "./keypad.js";
 import type { RtspActions } from "./rtsp.js";
 import type { VacuumCleanActions } from "./vacuum-clean.js";
 import type { VacuumDockActions } from "./vacuum-dock.js";
+import type { DisplayActions } from "./display.js";
 import type { SuctionActions } from "./suction.js";
 import type { LocateActions } from "./locate.js";
 import type { DeviceInfo } from "./info.js";
@@ -144,6 +146,7 @@ const MODULES: CapabilityModule[] = [
   VACUUM_DOCK,
   SUCTION,
   LOCATE,
+  DISPLAY,
   INFO,
 ];
 
@@ -216,8 +219,8 @@ function hintHaystack(rec: CloudRecord): string {
  * {@link detectCapabilities}. Exhaustive over {@link Codec} on purpose: a new codec must state its
  * line rather than silently defaulting into the security ecosystem.
  *
- * `display` is grouped into `security` by maintainer decision, not wire evidence — see
- * {@link namespaceForCodec} for what that actually opens up.
+ * `display` is its own line, not a corner of `security` — see {@link ProductLine} for why one
+ * capability still earns one, and `param-namespace.ts` for the matching split of the id space.
  */
 const CODEC_LINE: Record<Codec, ProductLine> = {
   station: "security",
@@ -229,7 +232,7 @@ const CODEC_LINE: Record<Codec, ProductLine> = {
   mower: "clean",
   light: "life",
   printer: "print",
-  display: "security",
+  display: "display",
 };
 
 /**
@@ -783,6 +786,8 @@ export interface DeviceActionMap {
   suction: SuctionActions;
   /** RoboVac locate (find-robot beep): `locating`; `locate(on?)`. */
   locate: LocateActions;
+  /** Smart Display reads (read-only): `modelCode`, `modelName`, `softwareVersion`. No write is captured. */
+  display: DisplayActions;
   /** Identity metadata (read-only): `{ manufacturer, model, serialNumber, name, deviceType?, firmwareVersion?, hardwareVersion? }`. */
   info: DeviceInfo;
 }
@@ -1032,6 +1037,7 @@ export { RTSP_MEMBERS } from "./rtsp.js";
 export { SIREN_MEMBERS } from "./siren.js";
 export { SMART_LIGHT_MEMBERS } from "./smart-light.js";
 export { SMOKE_MEMBERS } from "./smoke.js";
+export { DISPLAY_MEMBERS, DISPLAY_PARAM, type DisplayActions } from "./display.js";
 export { SUCTION_MEMBERS } from "./suction.js";
 export { VACUUM_CLEAN_MEMBERS } from "./vacuum-clean.js";
 // The read-only identity metadata object returned by `dev.info()` — a public consumer type.

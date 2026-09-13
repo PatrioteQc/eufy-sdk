@@ -74,6 +74,9 @@ export type Capability =
   // eufy_life smart lighting (own secure-MQTT DP namespace) — the T8L0x line's on/off/brightness/
   // effect control. Distinct from the camera-floodlight `light` capability above.
   | "smart_light"
+  // --- Smart Display line (own 8001-8006 param namespace, secure MQTT, never P2P) ---
+  // What a T87Ax Smart Display reports about itself. Read-only: no display write is captured.
+  | "display"
   // Universal read-only identity metadata (manufacturer/model/serial/name) — every device has it.
   | "info";
 

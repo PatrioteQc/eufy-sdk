@@ -1710,3 +1710,51 @@ export const CLEAN_PARAMS: Record<number, ParamDef> = {
     provenance: "mega",
   },
 };
+
+/**
+ * eufy Smart Display (T87Ax) param space — ids 8001-8006.
+ *
+ * Its own table rather than a corner of {@link SECURITY_PARAMS}, which is where this line's ids used to
+ * be read from by virtue of the codec's namespace grouping. Nothing in the 8000s was ever assigned a
+ * security meaning, so that grouping decoded nothing today — but it left the door open for a future
+ * security param in this range to be read off a Smart Display as something it is not.
+ *
+ * Every id here was REPORTED by a live T87A0 (captured 2026-09-04), which is what `mega` provenance
+ * means: the device sent it. Whether each id's MEANING is equally certain varies, and the two are
+ * recorded separately below — a value whose content identifies it beyond doubt is not the same claim as
+ * one whose shape merely suggests a name.
+ *
+ * **Three of the six are not here, and that is deliberate.** The device also reported 8001 (`"100"`),
+ * 8002 (`"1"`) and 8004 (a serial-shaped string). None of their meanings is legible from one value:
+ * `100` fits a percentage of brightness, volume or battery equally well, `1` fits any enum or flag, and
+ * a serial-shaped value could be the display's own or the station's it is bound to. Naming any of them
+ * would be a guess a consumer would then read as a fact — and on a screen device, a misread `100` shown
+ * as battery is exactly the kind of wrong that looks right. They are left undecoded, which reports them
+ * as raw ids. What would settle them: the vendor app's own display settings screen moved one control at
+ * a time, with the reported params diffed after each.
+ */
+export const DISPLAY_PARAMS: Record<number, ParamDef> = {
+  8003: {
+    name: "softwareVersion",
+    type: "string",
+    // `guessed` on purpose, against `mega` for the other two. The device sent `"2.9.05"`, which is
+    // version-shaped and nothing else on this record looks like a version — but a single dotted value
+    // is circumstantial, not a mapping anyone confirmed. It reads as a version because it looks like
+    // one, which is the definition of this tier.
+    provenance: "guessed",
+  },
+  8005: {
+    name: "modelName",
+    type: "string",
+    // Self-evidencing: the value was exactly "Smart Display E10", the model's retail name, which the
+    // registry row for T87A0 already carried from another source. A value that matches a fact known
+    // independently is not an inference about what the id means.
+    provenance: "mega",
+  },
+  8006: {
+    name: "modelCode",
+    type: "string",
+    // Self-evidencing in the same way: the value was "T87A0", the device's own model code.
+    provenance: "mega",
+  },
+};
