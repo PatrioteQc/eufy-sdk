@@ -29,10 +29,10 @@
  *
  * `display` is the T87Ax Smart Display line — its own codec because its `device_type` collides with
  * the security residual range (confirmed live, 2026-09-04: it connects over secure MQTT with no
- * `p2p_did`, never P2P). Its param namespace and product line are nonetheless grouped into `security`
- * by maintainer decision, not wire evidence — see {@link namespaceForCodec}. No capability module
- * targets it yet: no screen/audio/assistant param has been observed, only its own small cloud-param
- * namespace (ids 8001-8006).
+ * `p2p_did`, never P2P). It owns its own param namespace (ids 8001-8006) and its own product line, so
+ * no other line's capability can attach to it — see `namespaceForCodec` and `CODEC_LINE`. The `display`
+ * capability targets it and reads the charge; no screen/audio/assistant param has been observed, so
+ * those are absent rather than deferred.
  */
 export type Codec =
   "station" | "camera" | "sensor" | "lock" | "keypad" | "vacuum" | "mower" | "light" | "printer" | "display";

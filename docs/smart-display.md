@@ -12,7 +12,7 @@ display?.battery; // 0-100 — the screen's charge
 That is the whole capability. There is no screen control, no volume, no assistant — not because they
 are unimplemented, but because the one captured unit reported no parameter for any of them.
 
-Three more params ARE named, and readable without a typed getter:
+Three more params ARE readable, without a typed getter:
 
 ```ts
 const props = dev.getProperties();
@@ -21,11 +21,13 @@ props.modelCode?.value; // "T87A0"
 props.softwareVersion?.value; // "2.9.05" — version-shaped; see the warning below
 ```
 
-A dictionary entry is what makes a param readable by name; a typed getter is a recommendation on top of
-that, and these three do not earn one. `modelName` and `modelCode` restate what `dev.info?.()` already
-answers from the curated registry and the cloud record — their whole evidence is that agreement, so a
-getter beside `info` would offer a second spelling of what you just read. `softwareVersion` is a guess,
-and a guess must not reach a surface where a caller cannot see the label.
+A typed getter is a recommendation, not just a decoding, and these three do not earn one. `modelName` and
+`modelCode` restate what `dev.info?.()` already answers from the curated registry and the cloud record —
+their whole evidence is that agreement, so a getter beside `info` would offer a second spelling of what
+you just read; being named in the display's param dictionary is enough to keep them readable.
+`softwareVersion` is a guess, and a guess must not reach a surface where a caller cannot see the label —
+so it is in the property SCHEMA, carrying its type and its `guessed` label, and `getProperty` answers for
+it, with no getter on the bound object.
 
 ## What the device actually reported
 
@@ -46,12 +48,16 @@ uses.
 be the display's own or the station it is bound to. One value does not settle either, and a name here
 would be read downstream as a fact. They are reported as raw ids instead.
 
-8001 was a third until the maintainer identified it as the **battery**, and how that went is worth
-recording: `"100"` fits a percentage of brightness, volume or charge equally well, so the capture could
-not have said which, and picking one would have been a coin toss presented to users as a fact. It took
-someone who knows the device — not another capture. Its `percent` scale follows the line's own convention
-(every eufy battery this SDK models is 0-100) and one consistent reading, which is a good reason to expect
-a percentage and not the same thing as having watched it move.
+**8001 is the battery because the maintainer identified it, and that is why its provenance is `verified`
+rather than `mega`.** `"100"` fits a percentage of brightness, volume or charge equally well, so the
+capture could not have said which, and picking one would have been a coin toss presented to users as a
+fact. It took someone who knows the device — not another capture, and not the cloud data-point list,
+which is what `mega` would have claimed.
+
+The 0-100 scale rests on the reading rather than on convention alone: a full charge reads `255` on a
+0-255 scale and `1000` on a 0-1000 one, so `"100"` on a charged unit is positive evidence for a
+percentage. What nobody has done is watch it **move**, which is the one thing that would distinguish a
+healthy value from one frozen at 100.
 
 A display's charge is read through `dev.display?.()`, not `dev.battery?.()`. The two mean the same thing on
 different wires — a camera's is param 1101 in the security id space, a display's is 8001 in this one — and
@@ -59,10 +65,11 @@ reading both from one capability would be a claim that the ecosystems share a pa
 door this line was split to close.
 
 ::: warning `softwareVersion` is an inference
-Its provenance is `guessed`, alone among the four, and why it has no typed getter. The device sent a dotted version-shaped string and
-nothing corroborates what the id means. `modelName` and `modelCode` are `mega` for a different reason:
-their VALUES were facts already known from elsewhere — the retail name and the model code — so the match
-is evidence about the id, not a shape that suggests one.
+Its provenance is `guessed`, alone among the four, and why it has no typed getter. The device sent a
+dotted version-shaped string and nothing corroborates what the id means. `modelName` and `modelCode` are
+`mega` because their VALUES were facts already known from elsewhere — the retail name and the model code
+— so the match is evidence about the id, not a shape that suggests one. `battery` sits between them at
+`verified`: a real id and a consistent reading, named by a person rather than by a data-point list.
 
 Where the cloud record carries a firmware version, `dev.info()?.firmwareVersion` is the field to trust.
 This device's record did not, which is the only reason 8003 is named at all.
@@ -70,8 +77,9 @@ This device's record did not, which is the only reason 8003 is named at all.
 
 ## Why it is not part of the security line
 
-A Smart Display shares a cloud account with the cameras and nothing else. It used to be grouped into
-the `security` product line and param namespace anyway, which left two doors open:
+A Smart Display shares a cloud account with the cameras and nothing else. Grouping it into the `security`
+product line and param namespace — which its `device_type` of `1` invites, since that falls inside the
+security residual range — leaves two doors open:
 
 - **A future security parameter assigned in the 8000s** would have been decoded off a Smart Display as
   whatever that id means on a camera.
@@ -80,8 +88,9 @@ the `security` product line and param namespace anyway, which left two doors ope
   hypothetical: with an adversarial device name, six security capabilities attached — light, doorbell,
   leak, smoke, CO, lock — none of which this device could ever answer for, because it has no P2P path.
 
-Both are shut. `display` is its own product line with its own parameter dictionary, and the adversarial
-case is pinned in `line-partition.spec.ts`.
+Both are shut by `display` being its own product line with its own parameter dictionary. The adversarial
+case is pinned in `line-partition.spec.ts`, and the naming it buys in `display.spec.ts`: the captured
+record's six params, each one named or explicitly raw.
 
 ## Nothing is writable
 

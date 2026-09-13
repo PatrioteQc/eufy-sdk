@@ -52,11 +52,11 @@ export interface DetectionSpec {
  * `display` (the T87Ax Smart Display — secure MQTT, never P2P, its own 8001-8006 param space).
  * They overlap in retail vocabulary but share no wire, no param space and no semantics.
  *
- * `display` is a line of its own for the second of those reasons rather than the first. It was grouped
- * into `security` while it had no capability to partition, and the cost was that every security
- * capability detected by a NAME regex became attachable to it — measured at six, on a device that can
- * answer for none of them because it speaks no P2P at all. A line with one capability in it is still
- * the thing that makes that impossible.
+ * `display` is a line of its own for the second of those reasons rather than the first: without it,
+ * every security capability detected by a NAME regex is attachable to a Smart Display — measured at six,
+ * on a device that can answer for none of them because it speaks no P2P at all. A line holding one
+ * capability still buys that, which is why the count is not the measure of whether a line is worth
+ * declaring.
  *
  * `any` is for the handful of capabilities that are genuinely line-independent (device identity).
  */

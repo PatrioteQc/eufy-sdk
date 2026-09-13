@@ -46,15 +46,13 @@ export function paramDef(ns: ParamNamespace, paramType: number): ParamDef | unde
  * `mower` shares the **clean** namespace: it's a Clean-line Tuya-DP device (the app's `TuyaP2PMower`
  * family), so its DPs live in the same `~150-180` space as the vacuums.
  *
- * `display` (the T87Ax Smart Display line) reads its OWN dictionary, and did not always. It used to be
- * grouped into `security` by maintainer decision rather than wire evidence, which left two doors open:
- * a future security param assigned in the 8001-8006 range would have silently misdecoded against this
- * device, and — through the matching product-line grouping — any security capability whose `modelHints`
- * regex matched this device's reported name became inference-attachable, the same
- * `T8L20`-as-"Outdoor Spotlights" collision the partition exists to prevent. That second one was
- * measured, not hypothetical: with an adversarial name, six security capabilities attached. Both doors
- * are shut by `display` owning a namespace here and a product line in `CODEC_LINE`, and the
- * `line-partition.spec.ts` `POISONED` case now asserts nothing attaches.
+ * `display` (the T87Ax Smart Display line) reads its own dictionary for the same reason every other
+ * line does: nothing in the 8001-8006 range carries a security meaning, so reading those ids against
+ * `SECURITY_PARAMS` would decode a future security param assigned in that range as whatever it means on
+ * a camera. The product line in `CODEC_LINE` is the other half — without it, any security capability
+ * whose `modelHints` regex matched this device's reported name is inference-attachable, which
+ * `line-partition.spec.ts`'s `POISONED` case measures at six on a device that speaks no P2P and can
+ * answer for none of them.
  */
 const NAMESPACE_BY_CODEC: Record<Codec, ParamNamespace> = {
   station: "security",

@@ -4,17 +4,17 @@ import { propertiesOf, type Members, type Surface } from "./members.js";
 /**
  * `display` — a eufy Smart Display's charge.
  *
- * One member, and the smallness is the finding rather than a gap. The captured unit (a T87A0,
+ * One typed read, and the smallness is the finding rather than a gap. The captured unit (a T87A0,
  * 2026-09-04) connects over secure MQTT with no `p2p_did`, so it speaks no P2P at all, and it reported
  * six params in an id range no other line uses. Only one of them tells a caller something it could not
- * get another way. The rest are named in {@link DISPLAY_PARAMS} — which is what makes them readable off
- * `getProperties()` — and deliberately have no typed getter:
+ * get another way:
  *
  *  - 8005 and 8006 restate the model's retail name and code, which `info` already answers from the
  *    curated registry and the cloud record. Their evidence IS that agreement, so a getter beside `info`
- *    would offer a caller a second spelling of what it just read.
- *  - 8003 is version-shaped and nothing confirms what it means, so its dictionary entry is `guessed` —
- *    and a guess does not belong in the typed surface, where a caller cannot see the label.
+ *    would offer a caller a second spelling of what it just read. They are named in the display param
+ *    dictionary, which is what makes them readable off `getProperties()`.
+ *  - 8003 is version-shaped and nothing confirms what it means, so it is `unexposed`: in the schema with
+ *    its type and its `guessed` label, reachable through `getProperty`, no typed getter.
  *
  * Nothing is writable. No capture pins a write for any display param, and an AIoT write is
  * fire-and-forget, so a wrong frame to a device that acknowledges nothing looks exactly like success. A
@@ -25,35 +25,58 @@ import { propertiesOf, type Members, type Surface } from "./members.js";
  */
 
 /** Smart Display param ids this capability reads. The rest of the range is named in the dictionary. */
-export const DISPLAY_PARAM = { BATTERY: 8001 } as const;
+export const DISPLAY_PARAM = { BATTERY: 8001, SOFTWARE_VERSION: 8003 } as const;
 
 /**
- * The `display` read. Read-only; see the module note for why there is no write.
+ * The `display` reads. Read-only; see the module note for why there is no write.
  *
- * Exported but NOT published: the entry states its wire id and what the claim rests on, which the
+ * Exported but NOT published: the entries state their wire ids and what each claim rests on, which the
  * reference site does not carry.
  * @internal
  */
 export const DISPLAY_MEMBERS = {
   /**
-   * Battery level.
+   * Battery level, 0-100.
    *
    * **On this capability rather than on `battery`, and that is the line partition doing its job.** The
-   * security-line `battery` capability reads param 1101, and a Smart Display's charge is 8001 in its own
-   * id space — two wires that happen to mean the same thing. Putting 8001 on the security module would
-   * have re-opened the door this line was split to close, so a consumer reads a display's charge through
+   * security-line `battery` capability reads param 1101 and a Smart Display's charge is 8001 in its own
+   * id space — two wires that happen to mean the same thing. One capability reading both would be a claim
+   * that the two ecosystems share a param space, so a consumer reads a display's charge through
    * `dev.display()` and a camera's through `dev.battery()`.
    *
-   * `percent` follows the line's own convention and one consistent reading, not a proven scale: every
-   * eufy battery this SDK models is 0-100, and the capture said `"100"`.
+   * `verified` rather than `mega`: the id is in the device's cloud record, but the NAME came from the
+   * maintainer's own knowledge of the hardware rather than from the cloud data-point list, and `"100"`
+   * fits brightness, volume or charge equally.
+   *
+   * The scale is `percent` on the reading itself, not on convention alone: a full charge reads `255` on a
+   * 0-255 scale and `1000` on a 0-1000 one, so `"100"` on a charged unit is positive evidence for 0-100
+   * rather than merely consistent with it. What nobody has done is watch it MOVE, which is why a value
+   * frozen at 100 would not yet be distinguishable from a healthy one.
    */
   battery: {
     param: DISPLAY_PARAM.BATTERY,
     type: "number",
     unit: "%",
     kind: "percent",
-    provenance: "mega",
-    description: "Battery level (param 8001). The scale follows the line's convention.",
+    provenance: "verified",
+    description: "Battery level, 0-100 (param 8001).",
+  },
+  /**
+   * Version-shaped, and that shape is the whole of the evidence — hence `guessed`, and hence no typed
+   * getter: a caller reading this off a bound object cannot see the label.
+   *
+   * `unexposed` rather than absent, so the schema still carries its type and that label and
+   * `getProperty("softwareVersion")` still answers. `dev.info()?.firmwareVersion` is the field to trust
+   * where the cloud record carries one; on this display it does not, which is the only reason 8003 is
+   * named at all.
+   */
+  softwareVersion: {
+    param: DISPLAY_PARAM.SOFTWARE_VERSION,
+    type: "string",
+    kind: "text",
+    provenance: "guessed",
+    unexposed: true,
+    description: "Version-shaped string (param 8003), meaning unconfirmed — prefer `info.firmwareVersion`.",
   },
 } as const satisfies Members;
 

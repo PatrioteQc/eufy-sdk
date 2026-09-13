@@ -1,8 +1,28 @@
 import { DISPLAY, DISPLAY_MEMBERS, DISPLAY_PARAM } from "../display.js";
 import { CAPABILITY_MODULES, detectCapabilities } from "../index.js";
 import { DISPLAY_PARAMS, SECURITY_PARAMS } from "../../param-dictionary.js";
-import { namespaceForCodec } from "../../param-namespace.js";
+import { namespaceForCodec, paramDef } from "../../param-namespace.js";
+import { Device, UNKNOWN_PARAM_PREFIX } from "../../device.js";
 import type { ValueMember } from "../members.js";
+
+/**
+ * The record the live T87A0 reported (2026-09-04, redacted). Six params, and what each one becomes is
+ * the whole subject of this file.
+ */
+const CAPTURED = {
+  category: "eufy_mega",
+  model: "T87A0",
+  deviceType: 1,
+  name: "Eufy Smart Display",
+  params: {
+    8001: "100",
+    8002: "1",
+    8003: "2.9.05",
+    8004: "T8000P0000000000",
+    8005: "Smart Display E10",
+    8006: "T87A0",
+  },
+} as const;
 
 /**
  * The Smart Display capability, and the two partitions that make it safe to have.
@@ -11,15 +31,22 @@ import type { ValueMember } from "../members.js";
  * other line uses, and three of those six illegible from one capture. So most of what is worth pinning
  * here is absence — that nothing was invented, and that nothing from another line can reach it.
  */
+/** The names a caller actually gets on `dev.display()` — an `unexposed` member contributes none. */
+const getterNames = (): string[] =>
+  Object.entries(DISPLAY_MEMBERS)
+    .filter(([, m]) => !(m as ValueMember).unexposed)
+    .map(([name]) => name);
+
 describe("display capability", () => {
-  it("publishes one typed read, and names the rest in the dictionary only", () => {
+  it("publishes one typed read, and keeps the rest readable without one", () => {
     // A typed getter is a recommendation, not just a decoding. Only the charge earns one: it is the sole
     // read a caller could not get another way. The identity strings restate what `info` already answers
     // from the registry and the cloud record — their whole evidence is that agreement — and 8003 is
     // `guessed`, which must not reach a surface where a caller cannot see the label.
-    expect(Object.keys(DISPLAY_MEMBERS)).toEqual(["battery"]);
-    expect(DISPLAY.properties?.map((p) => p.paramType)).toEqual([8001]);
-    // Named in the dictionary all the same, which is what keeps them readable off `getProperties()`.
+    expect(getterNames()).toEqual(["battery"]);
+    // 8003 is in the SCHEMA all the same, `unexposed`, so its type and its `guessed` label have a home
+    // and `getProperty` answers for it. 8005 and 8006 have no spec and are named by the dictionary.
+    expect(DISPLAY.properties?.map((p) => p.paramType)).toEqual([8001, 8003]);
     for (const id of [8003, 8005, 8006]) expect(DISPLAY_PARAMS[id]).toBeDefined();
   });
 
@@ -60,22 +87,45 @@ describe("display capability", () => {
     }
   });
 
-  it("labels the version-shaped string as the guess it is, in the dictionary", () => {
+  it("labels the version-shaped string as the guess it is, and keeps it off the typed surface", () => {
     // "2.9.05" on one device and nothing corroborates the mapping. The two identity ids are `mega`
     // because their VALUES were independently known facts — the retail name and the model code — which
-    // is evidence about what an id means, not a shape that suggests it.
+    // is evidence about what an id means, not a shape that suggests it. `battery` is only `verified`:
+    // the id is real, but its NAME came from the maintainer rather than the cloud data-point list.
     expect(DISPLAY_PARAMS[8003]?.provenance).toBe("guessed");
+    expect(DISPLAY_PARAMS[8001]?.provenance).toBe("verified");
     expect(DISPLAY_PARAMS[8005]?.provenance).toBe("mega");
     expect(DISPLAY_PARAMS[8006]?.provenance).toBe("mega");
+    // The label survives into the schema, which is the point of `unexposed` over dropping the member:
+    // asked from either side, the answer carries the same provenance.
+    expect(DISPLAY.properties?.find((p) => p.paramType === 8003)?.provenance).toBe("guessed");
     // And the guess has no typed getter, which is the rule it would otherwise break.
-    expect(Object.keys(DISPLAY_MEMBERS)).not.toContain("softwareVersion");
+    expect(getterNames()).not.toContain("softwareVersion");
   });
 
   it("reads its own id space, not the security dictionary", () => {
-    // The grouping this replaces meant a future security param in the 8000s would have been decoded off
-    // a Smart Display as something it is not. Both halves are asserted: the codec resolves here, and the
-    // security table has no claim on these ids.
+    // Asserting the mapping constant is nearly tautological, so this asserts the CONSEQUENCE: a real
+    // device's params, named. 8005 and 8006 have no capability spec, so the dictionary is the only thing
+    // that can name them — and only the `display` dictionary holds them. Point the codec at `security`
+    // and they arrive as `unknown_8005` / `unknown_8006` instead, which is the regression this catches
+    // and which asserting the table against itself does not.
+    const props = Device.fromRecord("DISPLAYSN", CAPTURED as never).getProperties();
+    expect(props.modelName?.value).toBe("Smart Display E10");
+    expect(props.modelCode?.value).toBe("T87A0");
+    // The charge and the version-shaped string come through their specs, so they would be named either
+    // way — but the charge must be a NUMBER, which is the spec's `coerce` and not the dictionary's.
+    expect(props.battery?.value).toBe(100);
+    expect(props.softwareVersion?.value).toBe("2.9.05");
+    // And the two nobody can read are not dropped: they are what makes the next capture able to
+    // identify them the way 8001 was identified.
+    expect(props[`${UNKNOWN_PARAM_PREFIX}8002`]?.value).toBe("1");
+    expect(props[`${UNKNOWN_PARAM_PREFIX}8004`]).toBeDefined();
+
+    // The mapping itself, last: it is what the assertions above ride on, and on its own it would only
+    // be the table agreeing with itself.
     expect(namespaceForCodec("display")).toBe("display");
+    expect(paramDef("display", 8005)?.name).toBe("modelName");
+    expect(paramDef("security", 8005)).toBeUndefined();
     for (const id of Object.values(DISPLAY_PARAM)) {
       expect(SECURITY_PARAMS[id], `security params now claim ${id}`).toBeUndefined();
     }
