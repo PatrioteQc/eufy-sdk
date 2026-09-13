@@ -266,11 +266,16 @@ export const ModeCtrlMethod = {
 /**
  * The methods that carry a `Param` oneof — room, zone, goto, schedule, cruise and scene cleans.
  *
- * Deliberately absent from {@link ModeCtrlMethod}. Each needs an argument the caller has to supply and
- * this SDK cannot yet answer: a room or zone id comes from map data, which is not decodable here, and a
- * coordinate is signed centimetres in a frame no capture has pinned. Listing their numbers beside the
- * parameterless ones would invite a caller to send one with an empty payload, which is a valid frame
- * meaning something nobody intended.
+ * Kept out of {@link ModeCtrlMethod} because each is meaningless without an argument, and listing its
+ * number beside the parameterless verbs would invite a caller to send it with an empty payload — a
+ * well-formed frame meaning something nobody intended. Each verb built on one of these therefore takes
+ * its argument in the signature: {@link VACUUM_CLEAN_MEMBERS.startScene},
+ * {@link VACUUM_CLEAN_MEMBERS.cleanRooms} and {@link VACUUM_CLEAN_MEMBERS.cleanZones}.
+ *
+ * The numbers are the vendor's own `ModeCtrlRequest.Method` values and are NOT capture-confirmed; the
+ * outer frame they ride in is, byte for byte, on a live T2351. `GOTO` carries no encoder because a
+ * goto point is a coordinate no read on this SDK supplies, where a scene id and a map id both arrive
+ * on DP 180.
  */
 
 /**
@@ -381,7 +386,7 @@ function encodeModeCtrlParam(method: number, paramField: number, build: (w: RawD
  * `mapId` is required and has no default, deliberately. The obvious shortcut is to assume the map a
  * single-floor home would have; on a two-floor home that silently sends the robot's ids against the
  * wrong floor's map. A caller that cannot name the map cannot safely make this call, and saying so is
- * better than picking for them.
+ * better than picking for them. {@link VACUUM_CLEAN_MEMBERS.cleanRooms} dispatches this.
  * @internal
  */
 export function encodeSelectRoomsClean(mapId: number, rooms: readonly VacuumRoomTarget[], cleanTimes = 1): string {
@@ -423,7 +428,11 @@ export function encodeSelectZonesClean(mapId: number, zones: readonly VacuumZone
   });
 }
 
-/** Build a scene clean, which needs only the scene's own id. @internal */
+/**
+ * Build a scene clean, which needs only the scene's own id — `VacuumScene.id`, as DP 180 reports it.
+ * {@link VACUUM_CLEAN_MEMBERS.startScene} dispatches this.
+ * @internal
+ */
 export function encodeSceneClean(sceneId: number): string {
   const { method, param } = ModeCtrlParamMethod.SCENE;
   return encodeModeCtrlParam(method, param, (p) => p.int(SCENE_CLEAN_ID, sceneId));
@@ -2904,6 +2913,61 @@ export const VACUUM_CLEAN_MEMBERS = {
       (): Promise<void> =>
         sink.dispatch(aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.PAUSE_TASK, nextModeCtrlSeq()))),
     "Pause the current cleaning task (ModeCtrlRequest method 13 over DP 152).",
+    isAiotVacuum,
+  ),
+
+  /**
+   * Run a saved cleaning scene by its id (ModeCtrlRequest method 24 over DP 152).
+   *
+   * The id is the device's own, as {@link VACUUM_CLEAN_MEMBERS.scenes} reports it — `VacuumScene.id`
+   * off the `SceneResponse` on DP 180. A scene the device reports invalid stays reportable and running
+   * it is still a well-formed request; `VacuumScene.invalidReason` says why the device will refuse.
+   *
+   * Frame shape is byte-proven against the shared outer `ModeCtrlRequest`. The method NUMBER is the
+   * vendor's own `ModeCtrlRequest.Method` value and is not capture-confirmed; on a fire-and-forget DP
+   * write a wrong number is a different command, so it is a maintainer decision that this ships
+   * callable rather than as an unverified write.
+   */
+  startScene: method(
+    ({ sink }) =>
+      (sceneId: number): Promise<void> =>
+        sink.dispatch(aiotDp(VACUUM_DP.MODE_CTRL, encodeSceneClean(sceneId))),
+    "Run a saved cleaning scene by its id (ModeCtrlRequest method 24 over DP 152).",
+    isAiotVacuum,
+  ),
+
+  /**
+   * Clean the named rooms of a named map (ModeCtrlRequest method 1 over DP 152).
+   *
+   * `mapId` has no default and that is deliberate: room ids are per map, so assuming the map a
+   * single-floor home would have sends a two-floor home's ids against the wrong floor. `SceneInfo.mapid`
+   * on DP 180 and a scheduled rooms-clean's `map_id` are the two real map ids the device reports.
+   *
+   * `cleanTimes` is how many passes to make over the set; rooms with no `order` are visited in the
+   * order given. Same evidence position as {@link VACUUM_CLEAN_MEMBERS.startScene}: the frame is
+   * byte-proven, the method number is the vendor's and uncaptured.
+   */
+  cleanRooms: method(
+    ({ sink }) =>
+      (mapId: number, rooms: readonly VacuumRoomTarget[], cleanTimes = 1): Promise<void> =>
+        sink.dispatch(aiotDp(VACUUM_DP.MODE_CTRL, encodeSelectRoomsClean(mapId, rooms, cleanTimes))),
+    "Clean the named rooms of a named map (ModeCtrlRequest method 1 over DP 152).",
+    isAiotVacuum,
+  ),
+
+  /**
+   * Clean the given rectangles of a named map (ModeCtrlRequest method 2 over DP 152).
+   *
+   * Corners are SIGNED centimetres in the map's own frame, whose origin sits wherever the robot first
+   * mapped from — negative coordinates are ordinary and are ZigZag-encoded, not written as plain
+   * varints. Same `mapId` reasoning and same evidence position as
+   * {@link VACUUM_CLEAN_MEMBERS.cleanRooms}.
+   */
+  cleanZones: method(
+    ({ sink }) =>
+      (mapId: number, zones: readonly VacuumZoneTarget[]): Promise<void> =>
+        sink.dispatch(aiotDp(VACUUM_DP.MODE_CTRL, encodeSelectZonesClean(mapId, zones))),
+    "Clean the given rectangles of a named map (ModeCtrlRequest method 2 over DP 152).",
     isAiotVacuum,
   ),
 } as const satisfies Members;
