@@ -22,7 +22,7 @@ import type {
   AbortableCall,
   TalkbackHandle,
 } from "../../core/contracts.js";
-import { StationBusyError } from "../../core/contracts.js";
+import { StationBusyError, StationKeyUnavailableError, StationUnreachableError } from "../../core/contracts.js";
 import { noopLogger, type Logger } from "../../core/logger.js";
 import { assertNever } from "../../core/util.js";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -58,6 +58,7 @@ import {
 import { openReadableFromConsumer } from "./readable-egress.js";
 import { Talkback } from "./talkback.js";
 import { FragmentRecording } from "./fragment-recording.js";
+import { traceLiveStart, type LiveTrace } from "./live-trace.js";
 
 /**
  * How many times each idempotent "direct" control command (camera on/off 1035, spotlight
@@ -105,6 +106,24 @@ const LEVEL2_GRACE_MS = 25_000;
  * so a station that offers no key does not charge this to every later command.
  */
 const LEVEL2_SETTLE_MS = 8_000;
+
+/**
+ * What a caller's own deadline on a station call has to clear, in milliseconds.
+ *
+ * A caller that bounds one of these calls itself races these waits, and a bound below them reports the
+ * caller's own expiry in place of the reason this SDK was about to give — the two are indistinguishable to
+ * whoever reads the outcome, and they call for different next steps. Published so that bound can be derived
+ * rather than copied: a literal in a caller's source is a second source of truth that goes stale silently
+ * when these change.
+ *
+ * `connect` applies to every call on a station, because nothing can be addressed to one before its session is
+ * up. `level2Grace` applies twice where the key is required: the negotiation is re-prompted once.
+ */
+export const P2P_STATION_WAITS = {
+  connect: CONNECT_WAIT_MS,
+  level2Grace: LEVEL2_GRACE_MS,
+  level2Settle: LEVEL2_SETTLE_MS,
+} as const;
 
 /** How long a station's live RTSP URL push is awaited — the connect wait and the URL wait together. */
 const RTSP_URL_READ_TIMEOUT_MS = 12_000;
@@ -244,6 +263,15 @@ export class P2PCommandRouter {
       this.deps.onError(normalized);
     }
     return normalized;
+  }
+
+  /**
+   * Emit a live trace under a station session's handle, for work this router does ON that session before
+   * the session itself records anything — reaching the station, and resolving what a device is on it. Same
+   * handle as everything the session goes on to trace, which is what groups one attempt.
+   */
+  private traceOnStation(session: P2PSession, trace: LiveTrace): void {
+    traceLiveStart(this.deps.logger ?? noopLogger, trace, session.traceId);
   }
 
   /**
@@ -393,7 +421,15 @@ export class P2PCommandRouter {
         let ecc: string | undefined;
         try {
           const ciphers = await this.deps.mega.getCiphers([cipherId], adminUserId, stationSn);
-          ecc = ciphers.find((c) => Number(c.cipher_id) === cipherId)?.ecc_private_key ?? ciphers[0]?.ecc_private_key;
+          ecc = ciphers.find((c) => Number(c.cipher_id) === cipherId)?.ecc_private_key;
+          if (ecc === undefined && ciphers[0]?.ecc_private_key !== undefined) {
+            ecc = ciphers[0].ecc_private_key;
+            this.traceOnStation(session, {
+              phase: "cipher-fallback",
+              cipherId,
+              answeredCipherId: Number(ciphers[0].cipher_id),
+            });
+          }
         } catch (e) {
           this.deps.onError(e instanceof Error ? e : new Error(String(e)));
         }
@@ -1061,9 +1097,9 @@ export class P2PCommandRouter {
           s.sendStringPayloadCommand(P2P_ENVELOPE.CONTROL_PAYLOAD, json, ch);
           return Promise.resolve();
         },
-        l2: async ({ session: s, channel: ch }) => {
+        l2: async ({ session: s, channel: ch, parentSn }) => {
           if (!(await s.awaitLevel2Key(LEVEL2_GRACE_MS, "call"))) {
-            throw new Error(`level-2 key not ready for ${sn} — cannot query`);
+            throw new StationKeyUnavailableError(parentSn);
           }
           s.sendRawLevel2(json, ch, P2P_ENVELOPE.CONTROL_PAYLOAD);
         },
@@ -1252,15 +1288,36 @@ export class P2PCommandRouter {
     }
     this.manager.bumpCommand(parentSn);
     const channel = typeof raw.device_channel === "number" ? (raw.device_channel as number) : 0;
-    const accountId = ((raw.member as any)?.admin_user_id as string) ?? this.deps.mega.auth?.userId ?? "";
+    const stationAdminId = (raw.member as any)?.admin_user_id;
+    const accountId = (stationAdminId as string) ?? this.deps.mega.auth?.userId ?? "";
 
     const t0 = Date.now();
-    while (!session.isConnected && Date.now() - t0 < CONNECT_WAIT_MS) {
-      opts.signal?.throwIfAborted();
-      await sleep(200);
+    let waitedMs = 0;
+    if (!session.isConnected) {
+      this.traceOnStation(session, { phase: "session-connect-wait", waitMs: CONNECT_WAIT_MS });
+      while (!session.isConnected && Date.now() - t0 < CONNECT_WAIT_MS) {
+        opts.signal?.throwIfAborted();
+        await sleep(200);
+      }
+      waitedMs = Date.now() - t0;
+      this.traceOnStation(
+        session,
+        session.isConnected ? { phase: "session-connected", waitedMs } : { phase: "session-unreachable", waitedMs },
+      );
     }
     opts.signal?.throwIfAborted();
-    if (!session.isConnected) throw new Error(`P2P session for ${parentSn} did not connect`);
+    if (!session.isConnected) throw new StationUnreachableError(parentSn, waitedMs);
+    this.traceOnStation(session, {
+      phase: "station-resolved",
+      topology: homeBaseAttached ? "attached" : "own",
+      channel,
+      stationAdmin:
+        typeof stationAdminId !== "string"
+          ? "unstated"
+          : stationAdminId === this.deps.mega.auth?.userId
+            ? "self"
+            : "other",
+    });
     if (opts.waitLevel2) {
       if (opts.waitLevel2 === "settle") {
         await abortable(session.awaitLevel2Key(LEVEL2_SETTLE_MS, "session"), opts.signal);
@@ -1272,7 +1329,7 @@ export class P2PCommandRouter {
       if (!ready && session.repromptLevel2Key()) {
         ready = await abortable(session.awaitLevel2Key(LEVEL2_GRACE_MS, "call"), opts.signal);
       }
-      if (!ready) throw new Error(`level-2 key not ready for ${parentSn}`);
+      if (!ready) throw new StationKeyUnavailableError(parentSn);
     }
     return { session, parentSn, channel, accountId, homeBaseAttached };
   }
