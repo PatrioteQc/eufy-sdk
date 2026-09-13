@@ -121,25 +121,33 @@ function recordSetting(param: number, value: number, ctx: CommandContext): Comma
 }
 
 /**
- * Camera models that are MAINS-powered yet still report the battery param (1101) as a fixed sentinel
- * (e.g. 0 or 100), not a real cell. They keep the `battery` capability (for working-mode/recording),
- * but the PHYSICAL-battery reads (`level`, `charging`) are withheld via {@link notMainsCamera} so they
- * don't sprout a bogus battery %/icon.
+ * Camera models that are MAINS-powered yet still report the battery params as fixed sentinels, not a
+ * real cell. They keep the `battery` capability — it owns the working-mode and recording settings,
+ * which a mains camera genuinely has — but every read that describes a PHYSICAL CELL is withheld via
+ * {@link notMainsCamera}, so they don't sprout a bogus battery %, a cell temperature, a state of
+ * health or a solar harvest.
+ *
+ * The guard covers `level`, `charging`, `temperature`, `health`, `solarIntensity` and
+ * `solarConnected24h`: a device with no cell has no charge, no cell temperature, no ageing figure and
+ * nothing for a panel to charge. The settings beside them are deliberately NOT gated, and that split
+ * is the whole reason the capability stays attached.
  *
  * An explicit list, NOT a `device-family.ts` predicate (`isFloodLight`/`isIndoorCamera`): composing
  * those would over-reach — not every floodlight or indoor cam is mains-only, and this must assert mains
  * only for hardware actually checked. `WORKING_MODE_DEFAULT_MODELS` in this file is the same shape.
  * Evidence bars differ: T8425 (Floodlight Cam) is confirmed on owned hardware; T8419 (Indoor Cam) is
- * taken from the app's own mains-cam handling (see the note on `publishedWorkingModeDomain`).
+ * taken from the app's own mains-cam handling (see the note on `publishedWorkingModeDomain`); T8410
+ * (Indoor Cam Pan & Tilt) is confirmed mains-only by the maintainer, reported after a live unit showed
+ * a battery level, a cell temperature and both solar reads it cannot have.
  *
  * KNOWN, ACCEPTED trade: because the capability stays, `poweredOf` (camera.ts) still resolves these as
  * `battery`, so a live stream is budgeted as if cell-powered. An unnecessary power budget is cheap; a
  * phantom battery icon is a support ticket — so the visible entity is fixed here and the budget is
  * left as-is (a `poweredOf` refinement would be a separate change).
  */
-const MAINS_CAMERA_MODELS = ["T8425", "T8419"] as const;
+const MAINS_CAMERA_MODELS = ["T8425", "T8419", "T8410"] as const;
 
-/** False for a mains camera that only reports 1101 as a sentinel — used to gate the physical reads. */
+/** False for a mains camera whose battery params are sentinels — gates every physical-cell read. */
 const notMainsCamera = (ctx: AvailabilityContext): boolean => {
   const model = (ctx.model ?? "").toUpperCase();
   return !MAINS_CAMERA_MODELS.some((prefix) => model.startsWith(prefix));
@@ -328,6 +336,7 @@ export const BATTERY_MEMBERS = {
    */
   temperature: {
     param: BATTERY_PARAM.BATTERY_TEMP,
+    available: notMainsCamera,
     property: "batteryTemperature",
     type: "number",
     unit: "°C",
@@ -342,6 +351,7 @@ export const BATTERY_MEMBERS = {
    */
   health: {
     param: BATTERY_PARAM.BATTERY_HEALTH,
+    available: notMainsCamera,
     property: "batteryHealth",
     type: "number",
     unit: "%",
@@ -356,6 +366,7 @@ export const BATTERY_MEMBERS = {
    */
   solarIntensity: {
     param: BATTERY_PARAM.SOLAR_INTENSITY,
+    available: notMainsCamera,
     type: "number",
     kind: "scalar",
     provenance: "apk",
@@ -368,6 +379,7 @@ export const BATTERY_MEMBERS = {
    */
   solarConnected24h: {
     param: BATTERY_PARAM.SOLAR_CONNECT_24H,
+    available: notMainsCamera,
     type: "bool",
     kind: "boolean",
     provenance: "apk",

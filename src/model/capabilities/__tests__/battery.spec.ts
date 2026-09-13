@@ -64,16 +64,23 @@ describe("battery capability module", () => {
     expect(BATTERY.detection?.evidenceParams).toContain(1101);
   });
 
-  it("publishes NO battery %/charging property on mains cameras that report 1101 as a sentinel", () => {
+  it("publishes NO physical-cell read on a mains camera, whichever sentinel it reports", () => {
     const namesFor = (model: string | undefined) =>
       propertiesOf(BATTERY.members!, { model } as AvailabilityContext).map((p) => p.name);
-    // Mains cameras (T8425 Floodlight, T8419 Indoor) publish neither the battery nor charging property.
-    for (const model of ["T8425P00", "T8419P00"]) {
-      expect(namesFor(model)).not.toContain("battery");
-      expect(namesFor(model)).not.toContain("charging");
+    // Every read that describes a CELL, not just the level. A mains camera reports the whole family as
+    // sentinels, so gating the level alone left it a cell temperature, a state of health and a solar
+    // harvest — on a device with no cell and, for the last two, no panel to attach one to. The
+    // temperature is the one that showed: a constant 30 on every mains camera at once.
+    const cell = ["battery", "charging", "batteryTemperature", "batteryHealth", "solarIntensity", "solarConnected24h"];
+    // T8425 Floodlight, T8419 Indoor, T8410 Indoor Pan & Tilt — all mains-only.
+    for (const model of ["T8425P00", "T8419P00", "T8410P00"]) {
+      for (const name of cell) expect(namesFor(model), `${model} still publishes ${name}`).not.toContain(name);
     }
-    // Real battery cams (and unknown models) keep them.
-    expect(namesFor("T8114P00")).toContain("battery");
+    // The settings beside them stay, which is the whole reason the capability remains attached.
+    expect(namesFor("T8410P00")).toContain("workingMode");
+    expect(namesFor("T8410P00")).toContain("recordDuration");
+    // Real battery cams (and unknown models) keep every one of them.
+    for (const name of cell) expect(namesFor("T8114P00")).toContain(name);
     expect(namesFor(undefined)).toContain("battery");
   });
 
