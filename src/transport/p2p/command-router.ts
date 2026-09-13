@@ -1097,9 +1097,9 @@ export class P2PCommandRouter {
           s.sendStringPayloadCommand(P2P_ENVELOPE.CONTROL_PAYLOAD, json, ch);
           return Promise.resolve();
         },
-        l2: async ({ session: s, channel: ch }) => {
+        l2: async ({ session: s, channel: ch, parentSn }) => {
           if (!(await s.awaitLevel2Key(LEVEL2_GRACE_MS, "call"))) {
-            throw new StationKeyUnavailableError();
+            throw new StationKeyUnavailableError(parentSn);
           }
           s.sendRawLevel2(json, ch, P2P_ENVELOPE.CONTROL_PAYLOAD);
         },
@@ -1306,7 +1306,7 @@ export class P2PCommandRouter {
       );
     }
     opts.signal?.throwIfAborted();
-    if (!session.isConnected) throw new StationUnreachableError(waitedMs);
+    if (!session.isConnected) throw new StationUnreachableError(parentSn, waitedMs);
     this.traceOnStation(session, {
       phase: "station-resolved",
       topology: homeBaseAttached ? "attached" : "own",
@@ -1329,7 +1329,7 @@ export class P2PCommandRouter {
       if (!ready && session.repromptLevel2Key()) {
         ready = await abortable(session.awaitLevel2Key(LEVEL2_GRACE_MS, "call"), opts.signal);
       }
-      if (!ready) throw new StationKeyUnavailableError();
+      if (!ready) throw new StationKeyUnavailableError(parentSn);
     }
     return { session, parentSn, channel, accountId, homeBaseAttached };
   }

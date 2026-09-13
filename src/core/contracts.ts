@@ -117,13 +117,21 @@ export class CameraDisabledError extends Error {
  *
  * The `level2-unavailable` trace states WHY the key is not coming. This states only that it is not, because
  * that is what the refusal itself knows.
+ *
+ * `stationSn` is the station that owed the key, which is the parent for an attached camera and therefore not
+ * the serial the refused call was made about: several cameras refused at once are one station's outcome, and
+ * nothing else in the refusal says so.
  */
 export class StationKeyUnavailableError extends Error {
   /** Always true: the negotiation is per connection, so a later one may still produce a key. */
   readonly retryable = true;
 
-  constructor(options?: { cause?: unknown }) {
-    super("the station did not provide its session key, so nothing that requires one could be sent", options);
+  constructor(
+    /** The station whose session key did not arrive. */
+    readonly stationSn: string,
+    options?: { cause?: unknown },
+  ) {
+    super(`station ${stationSn} did not provide its session key, so nothing that requires one could be sent`, options);
     this.name = "StationKeyUnavailableError";
   }
 }
@@ -138,18 +146,24 @@ export class StationKeyUnavailableError extends Error {
  * message.
  *
  * `waitedMs` is how long was actually waited, which a caller compares against its own deadline to know whether
- * this SDK concluded or its own bound expired first.
+ * this SDK concluded or its own bound expired first. `stationSn` is the station that could not be reached —
+ * the parent for an attached camera, so it is not derivable from the serial the call was made about.
  */
 export class StationUnreachableError extends Error {
   /** Always true: a station unreachable now may answer on a later attempt. */
   readonly retryable = true;
 
   constructor(
+    /** The station whose session did not connect. */
+    readonly stationSn: string,
     /** How long the session was waited on before this was raised. */
     readonly waitedMs: number,
     options?: { cause?: unknown },
   ) {
-    super(`the station's P2P session did not connect within ${waitedMs}ms, so nothing could be sent to it`, options);
+    super(
+      `station ${stationSn}'s P2P session did not connect within ${waitedMs}ms, so nothing could be sent to it`,
+      options,
+    );
     this.name = "StationUnreachableError";
   }
 }
