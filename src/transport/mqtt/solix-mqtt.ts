@@ -160,8 +160,13 @@ export interface SolixMqttOptions {
   /**
    * Stable 16-hex install UUID for the app-shaped client id. Defaults to one derived deterministically
    * from the user id ({@link deriveMqttUuid}) — the same no-storage trick `SolixClient` uses for
-   * `openudid`, so the broker sees one stable client across restarts without any persistence. Pass this
-   * to pin an explicit value.
+   * `openudid`, so the broker sees one stable client across restarts without any persistence.
+   *
+   * The trade this makes: the default seed is the **account** id, which every client on that account
+   * shares, so two clients on one account derive the same uuid → the same `client_id`, and the broker
+   * evicts one to admit the other (they take the channel from each other indefinitely). Restart
+   * stability is the common case and this is the deliberate default, but pass an explicit `mqttUuid`
+   * (per host/install) when more than one client runs on the same account, to be told apart.
    */
   mqttUuid?: string;
   /** The account's `site_id` for the `power_site` heartbeat. Omitted from the frame when unknown. */

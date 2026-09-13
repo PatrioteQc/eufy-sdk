@@ -37,11 +37,15 @@ export function generateMqttUuid(): string {
 }
 
 /**
- * Derive a STABLE install UUID (16 hex chars) deterministically from a per-identity seed (e.g. the
- * user id or email) — the same lazy trick `SolixClient` uses for `openudid`. Unlike
- * {@link generateMqttUuid} this needs no storage: the same seed always yields the same UUID, so the
- * broker sees one stable client across restarts. Use a seed distinct from any other derived id (a
- * salt prefix) so the values don't collide.
+ * Derive a STABLE install UUID (16 hex chars) deterministically from a seed — the same lazy trick
+ * `SolixClient` uses for `openudid`. Unlike {@link generateMqttUuid} this needs no storage: the same
+ * seed always yields the same UUID, so the broker sees one stable client across restarts. Use a seed
+ * distinct from any other derived id (a salt prefix) so the values don't collide.
+ *
+ * It separates two clients exactly as far as their seed does. The seeds available on these lines are
+ * per-ACCOUNT (a user id, or `openudid` = `md5("anker-solix:" + email)`), so two clients seeded the same
+ * way on one account derive the SAME uuid and collide at the broker (one evicts the other). Where more
+ * than one client shares an account, seed this with something per-host/per-install, not the account id.
  */
 export function deriveMqttUuid(seed: string): string {
   return createHash("md5").update(seed).digest("hex").slice(0, 16);
