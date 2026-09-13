@@ -5,13 +5,12 @@ import {
   AlarmDelayMode,
   AlarmDelaySeconds,
   ArmingMode,
-  UNQUALIFIED_MODES,
   type ArmingActions,
 } from "../arming.js";
 import { buildCommand } from "../index.js";
 import { bind } from "./bind.js";
 import type { CommandContext } from "../types.js";
-import { commandObservation, type Command } from "../../../core/contracts.js";
+import type { Command } from "../../../core/contracts.js";
 
 const ctx: CommandContext = {
   channel: 0,
@@ -22,7 +21,6 @@ const ctx: CommandContext = {
   paramIds: new Set(),
   accountName: "someone+tag",
 };
-const SETTABLE_MODES_FOR_TEST = [0, 1, 3, 63];
 
 const noIdentityCtx: CommandContext = { channel: 0, codec: "station", paramIds: new Set() };
 
@@ -74,17 +72,17 @@ describe("arming capability module", () => {
     it("buildCommand returns undefined for an unrelated action, and throws for an unknown mode name", () => {
       expect(buildCommand("nope", "home", ctx)).toBeUndefined();
       expect(() => buildCommand("armingMode", "not-a-mode", ctx)).toThrow(
-        /mode: "not-a-mode" is not a valid value \(must be one of 0\/1\/3\/63\)/,
+        /mode: "not-a-mode" is not a valid value \(must be one of 0\/1\/2\/3\/4\/5\/6\/47\/63\)/,
       );
     });
 
     /**
-     * The five uncaptured modes are the whole reason the write domain is narrower than the read one. A
-     * mode the station reports must still READ (it has a label), and the same value must refuse on the way
-     * back out — by naming the four that work, not by reporting the capability as missing.
+     * The five that spent a release refused. Each was qualified by sending exactly this frame and watching
+     * MODE_SWITCH come back (see `ARMING_MODE_WIRE`), so what this asserts is the promotion: the same value
+     * the getter answers now goes back out, through both entry points, on the frame that was confirmed.
      *
-     * Both entry points are checked: the fluent setter and the intent path share one domain check, and it
-     * was them disagreeing that put a guessed `mode_type` on a fire-and-forget wire in the first place.
+     * Both are checked because the fluent setter and the intent path share one domain check, and it was
+     * them disagreeing that put a guessed `mode_type` on a fire-and-forget wire in the first place.
      */
     it.each([
       ["schedule", 2],
@@ -92,18 +90,28 @@ describe("arming capability module", () => {
       ["custom3", 5],
       ["off", 6],
       ["geo", 47],
-    ])("refuses %s (mode_type %i) — reportable, never sent", async (name, wire) => {
+    ])("sends %s (mode_type %i) — confirmed live, no longer refused", async (name, wire) => {
       const readCtx: CommandContext = { ...ctx, paramIds: new Set([ARMING_CMD.SET_ARMING]) };
       const { acts, sent } = bind<ArmingActions>("arming", readCtx, {
         read: (p) => (p === "armingMode" ? { value: wire } : undefined),
       });
       expect(acts.mode).toBe(wire);
-      await expect(acts.setMode(acts.mode! as never)).rejects.toThrow(/must be one of 0\/1\/3\/63/);
-      expect(() => buildCommand("armingMode", name, ctx)).toThrow(/must be one of 0\/1\/3\/63/);
-      expect(sent).toEqual([]);
+      await acts.setMode(acts.mode! as never);
+      // The frame the three byte-captured modes ride, differing only in `mode_type` — which is what the
+      // qualification established, and the reason promoting them needed no new wire.
+      expect(sent).toEqual([
+        {
+          kind: "set-payload",
+          cmd: 1224,
+          payload: { mode_type: wire, user_name: "someone+tag" },
+          channel: 0,
+          mValue3: 0,
+        },
+      ]);
+      expect(buildCommand("armingMode", name, ctx)).toMatchObject({ payload: { mode_type: wire } });
     });
 
-    it("names every reportable mode, and offers only the settable ones", () => {
+    it("names every reportable mode, and offers every one of them", () => {
       const mode = ARMING_MEMBERS.mode;
       expect(Object.values(mode.enumValues)).toEqual([
         "away",
@@ -116,7 +124,10 @@ describe("arming capability module", () => {
         "geo",
         "disarmed",
       ]);
-      expect(mode.args[0].values).toEqual([0, 1, 3, 63]);
+      // Read and write are the same nine now, which is what makes the member stop narrowing its write.
+      // Still two derivations off one table rather than one list used twice — see SETTABLE_MODES.
+      expect(mode.args[0].values).toEqual([0, 1, 2, 3, 4, 5, 6, 47, 63]);
+      expect(mode.args[0].values).toEqual(Object.keys(mode.enumValues).map(Number));
     });
 
     it("setMode round-trips the wire integer the mode getter answers", async () => {
@@ -229,52 +240,5 @@ describe("arming capability module", () => {
       await expect(acts.setAlarmDelayConfig(AlarmDelayMode.away, malformed)).rejects.toThrow();
       expect(sent).toEqual([]);
     });
-  });
-});
-
-describe("qualifyMode — the instrument, not a setter", () => {
-  it("sends the SAME frame the confirmed modes ride on, with only mode_type differing", async () => {
-    // This is the whole basis for a qualification meaning anything. If the probe built its own frame,
-    // a mode that failed would tell you nothing (wrong bytes?) and one that worked would tell you less.
-    const { acts, sent } = bind<ArmingActions>("arming", ctx);
-    await acts.qualifyMode!(2); // schedule — named by the app, never captured
-
-    const confirmed = buildCommand("armingMode", ArmingMode.home, ctx)!;
-    const probe = sent[0]!;
-    expect(probe.kind).toBe(confirmed.kind);
-    // Identical but for the one integer under investigation.
-    expect({ ...probe, payload: undefined }).toEqual({ ...confirmed, payload: undefined });
-    expect((probe as unknown as { payload: { mode_type: number; user_name: string } }).payload).toEqual({
-      mode_type: 2,
-      user_name: ctx.accountName,
-    });
-  });
-
-  it("carries the same observation the real write is judged by", async () => {
-    // A qualification observed more loosely than the setter would promote a mode the setter then seems
-    // to fail at. `armingModeChanged` is only emitted once the readback converged, so this IS the verdict.
-    const { acts, sent } = bind<ArmingActions>("arming", ctx);
-    await acts.qualifyMode!(47); // geo
-    const observation = commandObservation(sent[0]!)!;
-    expect(observation.event).toBe("armingModeChanged");
-    expect(observation.expected).toBe(47);
-    expect(observation.param).toBe(ARMING_CMD.SET_ARMING);
-    expect(observation.timeoutMs).toBe(20_000);
-  });
-
-  it("refuses a mode that is already settable, and one the app never defines", async () => {
-    const { acts, sent } = bind<ArmingActions>("arming", ctx);
-    // 1 is `home` — settable, so it belongs to setMode and is not a thing to qualify.
-    await expect(acts.qualifyMode!(1)).rejects.toThrow(/already settable|setMode/);
-    // 99 is nobody's mode. Sending it would be a guess, which is the opposite of a qualification.
-    await expect(acts.qualifyMode!(99)).rejects.toThrow(/not a mode to qualify/);
-    expect(sent).toEqual([]);
-  });
-
-  it("offers exactly the five the app names and this SDK will not set", () => {
-    // Derived from the wire table minus the settable four, so promoting a mode removes it here in the
-    // same edit rather than leaving a second list to forget.
-    expect([...UNQUALIFIED_MODES].sort((a, b) => a - b)).toEqual([2, 4, 5, 6, 47]);
-    for (const wire of UNQUALIFIED_MODES) expect(SETTABLE_MODES_FOR_TEST).not.toContain(wire);
   });
 });

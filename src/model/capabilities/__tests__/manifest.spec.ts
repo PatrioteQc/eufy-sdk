@@ -194,15 +194,21 @@ describe("describeCapabilities — enumeration of the live bound objects", () =>
   });
 
   /**
-   * The read's set and the action's are separate answers on purpose: a station reports nine guard modes
-   * and can be SET to the four whose write is confirmed. Published together so a caller shows the current
-   * mode from the labels and offers only what will be accepted — the same declaration the write itself is
-   * checked against, so the offer cannot promise a refusal.
+   * The read's set and the action's are separate answers, published together so a caller can show the
+   * current value from the labels and offer exactly what will be accepted.
+   *
+   * Guard mode is the example because it is the one that has been BOTH: the write was four while five modes
+   * had no confirmation behind them, and is nine now that each has one. Nothing in the SDK narrows its
+   * write today, so this asserts the two are published independently AND currently agree — a caller reading
+   * the action's `values` gets the real domain either way, which is the property that has to hold across a
+   * change like that. `describeWrite`'s precedence (a member's own `args` over the read's domain) is what a
+   * future narrowing would go through.
    */
-  it("offers what an action accepts, not everything its read reports", () => {
+  it("publishes what an action accepts beside what its read reports", () => {
     const arming = describeAll(allParams()).find((d) => d.capability === "arming")!;
-    expect(arming.reads.find((r) => r.accessor === "mode")!.values).toEqual([0, 1, 2, 3, 4, 5, 6, 47, 63]);
-    expect(arming.actions.find((a) => a.name === "setMode")!.args![0].values).toEqual([0, 1, 3, 63]);
+    const nine = [0, 1, 2, 3, 4, 5, 6, 47, 63];
+    expect(arming.reads.find((r) => r.accessor === "mode")!.values).toEqual(nine);
+    expect(arming.actions.find((a) => a.name === "setMode")!.args![0].values).toEqual(nine);
   });
 
   /** An action taking nothing SAYS so, so a caller can offer it as a plain button. */
