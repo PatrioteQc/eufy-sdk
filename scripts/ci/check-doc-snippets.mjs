@@ -1,39 +1,22 @@
 /**
  * Typecheck every TypeScript snippet in the guides, against the library's real types.
  *
- * The reason this exists: two snippets in `docs/vacuums.md` did not compile — one named a setter that
- * does not exist (`setLevel` for `setSuctionLevel`), the other read a method as a property (`scenes`
- * rather than `scenes()`) — and a READER found them, not CI. Nothing in the repo compiled the guides,
- * so a rename in `src/` could silently make the documentation wrong, which is the failure mode a guide
- * has: it is believed.
+ * Two snippets in `docs/vacuums.md` did not compile — one named a setter that does not exist, the other
+ * read a method as a property — and a READER found them, not CI. Nothing here compiled the guides, so a
+ * rename in `src/` could silently make the documentation wrong, which is the failure mode a guide has:
+ * it is believed. Snippets are typechecked, never run; whether one WORKS needs a device and belongs in
+ * `examples/`.
  *
  *   node scripts/ci/check-doc-snippets.mjs          check (CI)
  *   node scripts/ci/check-doc-snippets.mjs --keep   leave the generated files for inspection
  *
- * ## How a fragment is made compilable
- *
- * A guide snippet is a FRAGMENT: it says `await clean?.startScene?.(first.id)` without ever declaring
- * `clean`, because the surrounding prose declared it. Two moves make that typecheckable without
- * rewriting a single snippet:
- *
- *  1. The shared vocabulary (`dev`, `eufy`, `station`, …) is declared ambiently in a prelude, so a
- *     snippet may use any of it without introducing it.
- *  2. The snippet's own body is wrapped in a function. That is what makes the prelude safe: a snippet
- *     that declares its own `const dev = await eufy.getDevice(sn)` SHADOWS the ambient one, which is
- *     legal, where a prelude in the same scope would collide. It also gives `await` somewhere to live.
- *
- * Snippets are not executed — `--noEmit` only. A guide is checked for whether it TYPES, which is the
- * half that rots under a rename; whether it runs needs a device and belongs in `examples/`.
- *
- * ## When a snippet genuinely cannot compile
- *
- * Mark it in the markdown, immediately above the fence, with a reason:
+ * Two markers a guide author can use, both invisible to a reader:
  *
  *     <!-- typecheck: skip — pseudocode for the retry shape, not real API -->
+ *     <!-- typecheck: host bus, consumeAudio -->
  *
- * The reason is required: a bare skip is rejected, because the point of the marker is that someone
- * decided, not that a snippet was inconvenient. An HTML comment renders as nothing, so the guide is
- * unchanged for a reader.
+ * `skip` needs a reason, so it is a decision rather than a convenience; `host` names the reader's own
+ * code. See {@link SKIP} and {@link HOST_NAMES}, and {@link PRELUDE} for how a fragment compiles at all.
  */
 
 import { execFileSync } from "node:child_process";
@@ -121,11 +104,10 @@ const PRELUDE_LINES = PRELUDE.split("\n").length;
 /**
  * Names the guides use as VALUES that a snippet may equally well import for itself.
  *
- * These cannot go in the prelude. `declare const EufyMega` at module scope collides with a snippet's own
- * `import { EufyMega } from "@mega-yfue/eufy-sdk"` — both bind the name in the same scope, and TypeScript
- * calls that a duplicate identifier. So each is emitted INSIDE the wrapper function instead, and only
- * for a snippet that did not import it: an import wins by being in the outer scope, and a snippet that
- * imports the wrong name still fails, which is the check worth keeping.
+ * These cannot go in the prelude: `declare const EufyMega` at module scope collides with a snippet's own
+ * `import { EufyMega } from "@mega-yfue/eufy-sdk"`, which TypeScript calls a duplicate identifier. Emitted
+ * INSIDE the wrapper instead, where a snippet's import is shadowed rather than duplicated — same type, and
+ * an import of a name the barrel does not export still fails at module scope.
  */
 const AMBIENT_VALUES = {
   EufyMega: "const EufyMega = null as unknown as typeof Sdk.EufyMega;",
@@ -135,24 +117,14 @@ const AMBIENT_VALUES = {
   listLightEffects: "const listLightEffects = null as unknown as typeof Sdk.listLightEffects;",
 };
 
-/** The names a snippet's hoisted declarations already bind, so they are not shadowed by the above. */
-function importedNames(hoisted) {
-  const names = new Set();
-  for (const m of hoisted.matchAll(/\{([^}]*)\}/g)) {
-    for (const part of m[1].split(",")) {
-      const name = part
-        .trim()
-        .replace(/^type\s+/, "")
-        .split(/\s+as\s+/)
-        .pop()
-        ?.trim();
-      if (name) names.add(name);
-    }
-  }
-  // A default or namespace import: `import X from …` / `import * as X from …`.
-  for (const m of hoisted.matchAll(/import\s+(?:\*\s+as\s+)?([A-Za-z_$][\w$]*)\s*(?:,|from)/g)) names.add(m[1]);
-  return names;
-}
+/**
+ * Strings, template literals and comments — matched so an ellipsis inside one can be left alone.
+ *
+ * `description: "…"` is already valid TypeScript and must stay a string; an ellipsis in prose inside a
+ * comment is not code at all. Matching what to SKIP is shorter and safer than scanning for what to
+ * replace, and it handles a multi-line template literal or block comment for free.
+ */
+const SKIPPABLE = String.raw`"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|\`(?:[^\`\\]|\\.)*\`|//[^\n]*|/\*[\s\S]*?\*/`;
 
 /**
  * The ellipsis a guide uses to elide a body, made compilable without changing what a reader sees.
@@ -160,68 +132,12 @@ function importedNames(hoisted) {
  * `eufy.on("motion", (e) => …)` is the clearest way to write "and here you do something with it", and
  * every reader understands it — but it is not TypeScript, and the interesting half of that line (the
  * event name, and the fields of `e`) is exactly what rots under a rename. Rewriting the guides to
- * `(e) => {}` to satisfy a checker would make them worse to read in order to make them checkable, so
- * the checker gives way instead: a bare `…` becomes an expression of type `never`, which is assignable
- * wherever a value is expected and never masks a type error of its own.
- *
- * Only OUTSIDE strings, template literals and comments — `description: "…"` is already valid and must
- * stay a string, and an ellipsis in prose inside a comment is not code at all. Hence a scan rather
- * than a replace: the state machine is small, and getting this wrong would either break valid snippets
- * or silently edit their meaning.
+ * `(e) => {}` would make them worse to read in order to make them checkable, so the checker gives way:
+ * a bare `…` becomes an expression of type `never`, assignable wherever a value is expected and never
+ * masking a type error of its own.
  */
 function expandElisions(code) {
-  let out = "";
-  let quote;
-  let comment;
-  for (let i = 0; i < code.length; i++) {
-    const c = code[i];
-    const next = code[i + 1];
-    if (comment === "line") {
-      if (c === "\n") comment = undefined;
-      out += c;
-      continue;
-    }
-    if (comment === "block") {
-      if (c === "*" && next === "/") {
-        comment = undefined;
-        out += "*/";
-        i += 1;
-        continue;
-      }
-      out += c;
-      continue;
-    }
-    if (quote) {
-      // A backslash escapes the next character, so an escaped quote does not end the string.
-      if (c === "\\") {
-        out += c + (next ?? "");
-        i += 1;
-        continue;
-      }
-      if (c === quote) quote = undefined;
-      out += c;
-      continue;
-    }
-    if (c === "/" && next === "/") {
-      comment = "line";
-      out += "//";
-      i += 1;
-      continue;
-    }
-    if (c === "/" && next === "*") {
-      comment = "block";
-      out += "/*";
-      i += 1;
-      continue;
-    }
-    if (c === '"' || c === "'" || c === "`") {
-      quote = c;
-      out += c;
-      continue;
-    }
-    out += c === "\u2026" ? "(undefined as never)" : c;
-  }
-  return out;
+  return code.replace(new RegExp(`${SKIPPABLE}|…`, "g"), (m) => (m === "…" ? "(undefined as never)" : m));
 }
 
 /**
@@ -364,16 +280,12 @@ for (const file of markdownFiles(DOCS)) {
     const name = `${rel.replace(/[/\\]/g, "__").replace(/\.md$/, "")}-${n}.ts`;
     // The body goes inside a function so its own `const`s shadow the prelude and `await` is legal.
     const { hoisted, body, hoistedCount } = hoistDeclarations(expandElisions(snippet.body));
-    const bound = importedNames(hoisted);
     const shadow = [
-      ...Object.entries(AMBIENT_VALUES)
-        .filter(([n]) => !bound.has(n))
-        .map(([, decl]) => decl),
-      // `any` on purpose: see HOST_NAMES. A host name the snippet also imports is left to the import.
-      // A value AND a type alias, because a host name can be either: `openEncoder` is called and
-      // `Encoder` annotates a variable, and the two live in separate declaration spaces so one name can
-      // legally be both.
-      ...(snippet.host ?? []).filter((n) => !bound.has(n)).flatMap((n) => [`let ${n}: any;`, `type ${n} = any;`]),
+      ...Object.values(AMBIENT_VALUES),
+      // `any` on purpose: see HOST_NAMES. A value AND a type alias, because a host name can be either —
+      // `openEncoder` is called and `Encoder` annotates a variable — and the two live in separate
+      // declaration spaces, so one name can legally be both.
+      ...(snippet.host ?? []).flatMap((n) => [`let ${n}: any;`, `type ${n} = any;`]),
     ].join("\n");
     // Hoisted lines keep their own order but move above the wrapper, so a line number inside the body
     // is offset by however many left it. The shadow block sits on ONE line for the same reason: a fixed,
