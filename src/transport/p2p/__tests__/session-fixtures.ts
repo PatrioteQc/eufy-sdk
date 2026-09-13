@@ -1,6 +1,8 @@
 import { EventEmitter } from "node:events";
 import { vi } from "vitest";
+import { noopLogger, type Logger } from "../../../core/logger.js";
 import { P2PCommandRouter, type P2PRouterDeps } from "../command-router.js";
+import { LIVE_TRACE_MESSAGE, type LiveTrace } from "../live-trace.js";
 
 /** Synthetic ids shared by the command-router specs — never a real device. */
 export const DEVICE_SN = "T8114P0000000000";
@@ -20,8 +22,8 @@ export const ACCOUNT_ID = "0000000000000000000000000000000000000000";
  */
 export interface FakeP2PSession extends EventEmitter {
   isConnected: boolean;
-  /** Records the traces staged on this session, which is how work done before a command is observed. */
-  trace: ReturnType<typeof vi.fn>;
+  /** The handle every trace about this session is emitted under, real sessions included. */
+  traceId: string;
   hasLevel2Key: boolean;
   awaitLevel2Key: ReturnType<typeof vi.fn>;
   repromptLevel2Key: ReturnType<typeof vi.fn>;
@@ -39,7 +41,7 @@ export interface FakeP2PSession extends EventEmitter {
 export function connectedSession(hasLevel2Key = true): FakeP2PSession {
   const session = new EventEmitter() as FakeP2PSession;
   session.isConnected = true;
-  session.trace = vi.fn();
+  session.traceId = "station-fake";
   session.hasLevel2Key = hasLevel2Key;
   session.keyArrivesOnReprompt = false;
   session.awaitLevel2Key = vi.fn(async () => session.hasLevel2Key);
@@ -61,6 +63,25 @@ export function disconnectedSession(): FakeP2PSession {
   const session = connectedSession(false);
   session.isConnected = false;
   return session;
+}
+
+/**
+ * A logger that keeps every live trace passed through it, in order.
+ *
+ * Traces reach a host as one debug message with a payload, so collecting them here is the same view a host
+ * has — including the `source` handle that groups an attempt, which asserting on an emitter would not see.
+ */
+export function traceCollector(): { logger: Logger; traces: (LiveTrace & { source?: string })[] } {
+  const traces: (LiveTrace & { source?: string })[] = [];
+  return {
+    logger: {
+      ...noopLogger,
+      debug: (message: string, ...args: unknown[]) => {
+        if (message === LIVE_TRACE_MESSAGE) traces.push(args[0] as LiveTrace & { source?: string });
+      },
+    },
+    traces,
+  };
 }
 
 /**

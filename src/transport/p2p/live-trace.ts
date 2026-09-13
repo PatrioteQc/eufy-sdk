@@ -62,37 +62,34 @@ export type LiveTrace =
   | { phase: "level2-wait"; waitMs: number }
   /** The station's level-2 key was negotiated, under the cipher it selected. */
   | { phase: "level2-ready"; cipherId: number }
-  /** The level-2 key did not arrive in its grace, so the start proceeds at level 1 or not at all. */
-  | { phase: "level2-absent"; waitedMs: number }
   /**
-   * The station's key is not coming, and why — answered without waiting, because nothing is still pending.
+   * The station's key is not coming, why, and the cipher where a station named one.
    *
-   * The negotiation is one-shot per connection, so a caller asking after it has concluded is told at once
-   * rather than held for a grace. That immediacy is what makes this the only record of the outcome: no grace
-   * elapses to report, and a caller reading a refused call cannot otherwise tell a station that never
-   * negotiated from one whose cloud cipher lookup answered nothing, from one whose reply would not derive.
-   * Each calls for a different next step, and only `no-cipher-key` and `derivation-failed` are about this
-   * account's own cipher material.
+   * Every ending of a level-2 wait carries one of these reasons, so a start refused for want of a key is
+   * accounted for however it ended. `grace-elapsed` is a wait that ran out and states how long was waited;
+   * the rest are answered without waiting, because the negotiation is one-shot per connection and a
+   * concluded one is final. `no-cipher-key` and `derivation-failed` are about this account's cipher
+   * material, `not-negotiating` and `session-closed` about the station or its connection — and only a
+   * reason reached under a negotiation has a cipher to name.
    *
-   * `cipherId` states which cipher the station asked for, where a station asked at all: it is what says whether
-   * the account was resolved for the cipher in question. The two reasons answered without a negotiation have
-   * none to name.
+   * A `grace-elapsed` start proceeds at level 1 where it has such a form, and not at all where it does not.
    */
   | {
       phase: "level2-unavailable";
-      reason: "no-cipher-key" | "derivation-failed" | "not-negotiating" | "session-closed";
+      reason: "no-cipher-key" | "derivation-failed" | "not-negotiating" | "session-closed" | "grace-elapsed";
       cipherId?: number;
+      waitedMs?: number;
     }
   /**
-   * The cloud lookup for a station's cipher material answered, and what it answered with.
+   * A station's cipher was answered with material for a DIFFERENT cipher, which was used in its place.
    *
-   * A key that never arrives has three causes on this side and they are not each other's: the account holds no
-   * material for the cipher the station named, the lookup itself failed, or material for a DIFFERENT cipher was
-   * used because the named one was absent from the answer — which then derives to nothing and looks like a
-   * station fault. `cipherId` is the cipher the station asked for, so this pairs with the negotiation that
-   * asked for it.
+   * The one lookup outcome no other phase accounts for: material for the cipher the station named is followed
+   * by `level2-ready` or by `level2-unavailable` with `derivation-failed`, an answer holding none by
+   * `no-cipher-key`, and a lookup that threw is reported as an error. Substituted material derives to
+   * nothing and otherwise reads as a station fault. `cipherId` is the cipher the station asked for,
+   * `answeredCipherId` the one whose material was used.
    */
-  | { phase: "cipher-lookup"; outcome: "exact" | "fallback" | "none" | "failed"; cipherId: number }
+  | { phase: "cipher-fallback"; cipherId: number; answeredCipherId: number }
   /**
    * The station answered its gateway-info prompt, so a key derivation has begun under the cipher it named.
    *

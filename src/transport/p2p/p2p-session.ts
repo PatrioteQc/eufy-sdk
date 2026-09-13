@@ -435,13 +435,8 @@ export class P2PSession extends EventEmitter {
     return false;
   }
 
-  /**
-   * Emit a live trace under this session's handle.
-   *
-   * Public so work staged on a session outside it — reaching the station before anything can be addressed to
-   * it — is recorded under the same handle as everything that follows, which is what groups one attempt.
-   */
-  trace(trace: LiveTrace): void {
+  /** Emit a live trace under this session's handle. */
+  private trace(trace: LiveTrace): void {
     traceLiveStart(this.logger, trace, this.traceId);
   }
 
@@ -478,6 +473,10 @@ export class P2PSession extends EventEmitter {
    * cameras from that second group streamed normally at level-1 — including one of the same firmware as an
    * own-session camera that delivered no video at all for a reason of its own. An expired grace therefore
    * separates nothing on this path, and a start failure on such a session is not evidence about it.
+   *
+   * Every `false` answer carries a `level2-unavailable` trace naming its reason, wherever the wait ended: a
+   * `terminal` outcome is the one already stated where the negotiation concluded, since that is where the
+   * cipher and the cause are known, and re-stating it here would double every settled negotiation.
    */
   async awaitLevel2Key(graceMs: number, graceFrom: "call" | "session" = "call"): Promise<boolean> {
     if (this.closed) {
@@ -493,7 +492,7 @@ export class P2PSession extends EventEmitter {
     const remaining = graceMs - (Date.now() - since);
     if (remaining <= 0) {
       this.logger.debug(`[p2p] ${this.cfg.stationSn} no level-2 key and its ${graceMs}ms grace has elapsed`);
-      this.trace({ phase: "level2-absent", waitedMs: graceMs });
+      this.trace({ phase: "level2-unavailable", reason: "grace-elapsed", waitedMs: graceMs });
       return false;
     }
     this.logger.debug(`[p2p] ${this.cfg.stationSn} waiting up to ${remaining}ms for the level-2 key`);
@@ -517,10 +516,12 @@ export class P2PSession extends EventEmitter {
     });
     if (outcome === "timeout") {
       this.logger.debug(`[p2p] ${this.cfg.stationSn} level-2 key did not arrive within its grace`);
+      this.trace({ phase: "level2-unavailable", reason: "grace-elapsed", waitedMs: remaining });
     } else if (outcome === "terminal") {
       this.logger.debug(`[p2p] ${this.cfg.stationSn} level-2 negotiation concluded without a key`);
     } else if (outcome === "closed") {
       this.logger.debug(`[p2p] ${this.cfg.stationSn} session closed before the level-2 key arrived`);
+      this.trace({ phase: "level2-unavailable", reason: "session-closed" });
     }
     return outcome === "key";
   }
@@ -595,6 +596,7 @@ export class P2PSession extends EventEmitter {
         this.emit("level2Ready", { cipherId });
       } catch (e) {
         if (this.closed || generation !== this.connectionGeneration) return;
+        this.trace({ phase: "level2-unavailable", reason: "derivation-failed", cipherId });
         this.settleLevel2();
         this.emit("error", e instanceof Error ? e : new Error(String(e)));
       }

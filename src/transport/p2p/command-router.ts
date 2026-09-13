@@ -58,7 +58,7 @@ import {
 import { openReadableFromConsumer } from "./readable-egress.js";
 import { Talkback } from "./talkback.js";
 import { FragmentRecording } from "./fragment-recording.js";
-import { traceLiveStart } from "./live-trace.js";
+import { traceLiveStart, type LiveTrace } from "./live-trace.js";
 
 /**
  * How many times each idempotent "direct" control command (camera on/off 1035, spotlight
@@ -119,11 +119,11 @@ const LEVEL2_SETTLE_MS = 8_000;
  * `connect` applies to every call on a station, because nothing can be addressed to one before its session is
  * up. `level2Grace` applies twice where the key is required: the negotiation is re-prompted once.
  */
-export const P2P_STATION_WAITS = Object.freeze({
+export const P2P_STATION_WAITS = {
   connect: CONNECT_WAIT_MS,
   level2Grace: LEVEL2_GRACE_MS,
   level2Settle: LEVEL2_SETTLE_MS,
-});
+} as const;
 
 /** How long a station's live RTSP URL push is awaited — the connect wait and the URL wait together. */
 const RTSP_URL_READ_TIMEOUT_MS = 12_000;
@@ -263,6 +263,15 @@ export class P2PCommandRouter {
       this.deps.onError(normalized);
     }
     return normalized;
+  }
+
+  /**
+   * Emit a live trace under a station session's handle, for work this router does ON that session before
+   * the session itself records anything — reaching the station, and resolving what a device is on it. Same
+   * handle as everything the session goes on to trace, which is what groups one attempt.
+   */
+  private traceOnStation(session: P2PSession, trace: LiveTrace): void {
+    traceLiveStart(this.deps.logger ?? noopLogger, trace, session.traceId);
   }
 
   /**
@@ -409,19 +418,21 @@ export class P2PCommandRouter {
       noBroadcast: this.deps.noBroadcast,
       resolveCipherKey: async (cipherId: number) => {
         if (this.cipherKeyCache.has(cipherId)) return this.cipherKeyCache.get(cipherId);
-        const logger = this.deps.logger ?? noopLogger;
         let ecc: string | undefined;
-        let outcome: "exact" | "fallback" | "none" | "failed" = "none";
         try {
           const ciphers = await this.deps.mega.getCiphers([cipherId], adminUserId, stationSn);
-          const named = ciphers.find((c) => Number(c.cipher_id) === cipherId)?.ecc_private_key;
-          ecc = named ?? ciphers[0]?.ecc_private_key;
-          outcome = named !== undefined ? "exact" : ecc !== undefined ? "fallback" : "none";
+          ecc = ciphers.find((c) => Number(c.cipher_id) === cipherId)?.ecc_private_key;
+          if (ecc === undefined && ciphers[0]?.ecc_private_key !== undefined) {
+            ecc = ciphers[0].ecc_private_key;
+            this.traceOnStation(session, {
+              phase: "cipher-fallback",
+              cipherId,
+              answeredCipherId: Number(ciphers[0].cipher_id),
+            });
+          }
         } catch (e) {
-          outcome = "failed";
           this.deps.onError(e instanceof Error ? e : new Error(String(e)));
         }
-        traceLiveStart(logger, { phase: "cipher-lookup", outcome, cipherId });
         if (ecc !== undefined) this.cipherKeyCache.set(cipherId, ecc);
         return ecc;
       },
@@ -1277,34 +1288,35 @@ export class P2PCommandRouter {
     }
     this.manager.bumpCommand(parentSn);
     const channel = typeof raw.device_channel === "number" ? (raw.device_channel as number) : 0;
-    const accountId = ((raw.member as any)?.admin_user_id as string) ?? this.deps.mega.auth?.userId ?? "";
+    const stationAdminId = (raw.member as any)?.admin_user_id;
+    const accountId = (stationAdminId as string) ?? this.deps.mega.auth?.userId ?? "";
 
     const t0 = Date.now();
+    let waitedMs = 0;
     if (!session.isConnected) {
-      session.trace({ phase: "session-connect-wait", waitMs: CONNECT_WAIT_MS });
+      this.traceOnStation(session, { phase: "session-connect-wait", waitMs: CONNECT_WAIT_MS });
       while (!session.isConnected && Date.now() - t0 < CONNECT_WAIT_MS) {
         opts.signal?.throwIfAborted();
         await sleep(200);
       }
-      session.trace(
-        session.isConnected
-          ? { phase: "session-connected", waitedMs: Date.now() - t0 }
-          : { phase: "session-unreachable", waitedMs: Date.now() - t0 },
+      waitedMs = Date.now() - t0;
+      this.traceOnStation(
+        session,
+        session.isConnected ? { phase: "session-connected", waitedMs } : { phase: "session-unreachable", waitedMs },
       );
     }
     opts.signal?.throwIfAborted();
-    if (!session.isConnected) throw new StationUnreachableError(Date.now() - t0);
-    const stationAdmin =
-      typeof (raw.member as any)?.admin_user_id !== "string"
-        ? "unstated"
-        : (raw.member as any).admin_user_id === this.deps.mega.auth?.userId
-          ? "self"
-          : "other";
-    session.trace({
+    if (!session.isConnected) throw new StationUnreachableError(waitedMs);
+    this.traceOnStation(session, {
       phase: "station-resolved",
       topology: homeBaseAttached ? "attached" : "own",
       channel,
-      stationAdmin,
+      stationAdmin:
+        typeof stationAdminId !== "string"
+          ? "unstated"
+          : stationAdminId === this.deps.mega.auth?.userId
+            ? "self"
+            : "other",
     });
     if (opts.waitLevel2) {
       if (opts.waitLevel2 === "settle") {

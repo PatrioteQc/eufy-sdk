@@ -4,7 +4,8 @@ import { P2P_STATION_WAITS, StationUnreachableError } from "../index.js";
 describe("station reachability at the package entry point", () => {
   it("publishes the waits a caller places its own bound above", () => {
     expect(P2P_STATION_WAITS.connect).toBeGreaterThan(0);
-    expect(Object.isFrozen(P2P_STATION_WAITS)).toBe(true);
+    expect(P2P_STATION_WAITS.level2Grace).toBeGreaterThan(0);
+    expect(P2P_STATION_WAITS.level2Settle).toBeGreaterThan(0);
   });
 
   it("publishes the refusal a caller narrows on", () => {

@@ -1,7 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 import { StationUnreachableError } from "../../../core/contracts.js";
 import { P2P_STATION_WAITS } from "../command-router.js";
-import { disconnectedSession, routerWithSession, DEVICE_SN } from "./session-fixtures.js";
+import {
+  connectedSession,
+  disconnectedSession,
+  routerWithSession,
+  traceCollector,
+  DEVICE_SN,
+} from "./session-fixtures.js";
 
 /**
  * A station that cannot be reached says so, and says it as itself.
@@ -20,7 +26,8 @@ describe("a station whose session does not connect", () => {
     vi.useFakeTimers();
     try {
       const session = disconnectedSession();
-      const router = routerWithSession(session);
+      const { logger, traces } = traceCollector();
+      const router = routerWithSession(session, { deps: { logger } });
 
       const call = router.mediaProviderFor(DEVICE_SN).live();
       const settled = expect(call).rejects.toBeInstanceOf(StationUnreachableError);
@@ -28,14 +35,16 @@ describe("a station whose session does not connect", () => {
       await vi.advanceTimersByTimeAsync(P2P_STATION_WAITS.connect + 1_000);
       await settled;
 
-      const phases = session.trace.mock.calls.map(([trace]) => trace);
-      expect(phases[0], "a caller whose own deadline expires inside the wait has this record and no other").toEqual({
+      expect(traces[0], "a caller whose own deadline expires inside the wait has this record and no other").toEqual({
         phase: "session-connect-wait",
         waitMs: P2P_STATION_WAITS.connect,
+        source: session.traceId,
       });
-      expect(phases.at(-1)).toMatchObject({ phase: "session-unreachable" });
-      expect(phases.at(-1)!.waitedMs).toBeGreaterThanOrEqual(P2P_STATION_WAITS.connect);
-      expect(phases.some((trace) => trace.phase === "media-command")).toBe(false);
+      const unreachable = traces.find((trace) => trace.phase === "session-unreachable");
+      expect(traces.at(-1), "the outcome is the last word on the wait").toBe(unreachable);
+      expect(unreachable?.waitedMs).toBeGreaterThanOrEqual(P2P_STATION_WAITS.connect);
+      expect(unreachable?.source).toBe(session.traceId);
+      expect(traces.some((trace) => trace.phase === "media-command")).toBe(false);
     } finally {
       vi.useRealTimers();
     }
@@ -46,16 +55,15 @@ describe("a station whose session does not connect", () => {
    * what states that no wait happened, so a reader is not left telling a fast path from a missing trace.
    */
   it("says nothing where the session was already connected", async () => {
-    const session = disconnectedSession();
-    session.isConnected = true;
-    const router = routerWithSession(session);
+    const { logger, traces } = traceCollector();
+    const router = routerWithSession(connectedSession(), { deps: { logger } });
 
     await router
       .mediaProviderFor(DEVICE_SN)
       .live()
       .catch(() => undefined);
 
-    const phases = session.trace.mock.calls.map(([trace]) => trace.phase);
+    const phases = traces.map((trace) => trace.phase);
     expect(phases).not.toContain("session-connect-wait");
     expect(phases).not.toContain("session-connected");
     expect(phases).not.toContain("session-unreachable");
