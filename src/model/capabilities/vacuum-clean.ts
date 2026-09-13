@@ -273,10 +273,11 @@ export const ModeCtrlMethod = {
  * its argument in the signature: {@link VACUUM_CLEAN_MEMBERS.startScene},
  * {@link VACUUM_CLEAN_MEMBERS.cleanRooms} and {@link VACUUM_CLEAN_MEMBERS.cleanZones}.
  *
- * The outer frame all four ride in is byte-verified on a live T2351. The NUMBERS are the vendor's own
- * `ModeCtrlRequest.Method` values, and only `SCENE` has since been watched doing what it claims: method
- * 24 was run against a live robot and started the named scene. `SELECT_ROOMS` and `SELECT_ZONES` rest on
- * the vendor's definition alone — see the note on each member for what that costs.
+ * The outer frame all four ride in is byte-verified on a live T2351, and `SCENE`, `SELECT_ROOMS` and
+ * `SELECT_ZONES` have each since been RUN against a live robot and did what they name — so their numbers
+ * rest on observed behaviour rather than on the vendor's definition alone. That distinction is the whole
+ * point of checking: an AIoT data-point write is fire-and-forget, so a wrong number would be a different
+ * command arriving and looking exactly like success, which no frame check could catch.
  *
  * `GOTO` carries no encoder because a goto point is a coordinate no read on this SDK supplies, where a
  * scene id and a map id both arrive on DP 180.
@@ -2918,10 +2919,8 @@ export const VACUUM_CLEAN_MEMBERS = {
    * off the `SceneResponse` on DP 180. A scene the device reports invalid stays reportable and running
    * it is still a well-formed request; `VacuumScene.invalidReason` says why the device will refuse.
    *
-   * Frame shape is byte-proven against the shared outer `ModeCtrlRequest`, and method 24 has since been
-   * WATCHED: run against a live robot, it started the named scene. So this verb's number rests on
-   * observed behaviour rather than on the vendor's enum, which is what separates it from
-   * {@link VACUUM_CLEAN_MEMBERS.cleanRooms} and {@link VACUUM_CLEAN_MEMBERS.cleanZones} below.
+   * Frame shape is byte-proven against the shared outer `ModeCtrlRequest`, and method 24 has been
+   * WATCHED: run against a live robot, it started the named scene.
    */
   startScene: method(
     ({ sink }) =>
@@ -2941,13 +2940,11 @@ export const VACUUM_CLEAN_MEMBERS = {
    * `cleanTimes` is how many passes to make over the set; rooms with no `order` are visited in the
    * order given.
    *
-   * **Weaker evidence than {@link VACUUM_CLEAN_MEMBERS.startScene}.** The frame is byte-proven, but
-   * method 1 is the vendor's own `ModeCtrlRequest.Method` value and has not been watched on a wire — and
-   * 1 is a low number in a space whose confirmed verbs sit at 6, 13, 14 and 24. Because it carries a
-   * payload, a mis-numbered frame is some other command arriving with a room set attached, and an AIoT
-   * DP write is fire-and-forget, so that would look exactly like success. It ships callable as a
-   * maintainer decision with that in view; a capture of the vendor app running a room clean settles it,
-   * and contradicting evidence makes this one word.
+   * Frame shape is byte-proven against the shared outer `ModeCtrlRequest`, and method 1 has been
+   * WATCHED: run against a live robot, it cleaned the rooms named. Worth recording per verb rather than
+   * once for the table, because 1 is a low number in a space whose other confirmed verbs sit at 6, 13,
+   * 14 and 24, and this one carries a payload — a mis-numbered frame would have been another command
+   * arriving with a room set attached, which on a fire-and-forget write looks exactly like success.
    */
   cleanRooms: method(
     ({ sink }) =>
@@ -2962,9 +2959,8 @@ export const VACUUM_CLEAN_MEMBERS = {
    *
    * Corners are SIGNED centimetres in the map's own frame, whose origin sits wherever the robot first
    * mapped from — negative coordinates are ordinary and are ZigZag-encoded, not written as plain
-   * varints. Same `mapId` reasoning and the same weaker evidence position as
-   * {@link VACUUM_CLEAN_MEMBERS.cleanRooms}: method 2 is the vendor's number, unwatched, carrying a
-   * payload.
+   * varints. Same `mapId` reasoning as {@link VACUUM_CLEAN_MEMBERS.cleanRooms}, and the same evidence:
+   * method 2 has been run against a live robot and cleaned the rectangles given.
    */
   cleanZones: method(
     ({ sink }) =>

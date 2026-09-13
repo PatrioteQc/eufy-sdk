@@ -130,13 +130,14 @@ the missing method is the signal.
 Each verb is also optional on the surface, because whether a device has it is a runtime fact. The `?.`
 is not defensive style — it is the type telling you to check.
 
-The verbs are grouped below by **what is known about the command number they send**, because that is
-the distinction that decides how much to trust one. Every frame here is byte-proven against the same
-captured `ModeCtrlRequest`; what differs is whether the number inside it has been watched doing what it
-claims. A robot acknowledges nothing, so a wrong number is a different command arriving and looking
-exactly like success.
+**Every verb below has been run against a live robot and did what it says.** That is worth stating
+rather than assuming, because the two halves of a write here carry different kinds of proof: the frames
+are byte-verified against a captured `ModeCtrlRequest`, and the command NUMBER inside each one was read
+off the vendor's message definition. A robot acknowledges nothing — an AIoT data-point write is
+fire-and-forget — so a wrong number would be a different command arriving and looking exactly like
+success, which no amount of frame checking would catch. The numbers were watched instead.
 
-### Confirmed on hardware
+### Whole-floor verbs
 
 ```ts
 const clean = dev.vacuumClean();
@@ -150,9 +151,11 @@ await dev.suction()?.setSuctionLevel?.(2); // raw level, see above
 await dev.suction()?.setBoostIq?.(true);
 ```
 
-Running a **saved scene** belongs here too, and it is the one argument-taking verb that does: the
-argument is the robot's own scene id, straight out of the scene report, so there is nothing for a
-caller to invent.
+### Cleaning part of a floor
+
+Three verbs take an argument, and each argument comes from a read the robot already publishes rather
+than from anything a caller has to invent. Running a **saved scene** is the simplest of the three: the
+argument is the robot's own scene id.
 
 ```ts
 const scenes = clean?.scenes?.(); // decoded off the robot's own scene report
@@ -160,19 +163,10 @@ const first = scenes?.find((s) => s.valid);
 if (first) await clean?.startScene?.(first.id);
 ```
 
-Method 24 is here because it was run against a live robot and the named scene started — the wire
-claim is that observation, not the vendor's definition of the number.
-
 A scene the robot reports invalid is still reportable and still a well-formed request;
 `VacuumScene.invalidReason` says why it will be refused.
 
-### Number taken from the vendor's enum
-
-Room and zone cleans send `ModeCtrlRequest.Method` 1 and 2. Those values are read off the vendor's own
-message definition and have **not** been watched on a wire, which is a weaker claim than everything
-above: 1 and 2 are low numbers in a space whose confirmed verbs sit at 6, 13 and 14, and both carry a
-payload, so a mis-numbered frame is some other command arriving with a room set attached. They ship
-callable as a maintainer decision with that trade-off in view, not because the evidence is equal.
+Room and zone cleans name the area themselves:
 
 ```ts
 await clean?.cleanRooms?.(
