@@ -4,12 +4,16 @@ import { propertiesOf, type Members, type Surface } from "./members.js";
 /**
  * `display` — what a eufy Smart Display (T87Ax) actually reports.
  *
- * A deliberately small capability, and the smallness IS the finding. The Smart Display shares a cloud
+ * A small capability, and its shape IS the finding. The Smart Display shares a cloud
  * account with the security line and nothing else: the one captured unit (a T87A0, 2026-09-04) connects
  * over secure MQTT with no `p2p_did`, so it speaks no P2P at all, and it reported exactly six params in
- * an id range (8001-8006) that no other line uses. Three of those six can be named from the capture and
- * are here; three cannot and are not — see {@link DISPLAY_PARAMS} for what each unnamed one looked like
- * and what would settle it.
+ * an id range (8001-8006) that no other line uses. Four of those six are named here; two are not — see
+ * {@link DISPLAY_PARAMS} for what each unnamed one looked like and what would settle it.
+ *
+ * The four did not all arrive the same way, and the difference is recorded per member: two identify
+ * themselves (their values were facts already known), one is named for its shape and labelled `guessed`,
+ * and the battery was identified by the maintainer — a single reading of `"100"` fits brightness, volume
+ * or charge equally, so that one took someone who knows the hardware rather than another capture.
  *
  * **Nothing here is writable, and that is not a gap in this module.** No capture pins a write for any
  * display param, and an AIoT write is fire-and-forget — a wrong frame to a device that acknowledges
@@ -33,6 +37,8 @@ import { propertiesOf, type Members, type Surface } from "./members.js";
  * reason they are absent from the dictionary, which is that a name would be a guess.
  */
 export const DISPLAY_PARAM = {
+  /** Battery level. Identified by the maintainer; the capture alone could not have said so. */
+  BATTERY: 8001,
   /** Something version-shaped (`"2.9.05"` on the capture). Provenance `guessed` — see the dictionary. */
   SOFTWARE_VERSION: 8003,
   /** The model's retail name, verbatim (`"Smart Display E10"`). */
@@ -49,6 +55,29 @@ export const DISPLAY_PARAM = {
  * @internal
  */
 export const DISPLAY_MEMBERS = {
+  /**
+   * Battery level.
+   *
+   * **On this capability rather than on `battery`, and that is the line partition doing its job.** The
+   * security-line `battery` capability reads param 1101, and a Smart Display's charge is 8001 in its own
+   * id space — the two are different wires that happen to mean the same thing. Putting 8001 on the
+   * security module would have re-opened exactly the door this line was split to close, so a consumer
+   * reads a display's charge through `dev.display()` and a camera's through `dev.battery()`. That asks
+   * something of a caller who wants "the battery, whatever the device is", and it is the honest shape:
+   * one capability reading two lines' ids would be a claim that the ecosystems share a param space.
+   *
+   * `percent` follows the line's own convention and one consistent reading, not a proven scale: every
+   * eufy battery this SDK models is 0-100, and the capture said `"100"`. That is a good reason to expect
+   * a percentage and not the same thing as having watched it move.
+   */
+  battery: {
+    param: DISPLAY_PARAM.BATTERY,
+    type: "number",
+    unit: "%",
+    kind: "percent",
+    provenance: "mega",
+    description: "Battery level (param 8001). Identified by the maintainer; the scale follows the line's convention.",
+  },
   /**
    * The model's retail name as the DEVICE reports it.
    *

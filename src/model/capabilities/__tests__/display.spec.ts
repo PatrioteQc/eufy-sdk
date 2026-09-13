@@ -1,5 +1,5 @@
 import { DISPLAY, DISPLAY_MEMBERS, DISPLAY_PARAM } from "../display.js";
-import { detectCapabilities } from "../index.js";
+import { CAPABILITY_MODULES, detectCapabilities } from "../index.js";
 import { DISPLAY_PARAMS, SECURITY_PARAMS } from "../../param-dictionary.js";
 import { namespaceForCodec } from "../../param-namespace.js";
 import type { ValueMember } from "../members.js";
@@ -12,20 +12,33 @@ import type { ValueMember } from "../members.js";
  * here is absence — that nothing was invented, and that nothing from another line can reach it.
  */
 describe("display capability", () => {
-  it("reports only the three params whose meaning the capture shows", () => {
-    expect(Object.keys(DISPLAY_MEMBERS).sort()).toEqual(["modelCode", "modelName", "softwareVersion"]);
-    expect(DISPLAY.properties?.map((p) => p.paramType).sort()).toEqual([8003, 8005, 8006]);
+  it("reports only the params whose meaning is actually known", () => {
+    expect(Object.keys(DISPLAY_MEMBERS).sort()).toEqual(["battery", "modelCode", "modelName", "softwareVersion"]);
+    expect(DISPLAY.properties?.map((p) => p.paramType).sort()).toEqual([8001, 8003, 8005, 8006]);
   });
 
   it("names no param whose meaning one value cannot settle", () => {
-    // The device also reported 8001 ("100"), 8002 ("1") and 8004 (a serial-shaped string). `100` fits
-    // brightness, volume or battery equally, `1` fits any flag, and a serial could be the display's or
-    // its station's. A name for any of them would be read downstream as a fact, and on a screen device a
-    // misread `100` shown as battery is the kind of wrong that looks right.
-    for (const id of [8001, 8002, 8004]) {
+    // The device also reported 8002 ("1") and 8004 (a serial-shaped string). `1` fits any flag, and a
+    // serial could be the display's or its station's. A name for either would be read downstream as a
+    // fact. 8001 was in this list too until the maintainer identified it as the battery — which is the
+    // point of the list: it holds what is unknown, not what is unknowable.
+    for (const id of [8002, 8004]) {
       expect(DISPLAY_PARAMS[id]).toBeUndefined();
       expect(DISPLAY.properties?.some((p) => p.paramType === id)).toBe(false);
     }
+  });
+
+  it("reads the display's battery off its own id, not the security line's", () => {
+    // The two mean the same thing on different wires: a camera's charge is param 1101 in the security
+    // space, a display's is 8001 in this one. Reading both from one capability would be a claim that the
+    // ecosystems share a param space, which is the door this line was split to close.
+    const battery = DISPLAY_MEMBERS.battery as ValueMember;
+    expect(battery.param).toBe(8001);
+    expect(battery.kind).toBe("percent");
+    expect(battery.unit).toBe("%");
+    // And the security module is untouched: it still reads 1101 and knows nothing about 8001.
+    const security = CAPABILITY_MODULES.battery.properties ?? [];
+    expect(security.some((p) => p.paramType === 8001)).toBe(false);
   });
 
   it("offers no write at all, because no display write is captured", () => {
