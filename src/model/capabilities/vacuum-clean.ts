@@ -273,11 +273,14 @@ export const ModeCtrlMethod = {
  * its argument in the signature: {@link VACUUM_CLEAN_MEMBERS.startScene},
  * {@link VACUUM_CLEAN_MEMBERS.cleanRooms} and {@link VACUUM_CLEAN_MEMBERS.cleanZones}.
  *
- * The outer frame all four ride in is byte-verified on a live T2351, and `SCENE`, `SELECT_ROOMS` and
- * `SELECT_ZONES` have each since been RUN against a live robot and did what they name — so their numbers
- * rest on observed behaviour rather than on the vendor's definition alone. That distinction is the whole
- * point of checking: an AIoT data-point write is fire-and-forget, so a wrong number would be a different
- * command arriving and looking exactly like success, which no frame check could catch.
+ * The outer frame these ride in is byte-verified on a live T2351, and `SCENE`, `SELECT_ROOMS` and
+ * `SELECT_ZONES` have each since been RUN on a T2351 and did what they name — so their numbers rest on
+ * observed behaviour rather than on the vendor's definition alone.
+ *
+ * That distinction is the whole point of checking, and this is the one place it is argued: an AIoT
+ * data-point write is fire-and-forget, so a wrong number would be a different command arriving and
+ * looking exactly like success, which no frame check could catch. Watching the number is the only thing
+ * that rules it out.
  *
  * `GOTO` carries no encoder because a goto point is a coordinate no read on this SDK supplies, where a
  * scene id and a map id both arrive on DP 180.
@@ -2920,7 +2923,7 @@ export const VACUUM_CLEAN_MEMBERS = {
    * it is still a well-formed request; `VacuumScene.invalidReason` says why the device will refuse.
    *
    * Frame shape is byte-proven against the shared outer `ModeCtrlRequest`, and method 24 has been
-   * WATCHED: run against a live robot, it started the named scene.
+   * WATCHED: run on a T2351, it started the named scene.
    */
   startScene: method(
     ({ sink }) =>
@@ -2941,10 +2944,7 @@ export const VACUUM_CLEAN_MEMBERS = {
    * order given.
    *
    * Frame shape is byte-proven against the shared outer `ModeCtrlRequest`, and method 1 has been
-   * WATCHED: run against a live robot, it cleaned the rooms named. Worth recording per verb rather than
-   * once for the table, because 1 is a low number in a space whose other confirmed verbs sit at 6, 13,
-   * 14 and 24, and this one carries a payload — a mis-numbered frame would have been another command
-   * arriving with a room set attached, which on a fire-and-forget write looks exactly like success.
+   * WATCHED: run on a T2351, it cleaned the rooms named.
    */
   cleanRooms: method(
     ({ sink }) =>
@@ -2960,7 +2960,7 @@ export const VACUUM_CLEAN_MEMBERS = {
    * Corners are SIGNED centimetres in the map's own frame, whose origin sits wherever the robot first
    * mapped from — negative coordinates are ordinary and are ZigZag-encoded, not written as plain
    * varints. Same `mapId` reasoning as {@link VACUUM_CLEAN_MEMBERS.cleanRooms}, and the same evidence:
-   * method 2 has been run against a live robot and cleaned the rectangles given.
+   * method 2 was run on a T2351 and cleaned the rectangles given.
    */
   cleanZones: method(
     ({ sink }) =>

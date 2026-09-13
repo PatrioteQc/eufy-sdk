@@ -130,12 +130,12 @@ the missing method is the signal.
 Each verb is also optional on the surface, because whether a device has it is a runtime fact. The `?.`
 is not defensive style — it is the type telling you to check.
 
-**Every verb below has been run against a live robot and did what it says.** That is worth stating
-rather than assuming, because the two halves of a write here carry different kinds of proof: the frames
-are byte-verified against a captured `ModeCtrlRequest`, and the command NUMBER inside each one was read
-off the vendor's message definition. A robot acknowledges nothing — an AIoT data-point write is
-fire-and-forget — so a wrong number would be a different command arriving and looking exactly like
-success, which no amount of frame checking would catch. The numbers were watched instead.
+**Every mode-control verb below was run on a T2351 and did what it says** — the whole-floor four, and
+the three that take an argument. The two suction setters rest on something different: a data-point write
+the SKU's own catalog confirms, rather than a watched run.
+
+Worth separating, because a mode-control write carries a command NUMBER, and a wrong number is a
+different command rather than a failure.
 
 ### Whole-floor verbs
 
@@ -153,9 +153,9 @@ await dev.suction()?.setBoostIq?.(true);
 
 ### Cleaning part of a floor
 
-Three verbs take an argument, and each argument comes from a read the robot already publishes rather
-than from anything a caller has to invent. Running a **saved scene** is the simplest of the three: the
-argument is the robot's own scene id.
+Three verbs take an argument, and each argument comes from a read the robot already publishes rather than
+from anything you have to invent. Running a **saved scene** is the simplest: the argument is the robot's
+own scene id.
 
 ```ts
 const scenes = clean?.scenes?.(); // decoded off the robot's own scene report
