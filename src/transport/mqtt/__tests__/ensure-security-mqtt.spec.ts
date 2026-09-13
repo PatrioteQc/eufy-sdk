@@ -10,7 +10,7 @@ import type { EufyDevice } from "../../../core/types.js";
  *
  * The account's own credentials are the ONLY credentials used — there is no cert override, so the
  * router does no filesystem access at all. `discoverReachableInstance` and `SecureMqtt` are mocked (no
- * real network); `secureTopic`/`buildAppShapedClientId`/`generateMqttUuid` stay real (pure).
+ * real network); `secureTopic`/`buildAppShapedClientId`/`mqttUuidFrom` stay real (pure).
  */
 const discoverReachableInstance = vi.fn();
 vi.mock("../broker-discovery.js", () => ({ discoverReachableInstance }));
@@ -33,6 +33,7 @@ vi.mock("../secure-mqtt.js", async () => {
 });
 
 const { MqttCommandRouter } = await import("../command-router.js");
+const { mqttUuidFrom } = await import("../app-client-id.js");
 
 const DEV = { sn: "T85D0K0000000000", category: "eufy_security", model: "T85D0" } as unknown as EufyDevice;
 
@@ -45,9 +46,12 @@ const OWN_CREDS = {
   user_id: "u1",
 };
 
+/** The install identity the one-shot client id is built from, as `MegaHttpClient` resolves it. */
+const OPENUDID = "a".repeat(16);
+
 function makeRouter() {
   return new MqttCommandRouter({
-    mega: { getUserMqttInfo: vi.fn().mockResolvedValue(OWN_CREDS) } as any,
+    mega: { getUserMqttInfo: vi.fn().mockResolvedValue(OWN_CREDS), openudid: OPENUDID } as any,
     listDevices: () => [DEV],
     ensureDevices: async () => {},
     onCommandAck: () => {},
@@ -85,6 +89,17 @@ describe("MqttCommandRouter.ensureSecurityMqttFor — broker-instance probe", ()
       endpoint_addr: "aiot-mqtt-us.anker.com",
       aws_root_ca1_pem: "CA",
     });
+  });
+
+  it("identifies itself the same way on every run, being built from the install's own identity", async () => {
+    discoverReachableInstance.mockResolvedValue(granted("3.139.229.186"));
+
+    await (makeRouter() as any).ensureSecurityMqttFor(DEV);
+    const first = lastConstructedWith.clientId;
+    await (makeRouter() as any).ensureSecurityMqttFor(DEV);
+
+    expect(first.split("-")[3]).toBe(mqttUuidFrom(OPENUDID));
+    expect(lastConstructedWith.clientId.split("-")[3]).toBe(first.split("-")[3]);
   });
 
   it("throws after one probe round when every candidate denies", async () => {

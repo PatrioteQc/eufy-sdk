@@ -10,7 +10,7 @@
  * dash-stripped endpoint address there instead; the two disagree and were never reconciled. This
  * builder follows the timestamp form, the one that actually earned a granted SUBSCRIBE.
  */
-import { createHash, randomBytes } from "node:crypto";
+import { createHash } from "node:crypto";
 
 export interface AppClientIdInput {
   /** Topic scope, e.g. "eufy_security". */
@@ -30,17 +30,13 @@ export function buildAppShapedClientId(input: AppClientIdInput): string {
   return `android-${input.appName}-${input.uid}-${input.mqttUuid}-${ts}`;
 }
 
-/** A fresh stable-looking install UUID (16 hex chars) — generate ONCE per identity and persist it
- * (a new random value on every connect defeats the point of "stable"). */
-export function generateMqttUuid(): string {
-  return randomBytes(8).toString("hex");
-}
-
 /**
- * The `mqttUuid` for an identity that is already stable and persisted, hashed to the 16-hex shape
- * {@link buildAppShapedClientId} expects. Deterministic, so the same install produces the same value
- * on every run and two installs produce different ones; one-way, so the id it is derived from is not
- * recoverable from a client_id that travels the wire in clear.
+ * The `mqttUuid` segment for a client bound to `installId`, hashed to the 16-hex shape
+ * {@link buildAppShapedClientId} expects. Deterministic, so a client keeps its id across restarts and
+ * takes its own stale session over rather than doubling up beside it; one-way, so the id it is derived
+ * from is not recoverable from a client_id that travels the wire in clear.
+ *
+ * Two clients are distinguished exactly as far as their `installId` is: equal ids in, equal ids out.
  */
 export function mqttUuidFrom(installId: string): string {
   return createHash("sha256").update(installId).digest("hex").slice(0, 16);
