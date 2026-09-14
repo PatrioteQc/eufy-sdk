@@ -65,62 +65,86 @@ describe("battery capability module", () => {
     expect(BATTERY.detection?.evidenceParams).toContain(1101);
   });
 
-  it("publishes NO physical-cell read on a mains camera, whichever sentinel it reports", () => {
-    const namesFor = (model: string | undefined) =>
-      propertiesOf(BATTERY.members!, { model } as AvailabilityContext).map((p) => p.name);
-    // Every read that describes a CELL, not just the level. A mains camera reports the whole family as
-    // sentinels, so gating the level alone left it a cell temperature, a state of health and a solar
-    // harvest — on a device with no cell and, for the last two, no panel to attach one to. The
-    // temperature is the one that showed: a constant 30 on every mains camera at once.
-    const cell = [
-      "battery",
-      "charging",
-      "batteryTemperature",
-      "batteryHealth",
-      "solarIntensity",
-      "solarConnected24h",
-      // The seventh, and the one `unexposed` hid: suppressing the fluent getter says nothing about the
-      // schema, which is where a "battery power history" on a cell-less camera was still being published.
-      "batteryPowerStats",
-    ];
-    // T8425 Floodlight, T8419 Indoor, T8410 Indoor Pan & Tilt — all mains-only.
-    for (const model of ["T8425P00", "T8419P00", "T8410P00"]) {
-      for (const name of cell) expect(namesFor(model), `${model} still publishes ${name}`).not.toContain(name);
-    }
-    // The settings beside them stay, which is the whole reason the capability remains attached.
-    expect(namesFor("T8410P00")).toContain("workingMode");
-    expect(namesFor("T8410P00")).toContain("recordDuration");
-    // Real battery cams (and unknown models) keep every one of them.
-    for (const name of cell) expect(namesFor("T8114P00")).toContain(name);
-    expect(namesFor(undefined)).toContain("battery");
-    // And the list above is the whole of it, so a cell read added later cannot slip past this test by
-    // simply not being named here — see the bidirectional check below.
-    expect(cell.length).toBe(CELL_PARAMS.length);
+  it("names exactly seven cell params, pinned independently of the list itself", () => {
+    // The one place duplication is right. Every other assertion here iterates CELL_PARAMS, so dropping
+    // an entry drops its own check with it — and since `cellGated` applies the gate FROM that list, a
+    // deletion would silently un-gate a read and stay green. A test that takes its expectation from the
+    // thing under test proves nothing about it, so the expected set is written out.
+    expect([...CELL_PARAMS].sort((a, b) => a - b)).toEqual(
+      [1101, 1138, 1198, 2111, 3100, 6482, 1309].sort((a, b) => a - b),
+    );
   });
 
-  it("gates every cell read and nothing else, so the next one cannot be forgotten", () => {
-    // The omission this guards is the one that produced the bug twice over: the first pass gated 2 of 7
-    // reads, and `batteryPowerStats` was then missed again because `unexposed: true` looked like enough.
-    // A per-member `available` cannot be checked by reading the table, so the table is checked against
-    // `CELL_PARAMS` instead — in BOTH directions, which is what makes it a gate rather than a reminder.
-    const mains = { model: "T8410P00" } as AvailabilityContext;
-    const battery = { model: "T8114P00" } as AvailabilityContext;
-    const publishedOn = (ctx: AvailabilityContext) =>
-      new Set(propertiesOf(BATTERY.members!, ctx).map((p) => p.paramType));
-    const onMains = publishedOn(mains);
-    const onBattery = publishedOn(battery);
+  it("publishes NO physical-cell read on a mains camera, whichever sentinel it reports", () => {
+    // A mains camera reports the whole family as sentinels, so gating the level alone left it a cell
+    // temperature, a state of health and a solar harvest — on a device with no cell and, for the last
+    // two, no panel to attach one to. The temperature is the one that showed: a constant 30 everywhere.
+    //
+    // Driven off CELL_PARAMS rather than a second list of names, because `cellGated` applies the gate
+    // from exactly that list: naming them again here would test the copy instead of the thing.
+    const published = (model: string | undefined) =>
+      new Set(propertiesOf(BATTERY.members!, { model } as AvailabilityContext).map((p) => p.paramType));
 
+    // T8425 Floodlight, T8419 Indoor, T8410 Indoor Pan & Tilt — all mains-only.
+    for (const model of ["T8425P00", "T8419P00", "T8410P00"]) {
+      for (const param of CELL_PARAMS) {
+        expect(published(model), `${model} still publishes ${param}`).not.toContain(param);
+      }
+    }
+    // The settings beside them stay, which is the whole reason the capability remains attached.
+    expect(published("T8410P00")).toContain(BATTERY_PARAM.WORKING_MODE);
+    expect(published("T8410P00")).toContain(BATTERY_PARAM.RECORD_DURATION);
+    // A real battery cam keeps every one of them.
+    for (const param of CELL_PARAMS) expect(published("T8114P00")).toContain(param);
+  });
+
+  it("fails OPEN: a record with no model keeps every cell read", () => {
+    // The chosen direction, not an oversight. `notMainsCamera` matches a prefix, so a record carrying no
+    // model matches nothing and publishes everything — the same as any model the list does not name.
+    // A real battery camera never silently loses its charge because its record was thin; the cost is
+    // that the guard is a floor, and a mains model nobody has enumerated still shows the sentinels.
+    const published = (ctx: AvailabilityContext) =>
+      new Set(propertiesOf(BATTERY.members!, ctx).map((p) => p.paramType));
     for (const param of CELL_PARAMS) {
-      expect(onBattery, `${param} is a cell param that no member reads`).toContain(param);
-      expect(onMains, `${param} is a cell read with no notMainsCamera gate`).not.toContain(param);
+      expect(published({} as AvailabilityContext), `no model should publish ${param}`).toContain(param);
+      expect(published({ model: "" } as AvailabilityContext)).toContain(param);
     }
-    // The other direction: a gate on something that is not a cell read would be withholding a reading a
-    // mains camera genuinely answers — `powerSource` says which supply is in use, and the recording
-    // settings describe how hard the camera works. Both are why the capability stays attached at all.
-    for (const param of onBattery) {
-      if (CELL_PARAMS.includes(param)) continue;
-      expect(onMains, `${param} is gated but is not in CELL_PARAMS`).toContain(param);
+  });
+
+  it("gates the BINDER too, not just the published schema", () => {
+    // `propertiesOf` is one projection; `bindMembers` makes its own `available` decision, and a caller
+    // holding `dev.battery()` goes through that one. Covering only the schema would leave the surface a
+    // caller actually touches unpinned — and it is the surface the original symptom was reported from.
+    const ctx = (model: string): CommandContext => ({
+      channel: 0,
+      codec: "camera",
+      capabilities: new Set<Capability>(["battery"]),
+      paramIds: new Set(CELL_PARAMS.concat([BATTERY_PARAM.POWER_CHARGE, BATTERY_PARAM.WORKING_MODE])),
+      model,
+    });
+    // Member names, not property names: the bound object is keyed by the table's own keys.
+    const bound = (model: string) => Object.keys(bind<BatteryActions>("battery", ctx(model)).acts as object).sort();
+
+    // Everything a mains camera binds, pinned whole rather than as absences — so a cell getter that
+    // starts installing shows up here even if nobody thought to name it.
+    expect(bound("T8410P00")).toEqual(["powerSource", "setPowerSource", "setWorkingMode", "workingMode"]);
+    // And the same context on a real battery cam binds the cell reads beside them.
+    for (const name of ["level", "charging", "temperature", "health", "solarIntensity", "solarConnected24h"]) {
+      expect(bound("T8114P00"), `a battery camera lost ${name}`).toContain(name);
     }
+  });
+
+  it("gates the READS only — detection and the cell alerts are untouched, deliberately", () => {
+    // The claim this guard makes is about what a device REPORTS, and it stops there. `evidenceParams`
+    // still names 1101, so a mains camera reporting that sentinel still resolves as `battery` — which is
+    // load-bearing: the capability owns the working-mode and recording settings it genuinely has, and
+    // detecting it away would take those with it. The push events are the same shape: a station can still
+    // deliver a low- or hot-cell alert for one of these models, and nothing here filters that.
+    //
+    // So the surface is honest and the plumbing is not yet. Pinned rather than fixed, because detaching
+    // either would need evidence about what these models actually push, which nothing here has.
+    expect(BATTERY.detection?.evidenceParams).toContain(BATTERY_PARAM.BATTERY);
+    expect(BATTERY.events?.length).toBeGreaterThan(0);
   });
 
   it("writes recordAutoStop as an INVERTED station-scalar on the device channel (wire-verified T8170)", () => {
