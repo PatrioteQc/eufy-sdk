@@ -14,6 +14,7 @@ import {
 import { buildCommand } from "../index.js";
 import { propertiesOf } from "../members.js";
 import type { AvailabilityContext } from "../types.js";
+import { Device } from "../../device.js";
 import { bind } from "./bind.js";
 import type { CommandContext } from "../types.js";
 import type { Capability } from "../../types.js";
@@ -132,6 +133,44 @@ describe("battery capability module", () => {
     for (const name of ["level", "charging", "temperature", "health", "solarIntensity", "solarConnected24h"]) {
       expect(bound("T8114P00"), `a battery camera lost ${name}`).toContain(name);
     }
+  });
+
+  it("withholds the reading from getProperty too, not just from the typed surface", () => {
+    // The gate has to hold on the surface a host actually reads, and `propertiesOf` is not that surface.
+    // `applyParams` names by precedence — curated spec, then the param dictionary — so dropping the
+    // member leaves the value to be re-named by the dictionary. For 1101 and 1309 the dictionary name is
+    // the SAME (`battery`, `solarIntensity`), which made the gate invisible to a caller: `getProperty`
+    // answered 88 on a camera with no cell. The others came back under the dictionary's spelling
+    // (`batteryTemp`, `devBatteryHealthyV2`, `solarPanelConnect24h`, `batteryPowerDatas`) — renamed,
+    // not withheld.
+    const params = { 1101: "88", 1138: "30", 1198: "95", 2111: "0", 1309: "7", 6482: "1", 3100: "{}", 1293: "0" };
+    const of = (model: string) =>
+      Device.fromRecord(`${model}P0000000000`, {
+        deviceType: 30,
+        model,
+        category: "eufy_security",
+        params,
+      } as never);
+
+    const mains = of("T8410");
+    for (const name of ["battery", "solarIntensity", "batteryTemperature", "batteryHealth", "batteryPowerStats"]) {
+      expect(mains.getProperty(name), `a mains camera served ${name}`).toBeUndefined();
+    }
+    // Including under the dictionary's own spelling, which is the half that made this invisible.
+    for (const name of ["batteryTemp", "devBatteryHealthyV2", "solarPanelConnect24h", "batteryPowerDatas"]) {
+      expect(mains.getProperty(name), `a mains camera served ${name}`).toBeUndefined();
+    }
+    // Kept, not dropped: the graceful-unknown rule says the data survives, under a name claiming nothing.
+    const keys = Object.keys(mains.getProperties()).sort();
+    for (const param of CELL_PARAMS) expect(keys).toContain(`unknown_${param}`);
+    // And the supply it genuinely reports is still named.
+    expect(mains.getProperty("powerSource")).toBeDefined();
+
+    // A real battery camera is untouched, under the member's name.
+    const cell = of("T8114");
+    expect(cell.getProperty("battery")?.value).toBe(88);
+    expect(cell.getProperty("solarIntensity")?.value).toBe(7);
+    expect(Object.keys(cell.getProperties())).not.toContain("unknown_1101");
   });
 
   it("gates the READS only — detection and the cell alerts are untouched, deliberately", () => {
