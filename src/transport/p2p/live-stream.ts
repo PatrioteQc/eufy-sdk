@@ -96,7 +96,7 @@ export interface LiveStreamOptions {
    * How long an attached stream tolerates silence on its own channel before re-asserting again, in ms.
    *
    * The re-assert is settled by the first own-channel frame, because settling it is what stops two attached
-   * streams contending on a station that serves one camera at a time. Silence for this long says the station
+   * streams contending over one session, which serves one camera at a time. Silence for this long says the station
    * is no longer serving this camera, which is the only condition the re-assert was for. Defaults to twice
    * the keepalive interval, so a stream whose media flows never reaches it.
    */
@@ -187,8 +187,9 @@ export class LiveStream extends EventEmitter {
    * Stop re-issuing the media start once this camera's own media has arrived, on an attached camera.
    *
    * The nudge differs by topology and only one branch is a ping: an own-session camera sends a small
-   * keepalive, while an attached camera has no such state and re-sends the FULL media start. On a station that
-   * serves one camera at a time that restart re-asserts this channel against whatever else is warm, so two
+   * keepalive, while an attached camera has no such state and re-sends the FULL media start. Over one session,
+   * which serves one camera at a time, that restart re-asserts this channel against whatever else is warm on
+   * it, so two
    * attached streams restart every interval and contend for the station continuously — measured on a real base
    * as a full start every 3 s from each.
    *
@@ -357,7 +358,7 @@ export class LiveStream extends EventEmitter {
    *
    * The match is UNCONDITIONAL, however long a station serves another camera instead of this one.
    *
-   * A station serving one camera at a time hands a newly opened camera nothing but its sibling's frames until
+   * One session serving one camera at a time hands a newly opened camera nothing but its sibling's frames until
    * it switches, so "no media of my own yet, plenty for someone else" is what an ordinary handover looks like
    * and does not distinguish a station that tags differently from one that is simply busy.
    *

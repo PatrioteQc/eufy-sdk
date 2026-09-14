@@ -51,8 +51,8 @@ export async function openLiveStream(session: P2PSession, opts: LiveStreamOption
  * image, so the image is its source of truth.
  *
  * The consumer is detached the moment the collected run is complete, and the decode that follows holds no
- * station: it works on bytes already in memory. A station serves one camera at a time and the SDK refuses a
- * second channel on one that is busy, so a still that kept its pull attached across its own decode would deny
+ * station: it works on bytes already in memory. One session serves one camera at a time and a still never
+ * opens a second one, so a still that kept its pull attached across its own decode would deny
  * that station to every live request for the length of an FFmpeg run — measured on a real base as a live
  * request refused 370ms after the still it was waiting on had already collected everything it needed.
  *

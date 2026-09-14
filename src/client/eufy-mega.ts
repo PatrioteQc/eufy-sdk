@@ -1061,9 +1061,9 @@ export class EufyMega extends EventEmitter {
   /**
    * Combine explicit P2P media with the optional passive push-thumbnail provider.
    *
-   * The retained still also becomes the answer for a live still that could not be captured. A station
-   * serves one camera at a time and a live view outranks a tile, so a still asked for while a sibling is
-   * being watched is refused at the transport. Answering the retained bytes answers the read rather than
+   * The retained still also becomes the answer for a live still that could not be captured. One session
+   * serves one camera at a time and a live view outranks a tile — a still does not open a connection of its
+   * own — so a still asked for while a sibling is being watched is refused at the transport. Answering the retained bytes answers the read rather than
    * failing it, marked {@link MediaProvider.snapshotLive} `retained` so the caller knows they are not
    * current. With nothing retained the refusal stands.
    */
@@ -1857,10 +1857,15 @@ export class EufyMega extends EventEmitter {
   }
 
   /**
-   * Stations with a live P2P session. P2P is auto-managed: wired stations are warmed at login, battery
+   * The open P2P sessions, by key. P2P is auto-managed: wired stations are warmed at login, battery
    * stations open on demand (command / stream, or an opted-in event pre-warm) and idle-detach — so this
-   * map grows and shrinks over time. `p2pConnect(stationSn)` / `p2pClose(stationSn)` events track the
-   * changes.
+   * map grows and shrinks over time.
+   *
+   * A station's own session is keyed by its serial, and `p2pConnect(stationSn)` / `p2pClose(stationSn)`
+   * track those. A station serving more than one camera at once also holds a session per extra camera,
+   * keyed `<stationSn>#live:<channel>` — these carry media alone and raise no connection events, because
+   * a station announces its state to every client that connects and reporting each copy would double
+   * every event the station's own session already delivers.
    */
   getP2pSessions(): Map<string, P2PSession> {
     return this.p2p.getSessions();
