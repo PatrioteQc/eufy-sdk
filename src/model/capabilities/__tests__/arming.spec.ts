@@ -124,10 +124,11 @@ describe("arming capability module", () => {
         "geo",
         "disarmed",
       ]);
-      // Read and write are the same nine now, which is what makes the member stop narrowing its write.
-      // Still two derivations off one table rather than one list used twice — see SETTABLE_MODES.
-      expect(mode.args[0].values).toEqual([0, 1, 2, 3, 4, 5, 6, 47, 63]);
-      expect(mode.args[0].values).toEqual(Object.keys(mode.enumValues).map(Number));
+      // No `args` entry: the member's two sides agree, so `enumValues` IS the write domain (`writeDomain`
+      // falls back to it) and the argument derives from it. Stating it again would be the second
+      // declaration that has to be kept equal — `ARMING_MODE_WIRE: Record<ArmingMode, number>` is what
+      // holds the table to the union now, at compile time, so there is nothing left for a test to pin.
+      expect("args" in mode).toBe(false);
     });
 
     it("setMode round-trips the wire integer the mode getter answers", async () => {
