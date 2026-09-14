@@ -170,6 +170,24 @@ export const CAPABILITY_MODULES = Object.fromEntries(MODULES.map((m) => [m.capab
 >;
 
 /**
+ * Every param these capabilities declare before any gate — the set a device's schema is a subset of.
+ *
+ * A param in here that a device's schema does NOT carry is one a gate withheld: the capability resolved,
+ * and its member decided the read does not describe this device — a cell reading on a mains model, a mode
+ * a family does not carry. Read-aliases count, since a member reads them under its own name.
+ * @internal
+ */
+export function claimedParams(caps: Capability[]): Set<number> {
+  const claimed = new Set<number>();
+  for (const cap of caps)
+    for (const spec of getCapabilityModule(cap)?.properties ?? []) {
+      claimed.add(spec.paramType);
+      for (const alias of spec.readAliases ?? []) claimed.add(alias.paramType);
+    }
+  return claimed;
+}
+
+/**
  * Merge the property schemas of several capabilities into one flat, de-duplicated list.
  *
  * Properties are de-duplicated by `PropertySpec.name` with **first-wins** semantics, so the

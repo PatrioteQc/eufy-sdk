@@ -31,11 +31,18 @@ const allParams = (): Set<number> =>
     ),
   );
 
-const ctxWith = (paramIds: Set<number>): CommandContext => ({
+/**
+ * `model` is optional and worth passing wherever the fixture names one: without it a model-gated read
+ * installs on everything, so a fixture claiming to be a particular camera proves nothing about that
+ * camera. That is how a `T8410` record came to assert it installs a battery `level` — the record said
+ * one model and the context it was bound with knew none.
+ */
+const ctxWith = (paramIds: Set<number>, model?: string): CommandContext => ({
   channel: 0,
   codec: "camera",
   paramIds,
   capabilities: new Set(MODULES.map((m) => m.capability)),
+  ...(model ? { model } : {}),
 });
 
 /** Describe the bound objects of a synthetic device that HAS every capability. */
@@ -230,10 +237,13 @@ describe("describeCapabilities — enumeration of the live bound objects", () =>
 });
 
 describe("Device.describe — the manifest a caller renders from", () => {
-  const record = { deviceType: 30, model: "T8410", category: "eufy_security", params: { 1101: "88", 1102: "1" } };
+  // A battery camera, since the record reports a level and the spec below asserts the `level` read
+  // installs. `T8410` is mains-only (see MAINS_CAMERA_MODELS), so that assertion was only true because
+  // the bind context carried no model for the gate to read.
+  const record = { deviceType: 30, model: "T8114", category: "eufy_security", params: { 1101: "88", 1102: "1" } };
   const bound = (): Device => {
     const dev = Device.fromRecord("T8000P0000000000", record);
-    dev.bindActions(ctxWith(new Set([1101, 1102])), sink);
+    dev.bindActions(ctxWith(new Set([1101, 1102]), record.model), sink);
     return dev;
   };
 
@@ -303,8 +313,8 @@ describe("Device.describe — the manifest a caller renders from", () => {
 describe("describing a device sends nothing", () => {
   it("dispatches no command", () => {
     const sent: Command[] = [];
-    const dev = Device.fromRecord("T8000P0000000000", { deviceType: 30, model: "T8410", params: { 1101: "88" } });
-    dev.bindActions(ctxWith(allParams()), { dispatch: async (c) => void sent.push(c) });
+    const dev = Device.fromRecord("T8000P0000000000", { deviceType: 30, model: "T8114", params: { 1101: "88" } });
+    dev.bindActions(ctxWith(allParams(), "T8114"), { dispatch: async (c) => void sent.push(c) });
     dev.describe();
     expect(sent).toEqual([]);
   });
