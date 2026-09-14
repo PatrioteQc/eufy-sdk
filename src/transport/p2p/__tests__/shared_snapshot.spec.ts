@@ -68,7 +68,8 @@ describe("captureSnapshotFromShared (V6 snapshot as consumer)", () => {
    * The station is free before the decode, not after it.
    *
    * A decode works on bytes already collected, so a still that kept its pull attached across it would hold a
-   * station that serves one camera at a time for the length of an FFmpeg run — which is a live request refused
+   * session that serves one camera at a time — and a still never opens one of its own — for the length of an
+   * FFmpeg run — which is a live request refused
    * for a still that had already taken everything it needed.
    */
   it("releases the station as soon as it has collected, without waiting for the decode", async () => {

@@ -129,14 +129,16 @@ export interface SharedLiveSourceOptions {
    * Not called by {@link SharedLiveSource.dispose}: the owner asked for that one, and it is the very thing
    * an owner does in response to this callback.
    */
+  onStartFailed?: () => void;
   /**
-   * Called once this source has stopped pulling — its linger elapsed, its budget ran out, or it was
-   * torn down. Distinct from {@link onIdle}, which fires when the last consumer leaves and the linger
-   * is still holding the pull open for a quick re-attach: a caller that owns a connection for this
-   * source alone must release it here, not there, or it pays for the linger with the connection closed.
+   * The pull has ended and will not resume: the linger elapsed, the battery budget ran out, or the source
+   * was torn down. A later attach builds a fresh stream rather than reviving this one.
+   *
+   * Distinct from {@link onIdle} by what is still running. `onIdle` fires at the last detach, while the
+   * linger is still holding the pull open so a quick re-attach costs nothing; between the two the pull is
+   * alive. This fires when it is not.
    */
   onStopped?: () => void;
-  onStartFailed?: () => void;
   /**
    * A media start was abandoned unacknowledged before anything was delivered, so this session is not being
    * heard. The owner is asked for a replacement and calls {@link SharedLiveSource.rewarm} once it has one.

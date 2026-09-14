@@ -146,7 +146,13 @@ export class SessionManager {
     return e;
   }
 
-  /** Register an already-built session for test seeding or an externally assembled connection. */
+  /**
+   * Register an already-built session for test seeding or an externally assembled connection.
+   *
+   * `station` defaults to the key, which is safe HERE and nowhere else in this class: the paths that open a
+   * session under a key that is not a station serial all go through {@link acquire}, which requires it. A
+   * caller seeding one under such a key must pass it.
+   */
   register(key: string, session: P2PSession, station: string = key): void {
     this.entry(key, station).session = session;
   }
@@ -159,7 +165,7 @@ export class SessionManager {
   async acquire(
     key: string,
     factory: (register: (session: P2PSession) => void) => Promise<P2PSession>,
-    station: string = key,
+    station: string,
   ): Promise<P2PSession> {
     const e = this.entry(key, station);
     if (e.connecting) {
@@ -185,9 +191,20 @@ export class SessionManager {
     }
   }
 
-  /** Add a reason to stay connected; cancels a pending idle-close. */
-  retain(key: string, station: string): void {
-    const e = this.entry(key, station);
+  /**
+   * Add a reason to stay connected; cancels a pending idle-close.
+   *
+   * Refused when nothing is open under `key`, for the reason {@link release} gives in the other direction: a
+   * retain names a session that was acquired, and one that names nothing would file an entry with no
+   * connection behind it. {@link hold} is the path that legitimately creates one, and it opens the entry
+   * itself before retaining it.
+   */
+  retain(key: string): void {
+    const e = this.entries.get(key);
+    if (!e) {
+      this.logger.warn(`[session ${key}] retain on a session that is not open — ignored`);
+      return;
+    }
     e.retained++;
     if (e.idle.pending) this.logger.debug(`[session ${key}] in use again — idle-detach cancelled`);
     e.idle.cancel();
@@ -241,7 +258,7 @@ export class SessionManager {
    */
   hold(key: string, ms: number, station: string): void {
     const entry = this.entry(key, station);
-    this.retain(key, station);
+    this.retain(key);
     const timer = setTimeout(() => {
       entry.holdTimers.delete(timer);
       this.release(key);

@@ -187,8 +187,9 @@ export class LiveStream extends EventEmitter {
    * Stop re-issuing the media start once this camera's own media has arrived, on an attached camera.
    *
    * The nudge differs by topology and only one branch is a ping: an own-session camera sends a small
-   * keepalive, while an attached camera has no such state and re-sends the FULL media start. On a station that
-   * serving one camera at a time, that restart re-asserts this channel against whatever else is warm, so two
+   * keepalive, while an attached camera has no such state and re-sends the FULL media start. Over one session,
+   * which serves one camera at a time, that restart re-asserts this channel against whatever else is warm on
+   * it, so two
    * attached streams restart every interval and contend for the station continuously — measured on a real base
    * as a full start every 3 s from each.
    *

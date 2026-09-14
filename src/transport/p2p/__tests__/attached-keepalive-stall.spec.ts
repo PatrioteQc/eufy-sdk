@@ -6,8 +6,9 @@ import { FakeP2PSession, p2pVideoFrame } from "./live-source-fixtures.js";
 /**
  * An attached stream the station stopped serving re-asserts its channel, once its media has actually stopped.
  *
- * The 3 s re-assert is settled by the first own-channel frame, because a station serving one camera at a time
- * is re-tasked by every re-assert: two attached streams doing it continuously contend forever — measured as a
+ * The 3 s re-assert is settled by the first own-channel frame, because one session serving one camera at a
+ * time is re-tasked by every re-assert: two attached streams sharing one and doing it continuously contend
+ * forever — measured as a
  * full start every 3 s from each, and settling it is what let both hold a 40 s stream.
  *
  * Settling it for the stream's whole life left nothing to recover a stream the station later gave to a

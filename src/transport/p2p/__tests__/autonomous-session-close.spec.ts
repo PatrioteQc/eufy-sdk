@@ -67,7 +67,7 @@ describe("a station's session closing without a caller", () => {
     manager.register(STATION, fakeSession());
     const { dispose, stop } = seedRiders(sources, talkbacks);
 
-    manager.retain(STATION, STATION);
+    manager.retain(STATION);
     manager.release(STATION);
     await vi.advanceTimersByTimeAsync(1000);
 
@@ -83,7 +83,7 @@ describe("a station's session closing without a caller", () => {
     manager.register(STATION, fakeSession());
     const { dispose } = seedRiders(sources, talkbacks);
 
-    manager.retain(STATION, STATION);
+    manager.retain(STATION);
     const reset = manager.resetWhenUnused(STATION);
     manager.release(STATION);
     await reset;

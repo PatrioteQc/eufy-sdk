@@ -891,7 +891,7 @@ export class P2PCommandRouter {
         budgetGraceMs: opts.budgetGraceMs,
         logger,
         label: key,
-        onActive: () => this.manager.retain(sessionKey, parentSn),
+        onActive: () => this.manager.retain(sessionKey),
         onIdle: () => this.manager.release(sessionKey),
         onStopped: () => this.closeMediaSession(key),
         onStartFailed: () => this.onLiveStartFailed(sn, key),
@@ -923,6 +923,11 @@ export class P2PCommandRouter {
    * zero consumers as a linger, and disposes the source its caller is holding. Which is the four-tile case
    * this whole path exists for.
    *
+   * A sibling lingering on a connection of its OWN is skipped for the same reason stated the other way: the
+   * contention this releases is contention over one session, and that sibling is not on this one. Dropping
+   * it would close a socket and throw away the cheap re-attach the linger exists to provide, to relieve a
+   * competition that is not happening.
+   *
    * A snapshot tile is nobody looking. Opening a live view in the Home app takes that cell fullscreen, so the
    * pulls refreshing the other cells are off screen, yet each goes on re-issuing its own media start every
    * retry tick — measured as four pulls warming together off one HomeBase, a live request landing 1.4 s later,
@@ -936,6 +941,7 @@ export class P2PCommandRouter {
     for (const [key, source] of [...this.liveSources]) {
       if (!key.startsWith(`${parentSn}:`) || key === own || source.consumerCount > 0) continue;
       if (source.state === "idle") continue;
+      if (this.liveSessionKeys.get(key) !== parentSn) continue;
       (this.deps.logger ?? noopLogger).debug(
         `[live ${key}] releasing a pull nothing is attached to so ${own} can start — ` +
           `one session serves one camera at a time`,
@@ -1440,7 +1446,8 @@ export class P2PCommandRouter {
       this.manager.get(sn) ??
       (dev.stationSn ? this.manager.get(dev.stationSn) : undefined);
     if (!session) {
-      throw new Error(`no P2P session for ${sn} (known: ${this.manager.keys().join(", ") || "none"})`);
+      const stations = this.manager.keys().filter((k) => !P2PCommandRouter.isMediaSessionKey(k));
+      throw new Error(`no P2P session for ${sn} (known: ${stations.join(", ") || "none"})`);
     }
     if (session.pathAnswering === false && !rebuilt) {
       (this.deps.logger ?? noopLogger).debug(`[p2p] ${parentSn} path stopped answering — rebuilding before use`);

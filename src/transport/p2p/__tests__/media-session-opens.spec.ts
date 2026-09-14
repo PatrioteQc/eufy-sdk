@@ -163,6 +163,26 @@ describe("a second live camera on a claimed station session", () => {
   });
 
   /**
+   * The linger sweep relieves contention over ONE session. A sibling lingering on a connection of its own is
+   * not competing for the one being started on, so dropping it would close a socket and throw away the cheap
+   * re-attach the linger exists for, to settle a competition that is not happening.
+   */
+  it("leaves a sibling lingering on its own connection alone, having nothing to contend with", async () => {
+    const r = router();
+    const a = (await openLive(r, CAM_A)).attach() as { detach(): void };
+    const b = await openLive(r, CAM_B);
+    const bConsumer = b.attach() as { detach(): void };
+    expect(sessionKeys(r).get(`${STATION_SN}:2`)).toBe(`${STATION_SN}#live:2`);
+
+    bConsumer.detach();
+    a.detach();
+    (await openLive(r, CAM_A)).attach();
+
+    expect(sources(r).has(`${STATION_SN}:2`)).toBe(true);
+    expect(built).toHaveLength(2);
+  });
+
+  /**
    * A wired station's idle window is infinite by design, so a media session left retained by a stopped
    * source is never reclaimed by the lifecycle: its socket and 5 s heartbeat stay up until that same
    * camera is asked for again, a sibling opens, or the station goes. The connection exists for one pull
