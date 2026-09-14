@@ -4,12 +4,10 @@
  * the device reports (its catalog category + record fields + live telemetry) rather than switched on
  * its model. Callers branch on {@link SolixDevice.has}(capability), never on the product code.
  *
- * The capabilities and their surface come from the SAME capability-module pattern the eufy model uses
- * ({@link SOLIX_MODULES} — `CapabilityModule<SolixCapability>`, one `members` table per feature), NOT a
- * hand-rolled parallel system: `energyMeter()`'s reads are derived by the shared `bindMembers` engine
- * and evidence-gated, so a getter exists only once a live frame has carried its tag. `identity` /
- * `firmware` / `connectivity` are read-only projections of the device record (like the eufy `info`
- * capability), so they take no telemetry and are always answerable when the record carries the field.
+ * `energyMeter()`'s reads come from the shared `members` engine ({@link SOLIX_ENERGY_METER_MEMBERS} +
+ * `bindMembers`) and are evidence-gated, so a getter exists only once a live frame has carried its tag.
+ * `identity` / `firmware` / `connectivity` are read-only projections of the device record, so they take
+ * no telemetry and are answerable whenever the record carries the field.
  */
 import { bindMembers } from "./capabilities/members.js";
 import type { CapabilityStateReader, CommandContext } from "./capabilities/types.js";
@@ -23,8 +21,10 @@ import {
 import { buildModelIndex } from "./solix-catalog.js";
 import type { SolixDeviceRecord, SolixProductCategory } from "../core/solix-types.js";
 
-// Re-exported for callers that import the record shape from the model surface (it lives in core so the
-// transport client can return it without crossing the transport↔model line — see core/solix-types).
+/**
+ * The device record shape, re-exported from the model surface. It lives in `core/solix-types` so the
+ * transport client can return it without crossing the transport↔model line.
+ */
 export type { SolixDeviceRecord } from "../core/solix-types.js";
 
 export interface SolixIdentity {
@@ -43,12 +43,11 @@ export interface SolixConnectivity {
 
 /**
  * The `dev.energyMeter()` handle: the members-derived reads ({@link SolixEnergyMeterReads} —
- * `meterVoltageL1` is present only once a frame carrying its tag has landed) plus the bespoke
- * `channels()`, which returns every decoded float keyed `channel_<hex tag>`. `channels()` is not a
- * member because a static members table cannot enumerate arbitrary dynamic hex tags; it is where every
- * not-yet-named meter quantity is read until its tag→name binding is confirmed.
+ * `meterVoltageL1` is present only once a frame carrying its tag has landed). Every not-yet-named meter
+ * quantity is read from {@link SolixDevice.telemetry} under its `channel_<hex tag>` key instead, which a
+ * static members table cannot enumerate.
  */
-export type SolixEnergyMeter = SolixEnergyMeterReads & { channels(): Record<string, number> };
+export type SolixEnergyMeter = SolixEnergyMeterReads;
 
 /** Options for {@link SolixDevice}. */
 export interface SolixDeviceOptions {
@@ -130,28 +129,29 @@ export class SolixDevice {
     };
   }
 
+  /**
+   * The members-derived `energyMeter` reads, or `undefined` when the device has no meter. Each getter is
+   * installed only for a tag this device has actually reported, and reads `this.values` LIVE — a handle
+   * held across an {@link applyReading} reflects the newer values. Getter INSTALLATION is fixed at the
+   * time of this call, so re-call it to pick up a tag first seen since.
+   */
   energyMeter(): SolixEnergyMeter | undefined {
     if (!this.has("energyMeter")) return undefined;
-    // Members-derived reads via the shared engine. The reads flip on live: bindMembers gates each getter
-    // on `ctx.paramIds`, which is rebuilt each call from the tags this device has actually reported (the
-    // `channel_<hex>` keys the decoder writes), so `meterVoltageL1` exists only once tag 0xAC has landed.
-    const reads = bindMembers(SOLIX_ENERGY_METER_MEMBERS, this.meterDeps());
-    return Object.assign(reads, { channels: () => this.telemetry() });
+    return bindMembers(SOLIX_ENERGY_METER_MEMBERS, this.meterDeps());
   }
 
-  /** Minimal {@link MemberDeps} for the members engine: a read closure over the values store + the seen tags. */
+  /**
+   * The {@link MemberDeps} the members engine needs: a read closure over the live values store, and the
+   * evidence gate (`ctx.paramIds`) rebuilt from the ff09 tags this device has reported. No `codec` — the
+   * codecs are eufy transport families and a Solix device belongs to none of them. The sink is a no-op:
+   * Solix telemetry is read-only, no member here dispatches a command.
+   */
   private meterDeps(): { ctx: CommandContext; sink: CommandSink; read: CapabilityStateReader } {
-    // Reads `this.values` LIVE (not a captured snapshot): applyReading rebinds it, so a getter on a held
-    // handle reflects a later reading. (Getter INSTALLATION is still gated on the evidence at bind time —
-    // re-call energyMeter() to pick up a getter for a tag first seen after the handle was taken.)
     const read: CapabilityStateReader = (name) => {
       const v = this.values[name];
       return v === undefined ? undefined : { name, paramType: 0, value: v, ts: Date.now() };
     };
-    // `codec` is required by CommandContext but is a pure eufy discriminator no Solix member consults —
-    // pass a benign sentinel; it never leaves this internal context. paramIds is the evidence gate.
-    const ctx: CommandContext = { codec: "sensor", channel: 0, paramIds: this.seenTags() };
-    return { ctx, sink: READ_ONLY_SINK, read };
+    return { ctx: { channel: 0, paramIds: this.seenTags() }, sink: READ_ONLY_SINK, read };
   }
 
   /** The ff09 tags this device has reported, derived from the decoder's `channel_<hex>` keys. */

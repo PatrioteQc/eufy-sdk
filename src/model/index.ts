@@ -130,17 +130,6 @@ export {
   type SolixEnergyMeter,
   type SolixDeviceOptions,
 } from "./solix-device.js";
-// Solix capability modules — the SAME CapabilityModule pattern (see capabilities/solix.ts), Solix-scoped.
-export {
-  SOLIX_MODULES,
-  SOLIX_ENERGY_METER_MEMBERS,
-  CATEGORY_CAPABILITIES,
-  SOLIX_METER_MODELS,
-  SOLARBANK_MODELS,
-  detectSolixCapabilities,
-  type SolixCapability,
-  type SolixCapabilityModule,
-  type SolixEnergyMeterReads,
-  type SolixDetectionInput,
-} from "./capabilities/solix.js";
+// Solix capability ids + the one confirmed members table the meter surface derives from.
+export { SOLIX_ENERGY_METER_MEMBERS, type SolixCapability, type SolixEnergyMeterReads } from "./capabilities/solix.js";
 export { buildModelIndex, type SolixProduct, type SolixProductCategory } from "./solix-catalog.js";

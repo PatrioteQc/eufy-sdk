@@ -1,24 +1,15 @@
 import { describe, expect, it } from "vitest";
 
-import { SOLIX_MODULES, SOLIX_ENERGY_METER_MEMBERS, detectSolixCapabilities, type SolixCapability } from "../solix.js";
+import { SOLIX_ENERGY_METER_MEMBERS, detectSolixCapabilities } from "../solix.js";
 import { propertiesOf } from "../members.js";
 
 /**
- * Solix capability modules use the SAME module pattern as eufy — one `members` table per feature, the
- * schema/getters derived from it — and are Solix-scoped (their own id union + registry, never eufy's).
- * These lock the line partition, the members-derived schema, and the category/prefix detection.
+ * The Solix capability surface: one `members` table for the single feature with a confirmed readable
+ * wire, and category/prefix detection for the rest. These lock the members-derived schema and detection.
  */
-describe("Solix capability modules", () => {
-  it("every Solix module declares line 'solix' (the product-line partition covers them)", () => {
-    for (const [cap, mod] of Object.entries(SOLIX_MODULES)) {
-      expect(mod.line, cap).toBe("solix");
-      expect(mod.capability).toBe(cap);
-    }
-  });
-
-  it("energyMeter's schema derives from its members table: only the confirmed meterVoltageL1 (0xAC)", () => {
-    const props = SOLIX_MODULES.energyMeter.properties;
-    expect(props).toEqual(propertiesOf(SOLIX_ENERGY_METER_MEMBERS));
+describe("Solix capability surface", () => {
+  it("the energyMeter schema derives from its members table: only the confirmed meterVoltageL1 (0xAC)", () => {
+    const props = propertiesOf(SOLIX_ENERGY_METER_MEMBERS);
     expect(props).toHaveLength(1);
     const v = props[0];
     expect(v.name).toBe("meterVoltageL1");
@@ -26,24 +17,6 @@ describe("Solix capability modules", () => {
     expect(v.type).toBe("number");
     expect(v.provenance).toBe("verified");
     expect(v.writable).toBe(false);
-  });
-
-  it("detection-only modules carry no members, so no getter can return a phantom value", () => {
-    const detectionOnly: SolixCapability[] = [
-      "identity",
-      "firmware",
-      "connectivity",
-      "battery",
-      "solarInput",
-      "acOutput",
-      "evCharger",
-      "charger",
-      "cooler",
-    ];
-    for (const cap of detectionOnly) {
-      expect(SOLIX_MODULES[cap].properties, cap).toEqual([]);
-      expect(SOLIX_MODULES[cap].members, cap).toBeUndefined();
-    }
   });
 
   it("detects capabilities from catalog category + product-code prefix (identity always present)", () => {

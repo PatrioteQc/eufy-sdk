@@ -60,7 +60,7 @@ export interface DetectionSpec {
  *
  * `any` is for the handful of capabilities that are genuinely line-independent (device identity).
  */
-export type ProductLine = "security" | "life" | "clean" | "print" | "display" | "solix" | "any";
+export type ProductLine = "security" | "life" | "clean" | "print" | "display" | "any";
 
 /**
  * A structural subset of a P2P frame. Deliberately NOT `import`ed from `p2p/*` — keeping it
@@ -180,8 +180,13 @@ export interface DecodedState {
  * the manifest path and the command path.
  */
 export interface AvailabilityContext {
-  /** Resolved codec/family. */
-  codec: Codec;
+  /**
+   * Resolved codec/family. Absent for a device outside the eufy device model entirely — the codecs are
+   * the eufy transport families, so an ecosystem with its own backend has no truthful value here and
+   * says so by omission rather than borrowing another family's. Every gate that reads it compares
+   * against a specific codec, so an absent one matches none.
+   */
+  codec?: Codec;
   /** eufy DeviceType, when known. */
   deviceType?: number;
   /** Model / T-code, when known. */
@@ -365,14 +370,8 @@ export interface ActionSpec {
  * A capability module: property schema + detection + inbound decode + outbound commands. Written
  * once, reused by every device that lists the capability.
  */
-/**
- * The module contract, generic over its capability-id type. Defaults to eufy's {@link Capability}, so
- * every eufy module and every `Record<Capability, CapabilityModule>` consumer is unchanged. A separate
- * ecosystem parameterises it with its own id union (e.g. Solix: `CapabilityModule<SolixCapability>`) —
- * the SAME module shape and members engine, not a parallel capability system.
- */
-export interface CapabilityModule<C extends string = Capability> {
-  capability: C;
+export interface CapabilityModule {
+  capability: Capability;
   /**
    * Properties this capability contributes.
    *

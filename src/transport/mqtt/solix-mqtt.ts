@@ -57,7 +57,7 @@ export interface SolixParamFrame {
  *   0xb1 meterCurrentL3 0xb2 meterCurrentTotal 0xb3 meterImportEnergy 0xb4 meterExportEnergy
  */
 export const SOLIX_METER_FIELD_NAMES: Readonly<Record<number, string>> = {
-  0xac: "meterVoltageL1", // CONFIRMED live — the only tag whose name is asserted
+  0xac: "meterVoltageL1",
 };
 
 /** Interpret one TLV value as a telemetry channel (leading type byte + payload). */
@@ -82,12 +82,11 @@ export function readSolixChannel(value: Buffer | undefined): SolixChannel | unde
 export function decodeSolixParamFrame(buf: Buffer): SolixParamFrame | null {
   if (buf.length < 10 || buf[0] !== 0xff || buf[1] !== 0x09) return null;
   const declaredLen = buf.readUInt16LE(2);
-  if (declaredLen < 5 || declaredLen > buf.length) return null; // length field must fit the buffer
-  // Trailing byte is the XOR of every preceding byte, so XOR over the whole declared frame is 0.
+  if (declaredLen < 5 || declaredLen > buf.length) return null;
   let xor = 0;
   for (let i = 0; i < declaredLen; i++) xor ^= buf[i]!;
   if (xor !== 0) return null;
-  const end = declaredLen - 1; // exclusive of the trailing XOR checksum byte
+  const end = declaredLen - 1;
   const start = buf.indexOf(0xa1, 4);
   if (start < 0 || start >= end) return { fields: new Map() };
   const fields = walkFf09Tlv(buf, start, end);
@@ -98,16 +97,17 @@ export function decodeSolixParamFrame(buf: Buffer): SolixParamFrame | null {
 }
 
 /**
- * Reduce a param frame to named + raw telemetry values. Measurement channels (`0xa6`..`0xff`) are
- * decoded as float32 where the payload is 4 bytes; a tag in {@link SOLIX_METER_FIELD_NAMES} is emitted
- * under its name (e.g. `meterVoltageL1`), and all measurement tags additionally under `channel_<hex tag>`.
+ * Reduce a param frame to named + raw telemetry values. Tags below `0xa6` are skipped — `a1`/`a2`/`a3`
+ * carry the field count, the serial and the status, not measurements. A measurement channel is one whose
+ * leading type byte is `0x05` (float32 LE over a 4-byte payload); any other type is a non-measurement
+ * param and contributes nothing. Each measurement is emitted under `channel_<hex tag>`, and additionally
+ * under its name when the tag has a confirmed one in {@link SOLIX_METER_FIELD_NAMES}.
  */
 export function solixReadings(frame: SolixParamFrame): Record<string, number> {
   const out: Record<string, number> = {};
   for (const [tag, value] of frame.fields) {
-    if (tag < 0xa6) continue; // a1/a2/a3 are count/serial/status, not measurements
+    if (tag < 0xa6) continue;
     const ch = readSolixChannel(value);
-    // 0x05 = float32 measurement channel (confirmed live); other types are non-measurement params.
     if (ch?.type !== 0x05 || ch.float === undefined) continue;
     out[`channel_${tag.toString(16)}`] = ch.float;
     const name = SOLIX_METER_FIELD_NAMES[tag];
@@ -193,6 +193,12 @@ export class SolixMqtt extends EventEmitter {
   private seq = 0;
   private armTimer?: ReturnType<typeof setInterval>;
 
+  /**
+   * Bind to one account's MQTT plane. The envelope `client_id` takes the app's shape
+   * (`android-{app}-{uid}-{mqttUuid}-{ts}`); its `mqttUuid` half must be stable across restarts, or every
+   * restart presents itself to the broker as a new client, so it defaults deterministically from the user
+   * id (see {@link SolixMqttOptions.mqttUuid}) rather than a fresh random per instance.
+   */
   constructor(opts: SolixMqttOptions) {
     super();
     this.appName = opts.mqttInfo.app_name ?? "anker_power";
@@ -200,9 +206,6 @@ export class SolixMqtt extends EventEmitter {
     this.armIntervalMs = opts.armIntervalMs ?? 25_000;
     this.siteId = opts.siteId;
     this.logger = opts.logger;
-    // The app's client_id shape (android-{app}-{uid}-{mqttUuid}-{ts}); the mqttUuid must be stable
-    // across restarts or every restart looks like a new broker client. Default it deterministically
-    // from the user id (no storage needed) rather than a fresh random per instance.
     const uid = this.userId ?? "anonymous";
     this.appClientId =
       opts.appClientId ??
@@ -224,22 +227,25 @@ export class SolixMqtt extends EventEmitter {
   /**
    * Connect, subscribe to the device's telemetry (+ command-reply) topics, ARM realtime reporting, and
    * start the re-arm/heartbeat timer so telemetry keeps flowing without the app. Idempotent per device.
+   *
+   * Subscribes ONLY to what the device sends — `param_info` plus the device and account command-reply
+   * channels — never the `…/req` channels, which are the app→device request side this arms on, and would
+   * echo its own publishes back.
+   *
+   * Throws when `param_info` was not granted. A scope-denied filter comes back as SUBACK_FAILURE rather
+   * than an error (see `SecureMqtt.subscribe`), so an unusable subscription otherwise looks like
+   * success: the call would resolve and arm on every interval while no reading ever arrives.
+   *
+   * The re-arm timer is unreffed, so a caller that watches and returns can still exit.
    */
   async watch(device: SolixMqttDevice): Promise<void> {
     await this.transport.connect();
     const topics = solixDeviceTopics(this.appName, device.product_code, device.device_sn);
-    // SUBSCRIBE only to what the device SENDS: its telemetry (param_info) + command replies, plus the
-    // account reply channel. NOT the device/account `…/req` channels — those are the app→device request
-    // side that we PUBLISH to when arming (subscribing there would echo our own requests back).
     const granted = await this.transport.subscribe([
-      topics.paramInfo, // ff09 telemetry frames (the only thing we decode)
-      topics.cmdRes, // this device's command replies
+      topics.paramInfo,
+      topics.cmdRes,
       ...(this.userId ? [solixUserTopics(this.appName, this.userId).cmdRes] : []),
     ]);
-    // A scope-denied filter comes back as SUBACK_FAILURE, not an error (AWS IoT quirk — see
-    // SecureMqtt.subscribe), so an unusable subscription otherwise looks like success: watch() would
-    // resolve, arming would publish every armIntervalMs, and no telemetry would ever arrive. paramInfo
-    // is the one topic whose denial makes the whole call pointless, so fail loudly if it wasn't granted.
     if (!granted.includes(topics.paramInfo)) {
       const scope = this.appName;
       throw new Error(
@@ -252,7 +258,6 @@ export class SolixMqtt extends EventEmitter {
       await this.armAll();
       if (!this.armTimer) {
         this.armTimer = setInterval(() => void this.armAll(), this.armIntervalMs);
-        // Don't hold the event loop open: a caller that watches and returns can still exit.
         this.armTimer.unref?.();
       }
     }
@@ -321,7 +326,11 @@ export class SolixMqtt extends EventEmitter {
     };
   }
 
-  /** Build the `{head, payload}` cmd-17 (requestDeviceInfo) envelope carrying a base64 ff09 request. */
+  /**
+   * Build the `{head, payload}` cmd-17 (requestDeviceInfo) envelope carrying a base64 ff09 request.
+   * `account_id` is omitted when the user id is unknown: a live broker cannot tell an empty placeholder
+   * from a real value, so sending `""` would claim an account this client does not have.
+   */
   private commandEnvelope(device: SolixMqttDevice, frame: Buffer, extra: Record<string, unknown>): string {
     this.seq += 1;
     return JSON.stringify({
@@ -334,8 +343,6 @@ export class SolixMqtt extends EventEmitter {
       }),
       payload: JSON.stringify({
         device_sn: device.device_sn,
-        // Only send account_id when known — an empty placeholder to a live broker can't be told from a
-        // real one (same reason heartbeatEnvelope omits an unknown site_id), so omit it rather than "".
         ...(this.userId ? { account_id: this.userId } : {}),
         data: frame.toString("base64"),
         ...extra,
@@ -343,24 +350,29 @@ export class SolixMqtt extends EventEmitter {
     });
   }
 
-  /** The `power_site` heartbeat (cmd 10) envelope the app sends on a timer to keep the session alive. */
+  /**
+   * The `power_site` heartbeat (cmd 10) envelope the app sends on a timer to keep the session alive.
+   * `site_id` is omitted when unknown, for the same reason `account_id` is in {@link commandEnvelope}.
+   */
   private heartbeatEnvelope(): string {
     return JSON.stringify({
       head: this.makeHead(10, { sess_id: "1", msg_seq: 1, seed: "1" }),
-      // Only include site_id when known — an empty placeholder to a live broker can't be told from a
-      // real one (fire-and-forget), so omit it rather than send "".
       payload: JSON.stringify({ user_id: this.userId ?? "", ...(this.siteId ? { site_id: this.siteId } : {}) }),
     });
   }
 
-  /** Decode one inbound MQTT message envelope and emit a `reading` if it carries an ff09 param frame. */
+  /**
+   * Decode one inbound MQTT message envelope and emit a `reading` if it carries an ff09 param frame. The
+   * product code and the fallback serial come from the topic (`dt/{app}/{pn}/{sn}/param_info`); the frame's
+   * own `a2` field wins for the serial when it carries one.
+   */
   private onMessage(msg: { topic?: string; raw: unknown }): void {
     const topic = msg.topic ?? "";
     const buf = extractFf09Payload(msg.raw);
     if (!buf) return;
     const frame = decodeSolixParamFrame(buf);
     if (!frame) return;
-    const parts = topic.split("/"); // dt/{app}/{pn}/{sn}/param_info
+    const parts = topic.split("/");
     const reading: SolixReading = {
       deviceSn: frame.deviceSn ?? parts[3] ?? "",
       productCode: parts[2] ?? "",
@@ -390,7 +402,7 @@ export function extractFf09Payload(raw: unknown): Buffer | null {
     }
   }
   const p = payload as { data?: unknown; trans?: unknown } | undefined;
-  const data = p?.data ?? p?.trans ?? env.data; // some frames carry the base64 body under `trans`
+  const data = p?.data ?? p?.trans ?? env.data;
   if (typeof data !== "string") return null;
   const buf = Buffer.from(data, "base64");
   return buf.length ? buf : null;
@@ -422,7 +434,7 @@ export function buildFf09Request(variant: "info" | "realtime", atUnixSec?: numbe
   const frame = Buffer.alloc(body.length + 5);
   frame[0] = 0xff;
   frame[1] = 0x09;
-  frame.writeUInt16LE(frame.length, 2); // declared length = total frame bytes (incl. ff09, len, xor)
+  frame.writeUInt16LE(frame.length, 2);
   body.copy(frame, 4);
   let xor = 0;
   for (let i = 0; i < frame.length - 1; i++) xor ^= frame[i]!;

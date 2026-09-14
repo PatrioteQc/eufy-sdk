@@ -1,20 +1,16 @@
 /**
- * Anker **Solix** capability modules — the SAME capability-module pattern the eufy device model uses,
- * parameterised on Solix's own id union via {@link CapabilityModule}<{@link SolixCapability}>. Not a
- * second capability system: the property schema, the evidence-gated getters and the descriptions all
- * derive from one `members` table through the shared engine (`members.ts` `bindMembers`/`propertiesOf`),
- * exactly as a eufy capability does.
+ * Anker **Solix** capability surface. Solix is a separate ecosystem — its own Anker account, backend
+ * and product catalog — so it keeps its own capability id union rather than joining eufy's `Capability`
+ * / `Codec` unions, and detection is by Anker catalog CATEGORY + product-code prefix (see
+ * {@link detectSolixCapabilities}) rather than eufy param ids.
  *
- * Solix is a separate ecosystem (its own Anker account + backend), so it keeps its own id union and its
- * own registry ({@link SOLIX_MODULES}) rather than joining eufy's `Capability`/`Codec` unions — every
- * module declares `line: "solix"` so the product-line partition covers it. Detection is by Anker catalog
- * CATEGORY + product-code prefix (see {@link detectSolixCapabilities}), not eufy param ids, so the
- * modules here carry the surface (members), while detection lives in the Solix-scoped resolver.
+ * What it shares is the `members` engine: the one feature with a readable wire declares ONE `members`
+ * table, and its property schema, evidence gate and typed surface all derive from it through
+ * `members.ts` (`bindMembers` / `Surface`), exactly as a eufy capability does.
  *
  * @module model/capabilities/solix
  */
-import { propertiesOf, type Members, type Surface } from "./members.js";
-import type { CapabilityModule } from "./types.js";
+import type { Members, Surface } from "./members.js";
 
 /** Every capability a Solix device may carry. Solix's OWN union (not eufy's `Capability`). */
 export type SolixCapability =
@@ -29,21 +25,17 @@ export type SolixCapability =
   | "charger"
   | "cooler";
 
-/** A Solix capability module — the eufy module contract, parameterised on {@link SolixCapability}. */
-export type SolixCapabilityModule = CapabilityModule<SolixCapability>;
-
 /**
  * The `energyMeter` surface, declared once. Only the ONE confirmed tag→name binding is a member:
  * `meterVoltageL1` (ff09 tag `0xAC`), confirmed against a live single-phase frame. The evidence gate
- * (`bindMembers` + `reads`) installs its getter only once a frame carrying tag `0xAC` has landed and
- * answers `undefined` before — so the "undefined until a real frame" fact the old hand-written comment
- * spelled out is now stated by construction.
+ * (`bindMembers`) installs its getter only once a frame carrying tag `0xAC` has landed and answers
+ * `undefined` before.
  *
  * The meter reports many more quantities (per-line power/current/voltage, totals, import/export energy),
  * but their tag→name bindings are a structural inference not yet pinned to a known-load capture. Rather
- * than assert a name that could mislabel a live float, those stay reachable raw as `channel_<hex>` via
- * the bespoke `channels()` method on the bound surface (a static members table cannot enumerate dynamic
- * hex tags); each is promoted to a member here, one line, as a capture confirms its binding.
+ * than assert a name that could mislabel a live float, those stay reachable raw as `channel_<hex>` from
+ * the device's telemetry (a static members table cannot enumerate dynamic hex tags); each is promoted to
+ * a member here, one line, as a capture confirms its binding.
  *
  * @internal — the declaration `SolixEnergyMeterReads` derives from; exported (like the eufy `*_MEMBERS`
  * tables) so it is a known symbol, but excluded from the rendered API reference.
@@ -67,39 +59,11 @@ export const SOLIX_ENERGY_METER_MEMBERS = {
 /** Bound `energyMeter` reads (the members-derived half of `dev.energyMeter()`). Read-only. */
 export type SolixEnergyMeterReads = Surface<typeof SOLIX_ENERGY_METER_MEMBERS>;
 
-/** A detection-only module: `has(cap)` is correct, but it carries no members, so no getter can exist. */
-function detectionOnly(capability: SolixCapability, description: string): SolixCapabilityModule {
-  return { capability, description, line: "solix", properties: [] };
-}
-
-/**
- * The Solix module registry — Solix-scoped, never joined to eufy's `CAPABILITY_MODULES`. `energyMeter`
- * carries the one confirmed members table; the rest are detection-only until a telemetry frame for that
- * family is captured and its fields confirmed (then they gain members, one line each).
- */
-export const SOLIX_MODULES: Readonly<Record<SolixCapability, SolixCapabilityModule>> = {
-  identity: detectionOnly("identity", "Device identity (serial, product code, resolved name/category)."),
-  firmware: detectionOnly("firmware", "Reported firmware version."),
-  connectivity: detectionOnly("connectivity", "Wi-Fi connectivity (online, rssi, ssid)."),
-  energyMeter: {
-    capability: "energyMeter",
-    description: "Grid/energy-meter live readings (Smart Meter AE1X0).",
-    line: "solix",
-    members: SOLIX_ENERGY_METER_MEMBERS,
-    properties: propertiesOf(SOLIX_ENERGY_METER_MEMBERS),
-  },
-  battery: detectionOnly("battery", "Battery/energy storage (Solarbank / power station)."),
-  solarInput: detectionOnly("solarInput", "Solar PV input."),
-  acOutput: detectionOnly("acOutput", "AC output."),
-  evCharger: detectionOnly("evCharger", "EV charger."),
-  charger: detectionOnly("charger", "Charger."),
-  cooler: detectionOnly("cooler", "Powered cooler."),
-};
-
 /**
  * The capabilities each Anker catalog category implies. Category is a detection SIGNAL (like eufy's
- * `deviceTypes`), not the model's identity — a device still resolves `energyMeter` from telemetry/model
- * even though its category is "Accessory". Unlisted categories contribute nothing here.
+ * `deviceTypes`), not the model's identity — a device still resolves `energyMeter` from its product code
+ * even though its category is "Accessory", which is why that category maps to nothing on its own.
+ * Unlisted categories contribute nothing here.
  */
 export const CATEGORY_CAPABILITIES: Readonly<Record<string, readonly SolixCapability[]>> = {
   "Portable Power Station": ["battery", "acOutput", "solarInput"],
@@ -108,7 +72,7 @@ export const CATEGORY_CAPABILITIES: Readonly<Record<string, readonly SolixCapabi
   "Power Bank": ["battery"],
   "Smart EV Charger": ["evCharger"],
   Charger: ["charger"],
-  Accessory: [], // device-specific — the smart meter resolves energyMeter from telemetry/model below
+  Accessory: [],
 };
 
 /** Product-code prefixes known to be grid/energy meters (detects `energyMeter` regardless of category). */

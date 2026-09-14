@@ -8,4 +8,11 @@ export { listLightEffects, listAiSceneRecommendations, type LightEffectSummary }
 // Anker Solix power-station cloud WIRE client (same-account login + device/site/MQTT reads). It puts
 // bytes on the wire (fetch, signed/parsed envelopes), so it lives in the transport/http layer; building
 // its records into SolixDevice models is the model layer's `discoverSolixDevices`.
-export * from "./solix-client.js";
+export {
+  SolixClient,
+  type SolixClientOptions,
+  type SolixLoginResult,
+  type SolixSession,
+  type SolixPersisted,
+  type SolixSessionStore,
+} from "./solix-client.js";

@@ -18,7 +18,6 @@ import {
   decryptBody,
   encryptBody,
   encryptLoginPassword,
-  FileSessionStore,
   finishKeyExchange,
   genId,
   gtoken,
@@ -91,8 +90,10 @@ export interface SolixPersisted {
 }
 
 /**
- * A place to persist a Solix session across process runs. Reuses the core {@link SessionStore}
- * parameterised on the Solix record shape — see {@link FileSolixSessionStore}.
+ * A place to persist a Solix session across process runs — the core {@link SessionStore} parameterised on
+ * the Solix record shape, so `FileSessionStore` serves it as-is. The device id survives token expiry (so
+ * the account keeps seeing the same device and does not re-prompt 2FA), and a live session is reused
+ * until it expires.
  */
 export type SolixSessionStore = SessionStore<SolixPersisted>;
 
@@ -123,6 +124,12 @@ export class SolixClient {
   /** Carried between {@link login} and {@link submitVerifyCode} while a 2FA code is outstanding. */
   private pending2fa?: { limitedToken: string; userId: string; geoKey?: string };
 
+  /**
+   * Resolve the device id (explicit → stored → deterministic from the email, so it is stable and does
+   * not re-trigger 2FA) and adopt a stored session that has not expired, so a warm start skips the
+   * handshake. An explicit `opts.apiHost` outranks a stored session's host in both cases: it is an
+   * override that also skips domain-estimate, and every read goes through `this.apiHost`.
+   */
   constructor(opts: SolixClientOptions) {
     this.email = opts.email;
     this.password = opts.password;
@@ -132,14 +139,9 @@ export class SolixClient {
     this.apiHost = opts.apiHost ?? SOLIX_DEFAULT_API_HOST;
     this.store = opts.store;
     const saved = this.store?.load();
-    // Device id: explicit → stored → a deterministic id from the email (stable, avoids re-2FA).
     this.openudid = opts.openudid ?? saved?.openudid ?? uuidFromHex(md5Hex(`anker-solix:${opts.email}`));
-    // Adopt a stored session that has not expired, so a warm start skips login entirely.
     if (saved?.session && solixSessionFresh(saved.session)) {
       this.session_ = saved.session;
-      // An explicit apiHost still wins over the stored session's host (it's an override that also skips
-      // domain-estimate); the stored host is only the fallback. authed() reads this.apiHost, so a warm
-      // start honours the pin too.
       this.apiHost = opts.apiHost ?? saved.session.apiHost;
     }
   }
@@ -269,13 +271,16 @@ export class SolixClient {
     );
   }
 
-  /** Turn a decrypted `/passport/login` payload into an `ok`/`2fa` result, establishing the session on `ok`. */
+  /**
+   * Turn a decrypted `/passport/login` payload into an `ok`/`2fa` result, establishing the session on
+   * `ok`. The passport marks a pending 2FA with a non-empty `fa_info.info`, and empties it once the code
+   * has been satisfied.
+   */
   private classifyLogin(data: Record<string, unknown>, isVerify: boolean): SolixLoginResult {
     const userId = (data.ap_cloud_user_id ?? data.user_id) as string | undefined;
     const authToken = data.auth_token as string | undefined;
     if (!userId || !authToken)
       throw new Error(`Solix login returned no session: ${JSON.stringify(data).slice(0, 160)}`);
-    // The passport marks a pending 2FA with a non-empty `fa_info.info`; empty once satisfied.
     const faInfo = (data.fa_info ?? {}) as { info?: string };
     if (!isVerify && faInfo.info) {
       this.pending2fa = { limitedToken: authToken, userId, geoKey: data.geo_key as string | undefined };
@@ -301,10 +306,10 @@ export class SolixClient {
 
   /**
    * Authenticate with the account credentials. Resolves to `ok` with a {@link SolixSession}, or `2fa`
-   * when the passport sent a code — then call {@link submitVerifyCode}.
+   * when the passport sent a code — then call {@link submitVerifyCode}. A session that is already fresh
+   * (adopted from a store) is answered without a handshake.
    */
   async login(): Promise<SolixLoginResult> {
-    // A warm session (from a store) that has not expired skips the handshake entirely.
     if (solixSessionFresh(this.session_)) {
       return { status: "ok", session: this.session_ };
     }
@@ -330,7 +335,7 @@ export class SolixClient {
     if (!this.session_) throw new Error("not authenticated — call login() first");
     const env = await this.send(
       method,
-      this.apiHost, // single source of truth for the host — honours an explicit opts.apiHost on warm starts too
+      this.apiHost,
       path,
       this.baseHeaders({ gtoken: this.session_.gtoken, "x-auth-token": this.session_.authToken }),
       body ? JSON.stringify(body) : undefined,
@@ -374,11 +379,3 @@ export class SolixClient {
     return (await this.authed<SolixProductCategory[]>("GET", SOLIX_ENDPOINTS.productCategories)) ?? [];
   }
 }
-
-/**
- * A {@link SolixSessionStore} backed by a JSON file — the core {@link FileSessionStore} parameterised on
- * the Solix record shape, so it inherits the `mkdirSync` on save (nested paths work) and `clear()` (an
- * invalidated token can be dropped). The device id survives token expiry (so the account keeps seeing
- * the same device and does not re-prompt 2FA), and a live session is reused until it expires.
- */
-export class FileSolixSessionStore extends FileSessionStore<SolixPersisted> {}

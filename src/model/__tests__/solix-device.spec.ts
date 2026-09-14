@@ -63,8 +63,7 @@ describe("SolixDevice", () => {
     // A frame carrying tag 0xAC (channel_ac) is the evidence; the decoder emits meterVoltageL1 + channel_ac.
     d.applyReading({ values: { meterVoltageL1: 236.8, channel_ac: 236.8, channel_a8: 0 } });
     expect(d.energyMeter()!.meterVoltageL1).toBeCloseTo(236.8, 1);
-    // Every other decoded tag is read raw via channels()/telemetry(), never a named getter.
-    expect(d.energyMeter()!.channels().channel_a8).toBe(0);
+    // Every other decoded tag is read raw via telemetry(), never a named getter.
     expect(d.telemetry().channel_a8).toBe(0);
   });
 
@@ -76,7 +75,7 @@ describe("SolixDevice", () => {
     d.applyReading({ deviceSn: METER.device_sn, values: { meterVoltageL1: 231.2, channel_ac: 231.2, channel_a8: 12 } });
     // The SAME handle sees the new reading — applyReading rebinds the store; the getter reads it live.
     expect(meter.meterVoltageL1).toBeCloseTo(231.2, 1);
-    expect(meter.channels().channel_a8).toBe(12);
+    expect(d.telemetry().channel_a8).toBe(12);
   });
 
   it("drops a reading addressed to a DIFFERENT device (no cross-feed on a shared MQTT stream)", () => {
