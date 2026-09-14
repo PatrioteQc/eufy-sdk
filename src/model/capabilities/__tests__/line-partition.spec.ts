@@ -1,4 +1,4 @@
-import { detectCapabilities, CAPABILITY_MODULES } from "../index.js";
+import { buildCommand, detectCapabilities, CAPABILITY_MODULES } from "../index.js";
 import type { Capability, Codec } from "../../types.js";
 
 /**
@@ -95,6 +95,22 @@ describe("product-line partition", () => {
     for (const codec of CODECS) {
       expect(detectCapabilities({ model: "T8000P0000000000" } as never, codec)).toContain("info");
     }
+  });
+
+  it("puts a codec-less device on no line at all — only the line-agnostic capabilities may match", () => {
+    // A separate ecosystem (its own account and backend) has no truthful codec, so it omits the field
+    // rather than borrowing a eufy family's. Every line-bearing module is then unreachable, including
+    // the ones a name or a param id would otherwise match on its own.
+    const rec = { model: "T8000P0000000000", name: POISONED, params: { 1011: "1" } } as never;
+    const caps = detectCapabilities(rec, undefined);
+    for (const cap of caps) expect(lineOf(cap), cap).toBe("any");
+    // The same record WITH a codec resolves plenty, so the absent codec is what withheld them.
+    expect(detectCapabilities(rec, "camera").length).toBeGreaterThan(caps.length);
+    // And no command can be built for a capability the device is not credited with.
+    expect(buildCommand("motionDetection", true, { channel: 0, paramIds: new Set([1011]) })).toBeUndefined();
+    expect(
+      buildCommand("motionDetection", true, { codec: "camera", channel: 0, paramIds: new Set([1011]) }),
+    ).toBeDefined();
   });
 
   it("pins each non-security module's declared line, so a silent retag fails here", () => {

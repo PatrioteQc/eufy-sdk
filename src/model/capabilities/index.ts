@@ -243,9 +243,9 @@ const CODEC_LINE: Record<Codec, ProductLine> = {
  * ecosystems ("Outdoor Spotlights" is a smart light, not a camera spotlight), so without this a
  * name match hands a device a capability whose wire it cannot speak.
  */
-function lineAllows(module: CapabilityModule, codec: Codec): boolean {
+function lineAllows(module: CapabilityModule, codec: Codec | undefined): boolean {
   const line = module.line ?? "security";
-  return line === "any" || line === CODEC_LINE[codec];
+  return line === "any" || (codec !== undefined && line === CODEC_LINE[codec]);
 }
 
 /**
@@ -257,10 +257,12 @@ function lineAllows(module: CapabilityModule, codec: Codec): boolean {
  *  - a `modelHints` regex matches the model/category/name haystack,
  *  - `codecs` includes `codec`,
  *  - `detect(rec, codec)` returns true.
- * Never throws. Returns a de-duplicated array.
+ *
+ * An absent `codec` belongs to no line, so only the line-agnostic capabilities can match — the truthful
+ * answer for a device outside the eufy families entirely. Never throws. Returns a de-duplicated array.
  * @internal
  */
-export function detectCapabilities(rec: CloudRecord, codec: Codec): Capability[] {
+export function detectCapabilities(rec: CloudRecord, codec?: Codec): Capability[] {
   const found = new Set<Capability>();
 
   // Set of reported param_type ids (keys arrive as strings on rec.params).
@@ -290,10 +292,10 @@ export function detectCapabilities(rec: CloudRecord, codec: Codec): Capability[]
     if (!matched && d.modelHints && haystack.length > 0) {
       matched = d.modelHints.some((re) => re.test(haystack));
     }
-    if (!matched && d.codecs) {
+    if (!matched && d.codecs && codec !== undefined) {
       matched = d.codecs.includes(codec);
     }
-    if (!matched && d.detect) {
+    if (!matched && d.detect && codec !== undefined) {
       try {
         matched = d.detect(rec, codec) === true;
       } catch {

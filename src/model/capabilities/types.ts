@@ -180,8 +180,13 @@ export interface DecodedState {
  * the manifest path and the command path.
  */
 export interface AvailabilityContext {
-  /** Resolved codec/family. */
-  codec: Codec;
+  /**
+   * Resolved codec/family. Absent for a device outside the eufy device model entirely — the codecs are
+   * the eufy transport families, so an ecosystem with its own backend has no truthful value here and
+   * says so by omission rather than borrowing another family's. Every gate that reads it compares
+   * against a specific codec, so an absent one matches none.
+   */
+  codec?: Codec;
   /** eufy DeviceType, when known. */
   deviceType?: number;
   /** Model / T-code, when known. */
