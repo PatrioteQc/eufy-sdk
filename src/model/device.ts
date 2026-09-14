@@ -33,7 +33,6 @@ import {
   buildActions,
   accessorNamesFor,
   describeCapabilities,
-  mergeProperties,
   type DeviceActionMap,
   type CapabilityAccessors,
   type DeviceManifest,
@@ -170,18 +169,6 @@ export class Device {
    * different wire ids across device families still resolves to one named value.
    */
   private specByParam!: ReadonlyMap<number, { spec: PropertySpec; invert: boolean }>;
-  /**
-   * Params this device's capabilities declare and this DEVICE does not have — withheld by a member's
-   * `available` gate (a mains camera's cell reads, say), not merely absent from the module.
-   *
-   * Needed because {@link applyParams} names by precedence — curated spec, then the param dictionary —
-   * and a gated member has no curated spec. Without this the dictionary re-names the value and the
-   * reading comes back under a public name, which for a param whose dictionary name MATCHES the
-   * member's (`battery`, `solarIntensity`) means the gate changed nothing a caller can see. The value
-   * is still kept, as `unknown_<paramType>`: the graceful-unknown rule says never drop data, and an
-   * `unknown_` name is the one form that carries it without claiming it means anything.
-   */
-  private withheldParams!: ReadonlySet<number>;
   /** Which param namespace this device's ids live in (clean DPs vs security P2P). */
   private namespace!: ParamNamespace;
   /** The record's `device_name` as stated, before the {@link modelName} fallback is applied. */
@@ -251,15 +238,6 @@ export class Device {
         if (!byParam.has(a.paramType)) byParam.set(a.paramType, { spec: p, invert: a.invert ?? false });
     }
     this.specByParam = byParam;
-    // Params a capability on this device WOULD name, that this device's own `available` gates withheld.
-    // See {@link withheldParams} — `applyParams` must not let the dictionary re-name them.
-    const withheld = new Set<number>();
-    for (const spec of mergeProperties(resolved.capabilities)) {
-      if (byParam.has(spec.paramType)) continue;
-      withheld.add(spec.paramType);
-      for (const a of spec.readAliases ?? []) if (!byParam.has(a.paramType)) withheld.add(a.paramType);
-    }
-    this.withheldParams = withheld;
     this.namespace = namespaceForCodec(resolved.codec);
     this.installAccessors();
   }
@@ -457,16 +435,12 @@ export class Device {
       const hit = this.specByParam.get(pt);
       const spec = hit?.spec;
       const def = paramDef(this.namespace, pt);
-      // A WITHHELD param skips the dictionary: this device's own gate decided it has no such reading,
-      // and the dictionary naming it anyway would put it straight back on the public surface. See
-      // {@link withheldParams}.
-      const named = spec ? spec.name : def && !this.withheldParams.has(pt) ? def.name : undefined;
-      const name = named ?? `${UNKNOWN_PARAM_PREFIX}${pt}`;
+      const name = spec ? spec.name : def ? def.name : `${UNKNOWN_PARAM_PREFIX}${pt}`;
       const value: ParamValue = def?.encoding
         ? decodeEncoded(rawVal, def.encoding) // base64+json / json → structured object
         : spec
           ? coerce(spec, rawVal, hit!.invert, this.logger)
-          : def && named
+          : def
             ? coerceByType(def.type, rawVal, def.name, this.logger)
             : String(rawVal);
       const prev = this.state.get(name);
