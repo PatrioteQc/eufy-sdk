@@ -819,9 +819,9 @@ export interface MediaProvider {
    *
    * @example
    * ```ts
-   * const stream = await cam.live();
-   * stream.on("video", (frame) => write(frame.data)); // Annex-B
-   * stream.stop(); // detach this consumer
+   * const stream = await cam.live?.();
+   * stream?.on("video", (frame) => sink.write(frame.data)); // Annex-B
+   * stream?.stop(); // detach this consumer
    * ```
    */
   live(opts?: SharedSourceHints & AbortableCall & Record<string, unknown>): Promise<LiveStreamConsumer>;

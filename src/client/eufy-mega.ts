@@ -4,11 +4,11 @@
  * Cloud APIs:  the eufy v6 cloud (+ legacy, planned)
  * Realtime:    secure MQTT (appliances)  +  P2P (cameras/HomeBases)
  *
- *   const eufy = new EufyMega({ email, password, region: "eu" });
+ *   const eufy = new EufyMega({ email, password, region: "eu-pr" });
  *   await eufy.login(); // → LoginResult; on success the SDK auto-starts realtime (push/MQTT/wired P2P)
  *   eufy.on("motion", (e) => console.log(e.deviceSn)); // typed semantic events — flowing already
  *   const dev = await eufy.getDevice((await eufy.getDevices())[0].sn);
- *   await dev.camera()?.snapshotStored();
+ *   await dev.camera?.()?.snapshotStored?.();
  *
  * Connectivity is SDK-managed: the host calls no `connect*`. P2P to a battery camera is opened only
  * when a command/stream/doorbell-ring needs it and closed when idle, so the camera can sleep.
@@ -910,8 +910,8 @@ export class EufyMega extends EventEmitter {
    * @example
    * ```ts
    * const res = await eufy.login();
-   * if (res.status === "captcha") await eufy.solveCaptcha(await ask(res.image));
-   * else if (res.status === "2fa") await eufy.submitVerifyCode(await ask());
+   * if (res.status === "captcha") await eufy.solveCaptcha(await promptUser(res.image));
+   * else if (res.status === "2fa") await eufy.submitVerifyCode(await promptUser());
    * ```
    */
   async login(opts: { messageType?: number } = {}): Promise<LoginResult> {
@@ -1232,7 +1232,7 @@ export class EufyMega extends EventEmitter {
    * @example
    * ```ts
    * const dev = await eufy.getDevice(sn);
-   * if (dev.has("camera")) await dev.camera()?.snapshotStored();
+   * if (dev.has("camera")) await dev.camera?.()?.snapshotStored?.();
    * console.log(dev.getProperty("battery"));
    * ```
    */

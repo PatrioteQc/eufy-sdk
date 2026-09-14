@@ -10,11 +10,11 @@ nothing is hardcoded per model.
 
 ```ts
 const dev = await eufy.getDevice(sn);
-const robo = dev.vacuumClean(); // present only on a Clean-line device
+const robo = dev.vacuumClean?.(); // present only on a Clean-line device
 ```
 
 The accessor returns `undefined` on a device without the capability, so guard it
-(`dev.vacuumClean()?.…`) or assert once up front. Each individual getter is **present only when the
+(`dev.vacuumClean?.()?.…`) or assert once up front. Each individual getter is **present only when the
 device reports that value**, so read them defensively.
 
 ::: warning A robot's state appears only after it reports
@@ -29,10 +29,10 @@ resolve with **no state getters at all** until the first report lands — `activ
 `volume` and `suction` are absent, not stale. They appear once the robot has something to say.
 
 So don't treat a missing getter as an error, and don't block startup waiting for one. Listen for
-`deviceState` and re-read `dev.vacuumClean()` when it fires, rather than sampling once at bind time.
+`deviceState` and re-read `dev.vacuumClean?.()` when it fires, rather than sampling once at bind time.
 There is no way to ask a robot for its state on demand — the vendor cloud exposes no such read.
 
-Re-read **through the accessor** (`dev.vacuumClean()?.activity`), not through an object you kept from
+Re-read **through the accessor** (`dev.vacuumClean?.()?.activity`), not through an object you kept from
 an earlier call: the report that first creates the reads installs them on a fresh object, and a cached
 one never grows them. `deviceState` fires again once they exist, so a handler that re-reads each time
 sees them on the first report.
@@ -41,11 +41,11 @@ sees them on the first report.
 ## State
 
 ```ts
-dev.vacuumClean()?.activity; // what the robot is doing (see below)
-dev.vacuumClean()?.battery; // 0–100
-dev.vacuumClean()?.power; // boolean — powered on
-dev.vacuumClean()?.volume; // speaker volume, 0–100
-dev.vacuumClean()?.cleanType; // "sweep" | "mop" | "sweepAndMop" | "sweepThenMop"
+dev.vacuumClean?.()?.activity; // what the robot is doing (see below)
+dev.vacuumClean?.()?.battery; // 0–100
+dev.vacuumClean?.()?.power; // boolean — powered on
+dev.vacuumClean?.()?.volume; // speaker volume, 0–100
+dev.vacuumClean?.()?.cleanType; // "sweep" | "mop" | "sweepAndMop" | "sweepThenMop"
 ```
 
 `activity` is readable **only** through this typed getter. The robot reports it inside a structured
@@ -73,7 +73,7 @@ typed getter.
 ## Cleaning type
 
 ```ts
-dev.vacuumClean()?.cleanType; // "sweep" | "mop" | "sweepAndMop" | "sweepThenMop"
+dev.vacuumClean?.()?.cleanType; // "sweep" | "mop" | "sweepAndMop" | "sweepThenMop"
 ```
 
 What the robot is **set** to do with a surface, not what the job in progress is doing — the two differ
@@ -92,9 +92,9 @@ it can't rely on this getter to do it.
 ```ts
 import { suctionLevelName } from "@mega-yfue/eufy-sdk";
 
-const level = dev.suction()?.level; // raw integer
-suctionLevelName(level); // "Quiet" | "Standard" | "Turbo" | "Max" | "BoostIQ" | "MaxPro" | undefined
-dev.suction()?.boostIq; // boolean — BoostIQ auto-suction
+const level = dev.suction?.()?.level; // raw integer, or undefined until the robot reports one
+if (level !== undefined) suctionLevelName(level); // "Quiet" | "Standard" | … | undefined for an unknown int
+dev.suction?.()?.boostIq; // boolean — BoostIQ auto-suction
 ```
 
 `level` is the **raw** suction level the device reports. The level → name mapping is **fixed across models**
@@ -140,15 +140,15 @@ different command rather than a failure.
 ### Whole-floor verbs
 
 ```ts
-const clean = dev.vacuumClean();
+const clean = dev.vacuumClean?.();
 
 await clean?.startCleaning?.(); // whole-floor auto clean
 await clean?.pauseCleaning?.();
 await clean?.resumeCleaning?.(); // resumes where it stopped, unlike a fresh start
 await clean?.returnToDock?.();
 
-await dev.suction()?.setSuctionLevel?.(2); // raw level, see above
-await dev.suction()?.setBoostIq?.(true);
+await dev.suction?.()?.setSuctionLevel?.(2); // raw level, see above
+await dev.suction?.()?.setBoostIq?.(true);
 ```
 
 ### Cleaning part of a floor
@@ -167,6 +167,8 @@ A scene the robot reports invalid is still reportable and still a well-formed re
 `VacuumScene.invalidReason` says why it will be refused.
 
 Room and zone cleans name the area themselves:
+
+<!-- typecheck: host mapId, p0, p1, p2, p3 -->
 
 ```ts
 await clean?.cleanRooms?.(
