@@ -243,6 +243,16 @@ describe("doorbell — confirmed against real T8214", () => {
     expect(r.properties.some((p) => [2015, 2022, 1306].includes(p.paramType))).toBe(false);
   });
 
+  it("types the wired T8200 as a doorbell, not a plain camera, and claims no battery", () => {
+    // Confirmed against a real owned unit. Without its registry row the model fell through to the
+    // camera codec, so `doorbell` never appeared and consumers built no ring event or trigger.
+    const r = resolveDevice({ model: "T8200", deviceType: 5 });
+    expect(r.capabilities).toContain("doorbell");
+    // Mains-powered: the row must not hand it a battery it does not have.
+    expect(r.capabilities).not.toContain("battery");
+    expect(r.name).toBe("Wired Doorbell 2K");
+  });
+
   it("decodes real doorbell param values (chime on, ringtone vol 80, notification JSON)", () => {
     const dev = Device.fromRecord("T8214DB", {
       model: "T8214",
