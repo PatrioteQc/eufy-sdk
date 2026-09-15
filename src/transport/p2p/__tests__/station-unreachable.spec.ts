@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { StationUnreachableError } from "../../../core/contracts.js";
 import { P2P_STATION_WAITS } from "../command-router.js";
+import { CONNECT_TIMEOUT_MS } from "../p2p-session.js";
 import {
   connectedSession,
   disconnectedSession,
@@ -52,6 +53,17 @@ describe("a station whose session does not connect", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  /**
+   * The wait is the session's own connect deadline, not a second number beside it.
+   *
+   * A session that reaches its deadline closes itself, so a wait longer than it holds a caller on a connection
+   * that can no longer answer and charges the difference to every failure — while a wait shorter than it reports
+   * unreachable for a station still being asked for.
+   */
+  it("waits the deadline the session gives a station, and no other", () => {
+    expect(P2P_STATION_WAITS.connect).toBe(CONNECT_TIMEOUT_MS);
   });
 
   /**

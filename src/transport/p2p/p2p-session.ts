@@ -69,7 +69,15 @@ const HEARTBEAT_MS = 5_000;
  */
 const PATH_SILENCE_MS = HEARTBEAT_MS * 3;
 const LOOKUP_RETRY_MS = 1_000;
-const CONNECT_TIMEOUT_MS = 15_000;
+/**
+ * How long a station is given to answer a lookup before the connection gives up on it and closes.
+ *
+ * The whole deadline for reaching a station: the lookups are re-sent every second until one is answered, and
+ * a connection that reaches this closes itself, so nothing addressed to that station can succeed afterwards.
+ * Published because it bounds every wait on a session connecting — a second number for the same deadline
+ * elsewhere would outlive the connection it waits on and charge the difference to every failure.
+ */
+export const CONNECT_TIMEOUT_MS = 15_000;
 /**
  * The channel a command addresses the station itself on, rather than one of its cameras, and the value a
  * session's channel-taking methods resolve an omitted channel to.
