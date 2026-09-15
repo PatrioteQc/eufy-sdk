@@ -1459,7 +1459,23 @@ export class P2PCommandRouter {
     this.manager.bumpCommand(parentSn, parentSn);
     const channel = typeof raw.device_channel === "number" ? (raw.device_channel as number) : 0;
     const stationAdminId = (raw.member as any)?.admin_user_id;
+    const stationModel = homeBaseAttached
+      ? ((await this.deviceFor(parentSn).catch(() => undefined))?.model ?? undefined)
+      : dev.model;
     const accountId = (stationAdminId as string) ?? this.deps.mega.auth?.userId ?? "";
+
+    this.traceOnStation(session, {
+      phase: "station-resolved",
+      topology: homeBaseAttached ? "attached" : "own",
+      channel,
+      stationAdmin:
+        typeof stationAdminId !== "string"
+          ? "unstated"
+          : stationAdminId === this.deps.mega.auth?.userId
+            ? "self"
+            : "other",
+      ...(stationModel === undefined ? {} : { stationModel }),
+    });
 
     const t0 = Date.now();
     let waitedMs = 0;
@@ -1477,17 +1493,6 @@ export class P2PCommandRouter {
     }
     opts.signal?.throwIfAborted();
     if (!session.isConnected) throw new StationUnreachableError(parentSn, waitedMs);
-    this.traceOnStation(session, {
-      phase: "station-resolved",
-      topology: homeBaseAttached ? "attached" : "own",
-      channel,
-      stationAdmin:
-        typeof stationAdminId !== "string"
-          ? "unstated"
-          : stationAdminId === this.deps.mega.auth?.userId
-            ? "self"
-            : "other",
-    });
     if (opts.waitLevel2) {
       if (opts.waitLevel2 === "settle") {
         await abortable(session.awaitLevel2Key(LEVEL2_SETTLE_MS, "session"), opts.signal);

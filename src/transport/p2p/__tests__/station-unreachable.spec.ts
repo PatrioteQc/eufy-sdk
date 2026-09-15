@@ -35,7 +35,11 @@ describe("a station whose session does not connect", () => {
       await vi.advanceTimersByTimeAsync(P2P_STATION_WAITS.connect + 1_000);
       await settled;
 
-      expect(traces[0], "a caller whose own deadline expires inside the wait has this record and no other").toEqual({
+      expect(
+        traces[0],
+        "a station never reached is the case a resolve states, so it is stated before the wait rather than after it",
+      ).toMatchObject({ phase: "station-resolved", topology: "attached", source: session.traceId });
+      expect(traces[1], "a caller whose own deadline expires inside the wait has this record and no other").toEqual({
         phase: "session-connect-wait",
         waitMs: P2P_STATION_WAITS.connect,
         source: session.traceId,

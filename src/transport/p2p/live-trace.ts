@@ -101,19 +101,23 @@ export type LiveTrace =
   /**
    * A station was resolved for a call, stating what the caller's device is on it and whose station it is.
    *
-   * Emitted before anything is sent, so it is the only account of the intended topology on a call that fails
-   * during resolution: an attached camera's media start has no unencrypted form, so whether a device was taken
-   * as attached decides what its failure means. `stationAdmin` states whether the signed-in account is the
-   * station's administrator, which is what a key the account cannot resolve turns on; `unstated` is a device
-   * record that names no administrator, which is not the same as naming another.
+   * Emitted before the session is waited on, because a station that is never reached is the case this exists
+   * for: an attached camera's media start has no unencrypted form, so whether a device was taken as attached
+   * decides what its failure means, and a base whose model this SDK reaches differently is indistinguishable
+   * from a base that is switched off if nothing states the model.
+   *
+   * `stationAdmin` states whether the signed-in account is the station's administrator, which is what a key
+   * the account cannot resolve turns on; `unstated` is a device record that names no administrator, which is
+   * not the same as naming another. `stationModel` is the base for an attached camera and the device itself
+   * for its own session, absent where the record does not state one.
    */
   | {
       phase: "station-resolved";
       topology: "attached" | "own";
       channel: number;
       stationAdmin: "self" | "other" | "unstated";
+      stationModel?: string;
     }
-  /** A shared source began warming, with the interval it re-issues on and the deadline it fails at. */
   | { phase: "warming"; retryMs: number; deadlineMs: number }
   /**
    * A media command was never put on the wire, and what it was missing.
