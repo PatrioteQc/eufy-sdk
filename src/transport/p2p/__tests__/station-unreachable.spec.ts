@@ -39,7 +39,7 @@ describe("a station whose session does not connect", () => {
         traces[0],
         "a station never reached is the case a resolve states, so it is stated before the wait rather than after it",
       ).toMatchObject({ phase: "station-resolved", topology: "attached", source: session.traceId });
-      expect(traces[1], "a caller whose own deadline expires inside the wait has this record and no other").toEqual({
+      expect(traces[1], "the wait a caller's own deadline expires inside is charged in full").toEqual({
         phase: "session-connect-wait",
         waitMs: P2P_STATION_WAITS.connect,
         source: session.traceId,

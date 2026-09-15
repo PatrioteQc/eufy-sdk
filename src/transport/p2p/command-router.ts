@@ -1459,7 +1459,7 @@ export class P2PCommandRouter {
     this.manager.bumpCommand(parentSn, parentSn);
     const channel = typeof raw.device_channel === "number" ? (raw.device_channel as number) : 0;
     const stationAdminId = (raw.member as any)?.admin_user_id;
-    const stationModel = homeBaseAttached ? this.recordFor(parentSn)?.model : dev.model;
+    const stationModel = this.recordFor(parentSn)?.model;
     const accountId = (stationAdminId as string) ?? this.deps.mega.auth?.userId ?? "";
 
     this.traceOnStation(session, {
@@ -1472,7 +1472,7 @@ export class P2PCommandRouter {
           : stationAdminId === this.deps.mega.auth?.userId
             ? "self"
             : "other",
-      ...(stationModel === undefined ? {} : { stationModel }),
+      ...(stationModel ? { stationModel } : {}),
     });
 
     const t0 = Date.now();

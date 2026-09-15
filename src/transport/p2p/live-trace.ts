@@ -105,9 +105,10 @@ export type LiveTrace =
    * attached camera's media start has no unencrypted form, so whether a device was taken as attached decides
    * what its failure means. `stationAdmin` states whether the signed-in account is the station's
    * administrator, which is what a key the account cannot resolve turns on; `unstated` is a device record
-   * that names no administrator, which is not the same as naming another. `stationModel` is the base's for an
-   * attached camera and the device's own otherwise, absent where the record states none — without it a base
-   * this SDK reaches differently is indistinguishable from one that is switched off.
+   * that names no administrator, which is not the same as naming another. `stationModel` is the model of the
+   * station the call resolved — the base's for an attached camera, the device's own where it is its own
+   * station — absent where that record states none; without it a base this SDK reaches differently is
+   * indistinguishable from one that is switched off.
    */
   | {
       phase: "station-resolved";
