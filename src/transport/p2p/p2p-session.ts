@@ -679,6 +679,11 @@ export class P2PSession extends EventEmitter {
       if (host && !this.closed) this.selfAddress = { host, port: boundPort };
     });
 
+    this.trace({
+      phase: "lookup-channels",
+      local: !this.cfg.noBroadcast || this.cfg.localAddress !== undefined,
+      cloud: this.cfg.dskKey !== undefined && (this.cfg.cloudAddresses?.length ?? 0) > 0,
+    });
     this.sendLookups();
     this.lookupTimer = setInterval(() => this.sendLookups(), LOOKUP_RETRY_MS);
     this.connectTimer = setTimeout(() => {
@@ -775,10 +780,6 @@ export class P2PSession extends EventEmitter {
       for (const addr of this.cfg.cloudAddresses) this.send(addr, type, payload);
       this.logger.debug(
         `[p2p] ${this.cfg.stationSn} sendLookups: cloud -> ${this.cfg.cloudAddresses.map((a) => `${a.host}:${a.port}`).join(", ")} self=${this.selfAddress?.host}:${this.selfAddress?.port}`,
-      );
-    } else {
-      this.logger.debug(
-        `[p2p] ${this.cfg.stationSn} sendLookups: NO cloud lookup sent (dskKey=${!!this.cfg.dskKey} cloudAddresses=${this.cfg.cloudAddresses?.length ?? 0})`,
       );
     }
   }

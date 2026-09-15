@@ -37,6 +37,16 @@ export type LiveTrace =
   /** A data channel's numbering restarted mid-connection, so sequencing resynchronized onto it. */
   | { phase: "sequence-restart"; dataType: number }
   /**
+   * Which lookup channels a connection can ask for the station on, before it asks.
+   *
+   * A station is found by a local lookup, by a cloud lookup, or by both, and each needs something the other
+   * does not: the local one needs the station on this link, the cloud one needs both a key for the station and
+   * an address to ask. A connect that had one channel failed for that channel's reason alone, and a connect
+   * that had neither could not have succeeded — outcomes a station that is switched off is otherwise
+   * indistinguishable from, because nothing else in a failed connect states what was even attempted.
+   */
+  | { phase: "lookup-channels"; local: boolean; cloud: boolean }
+  /**
    * Work on a station is holding for its session to connect, with the milliseconds it will wait.
    *
    * The earliest phase there is: nothing else on a station can be attempted until its session is up, and a
