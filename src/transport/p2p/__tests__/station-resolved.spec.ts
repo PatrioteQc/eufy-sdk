@@ -36,10 +36,6 @@ describe("the station a call resolves", () => {
     expect(await resolved()).toMatchObject({ phase: "station-resolved", topology: "attached", channel: 1 });
   });
 
-  /**
-   * A base this SDK reaches differently from another is indistinguishable from a base that is switched off,
-   * unless the model is stated. For an attached camera that model is the base's, not the camera's.
-   */
   it("states the model of the station it resolved, not of the device on it", async () => {
     expect(await resolved()).toMatchObject({ stationModel: STATION_MODEL });
   });
