@@ -55,6 +55,12 @@ export interface SolixParamFrame {
  * The frame carries sixteen float slots (`0xa8`..`0xb7`). The four that name no field — `0xb2`, `0xb5`,
  * `0xb6`, `0xb7` — are reserved and stay raw `channel_<hex tag>` (see {@link solixReadings}). `0xb2` in
  * particular is NOT a current total: it holds a small constant that does not track load.
+ *
+ * This table is **meter-family-specific**: the same tag carries a different quantity on another Solix
+ * device (a Solarbank's `0xac` reads a power value, not a voltage), so {@link solixReadings} applies
+ * these names ONLY to a frame from the meter family — see {@link SOLIX_METER_PRODUCT_PREFIXES}. Every
+ * measurement tag still surfaces as `channel_<hex tag>` regardless of device, so nothing on the wire is
+ * lost; the model layer names non-meter tags per capability.
  */
 export const SOLIX_METER_FIELD_NAMES: Readonly<Record<number, string>> = {
   0xa8: "meterPowerL1",
@@ -70,6 +76,20 @@ export const SOLIX_METER_FIELD_NAMES: Readonly<Record<number, string>> = {
   0xb3: "meterImportEnergy",
   0xb4: "meterExportEnergy",
 };
+
+/**
+ * Product-code prefixes of the Smart Meter family that {@link SOLIX_METER_FIELD_NAMES} decodes. The table
+ * is meter-specific, so {@link solixReadings} applies its named fields ONLY to a frame whose product code
+ * starts with one of these; a Solarbank (`AE103`) reporting the same `0xac` tag would otherwise be
+ * mislabelled `meterVoltageL1` with a nonsensical (negative-power) value. These are product-code prefixes
+ * used to select a decode table — not a model import — so the `transport ⊥ model` rule is untouched.
+ *
+ * Keep this in lockstep with `SOLIX_METER_MODELS` in `model/capabilities/solix.ts` (the same meter
+ * prefixes, model-side): a prefix added there but not here grants `energyMeter` to a device whose frames
+ * this decoder then refuses to name, and no guard can catch the split (the model layer can't import
+ * transport). Add a meter prefix to both.
+ */
+export const SOLIX_METER_PRODUCT_PREFIXES: readonly string[] = ["AE1X0"];
 
 /** Interpret one TLV value as a telemetry channel (leading type byte + payload). */
 export function readSolixChannel(value: Buffer | undefined): SolixChannel | undefined {
@@ -112,16 +132,20 @@ export function decodeSolixParamFrame(buf: Buffer): SolixParamFrame | null {
  * carry the field count, the serial and the status, not measurements. A measurement channel is one whose
  * leading type byte is `0x05` (float32 LE over a 4-byte payload); any other type is a non-measurement
  * param and contributes nothing. Each measurement is emitted under `channel_<hex tag>`, and additionally
- * under its name when the tag has a confirmed one in {@link SOLIX_METER_FIELD_NAMES}.
+ * under its name when the tag has a confirmed one in {@link SOLIX_METER_FIELD_NAMES} AND `productCode` is
+ * from the meter family (see {@link SOLIX_METER_PRODUCT_PREFIXES}) — so a non-meter device's tags stay
+ * raw `channel_<hex>` rather than borrowing the meter's tag→name table. `productCode` is required (it
+ * comes straight from the telemetry topic); pass `""` for a frame of unknown origin and no names apply.
  */
-export function solixReadings(frame: SolixParamFrame): Record<string, number> {
+export function solixReadings(frame: SolixParamFrame, productCode: string): Record<string, number> {
   const out: Record<string, number> = {};
+  const named = SOLIX_METER_PRODUCT_PREFIXES.some((p) => productCode.startsWith(p));
   for (const [tag, value] of frame.fields) {
     if (tag < 0xa6) continue;
     const ch = readSolixChannel(value);
     if (ch?.type !== 0x05 || ch.float === undefined) continue;
     out[`channel_${tag.toString(16)}`] = ch.float;
-    const name = SOLIX_METER_FIELD_NAMES[tag];
+    const name = named ? SOLIX_METER_FIELD_NAMES[tag] : undefined;
     if (name) out[name] = ch.float;
   }
   return out;
@@ -384,12 +408,13 @@ export class SolixMqtt extends EventEmitter {
     const frame = decodeSolixParamFrame(buf);
     if (!frame) return;
     const parts = topic.split("/");
+    const productCode = parts[2] ?? "";
     const reading: SolixReading = {
       deviceSn: frame.deviceSn ?? parts[3] ?? "",
-      productCode: parts[2] ?? "",
+      productCode,
       topic,
       frame,
-      values: solixReadings(frame),
+      values: solixReadings(frame, productCode),
     };
     this.emit("reading", reading);
   }

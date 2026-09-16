@@ -163,7 +163,12 @@ export const CATEGORY_CAPABILITIES: Readonly<Record<string, readonly SolixCapabi
   Accessory: [],
 };
 
-/** Product-code prefixes known to be grid/energy meters (detects `energyMeter` regardless of category). */
+/**
+ * Product-code prefixes known to be grid/energy meters (detects `energyMeter` regardless of category).
+ * Keep in lockstep with `SOLIX_METER_PRODUCT_PREFIXES` in `transport/mqtt/solix-mqtt.ts` (the same meter
+ * prefixes, transport-side, that gate the tag→name table): a prefix added here but not there grants
+ * `energyMeter` to a device whose frames the decoder then refuses to name. Add a meter prefix to both.
+ */
 export const SOLIX_METER_MODELS: readonly string[] = ["AE1X0"];
 
 /**

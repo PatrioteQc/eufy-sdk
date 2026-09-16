@@ -50,8 +50,8 @@ describe("Solix MQTT param decoding", () => {
     expect(ch.float).toBeCloseTo(237.5, 1);
   });
 
-  it("names the twelve app fields, keeps reserved tags (0xb2) raw-only, and emits every float as channel_<hex>", () => {
-    const values = solixReadings(decodeSolixParamFrame(FRAME)!);
+  it("names the twelve app fields for a meter frame, keeps reserved tags (0xb2) raw-only, emits every float as channel_<hex>", () => {
+    const values = solixReadings(decodeSolixParamFrame(FRAME)!, "AE1X0");
     expect(values.meterVoltageL1).toBeCloseTo(237.5, 1);
     expect(values["channel_ac"]).toBeCloseTo(237.5, 1);
     // The named electrical fields + energy counters are emitted (0 on this idle single-phase frame).
@@ -68,7 +68,7 @@ describe("Solix MQTT param decoding", () => {
   });
 
   it("binds the meter fields against a load-varying frame (L1 power == total, current, import; b2 constant)", () => {
-    const values = solixReadings(decodeSolixParamFrame(LOAD_FRAME)!);
+    const values = solixReadings(decodeSolixParamFrame(LOAD_FRAME)!, "AE1X0");
     // The checksum-validated frame decodes (a corrupted one returns null and would fail here).
     expect(decodeSolixParamFrame(LOAD_FRAME)).not.toBeNull();
     // L1 line power equals the aggregate total on a single-phase install — the a8/ab mirror.
@@ -83,6 +83,17 @@ describe("Solix MQTT param decoding", () => {
     // L2/L3 slots are unconnected on a single-CT install → reported as 0 (present, not fabricated).
     expect(values.meterPowerL2).toBe(0);
     expect(values.meterCurrentL3).toBe(0);
+  });
+
+  it("withholds the meter tag→name table from a non-meter (Solarbank) frame, and from an unknown origin", () => {
+    // A Solarbank (AE103) reports tag 0xac too, but it is a power value there, not a voltage — so the
+    // meter name must NOT be borrowed. Every tag still surfaces raw as channel_<hex>.
+    const solarbank = solixReadings(decodeSolixParamFrame(FRAME)!, "AE103");
+    expect(solarbank.meterVoltageL1).toBeUndefined();
+    expect(solarbank.meterPowerL1).toBeUndefined();
+    expect(solarbank["channel_ac"]).toBeCloseTo(237.5, 1);
+    // With no product code the table cannot be known to fit, so names are withheld too.
+    expect(solixReadings(decodeSolixParamFrame(FRAME)!, "").meterVoltageL1).toBeUndefined();
   });
 
   it("extracts the ff09 payload from the {head, payload:{data}} MQTT envelope", () => {
