@@ -45,20 +45,35 @@ export interface SolixParamFrame {
  *
  * - `0xac` = `meterVoltageL1` — confirmed against live single-phase data (a nominal mains voltage).
  *
- * Every other measurement tag still surfaces as `channel_<hex tag>` (see {@link solixReadings}), so
- * nothing on the wire is lost — a caller reads unconfirmed tags there. The names are deliberately NOT
- * asserted for the rest: the app exposes the field *list*, but the tag→name *binding* below is a
- * structural inference until a known-load capture pins it, and a mislabelled live float is worse than an
- * honest `channel_<tag>`. The recovered candidates, to re-add one line each (moving the tag from this
- * comment to the map above) as a known-load capture confirms each binding:
+ * This table is **meter-family-specific**: the same tag carries a different quantity on another Solix
+ * device (a Solarbank's `0xac` reads a power value, not a voltage), so {@link solixReadings} applies
+ * these names ONLY to a frame from the meter family (see {@link SOLIX_METER_PRODUCT_PREFIX}). Every
+ * measurement tag still surfaces as `channel_<hex tag>` regardless of device, so nothing on the wire is
+ * lost — a caller reads unconfirmed tags there, and the model layer names them per capability.
+ *
+ * The names are deliberately NOT asserted for the rest: the app exposes the field *list*, but the
+ * tag→name *binding* below is a structural inference until a known-load capture pins it, and a
+ * mislabelled live float is worse than an honest `channel_<tag>`. The recovered candidates, to re-add
+ * one line each (moving the tag from this comment to the map above) as a known-load capture confirms
+ * each binding (`0xb2` is NOT `meterCurrentTotal` — a live single-phase frame read ~0.007 there while
+ * L1 current was tens of milliamps, so it stays reserved):
  *
  *   0xa8 meterPowerL1   0xa9 meterPowerL2   0xaa meterPowerL3   0xab meterPowerTotal
  *   0xad meterVoltageL2 0xae meterVoltageL3 0xaf meterCurrentL1 0xb0 meterCurrentL2
- *   0xb1 meterCurrentL3 0xb2 meterCurrentTotal 0xb3 meterImportEnergy 0xb4 meterExportEnergy
+ *   0xb1 meterCurrentL3 0xb3 meterImportEnergy 0xb4 meterExportEnergy
  */
 export const SOLIX_METER_FIELD_NAMES: Readonly<Record<number, string>> = {
   0xac: "meterVoltageL1",
 };
+
+/**
+ * Product-code prefix of the Smart Meter family that {@link SOLIX_METER_FIELD_NAMES} decodes. The table
+ * is meter-specific, so {@link solixReadings} applies its named fields ONLY to a frame from this family;
+ * a Solarbank (`AE103`) reporting the same `0xac` tag would otherwise be mislabelled `meterVoltageL1`
+ * with a nonsensical (negative-power) value. This is a product-code prefix used to select a decode
+ * table — not a model import — so the `transport ⊥ model` rule is untouched.
+ */
+export const SOLIX_METER_PRODUCT_PREFIX = "AE1X0";
 
 /** Interpret one TLV value as a telemetry channel (leading type byte + payload). */
 export function readSolixChannel(value: Buffer | undefined): SolixChannel | undefined {
@@ -101,16 +116,21 @@ export function decodeSolixParamFrame(buf: Buffer): SolixParamFrame | null {
  * carry the field count, the serial and the status, not measurements. A measurement channel is one whose
  * leading type byte is `0x05` (float32 LE over a 4-byte payload); any other type is a non-measurement
  * param and contributes nothing. Each measurement is emitted under `channel_<hex tag>`, and additionally
- * under its name when the tag has a confirmed one in {@link SOLIX_METER_FIELD_NAMES}.
+ * under its name when the tag has a confirmed one in {@link SOLIX_METER_FIELD_NAMES} AND the frame is
+ * from the meter family — pass `productCode` (from the telemetry topic) so a non-meter device's tags
+ * stay raw `channel_<hex>` rather than borrowing the meter's tag→name table (see
+ * {@link SOLIX_METER_PRODUCT_PREFIX}). With no `productCode` the names are not applied, since the table
+ * cannot be known to fit.
  */
-export function solixReadings(frame: SolixParamFrame): Record<string, number> {
+export function solixReadings(frame: SolixParamFrame, productCode?: string): Record<string, number> {
   const out: Record<string, number> = {};
+  const named = !!productCode && productCode.startsWith(SOLIX_METER_PRODUCT_PREFIX);
   for (const [tag, value] of frame.fields) {
     if (tag < 0xa6) continue;
     const ch = readSolixChannel(value);
     if (ch?.type !== 0x05 || ch.float === undefined) continue;
     out[`channel_${tag.toString(16)}`] = ch.float;
-    const name = SOLIX_METER_FIELD_NAMES[tag];
+    const name = named ? SOLIX_METER_FIELD_NAMES[tag] : undefined;
     if (name) out[name] = ch.float;
   }
   return out;
@@ -373,12 +393,15 @@ export class SolixMqtt extends EventEmitter {
     const frame = decodeSolixParamFrame(buf);
     if (!frame) return;
     const parts = topic.split("/");
+    const productCode = parts[2] ?? "";
     const reading: SolixReading = {
       deviceSn: frame.deviceSn ?? parts[3] ?? "",
-      productCode: parts[2] ?? "",
+      productCode,
       topic,
       frame,
-      values: solixReadings(frame),
+      // Pass the product code so meter tag→name binding is applied only to a meter frame; a Solarbank's
+      // tags stay raw channel_<hex> (the model names them per capability) rather than being mislabelled.
+      values: solixReadings(frame, productCode),
     };
     this.emit("reading", reading);
   }

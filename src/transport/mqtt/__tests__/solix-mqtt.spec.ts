@@ -38,8 +38,8 @@ describe("Solix MQTT param decoding", () => {
     expect(ch.float).toBeCloseTo(237.5, 1);
   });
 
-  it("names only the confirmed tag (0xac = meterVoltageL1) and emits every float tag as channel_<hex>", () => {
-    const values = solixReadings(decodeSolixParamFrame(FRAME)!);
+  it("names only the confirmed tag (0xac = meterVoltageL1) for a meter frame, every float tag as channel_<hex>", () => {
+    const values = solixReadings(decodeSolixParamFrame(FRAME)!, "AE1X0");
     expect(values.meterVoltageL1).toBeCloseTo(237.5, 1);
     expect(values["channel_ac"]).toBeCloseTo(237.5, 1);
     // idle channels read 0 and surface raw as channel_<hex>...
@@ -48,6 +48,16 @@ describe("Solix MQTT param decoding", () => {
     expect(values.meterPowerL1).toBeUndefined();
     // a6 is a non-float type (0x03) → excluded from readings
     expect(values["channel_a6"]).toBeUndefined();
+  });
+
+  it("does NOT apply the meter tag→name table to a non-meter frame (0xac is not voltage on a Solarbank)", () => {
+    // A Solarbank (AE103) reports tag 0xac too, but it is a power value there, not a voltage — so the
+    // meter name must not be borrowed. Every tag still surfaces raw as channel_<hex>.
+    const solarbank = solixReadings(decodeSolixParamFrame(FRAME)!, "AE103");
+    expect(solarbank.meterVoltageL1).toBeUndefined();
+    expect(solarbank["channel_ac"]).toBeCloseTo(237.5, 1);
+    // With no product code the table cannot be known to fit, so names are withheld as well.
+    expect(solixReadings(decodeSolixParamFrame(FRAME)!).meterVoltageL1).toBeUndefined();
   });
 
   it("extracts the ff09 payload from the {head, payload:{data}} MQTT envelope", () => {
