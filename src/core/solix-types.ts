@@ -37,3 +37,28 @@ export interface SolixProductCategory {
   products: SolixProduct[];
   [k: string]: unknown;
 }
+
+/** One device's membership entry within a site, as carried by `get_site_list`'s `site_device_list`. */
+export interface SolixSiteDeviceEntry {
+  device_sn: string;
+  /** The device's product/model code (the site list names this field `device_model`). */
+  device_model: string;
+  device_name?: string;
+  /** Anker device-type discriminator (e.g. 3 = Solarbank/battery, 6 = smart meter). */
+  device_type?: number;
+  [k: string]: unknown;
+}
+
+/**
+ * A site ("system") record, as returned by `SolixClient.getSites()`. A site is the account's home
+ * energy system — the "My Home" the app shows — grouping the member devices ({@link site_device_list})
+ * that a {@link SolixSiteReader} resolves into a `SolixSite`. Extra vendor fields are preserved.
+ */
+export interface SolixSiteRecord {
+  site_id: string;
+  site_name?: string;
+  /** Anker's site-type discriminator (e.g. 20 for a Solarbank-anchored home system). */
+  power_site_type?: number;
+  site_device_list?: SolixSiteDeviceEntry[];
+  [k: string]: unknown;
+}

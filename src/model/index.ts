@@ -133,3 +133,15 @@ export {
 // Solix capability ids + the one confirmed members table the meter surface derives from.
 export { SOLIX_ENERGY_METER_MEMBERS, type SolixCapability, type SolixEnergyMeterReads } from "./capabilities/solix.js";
 export { buildModelIndex, type SolixProduct, type SolixProductCategory } from "./solix-catalog.js";
+// Solix product-family classification (the "what kind of device is this" question — the Solix analogue
+// of eufy's isHomeBase), and the site aggregate that groups a system's member devices ("My Home").
+export {
+  solixProductFamily,
+  isSolixPowerStation,
+  isSolixSolarbank,
+  isSolixSmartMeter,
+  type SolixProductFamily,
+  type SolixFamilyInput,
+} from "./solix-family.js";
+export { SolixSite, discoverSolixSites, type SolixSiteReader, type SolixSiteOptions } from "./solix-site.js";
+export type { SolixSiteRecord, SolixSiteDeviceEntry } from "../core/solix-types.js";

@@ -19,6 +19,7 @@ import {
   type SolixEnergyMeterReads,
 } from "./capabilities/solix.js";
 import { buildModelIndex } from "./solix-catalog.js";
+import { solixProductFamily, type SolixProductFamily } from "./solix-family.js";
 import type { SolixDeviceRecord, SolixProductCategory } from "../core/solix-types.js";
 
 /**
@@ -34,6 +35,11 @@ export interface SolixIdentity {
   name: string;
   /** Anker catalog category (e.g. "Accessory", "Portable Power Station"), if resolvable. */
   category?: string;
+  /**
+   * Normalized product family — the "what kind of thing is this" answer (power station, Solarbank,
+   * smart meter, …), decorrelated from the marketing `category` string. See {@link SolixDevice.family}.
+   */
+  family: SolixProductFamily;
 }
 export interface SolixConnectivity {
   online: boolean;
@@ -80,8 +86,18 @@ export class SolixDevice {
       productCode: record.product_code,
       name: label?.name ?? record.alias_name ?? record.device_name ?? record.product_code,
       category: label?.category,
+      family: solixProductFamily({ product_code: record.product_code, category: label?.category }),
     };
     this.caps = detectSolixCapabilities(record, this.identity_.category);
+  }
+
+  /**
+   * The device's {@link SolixProductFamily} — the classification a caller branches on to SORT devices
+   * (a site's power stations vs its meters), the Solix analogue of eufy's `isHomeBase()`. Distinct from
+   * {@link has}, which answers what the device can DO; family answers what KIND of device it is.
+   */
+  get family(): SolixProductFamily {
+    return this.identity_.family;
   }
 
   /** All capabilities this device carries. */
