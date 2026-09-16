@@ -17,6 +17,12 @@ import type { RegionShard } from "../transport/http/mega-client.js";
  */
 export interface PersistedSession {
   userId: string;
+  /**
+   * The eufy account's own `user_id`, when the login reply carried one distinct from `userId` (which
+   * prefers the Anker Passport cloud's id). The `gtoken` header is hashed from this; absent in a record
+   * written before it was tracked, which falls back to `userId` as before.
+   */
+  accountUserId?: string;
   authToken: string;
   geoKey?: string;
   region: RegionShard;

@@ -31,6 +31,20 @@ const TOKEN_NOT_EXIST: Response = {
   status: 401,
   data: { code: 401, msg: "token not exist, token = 0123456789abcdef0123" },
 };
+/**
+ * A 401 that is NOT the credential failing: the gateway recomputes the `gtoken` header from the user its
+ * token belongs to, and says so when the two disagree. Observed live on an account that had just signed in
+ * cleanly — no 2FA, right region — and whose token was perfectly good. Re-logging in cannot fix a header,
+ * so reading this as an expiry spends a verification code (or, on an account without 2FA, silently loops)
+ * and never repairs anything.
+ *
+ * Both traps live in this one string: `token` at position 0 comes from the echoed credential, and the
+ * `error` the wildcard reaches for belongs to `gtoken` — a different header entirely.
+ */
+const GTOKEN_MISMATCH: Response = {
+  status: 401,
+  data: { code: 401, msg: "token = 0123456789abcdef0123, gtoken not equal userid error" },
+};
 const OK: Response = { status: 200, data: { code: 0, data: { ok: true } } };
 
 /**
@@ -122,6 +136,31 @@ describe("mega authenticated session rejection", () => {
 
     await expect(call(mega)).resolves.toEqual({ ok: true });
     expect(login).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * The counterpart to the two above: a 401 that says the HEADER is wrong, not the credential. Keeping the
+   * session is the whole point — a login cannot change a gtoken, so treating this as an expiry burns a
+   * verification code and leaves the next call failing exactly the same way.
+   */
+  it("keeps the session on a gtoken mismatch, which a re-login cannot fix", async () => {
+    const { mega, login, clearSession } = client([GTOKEN_MISMATCH]);
+
+    await expect(call(mega)).rejects.not.toBeInstanceOf(SessionExpiredError);
+    expect(login).not.toHaveBeenCalled();
+    expect(clearSession).not.toHaveBeenCalled();
+  });
+
+  it("still reports the gtoken mismatch as a failure, rather than swallowing it", async () => {
+    const { mega } = client([GTOKEN_MISMATCH]);
+
+    const error: Error = await call(mega).then(
+      () => new Error("expected a rejection"),
+      (e: Error) => e,
+    );
+
+    expect(error.message).toContain("gtoken not equal userid");
+    expect(error.message).not.toContain("0123456789abcdef0123");
   });
 
   /**
