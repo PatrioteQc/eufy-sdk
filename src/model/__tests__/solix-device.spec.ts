@@ -13,6 +13,8 @@ const CATALOG: SolixProductCategory[] = [
     name: "Portable Power Station",
     products: [{ product_code: "A1782", name: "SOLIX F3000", p_codes: ["2301", { product_code: "2302" }] }],
   },
+  // NOTE the trailing space in the category name — the live catalog returns it that way.
+  { name: "Plug-in Home Battery ", products: [{ product_code: "AE103", name: "Solarbank 4 E5000 Pro" }] },
 ];
 
 const METER: SolixDeviceRecord = {
@@ -112,6 +114,23 @@ describe("SolixDevice", () => {
     expect(sb.has("energyMeter")).toBe(false);
     // battery has no typed accessors (no decode path captured yet) — callers use has() + telemetry().
     expect(sb.energyMeter()).toBeUndefined();
+  });
+
+  it("resolves a Solarbank from its 'Plug-in Home Battery ' catalog category (trailing space trimmed)", () => {
+    const sb = new SolixDevice({ device_sn: "AE103EXAMPLE00001", product_code: "AE103" }, { catalog: CATALOG });
+    expect(sb.identity().category).toBe("Plug-in Home Battery ");
+    expect(sb.has("battery")).toBe(true);
+    expect(sb.has("solarInput")).toBe(true);
+    expect(sb.has("acOutput")).toBe(true);
+    // NOT energyMeter: the AE1X0 meter's members are its own ff09 tag family, not a Solarbank's.
+    expect(sb.has("energyMeter")).toBe(false);
+  });
+
+  it("detects a newer Solarbank (AE10x) by product code even without a catalog", () => {
+    const sb = new SolixDevice({ device_sn: "AE103EXAMPLE00002", product_code: "AE103" });
+    expect(sb.has("battery")).toBe(true);
+    expect(sb.has("solarInput")).toBe(true);
+    expect(sb.has("energyMeter")).toBe(false);
   });
 
   it("buildModelIndex resolves model codes and their variant codes to name + category", () => {

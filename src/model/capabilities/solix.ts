@@ -67,7 +67,11 @@ export type SolixEnergyMeterReads = Surface<typeof SOLIX_ENERGY_METER_MEMBERS>;
  */
 export const CATEGORY_CAPABILITIES: Readonly<Record<string, readonly SolixCapability[]>> = {
   "Portable Power Station": ["battery", "acOutput", "solarInput"],
-  "Plug-in Home Battery": ["battery", "solarInput", "acOutput", "energyMeter"],
+  // NOT `energyMeter`: a home battery measures its own grid/PV/output power, but that is a different
+  // ff09 tag family than the AE1X0 Smart Meter's — the `energyMeter` members are AE1X0-specific, so a
+  // Solarbank frame decoded through them mislabels (e.g. tag `0xac` is power on a Solarbank, voltage on
+  // the meter). `energyMeter` is model-detected for the meter (SOLIX_METER_MODELS), not category-detected.
+  "Plug-in Home Battery": ["battery", "solarInput", "acOutput"],
   "Powered Cooler": ["battery", "cooler"],
   "Power Bank": ["battery"],
   "Smart EV Charger": ["evCharger"],
@@ -80,9 +84,12 @@ export const SOLIX_METER_MODELS: readonly string[] = ["AE1X0"];
 
 /**
  * Product-code prefixes for the grid-tie Solarbank / home-battery family (detects `battery` +
- * `solarInput` regardless of category): A1790 = Solarbank E1600 gen-1, A17C* = Solarbank 2 / 3.
+ * `solarInput` regardless of category, so a caller that builds a device without the catalog still gets
+ * them): A1790 = Solarbank E1600 gen-1, A17C* = Solarbank 2 / 3, A17E* = Solarbank Max AC, AE10* =
+ * Solarbank 4 E5000 Pro / Power Dock, AE11* = Solarbank Max. (`AE1X0`/`AE1R0` meters start `AE1X`/`AE1R`,
+ * so `AE10`/`AE11` do not catch them.)
  */
-export const SOLARBANK_MODELS: readonly string[] = ["A1790", "A17C"];
+export const SOLARBANK_MODELS: readonly string[] = ["A1790", "A17C", "A17E", "AE10", "AE11"];
 
 /** The minimum device shape {@link detectSolixCapabilities} reads. */
 export interface SolixDetectionInput {
@@ -102,7 +109,9 @@ export function detectSolixCapabilities(rec: SolixDetectionInput, category?: str
   const caps = new Set<SolixCapability>(["identity"]);
   if (rec.device_sw_version) caps.add("firmware");
   if (rec.wifi_online !== undefined || rec.rssi != null || rec.wifi_name) caps.add("connectivity");
-  for (const c of (category && CATEGORY_CAPABILITIES[category]) || []) caps.add(c);
+  // Trim the category: the catalog returns some names with trailing whitespace (e.g. "Plug-in Home
+  // Battery "), which would otherwise miss the map and leave a Solarbank with no capabilities.
+  for (const c of (category && CATEGORY_CAPABILITIES[category.trim()]) || []) caps.add(c);
   if (SOLIX_METER_MODELS.some((m) => rec.product_code?.startsWith(m))) caps.add("energyMeter");
   if (SOLARBANK_MODELS.some((m) => rec.product_code?.startsWith(m))) {
     caps.add("battery");
