@@ -26,26 +26,23 @@ export type SolixCapability =
   | "cooler";
 
 /**
- * The `energyMeter` surface, declared once. Only the ONE confirmed tag→name binding is a member:
- * `meterVoltageL1` (ff09 tag `0xAC`), confirmed against a live single-phase frame. The evidence gate
- * (`bindMembers`) installs its getter only once a frame carrying tag `0xAC` has landed and answers
- * `undefined` before.
+ * The `energyMeter` surface — the electrical readings the vendor app names, as typed members. Each is
+ * read-only and evidence-gated: `bindMembers` installs a getter only once a frame carrying that tag has
+ * landed, and answers `undefined` (not a fabricated `0`) before — so on a single-phase / single-CT
+ * install the L2/L3 members stay absent until a multi-phase frame carries them.
  *
- * The meter reports many more quantities (per-line power/current/voltage, totals, import/export energy),
- * but their tag→name bindings are a structural inference not yet pinned to a known-load capture. Rather
- * than assert a name that could mislabel a live float, those stay reachable raw as `channel_<hex>` from
- * the device's telemetry (a static members table cannot enumerate dynamic hex tags); each is promoted to
- * a member here, one line, as a capture confirms its binding.
+ * The tag→field bindings are the app's own field list, and a live single-phase frame confirmed the
+ * magnitudes for L1 and the power total (a nominal mains voltage, an equal line/total power pair, the
+ * line current). The energy counters (`meterImportEnergy`/`meterExportEnergy`) are named on the wire but
+ * are NOT members here: their tag→name is confirmed, but their unit SCALE is not (a live reading is
+ * consistent with either Wh or kWh), so they stay raw named values via {@link SOLIX_METER_FIELD_NAMES}
+ * until a capture pins the scale, rather than ship a member with a guessed unit.
  *
  * @internal — the declaration `SolixEnergyMeterReads` derives from; exported (like the eufy `*_MEMBERS`
  * tables) so it is a known symbol, but excluded from the rendered API reference.
  */
 export const SOLIX_ENERGY_METER_MEMBERS = {
-  /**
-   * Line-1 voltage (V), ff09 tag `0xAC` — the ONE confirmed meter binding, matched against a live
-   * single-phase frame (a nominal mains voltage). Read-only; the evidence gate installs its getter only
-   * once a frame carrying `0xAC` has landed, so it is absent (not a fabricated `0`) until then.
-   */
+  /** Line-1 voltage (V), ff09 tag `0xAC` — confirmed live (a nominal mains voltage). */
   meterVoltageL1: {
     param: 0xac,
     type: "number",
@@ -53,6 +50,87 @@ export const SOLIX_ENERGY_METER_MEMBERS = {
     unit: "V",
     provenance: "verified",
     description: "Meter line-1 voltage (V) — ff09 tag 0xAC, confirmed against a live single-phase frame.",
+  },
+  /** Line-2 voltage (V), ff09 tag `0xAD` — the app's field; reads 0 until a multi-phase frame carries it. */
+  meterVoltageL2: {
+    param: 0xad,
+    type: "number",
+    kind: "scalar",
+    unit: "V",
+    provenance: "apk",
+    description: "Meter line-2 voltage (V) — ff09 tag 0xAD; 0 on a single-phase install.",
+  },
+  /** Line-3 voltage (V), ff09 tag `0xAE` — the app's field; reads 0 until a multi-phase frame carries it. */
+  meterVoltageL3: {
+    param: 0xae,
+    type: "number",
+    kind: "scalar",
+    unit: "V",
+    provenance: "apk",
+    description: "Meter line-3 voltage (V) — ff09 tag 0xAE; 0 on a single-phase install.",
+  },
+  /** Line-1 current (A), ff09 tag `0xAF` — confirmed live (the line's CT current). */
+  meterCurrentL1: {
+    param: 0xaf,
+    type: "number",
+    kind: "scalar",
+    unit: "A",
+    provenance: "verified",
+    description: "Meter line-1 current (A) — ff09 tag 0xAF, confirmed against a live single-phase frame.",
+  },
+  /** Line-2 current (A), ff09 tag `0xB0` — the app's field; reads 0 until a multi-phase frame carries it. */
+  meterCurrentL2: {
+    param: 0xb0,
+    type: "number",
+    kind: "scalar",
+    unit: "A",
+    provenance: "apk",
+    description: "Meter line-2 current (A) — ff09 tag 0xB0; 0 on a single-phase install.",
+  },
+  /** Line-3 current (A), ff09 tag `0xB1` — the app's field; reads 0 until a multi-phase frame carries it. */
+  meterCurrentL3: {
+    param: 0xb1,
+    type: "number",
+    kind: "scalar",
+    unit: "A",
+    provenance: "apk",
+    description: "Meter line-3 current (A) — ff09 tag 0xB1; 0 on a single-phase install.",
+  },
+  /** Line-1 active power (W), ff09 tag `0xA8` — confirmed live; negative on export. */
+  meterPowerL1: {
+    param: 0xa8,
+    type: "number",
+    kind: "scalar",
+    unit: "W",
+    provenance: "verified",
+    description: "Meter line-1 active power (W) — ff09 tag 0xA8, confirmed live; negative on export.",
+  },
+  /** Line-2 active power (W), ff09 tag `0xA9` — the app's field; reads 0 until a multi-phase frame carries it. */
+  meterPowerL2: {
+    param: 0xa9,
+    type: "number",
+    kind: "scalar",
+    unit: "W",
+    provenance: "apk",
+    description: "Meter line-2 active power (W) — ff09 tag 0xA9; 0 on a single-phase install.",
+  },
+  /** Line-3 active power (W), ff09 tag `0xAA` — the app's field; reads 0 until a multi-phase frame carries it. */
+  meterPowerL3: {
+    param: 0xaa,
+    type: "number",
+    kind: "scalar",
+    unit: "W",
+    provenance: "apk",
+    description: "Meter line-3 active power (W) — ff09 tag 0xAA; 0 on a single-phase install.",
+  },
+  /** Aggregate active power (W), ff09 tag `0xAB` — confirmed live; equals line-1 on a single phase. */
+  meterPowerTotal: {
+    param: 0xab,
+    type: "number",
+    kind: "scalar",
+    unit: "W",
+    provenance: "verified",
+    description: "Meter total active power (W) — ff09 tag 0xAB, confirmed live; equals L1 on one phase.",
   },
 } as const satisfies Members;
 

@@ -41,23 +41,34 @@ export interface SolixParamFrame {
 
 /**
  * Telemetry field tags for the Smart Meter (AE1X0) that we emit under a stable NAME, keyed by ff09 tag
- * byte. Only tags whose tag→name binding is CONFIRMED against a live frame live here:
+ * byte. These twelve are the meter fields the vendor app itself names, and their tag→name bindings are
+ * confirmed:
  *
- * - `0xac` = `meterVoltageL1` — confirmed against live single-phase data (a nominal mains voltage).
+ * - The app's field vocabulary is exactly these twelve — voltage, current and power per line
+ *   (L1/L2/L3), a power total, and cumulative import/export energy — with no current total, no
+ *   frequency and no power-factor field.
+ * - A live single-phase frame confirms the tag→field magnitudes: `0xac` a nominal mains voltage,
+ *   `0xa8` == `0xab` an equal power pair (line power equals total on one phase, one of them going
+ *   negative on export), `0xaf` the line current, `0xb3` a slowly-cumulative import counter; the L2/L3
+ *   slots read 0 on a single-CT install.
  *
- * Every other measurement tag still surfaces as `channel_<hex tag>` (see {@link solixReadings}), so
- * nothing on the wire is lost — a caller reads unconfirmed tags there. The names are deliberately NOT
- * asserted for the rest: the app exposes the field *list*, but the tag→name *binding* below is a
- * structural inference until a known-load capture pins it, and a mislabelled live float is worse than an
- * honest `channel_<tag>`. The recovered candidates, to re-add one line each (moving the tag from this
- * comment to the map above) as a known-load capture confirms each binding:
- *
- *   0xa8 meterPowerL1   0xa9 meterPowerL2   0xaa meterPowerL3   0xab meterPowerTotal
- *   0xad meterVoltageL2 0xae meterVoltageL3 0xaf meterCurrentL1 0xb0 meterCurrentL2
- *   0xb1 meterCurrentL3 0xb2 meterCurrentTotal 0xb3 meterImportEnergy 0xb4 meterExportEnergy
+ * The frame carries sixteen float slots (`0xa6`..`0xb7`). The four that name no field — `0xb2`, `0xb5`,
+ * `0xb6`, `0xb7` — are reserved and stay raw `channel_<hex tag>` (see {@link solixReadings}). `0xb2` in
+ * particular is NOT a current total: it holds a small constant that does not track load.
  */
 export const SOLIX_METER_FIELD_NAMES: Readonly<Record<number, string>> = {
+  0xa8: "meterPowerL1",
+  0xa9: "meterPowerL2",
+  0xaa: "meterPowerL3",
+  0xab: "meterPowerTotal",
   0xac: "meterVoltageL1",
+  0xad: "meterVoltageL2",
+  0xae: "meterVoltageL3",
+  0xaf: "meterCurrentL1",
+  0xb0: "meterCurrentL2",
+  0xb1: "meterCurrentL3",
+  0xb3: "meterImportEnergy",
+  0xb4: "meterExportEnergy",
 };
 
 /** Interpret one TLV value as a telemetry channel (leading type byte + payload). */
