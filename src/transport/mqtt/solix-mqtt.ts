@@ -52,7 +52,7 @@ export interface SolixParamFrame {
  *   negative on export), `0xaf` the line current, `0xb3` a slowly-cumulative import counter; the L2/L3
  *   slots read 0 on a single-CT install.
  *
- * The frame carries sixteen float slots (`0xa6`..`0xb7`). The four that name no field — `0xb2`, `0xb5`,
+ * The frame carries sixteen float slots (`0xa8`..`0xb7`). The four that name no field — `0xb2`, `0xb5`,
  * `0xb6`, `0xb7` — are reserved and stay raw `channel_<hex tag>` (see {@link solixReadings}). `0xb2` in
  * particular is NOT a current total: it holds a small constant that does not track load.
  */

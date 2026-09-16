@@ -20,6 +20,18 @@ const FRAME_HEX =
   "b4050500000000b5050500000000b6050500000000b7050500000000b802010344";
 const FRAME = Buffer.from(FRAME_HEX, "hex");
 
+// The same AE1X0 frame under a resistive load (magnitudes from a live single-phase capture): L1 power
+// equals the total, a line current, a cumulative import counter, and `0xb2` a small constant that does
+// NOT track load. Synthesised onto the captured idle frame — the six measurement slots overwritten and
+// the trailing XOR checksum recomputed — so the tag→field bindings are asserted against a load-varying
+// frame, not only the all-zero idle one (which would pass for any mapping).
+const LOAD_FRAME_HEX =
+  "ff09a00003010f0405a10134a2120041453158304558414d504c453030303031a3020100a6050309000001" +
+  "a8050566663641a9050500000000aa050500000000ab050566663641ac050500007043ad050500000000" +
+  "ae050500000000af0505713dca3fb0050500000000b1050500000000b205054260e53bb305056a3c7442" +
+  "b4050500000000b5050500000000b6050500000000b7050500000000b8020103fc";
+const LOAD_FRAME = Buffer.from(LOAD_FRAME_HEX, "hex");
+
 describe("Solix MQTT param decoding", () => {
   it("parses the ff09 frame's serial and TLV fields", () => {
     const frame = decodeSolixParamFrame(FRAME)!;
@@ -53,6 +65,24 @@ describe("Solix MQTT param decoding", () => {
     expect("meterCurrentTotal" in values).toBe(false);
     // a6 is a non-float type (0x03) → excluded from readings
     expect(values["channel_a6"]).toBeUndefined();
+  });
+
+  it("binds the meter fields against a load-varying frame (L1 power == total, current, import; b2 constant)", () => {
+    const values = solixReadings(decodeSolixParamFrame(LOAD_FRAME)!);
+    // The checksum-validated frame decodes (a corrupted one returns null and would fail here).
+    expect(decodeSolixParamFrame(LOAD_FRAME)).not.toBeNull();
+    // L1 line power equals the aggregate total on a single-phase install — the a8/ab mirror.
+    expect(values.meterPowerL1).toBeCloseTo(11.4, 2);
+    expect(values.meterPowerTotal).toBe(values.meterPowerL1);
+    expect(values.meterVoltageL1).toBeCloseTo(240, 1);
+    expect(values.meterCurrentL1).toBeCloseTo(1.58, 2);
+    expect(values.meterImportEnergy).toBeCloseTo(61.059, 2);
+    // 0xb2 is a small constant that does NOT scale with the load — so NOT a current total, and unnamed.
+    expect(values["channel_b2"]).toBeCloseTo(0.007, 3);
+    expect("meterCurrentTotal" in values).toBe(false);
+    // L2/L3 slots are unconnected on a single-CT install → reported as 0 (present, not fabricated).
+    expect(values.meterPowerL2).toBe(0);
+    expect(values.meterCurrentL3).toBe(0);
   });
 
   it("extracts the ff09 payload from the {head, payload:{data}} MQTT envelope", () => {
