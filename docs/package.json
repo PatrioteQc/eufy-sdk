@@ -20,6 +20,6 @@
     "typedoc-plugin-markdown": "^4.13.0",
     "typedoc-vitepress-theme": "^1.1.4",
     "typescript": "^6.0.3",
-    "vitepress": "^2.0.0-alpha.19"
+    "vitepress": "^2.0.0-alpha.20"
   }
 }
