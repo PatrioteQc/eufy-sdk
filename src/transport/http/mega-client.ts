@@ -242,18 +242,23 @@ const CONTENDED_SESSION_HINT =
  * serialised detail of rejections that have nothing to do with the credential, and clearing a healthy session
  * on one of those costs a re-2FA.
  *
- * Two things keep those anchors honest, and the gateway's `"token = …, gtoken not equal userid error"` needs
- * both — it is a HEADER fault on a perfectly good token, and re-logging in cannot fix it:
- *  - the echoed credential is dropped rather than redacted ({@link withoutTokenClause}), so a wildcard cannot
- *    start at the echo's own `token` and reach across the comma for a word belonging to another clause;
- *  - `token` is matched as a whole word, so `gtoken` — a different header with a different meaning — is not
- *    read as the credential.
+ * Two properties of the match keep those anchors on their own subject, and
+ * `"token = …, gtoken not equal userid error"` — a HEADER fault on a token that is fine, which no re-login can
+ * repair — needs both:
+ *  - a wildcard cannot cross a comma, so it stays inside the clause its anchor sits in and cannot borrow a
+ *    word from the next one;
+ *  - `token` matches as a whole word, so `gtoken` — a different header with a different meaning — is not read
+ *    as the credential.
+ *
+ * Both are bounds on the match rather than edits to the message: the echoed credential still carries the
+ * anchor for wordings that state their reason beside it (`"token = … expired"`), so removing the echo before
+ * matching would lose a real expiry and leave a dead session uncleared.
  */
 function tokenRejected(code: number | undefined, msg: string | undefined): boolean {
   return (
     code === EufyCloudErrorCode.SESSION_KICKED ||
-    /user_id is empty|invalid.*\btoken\b|\btoken\b.*(expired|error|not exist)|kicked|(?:\btoken\b|\bsession\b).*does not exist|unauthor/i.test(
-      withoutTokenClause(msg ?? ""),
+    /user_id is empty|invalid[^,]*\btoken\b|\btoken\b[^,]*(expired|error|not exist)|kicked|(?:\btoken\b|\bsession\b)[^,]*does not exist|unauthor/i.test(
+      msg ?? "",
     )
   );
 }
@@ -267,19 +272,6 @@ function tokenRejected(code: number | undefined, msg: string | undefined): boole
  */
 function withoutTokenEcho(text: string): string {
   return text.replace(/token\s*[=:]\s*"?[A-Za-z0-9._-]{8,}"?/gi, "token = <redacted>");
-}
-
-/**
- * Drop the echoed `token = …` clause entirely — including the `token = <redacted>` placeholder that
- * {@link withoutTokenEcho} leaves behind. For classification only; see {@link tokenRejected}.
- *
- * Keeping a readable placeholder is right for a message a person reads and wrong for one a pattern matches:
- * the placeholder still contains the word `token`, so it supplies an anchor for a wildcard that then spans
- * the rest of the message. The clause never explains anything — it is the credential — so the explanation is
- * what is left once it is gone.
- */
-function withoutTokenClause(text: string): string {
-  return text.replace(/\btoken\s*[=:]\s*\S+/gi, " ");
 }
 
 /**
@@ -305,6 +297,13 @@ export class MegaHttpClient {
   private sessionKey?: SessionEntry;
   /** Per-host ECDH session keys for non-mega gateways (e.g. eufylife) keyed by host. */
   private readonly sessionKeys = new Map<string, SessionEntry>();
+  /**
+   * The held credential. `userId` is the login reply's `ap_cloud_user_id` where it has one — the Anker
+   * Passport cloud's id — while `accountUserId` is the eufy account's own `user_id`.
+   *
+   * The `gtoken` header is hashed from `accountUserId`: that is the id the gateway recomputes the header
+   * from, rejecting a disagreement with `"gtoken not equal userid error"`.
+   */
   private auth_?: { userId: string; authToken: string; geoKey?: string; accountUserId?: string };
   /** captcha_id of an in-flight challenge, held between login() and solveCaptcha(). */
   private pendingCaptchaId?: string;
@@ -453,23 +452,6 @@ export class MegaHttpClient {
   }
 
   /**
-   * The `gtoken` header: `md5` of the eufy account's `user_id`. That id is the one the gateway recomputes
-   * the header from, and rejects a mismatch on — in its own words, `"gtoken not equal userid error"`.
-   *
-   * It is tracked separately from {@link auth_.userId} because the login reply carries TWO ids and the SDK
-   * prefers `ap_cloud_user_id` for `userId` — the Anker Passport cloud's id, not the eufy account's. That
-   * preference is load-bearing elsewhere (the Tuya binding, the P2P acting-user fallback, stored-image
-   * partitioning), so it is left alone; only the one header the gateway checks is pinned to the one id the
-   * gateway checks it against. Where the two ids are equal — which may be every account — this is the same
-   * string the header has always carried.
-   *
-   * Falls back to `userId` for a session persisted before this was recorded.
-   */
-  private gtokenHeader(auth: { userId: string; accountUserId?: string }): string {
-    return gtoken(auth.accountUserId ?? auth.userId);
-  }
-
-  /**
    * The account-credential headers every authed call carries — `x-auth-token` + `gtoken`.
    * One place so the signed path, the key-exchange and the bearer path can't drift on what "authed" means.
    */
@@ -478,7 +460,7 @@ export class MegaHttpClient {
     return {
       "x-auth-token": this.auth_.authToken,
       authorization: this.auth_.authToken,
-      gtoken: this.gtokenHeader(this.auth_),
+      gtoken: gtoken(this.auth_.accountUserId ?? this.auth_.userId),
     };
   }
 
@@ -864,7 +846,7 @@ export class MegaHttpClient {
     try {
       return await downloadMediaResource(url, {
         "x-auth-token": this.auth_.authToken,
-        gtoken: this.gtokenHeader(this.auth_),
+        gtoken: gtoken(this.auth_.accountUserId ?? this.auth_.userId),
         "app-name": "eufy_mega",
         "model-type": "PHONE",
         "user-agent": this.mediaUserAgent,
@@ -1199,20 +1181,11 @@ export class MegaHttpClient {
     {
       const cap = Object.keys(res).filter((k) => /captcha|answer|picture|image|fa_/i.test(k));
       this.logger.debug("[mega] login resp keys:", Object.keys(res).join(","));
-      // Whether the reply's two ids actually differ is the fact that says how often the gtoken header was
-      // wrong before gtokenHeader() pinned it — and it cannot be read from the key list above. Logged as a
-      // comparison, never as values: either one identifies the account.
-      if (res.ap_cloud_user_id !== undefined && res.user_id !== undefined)
-        this.logger.debug(
-          "[mega] ap_cloud_user_id vs user_id:",
-          res.ap_cloud_user_id === res.user_id ? "same" : "DIFFERENT",
-        );
+      this.logger.debug("[mega] ids agree:", res.ap_cloud_user_id === res.user_id);
       if (cap.length)
         this.logger.debug("[mega] captcha/fa:", JSON.stringify(Object.fromEntries(cap.map((k) => [k, res[k]]))));
     }
     const userId = (res.ap_cloud_user_id ?? res.user_id ?? res.userId) as string | undefined;
-    // The eufy account's own id, kept apart from the above — see gtokenHeader(). Undefined when the reply
-    // carries only the one id, which leaves the header exactly as it was.
     const accountUserId = (res.user_id ?? res.userId) as string | undefined;
     const authToken = (res.auth_token ?? res.token) as string | undefined;
     if (!userId || !authToken) throw new Error(`login returned no session: ${JSON.stringify(res).slice(0, 200)}`);
@@ -1249,7 +1222,7 @@ export class MegaHttpClient {
     if (!this.auth_ || !this.sessionKey) return;
     this.store.save({
       userId: this.auth_.userId,
-      accountUserId: this.auth_.accountUserId,
+      accountUserId: this.auth_.accountUserId ?? this.auth_.userId,
       authToken: this.auth_.authToken,
       geoKey: this.auth_.geoKey,
       region: this.region,

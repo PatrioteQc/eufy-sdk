@@ -32,14 +32,9 @@ const TOKEN_NOT_EXIST: Response = {
   data: { code: 401, msg: "token not exist, token = 0123456789abcdef0123" },
 };
 /**
- * A 401 that is NOT the credential failing: the gateway recomputes the `gtoken` header from the user its
- * token belongs to, and says so when the two disagree. Observed live on an account that had just signed in
- * cleanly — no 2FA, right region — and whose token was perfectly good. Re-logging in cannot fix a header,
- * so reading this as an expiry spends a verification code (or, on an account without 2FA, silently loops)
- * and never repairs anything.
- *
- * Both traps live in this one string: `token` at position 0 comes from the echoed credential, and the
- * `error` the wildcard reaches for belongs to `gtoken` — a different header entirely.
+ * A 401 that is NOT the credential failing — the `gtoken` header disagreeing with the token's user, which
+ * no re-login can repair. Both traps live in this one string: the `token` at position 0 comes from the
+ * echoed credential, and the `error` a wildcard reaches for belongs to `gtoken`, a different header.
  */
 const GTOKEN_MISMATCH: Response = {
   status: 401,
@@ -83,6 +78,7 @@ const call = (mega: MegaHttpClient, path = "/synthetic") => mega.postSigned("app
 function storedSession(authToken: string): PersistedSession {
   return {
     userId: "synthetic-user",
+    accountUserId: "synthetic-user",
     authToken,
     region: "us-pr",
     openudid: "0".repeat(16),
@@ -151,16 +147,18 @@ describe("mega authenticated session rejection", () => {
     expect(clearSession).not.toHaveBeenCalled();
   });
 
-  it("still reports the gtoken mismatch as a failure, rather than swallowing it", async () => {
-    const { mega } = client([GTOKEN_MISMATCH]);
-
-    const error: Error = await call(mega).then(
-      () => new Error("expected a rejection"),
-      (e: Error) => e,
+  /**
+   * The false negative the bound protects: a reason stated beside the echo rather than in its own clause.
+   * Removing the echo before matching would take the anchor with it and leave a dead session uncleared.
+   */
+  it("classifies an expiry whose reason sits beside the echoed token", async () => {
+    const { mega, clearSession } = client(
+      [{ status: 401, data: { code: 401, msg: "token = 0123456789abcdef0123 expired" } }],
+      new Error("synthetic: re-login unavailable"),
     );
 
-    expect(error.message).toContain("gtoken not equal userid");
-    expect(error.message).not.toContain("0123456789abcdef0123");
+    await expect(call(mega)).rejects.toBeInstanceOf(SessionExpiredError);
+    expect(clearSession).toHaveBeenCalled();
   });
 
   /**

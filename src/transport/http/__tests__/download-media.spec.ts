@@ -15,6 +15,7 @@ const AUTHENTICATED_HEADERS = {
 function sessionStore(): SessionStore {
   const session: PersistedSession = {
     userId: "synthetic-user",
+    accountUserId: "synthetic-user",
     authToken: "synthetic-token",
     region: "us-pr",
     openudid: "0000000000000000",
