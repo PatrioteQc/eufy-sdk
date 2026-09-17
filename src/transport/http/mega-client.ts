@@ -452,6 +452,16 @@ export class MegaHttpClient {
   }
 
   /**
+   * The id `gtoken` is hashed from — the account's own `user_id`, which is what the gateway recomputes the
+   * header from. One place so the two header paths cannot drift on which of the session's ids that is.
+   *
+   * Call only where `auth_` is already established; every header path guards it.
+   */
+  private gtokenUserId(): string {
+    return this.auth_!.accountUserId ?? this.auth_!.userId;
+  }
+
+  /**
    * The account-credential headers every authed call carries — `x-auth-token` + `gtoken`.
    * One place so the signed path, the key-exchange and the bearer path can't drift on what "authed" means.
    */
@@ -460,7 +470,7 @@ export class MegaHttpClient {
     return {
       "x-auth-token": this.auth_.authToken,
       authorization: this.auth_.authToken,
-      gtoken: gtoken(this.auth_.accountUserId ?? this.auth_.userId),
+      gtoken: gtoken(this.gtokenUserId()),
     };
   }
 
@@ -846,7 +856,7 @@ export class MegaHttpClient {
     try {
       return await downloadMediaResource(url, {
         "x-auth-token": this.auth_.authToken,
-        gtoken: gtoken(this.auth_.accountUserId ?? this.auth_.userId),
+        gtoken: gtoken(this.gtokenUserId()),
         "app-name": "eufy_mega",
         "model-type": "PHONE",
         "user-agent": this.mediaUserAgent,
