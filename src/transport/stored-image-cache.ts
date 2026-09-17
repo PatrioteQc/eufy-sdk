@@ -1,10 +1,6 @@
-import {
-  MEDIA_FAILURE_REASONS,
-  StoredSnapshotUnavailableError,
-  type MediaFailureReason,
-  type StoredSnapshotUnavailableReason,
-} from "../core/contracts.js";
+import { StoredSnapshotUnavailableError, type StoredSnapshotUnavailableReason } from "../core/contracts.js";
 import type { Logger } from "../core/logger.js";
+import { MEDIA_FAILURE_REASONS, type MediaFailureReason } from "./media-failure.js";
 
 const MAX_JPEG_BYTES = 10 * 1024 * 1024;
 
@@ -55,7 +51,13 @@ export class StoredImageCache {
     private readonly isLifecycleError: (error: unknown) => boolean = () => false,
   ) {}
 
-  /** Observe a normalized thumbnail URL and start acquisition eagerly. */
+  /**
+   * Observe a normalized thumbnail URL and start acquisition eagerly.
+   *
+   * A URL already inside this device's window of recent attempts is ignored, so one event arriving as
+   * several pushes downloads one thumbnail. The window is a `Set`, which iterates in insertion order,
+   * so the entry evicted once it is full is the oldest attempt.
+   */
   observe(deviceKey: string, url: string): void {
     let state = this.devices.get(deviceKey);
     if (!state) {
@@ -69,7 +71,6 @@ export class StoredImageCache {
     }
     if (state.seenUrls.has(url)) return;
     state.seenUrls.add(url);
-    // A Set iterates in insertion order, so the first entry is the oldest attempt.
     while (state.seenUrls.size > MAX_REMEMBERED_URLS) {
       const oldest = state.seenUrls.values().next();
       if (oldest.done) break;

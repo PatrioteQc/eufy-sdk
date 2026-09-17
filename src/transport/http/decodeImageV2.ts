@@ -22,27 +22,24 @@
  * Cracked keylessly 2026-06-04; verified against a live V6 production thumbnail (632×472, 4:4:4).
  *
  * @remarks
- * **Why the search reads the scan rather than decoding candidate frames.** It used to answer "does the
- * scan fill this frame?" by handing `jpeg-js` a spliced candidate and watching for a throw, walking a
- * ladder of common camera geometries. That is correct and it is unaffordable: a `jpeg-js` decode churns
+ * **Why the search reads the scan rather than decoding candidate frames.** "Does the scan fill this
+ * frame?" can be asked by splicing a candidate header on and handing it to `jpeg-js`, since the decoder
+ * throws on an under-filled frame. That answer is correct and unaffordable: a `jpeg-js` decode churns
  * about a megabyte of typed arrays whatever the frame size, glibc keeps the arenas rather than handing
- * them back, and the ~30 candidate decodes a thumbnail needed moved measured RSS by **~45 MB,
- * permanently, per thumbnail**. A caller running under a hard memory cap with tens of megabytes of
- * headroom — which is what an embedded host gives an app — was killed by its watchdog on the first
- * detection push that carried a thumbnail. Ordering the ladder by MCU count had already cut that from
- * ~150 MB and it was still fatal, because the per-decode cost, not the candidate count, is the bill.
+ * them back, and the question has to be asked of every candidate geometry — tens of megabytes of
+ * resident memory per thumbnail, permanently, which is more than an embedded host gives an app in
+ * total. Its ENCODER is worse: ~40 MB of RSS on first use, which is what rules out correcting the
+ * picture by rewriting pixels.
  *
- * `scanEntropy` answers the same question by Huffman-walking the scan and discarding every
- * coefficient it decodes: no IDCT, no component planes, no output image, one `Int32Array` of MCU count.
- * The whole three-hypothesis search now allocates a few hundred kilobytes and runs in single-digit
- * milliseconds, and `jpeg-js` is left with the one job it is needed for — decoding the ONE frame the
- * search settled on — and that decode is a measurement, not a rewrite: the picture handed back is the
- * camera's own scan under a corrected header (see `contrastScale`), never a re-encode, because
- * `jpeg-js`'s ENCODER is the costlier half of the old pipeline at ~40 MB of RSS on first use.
+ * `scanEntropy` answers the same question by Huffman-walking the scan and discarding every coefficient
+ * it decodes: no IDCT, no component planes, no output image, one `Int32Array` of MCU count. The
+ * three-hypothesis search allocates a few hundred kilobytes and runs in single-digit milliseconds, and
+ * `jpeg-js` is left with the one job that needs it — decoding the ONE frame the search settles on. That
+ * decode is a measurement, not a rewrite: what comes back is the camera's own scan under a corrected
+ * header (see `contrastScale`), never a re-encode.
  *
- * Measured end to end on the committed fixtures: **RSS +45.5 MB → +0.4 MB and 176 ms → 6 ms per
- * thumbnail** (+13 MB and 38 ms on the first one in a process, which is JIT warm-up, not per-image
- * cost).
+ * Measured on the committed fixtures: **+0.4 MB of resident memory and 6 ms per thumbnail**, plus about
+ * 13 MB and 38 ms once per process for JIT warm-up.
  *
  * Depends on `jpeg-js` (v0.4.x, BSD-3-Clause, pure-JS, **zero transitive dependencies**) for that one
  * probe decode.
@@ -219,7 +216,9 @@ function trimmedRange(data: Uint8Array, channel: number, total: number, cutoff: 
  * deviation from mid-grey.
  *
  * RGB rather than luma, and the tightest channel wins, so amplification never clips a channel that was
- * already at the rail. A picture that already spans the range measures 1 and is left exactly as it is.
+ * already at the rail. A picture that already spans the range measures 1 and is left exactly as it is,
+ * and a channel with no range at all is skipped rather than stretched: it says nothing about scale, and
+ * amplifying it would turn a flat picture into a black-and-white one.
  */
 function contrastScale(img: Decoded, cutoff = CUTOFF_PERCENT): number {
   const total = img.width * img.height;
@@ -227,8 +226,6 @@ function contrastScale(img: Decoded, cutoff = CUTOFF_PERCENT): number {
   let stretch = Number.POSITIVE_INFINITY;
   for (let channel = 0; channel < 3; channel++) {
     const { lo, hi } = trimmedRange(img.data, channel, total, cutoff);
-    // A channel with no range at all says nothing about scale, and amplifying it would only turn a
-    // flat picture into a black-and-white one. PIL's autocontrast skips it for the same reason.
     if (hi <= lo) continue;
     if (lo < 128) stretch = Math.min(stretch, 128 / (128 - lo));
     if (hi > 128) stretch = Math.min(stretch, 127 / (hi - 128));

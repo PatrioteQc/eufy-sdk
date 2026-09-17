@@ -1,17 +1,15 @@
 /**
  * A baseline-JPEG entropy scanner that decodes no pixels.
  *
- * The v2 thumbnail decoder next door has to discover a frame
- * geometry that its blob does not state, and the only evidence is the plaintext entropy-coded scan:
- * how many MCUs it carries, and whether it carries them under a given chroma subsampling. It used to
- * ask that question by *decoding candidate frames* with `jpeg-js` and watching for a throw, which
- * answers it correctly and costs a full set of component and output buffers per question.
+ * The v2 thumbnail decoder next door has to discover a frame geometry its blob does not state, and the
+ * only evidence is the plaintext entropy-coded scan: how many MCUs it carries, and whether it carries
+ * them under a given chroma subsampling. A JPEG decoder answers that — it throws on a frame the scan
+ * does not fill — and charges a full set of component and output buffers for each question.
  *
- * For a caller under a hard memory cap that bill is fatal. Each `jpeg-js` decode churns roughly a
+ * That bill is fatal for a caller under a hard memory cap. Each `jpeg-js` decode churns roughly a
  * megabyte of typed arrays, glibc keeps the arenas rather than handing them back, and a search asking
- * the question ~30 times moved measured RSS by **~45 MB per thumbnail, permanently** — more headroom
- * than an embedded host gives an app in total. The reporting caller's watchdog killed it for exceeding
- * its memory limit shortly after a detection push.
+ * the question of every candidate geometry costs tens of megabytes per thumbnail — permanently, and
+ * more than an embedded host gives an app in total.
  *
  * This module asks the same question by walking the Huffman-coded coefficients and throwing them away:
  * no IDCT, no component planes, no output image. What it keeps is one number per MCU — the DC
@@ -64,8 +62,9 @@ export interface EntropyScan {
   /**
    * Whether the scan ended where a whole MCU ended, with nothing but the EOI marker left.
    *
-   * This is the discriminator the old search got from `jpeg-js` throwing: a wrong hypothesis reads a
-   * block with the wrong Huffman table, diverges, and dies mid-MCU or leaves data behind.
+   * The discriminator between hypotheses: a wrong one reads a block with the wrong Huffman table,
+   * diverges, and either dies mid-MCU or stops with data still ahead of it. Only the subsampling the
+   * encoder used walks the scan to its last byte on an MCU boundary.
    */
   complete: boolean;
 }
@@ -227,6 +226,12 @@ function decodeBlock(reader: BitReader, component: ScanComponent): number {
  * `extraTables` carries the DHT segments that are NOT in the tail — for a v2 thumbnail, the standard
  * luma tables the reconstructed header supplies, since only the chroma ones survive in plaintext.
  * Returns null when the tail is not a baseline scan at all (no SOS, missing tables).
+ *
+ * The walk stops at the first byte it cannot read as this hypothesis's next block, and the result is
+ * `complete` only when that happened on an MCU boundary with nothing but a marker left. The DC array
+ * grows as the scan turns out to be long rather than being sized from the scan's byte length: a wrong
+ * hypothesis dies after a handful of MCUs, and provisioning three whole-scan arrays to discover that is
+ * the kind of allocation this module exists to avoid.
  */
 export function scanEntropy(
   tail: Uint8Array,
@@ -273,9 +278,6 @@ export function scanEntropy(
   }
 
   const reader = new BitReader(tail, scanStart);
-  // Grown as the scan turns out to be long rather than sized from the scan's byte length: a wrong
-  // hypothesis dies after a handful of MCUs, and provisioning three whole-scan arrays to discover that
-  // is exactly the kind of allocation this module exists to avoid.
   let luma = new Int32Array(1024);
   const lumaBlocks = lumaH * lumaV;
   let mcus = 0;
@@ -313,8 +315,6 @@ export function scanEntropy(
     }
   } catch (error) {
     if (!(error instanceof ScanEnd)) throw error;
-    // Clean when the divergence happened at the START of an MCU with nothing but a marker left: the
-    // scan handed over exactly whole MCUs. Anything else is a hypothesis reading the wrong tables.
     complete = tail.length - consumed <= 2;
   }
   return { mcus, luma: luma.subarray(0, mcus), complete };

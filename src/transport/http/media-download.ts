@@ -1,6 +1,6 @@
 import { lookup } from "node:dns/promises";
 import { BlockList, isIP } from "node:net";
-import type { MediaFailure, MediaFailureReason } from "../../core/contracts.js";
+import type { MediaFailure, MediaFailureReason } from "../media-failure.js";
 
 const MEDIA_DOWNLOAD_TIMEOUT_MS = 15_000;
 const MEDIA_DOWNLOAD_MAX_BYTES = 10 * 1024 * 1024;
@@ -28,9 +28,9 @@ type ResolveHost = (hostname: string) => Promise<readonly { address: string; fam
  * A media download that produced no bytes, tagged with WHY in {@link MediaFailureReason}'s closed
  * vocabulary.
  *
- * The messages stay as deliberately uninformative as they were — they are the only thing a caller sees
- * by default, and a media URL is a credential — but the tag rides alongside them, so a cache logging a
- * failure can say `http-status 404` rather than `download-failed` and leave the operator guessing.
+ * The message is deliberately uninformative: it is what a caller sees by default, and a media URL is a
+ * credential. The tag rides alongside it, so a cache logging a failure can name `http-status 404`
+ * without quoting anything the response or the URL said.
  */
 class MediaDownloadError extends Error implements MediaFailure {
   readonly mediaFailure: MediaFailureReason;

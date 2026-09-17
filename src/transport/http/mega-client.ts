@@ -838,10 +838,9 @@ export class MegaHttpClient {
   /**
    * Download push image bytes and decrypt a recognized v1 wrapper when its device key input is available.
    *
-   * A decoder throw is tagged as `decode-failed` rather than left to surface as an untagged error: to
-   * anything downstream the difference between "the bytes never arrived" and "the bytes arrived and the
-   * wrapper would not decrypt" is the difference between a network problem and a key problem, and one
-   * of them is this SDK's to fix.
+   * A decoder throw is tagged `decode-failed`: to anything downstream, the difference between "the
+   * bytes never arrived" and "the bytes arrived and the wrapper would not decrypt" is the difference
+   * between a network problem and a key problem, and one of them is this SDK's to fix.
    */
   async downloadImage(url: string, p2pDid?: string): Promise<Buffer> {
     const data = await this.downloadMedia(url);
