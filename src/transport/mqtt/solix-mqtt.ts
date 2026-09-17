@@ -53,8 +53,10 @@ export interface SolixParamFrame {
  *   slots read 0 on a single-CT install.
  *
  * The frame carries sixteen float slots (`0xa8`..`0xb7`). The four that name no field — `0xb2`, `0xb5`,
- * `0xb6`, `0xb7` — are reserved and stay raw `channel_<hex tag>` (see {@link solixReadings}). `0xb2` in
- * particular is NOT a current total: it holds a small constant that does not track load.
+ * `0xb6`, `0xb7` — stay raw `channel_<hex tag>` (see {@link solixReadings}). `0xb2` in particular is NOT
+ * a current total: under a 1.371 A line current it reads 0.009, three orders of magnitude off. Both
+ * `0xb2` and `0xb7` read zero at idle and non-zero under load, so they carry *something* load-related;
+ * what, is not established.
  *
  * This table is **meter-family-specific**: the same tag carries a different quantity on another Solix
  * device (a Solarbank's `0xac` reads a power value, not a voltage), so {@link solixReadings} applies

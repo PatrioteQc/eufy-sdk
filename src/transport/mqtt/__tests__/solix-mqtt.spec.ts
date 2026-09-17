@@ -25,8 +25,8 @@ const FRAME = Buffer.from(FRAME_HEX, "hex");
 // recomputed for that swap — NOT a synthesised one. This matters for the a8/ab pair: `meterPowerL1 ==
 // meterPowerTotal` here because the DEVICE itself reported the two slots equal (its own bytes), so the
 // L1==total mirror is independently corroborated by a real observation, not by writing the same bytes
-// to both slots. It carries a real line current + voltage, a cumulative import counter, and `0xb2` a
-// small constant that does NOT track load — the whole point of a load-varying frame the idle one can't be.
+// to both slots. It carries a real line current + voltage, a cumulative import counter, and `0xb2`/`0xb7`
+// reading non-zero under load (0 at idle) — the whole point of a load-varying frame the idle one can't be.
 const LOAD_FRAME_HEX =
   "ff09a00003010f0405a10134a2120041453158304558414d504c453030303031a3020100a6050309000001" +
   "a80505cdcc2c40a9050500000000aa050500000000ab0505cdcc2c40ac0505cd4c6f43ad050500000000" +
@@ -80,7 +80,8 @@ describe("Solix MQTT param decoding", () => {
     expect(values.meterVoltageL1).toBeCloseTo(239.3, 1);
     expect(values.meterCurrentL1).toBeCloseTo(1.371, 2);
     expect(values.meterImportEnergy).toBeCloseTo(74.108, 2);
-    // 0xb2 is a small constant that does NOT scale with the load — so NOT a current total, and unnamed.
+    // 0xb2 reads 0.009 under a 1.371 A line current — three orders off a current total, so NOT one, and
+    // unnamed. (It is 0 at idle and non-zero here, so it tracks something load-related, just not current.)
     expect(values["channel_b2"]).toBeCloseTo(0.009, 3);
     expect("meterCurrentTotal" in values).toBe(false);
     // L2/L3 slots are unconnected on a single-CT install → reported as 0 (present, not fabricated).
