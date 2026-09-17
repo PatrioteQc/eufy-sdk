@@ -28,7 +28,7 @@ import {
 import { MemorySessionStore, isSessionValid, type SessionStore } from "../../core/store.js";
 import { noopLogger, type Logger } from "../../core/logger.js";
 import type { SecureMqttCredentials } from "../mqtt/secure-mqtt.js";
-import { downloadMediaResource, MediaDownloadAuthenticationError } from "./media-download.js";
+import { downloadMediaResource, mediaFailureError, MediaDownloadAuthenticationError } from "./media-download.js";
 import { randomPhoneModel, randomUserAgent } from "./phone-model.js";
 import { normalizePushImage } from "./decodeImageV1.js";
 
@@ -835,9 +835,21 @@ export class MegaHttpClient {
     }
   }
 
-  /** Download push image bytes and decrypt a recognized v1 wrapper when its device key input is available. */
+  /**
+   * Download push image bytes and decrypt a recognized v1 wrapper when its device key input is available.
+   *
+   * A decoder throw is tagged as `decode-failed` rather than left to surface as an untagged error: to
+   * anything downstream the difference between "the bytes never arrived" and "the bytes arrived and the
+   * wrapper would not decrypt" is the difference between a network problem and a key problem, and one
+   * of them is this SDK's to fix.
+   */
   async downloadImage(url: string, p2pDid?: string): Promise<Buffer> {
-    return normalizePushImage(await this.downloadMedia(url), p2pDid);
+    const data = await this.downloadMedia(url);
+    try {
+      return normalizePushImage(data, p2pDid);
+    } catch (error) {
+      throw mediaFailureError("Push image could not be decoded", "decode-failed", error);
+    }
   }
 
   /** The security-app data host for this region (face recognition, media, etc.). */
