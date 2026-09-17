@@ -118,7 +118,8 @@ describe("SolixDevice", () => {
 
   it("resolves a Solarbank from its 'Plug-in Home Battery ' catalog category (trailing space trimmed)", () => {
     const sb = new SolixDevice({ device_sn: "AE103EXAMPLE00001", product_code: "AE103" }, { catalog: CATALOG });
-    expect(sb.identity().category).toBe("Plug-in Home Battery ");
+    // Category is trimmed at ingest (buildModelIndex), so consumers see the clean name, not "…Battery ".
+    expect(sb.identity().category).toBe("Plug-in Home Battery");
     expect(sb.has("battery")).toBe(true);
     expect(sb.has("solarInput")).toBe(true);
     expect(sb.has("acOutput")).toBe(true);
@@ -139,6 +140,13 @@ describe("SolixDevice", () => {
     // both the string and object variant codes resolve to the parent product
     expect(index.get("2301")?.name).toBe("SOLIX F3000");
     expect(index.get("2302")?.name).toBe("SOLIX F3000");
+  });
+
+  it("buildModelIndex trims the category at ingest (the live catalog has trailing whitespace)", () => {
+    // The AE103 entry's category in CATALOG is "Plug-in Home Battery " (trailing space, as the live
+    // product_categories endpoint returns it); the index stores the trimmed name so every consumer of
+    // it — identity().category and detectSolixCapabilities — matches on the clean string.
+    expect(buildModelIndex(CATALOG).get("AE103")?.category).toBe("Plug-in Home Battery");
   });
 
   it("discoverSolixDevices composes a wire client's reads into resolved SolixDevice models", async () => {

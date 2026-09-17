@@ -67,10 +67,13 @@ export type SolixEnergyMeterReads = Surface<typeof SOLIX_ENERGY_METER_MEMBERS>;
  */
 export const CATEGORY_CAPABILITIES: Readonly<Record<string, readonly SolixCapability[]>> = {
   "Portable Power Station": ["battery", "acOutput", "solarInput"],
-  // NOT `energyMeter`: a home battery measures its own grid/PV/output power, but that is a different
-  // ff09 tag family than the AE1X0 Smart Meter's — the `energyMeter` members are AE1X0-specific, so a
-  // Solarbank frame decoded through them mislabels (e.g. tag `0xac` is power on a Solarbank, voltage on
-  // the meter). `energyMeter` is model-detected for the meter (SOLIX_METER_MODELS), not category-detected.
+  /**
+   * NOT `energyMeter`: a home battery measures its own grid/PV/output power, but that is a different
+   * ff09 tag family than the AE1X0 Smart Meter's — the `energyMeter` members are AE1X0-specific, so a
+   * Solarbank frame decoded through them mislabels (tag `0xac` is power on a Solarbank, voltage on the
+   * meter — enforced by the meter-family gate in {@link SOLIX_METER_MODELS} / the transport decoder,
+   * see PR #186). `energyMeter` is model-detected for the meter, not category-detected.
+   */
   "Plug-in Home Battery": ["battery", "solarInput", "acOutput"],
   "Powered Cooler": ["battery", "cooler"],
   "Power Bank": ["battery"],
@@ -85,11 +88,19 @@ export const SOLIX_METER_MODELS: readonly string[] = ["AE1X0"];
 /**
  * Product-code prefixes for the grid-tie Solarbank / home-battery family (detects `battery` +
  * `solarInput` regardless of category, so a caller that builds a device without the catalog still gets
- * them): A1790 = Solarbank E1600 gen-1, A17C* = Solarbank 2 / 3, A17E* = Solarbank Max AC, AE10* =
- * Solarbank 4 E5000 Pro / Power Dock, AE11* = Solarbank Max. (`AE1X0`/`AE1R0` meters start `AE1X`/`AE1R`,
- * so `AE10`/`AE11` do not catch them.)
+ * them): `A1790` = Solarbank E1600 gen-1, `A17C*` = Solarbank 2 / 3, `AE10*` = Solarbank 4 E5000 Pro /
+ * SOLIX Power Dock.
+ *
+ * Grounded in the live `product_categories` catalog: `A17C0`–`A17C5` and `AE100` all list under
+ * category `"Plug-in Home Battery "`, and `AE103` by the device spec. `AE1X0`/`AE1R0` meters start
+ * `AE1X`/`AE1R`, so `AE10` does not catch them.
+ *
+ * The speculative `A17E` ("Solarbank Max AC") and `AE11` ("Solarbank Max") were dropped: neither is in
+ * the catalog, and the only `AE11x` product there — `AE113` "XE 6/8kW" — is a Residential Storage
+ * System, a different family whose telemetry is unverified, so granting it `battery`/`solarInput` would
+ * be an unevidenced false positive (exactly what this detection is otherwise careful to avoid).
  */
-export const SOLARBANK_MODELS: readonly string[] = ["A1790", "A17C", "A17E", "AE10", "AE11"];
+export const SOLARBANK_MODELS: readonly string[] = ["A1790", "A17C", "AE10"];
 
 /** The minimum device shape {@link detectSolixCapabilities} reads. */
 export interface SolixDetectionInput {
@@ -109,9 +120,8 @@ export function detectSolixCapabilities(rec: SolixDetectionInput, category?: str
   const caps = new Set<SolixCapability>(["identity"]);
   if (rec.device_sw_version) caps.add("firmware");
   if (rec.wifi_online !== undefined || rec.rssi != null || rec.wifi_name) caps.add("connectivity");
-  // Trim the category: the catalog returns some names with trailing whitespace (e.g. "Plug-in Home
-  // Battery "), which would otherwise miss the map and leave a Solarbank with no capabilities.
-  for (const c of (category && CATEGORY_CAPABILITIES[category.trim()]) || []) caps.add(c);
+  // The category is already trimmed at ingest (buildModelIndex), so an exact lookup is safe here.
+  for (const c of (category && CATEGORY_CAPABILITIES[category]) || []) caps.add(c);
   if (SOLIX_METER_MODELS.some((m) => rec.product_code?.startsWith(m))) caps.add("energyMeter");
   if (SOLARBANK_MODELS.some((m) => rec.product_code?.startsWith(m))) {
     caps.add("battery");
