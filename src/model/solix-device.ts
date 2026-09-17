@@ -192,6 +192,19 @@ export interface SolixDeviceReader {
 }
 
 /**
+ * Resolve the product catalog for a discovery: a caller-supplied `opts.catalog` short-circuits the wire
+ * read, and a failed `getProductCatalog()` degrades to no categories (names/families just go unresolved,
+ * never a thrown discovery). Shared by {@link discoverSolixDevices} and `discoverSolixSites` so that
+ * "a failed catalog is non-fatal" decision lives in exactly one place.
+ */
+export function resolveSolixCatalog(
+  client: SolixDeviceReader,
+  opts: { catalog?: SolixProductCategory[] },
+): Promise<SolixProductCategory[]> {
+  return opts.catalog ? Promise.resolve(opts.catalog) : client.getProductCatalog().catch(() => []);
+}
+
+/**
  * Discover an account's Solix devices as capability-driven {@link SolixDevice} objects — the wire+model
  * composition (a transport read + the product catalog) that used to be `SolixClient.discoverDevices()`.
  * It lives in the model layer because it builds `SolixDevice`; the wire client (now `transport/http`)
@@ -202,9 +215,6 @@ export async function discoverSolixDevices(
   client: SolixDeviceReader,
   opts: { catalog?: SolixProductCategory[] } = {},
 ): Promise<SolixDevice[]> {
-  const [records, catalog] = await Promise.all([
-    client.getDevices(),
-    opts.catalog ? Promise.resolve(opts.catalog) : client.getProductCatalog().catch(() => [] as SolixProductCategory[]),
-  ]);
+  const [records, catalog] = await Promise.all([client.getDevices(), resolveSolixCatalog(client, opts)]);
   return records.map((r) => new SolixDevice(r, { catalog }));
 }

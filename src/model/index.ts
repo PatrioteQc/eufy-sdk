@@ -144,4 +144,6 @@ export {
   type SolixFamilyInput,
 } from "./solix-family.js";
 export { SolixSite, discoverSolixSites, type SolixSiteReader, type SolixSiteOptions } from "./solix-site.js";
-export type { SolixSiteRecord, SolixSiteDeviceEntry } from "../core/solix-types.js";
+// `SolixSiteRecord` / `SolixSiteDeviceEntry` are core-owned (see `core/index.ts` `export *
+// ./solix-types`), so they reach `src/index.ts` through the core barrel — not re-exported here (a
+// core type should leave through one layer barrel, matching how `SolixDeviceRecord` is handled).

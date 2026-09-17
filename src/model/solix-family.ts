@@ -45,10 +45,15 @@ export interface SolixFamilyInput {
   category?: string;
 }
 
-/** The catalog categories that map one-to-one onto a family, for the codes a prefix set does not cover. */
+/**
+ * The catalog categories that map one-to-one onto a family, for the codes a prefix set does not cover.
+ * "Plug-in Home Battery" is intentionally NOT here: the solarbank family owns its own category check in
+ * {@link isSolixSolarbank}, which {@link solixProductFamily} consults directly — stating that mapping
+ * here too would be a second source of the same truth. The category strings are the trimmed form (the
+ * catalog's trailing whitespace is normalised at ingest in `buildModelIndex`), so exact keys match.
+ */
 const CATEGORY_FAMILY: Readonly<Record<string, SolixProductFamily>> = {
   "Portable Power Station": "powerStation",
-  "Plug-in Home Battery": "solarbank",
   "Power Bank": "powerBank",
   "Powered Cooler": "cooler",
   "Smart EV Charger": "evCharger",
@@ -70,15 +75,18 @@ export const isSolixSmartMeter = (input: SolixFamilyInput): boolean =>
 export const isSolixPowerStation = (input: SolixFamilyInput): boolean => input.category === "Portable Power Station";
 
 /**
- * Resolve a Solix device's {@link SolixProductFamily}. Product-code prefixes win first (they are
- * catalog-independent, so a device classifies even before a catalog is fetched); the catalog category
- * fills in the families that have no prefix set yet. Returns `"unknown"` when neither identifies one —
+ * Resolve a Solix device's {@link SolixProductFamily} by consulting the family predicates first (they are
+ * catalog-independent, so a device classifies even before a catalog is fetched), then the catalog
+ * category for the families that have no prefix set yet. Returns `"unknown"` when neither identifies one —
  * never a guess, mirroring `device-family.ts` returning `false` on an unknown device type.
+ *
+ * The meter is checked before the Solarbank: both can present a battery-ish catalog category, but the
+ * meter's `AE1X0` prefix is unambiguous and a meter is never a Solarbank. The Solarbank case reuses
+ * {@link isSolixSolarbank} (prefix OR the home-battery category) rather than re-testing the prefix here,
+ * so the two never drift.
  */
 export function solixProductFamily(input: SolixFamilyInput): SolixProductFamily {
-  // Meter before Solarbank: their catalog category can both be battery-ish, but the meter's AE1X0 prefix
-  // is unambiguous, and a meter is never a Solarbank.
   if (isSolixSmartMeter(input)) return "smartMeter";
-  if (hasPrefix(input.product_code, SOLARBANK_MODELS)) return "solarbank";
+  if (isSolixSolarbank(input)) return "solarbank";
   return (input.category ? CATEGORY_FAMILY[input.category] : undefined) ?? "unknown";
 }

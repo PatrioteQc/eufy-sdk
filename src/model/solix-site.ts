@@ -13,7 +13,7 @@
  * layer does not fabricate a getter for a value it cannot ground — a caller reads each member device's
  * telemetry instead.
  */
-import { SolixDevice, type SolixDeviceReader } from "./solix-device.js";
+import { SolixDevice, resolveSolixCatalog, type SolixDeviceReader } from "./solix-device.js";
 import type { SolixProductFamily } from "./solix-family.js";
 import type { SolixCapability } from "./capabilities/solix.js";
 import type { SolixDeviceRecord, SolixProductCategory, SolixSiteRecord } from "../core/solix-types.js";
@@ -100,13 +100,11 @@ export async function discoverSolixSites(client: SolixSiteReader, opts: SolixSit
   const [sites, records, catalog] = await Promise.all([
     client.getSites(),
     client.getDevices(),
-    opts.catalog ? Promise.resolve(opts.catalog) : client.getProductCatalog().catch(() => [] as SolixProductCategory[]),
+    resolveSolixCatalog(client, opts),
   ]);
   const bySerial = new Map(records.map((r) => [r.device_sn, r]));
   return sites.map((site) => {
     const members = (site.site_device_list ?? []).map((entry) => {
-      // Prefer the account's full device record; fall back to a minimal record from the site entry so a
-      // declared member is never dropped for being absent from the flat device list.
       const record: SolixDeviceRecord = bySerial.get(entry.device_sn) ?? {
         device_sn: entry.device_sn,
         product_code: entry.device_model,
