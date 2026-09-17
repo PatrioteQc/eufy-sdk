@@ -15,7 +15,7 @@
  *   - width and height — an exact factorisation of that MCU count, chosen by row continuity.
  *
  * The camera's quantization tables are lost with that prefix too. They are not guessed: the substitute
- * tables are right up to a scale, and {@link contrastScale} measures the scale the picture itself
+ * tables are right up to a scale, and `contrastScale` below measures the scale the picture itself
  * implies and writes it into the DQT — which recovers the camera's own quality factor closely enough
  * that a thumbnail encoded at quality 30 comes back at 31, rather than washed out.
  *
@@ -32,12 +32,12 @@
  * detection push that carried a thumbnail. Ordering the ladder by MCU count had already cut that from
  * ~150 MB and it was still fatal, because the per-decode cost, not the candidate count, is the bill.
  *
- * {@link scanEntropy} answers the same question by Huffman-walking the scan and discarding every
+ * `scanEntropy` answers the same question by Huffman-walking the scan and discarding every
  * coefficient it decodes: no IDCT, no component planes, no output image, one `Int32Array` of MCU count.
  * The whole three-hypothesis search now allocates a few hundred kilobytes and runs in single-digit
  * milliseconds, and `jpeg-js` is left with the one job it is needed for — decoding the ONE frame the
  * search settled on — and that decode is a measurement, not a rewrite: the picture handed back is the
- * camera's own scan under a corrected header (see {@link contrastScale}), never a re-encode, because
+ * camera's own scan under a corrected header (see `contrastScale`), never a re-encode, because
  * `jpeg-js`'s ENCODER is the costlier half of the old pipeline at ~40 MB of RSS on first use.
  *
  * Measured end to end on the committed fixtures: **RSS +45.5 MB → +0.4 MB and 176 ms → 6 ms per
@@ -167,7 +167,7 @@ function decodeSpliced(header: Buffer, tail: Buffer): Decoded | null {
 }
 
 /**
- * The quality the reconstruction's substitute quant tables start at, before {@link contrastScale}.
+ * The quality the reconstruction's substitute quant tables start at, before `contrastScale`.
  *
  * Only a starting point: it decides the numbers in the DQT the probe decode reads the picture through,
  * and the stretch is measured relative to it. 85 is what the original crack used, so a thumbnail whose
@@ -238,7 +238,7 @@ function contrastScale(img: Decoded, cutoff = CUTOFF_PERCENT): number {
 }
 
 /**
- * The quality whose Annex-K scaling is `stretch` times {@link REFERENCE_QUALITY}'s.
+ * The quality whose Annex-K scaling is `stretch` times `REFERENCE_QUALITY`'s.
  *
  * `scaleQuant`'s factor is what multiplies the base tables, so asking for `stretch` amplification is
  * asking for a factor `stretch` times the reference's — and the quality number that produces it is the
@@ -349,7 +349,7 @@ export function isV2Image(data: Buffer): boolean {
  * Decode a v2 blob to a plain JPEG buffer by reconstructing its header, or null if it isn't v2, the
  * plaintext scan can't be located, or no frame shape explains it.
  *
- * Three steps and no pixel rewrite: {@link findGeometry} reads the frame shape out of the entropy scan,
+ * Three steps and no pixel rewrite: the frame shape is read out of the entropy scan,
  * one probe decode both proves the spliced JPEG decodes and measures how far the substitute quant
  * tables fall short of the camera's, and the answer is the same tail under a header carrying the
  * corrected tables. See the module doc for the keyless-splice rationale and for why neither the search

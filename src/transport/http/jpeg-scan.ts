@@ -1,7 +1,7 @@
 /**
  * A baseline-JPEG entropy scanner that decodes no pixels.
  *
- * The v2 thumbnail decoder ({@link module:transport/http/decodeImageV2}) has to discover a frame
+ * The v2 thumbnail decoder next door has to discover a frame
  * geometry that its blob does not state, and the only evidence is the plaintext entropy-coded scan:
  * how many MCUs it carries, and whether it carries them under a given chroma subsampling. It used to
  * ask that question by *decoding candidate frames* with `jpeg-js` and watching for a throw, which
