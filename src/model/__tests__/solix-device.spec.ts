@@ -4,7 +4,7 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { SolixDevice, discoverSolixDevices, type SolixDeviceRecord } from "../solix-device.js";
+import { SolixDevice, discoverSolixDevices, solarbankSceneReadings, type SolixDeviceRecord } from "../solix-device.js";
 import { buildModelIndex, type SolixProductCategory } from "../solix-catalog.js";
 
 const CATALOG: SolixProductCategory[] = [
@@ -153,6 +153,33 @@ describe("SolixDevice", () => {
     // both the string and object variant codes resolve to the parent product
     expect(index.get("2301")?.name).toBe("SOLIX F3000");
     expect(index.get("2302")?.name).toBe("SOLIX F3000");
+  });
+
+  it("solarbankSceneReadings extracts batteryTemperature + batterySoc (string-typed) per device", () => {
+    const scene = {
+      solarbank_info: {
+        solarbank_list: [{ device_sn: "AE103EXAMPLE00001", device_pn: "AE103", bat_temperature: "31", bat_soc: "89" }],
+      },
+    };
+    const readings = solarbankSceneReadings(scene);
+    expect(readings).toEqual([{ deviceSn: "AE103EXAMPLE00001", values: { batteryTemperature: 31, batterySoc: 89 } }]);
+    // The reading is shaped like a SolixMqtt event, so it feeds straight into applyReading.
+    const dev = new SolixDevice({ device_sn: "AE103EXAMPLE00001", product_code: "AE103" });
+    dev.applyReading(readings[0]);
+    expect(dev.telemetry().batteryTemperature).toBe(31);
+  });
+
+  it("solarbankSceneReadings drops entries with no usable value (never clobbers live data)", () => {
+    const scene = {
+      solarbank_info: {
+        solarbank_list: [
+          { device_sn: "AE103EXAMPLE00001", bat_temperature: "", bat_soc: "" }, // empty strings during a gap
+          { bat_temperature: "30" }, // no device_sn
+        ],
+      },
+    };
+    expect(solarbankSceneReadings(scene)).toEqual([]);
+    expect(solarbankSceneReadings({})).toEqual([]);
   });
 
   it("buildModelIndex trims the category at ingest (the live catalog has trailing whitespace)", () => {

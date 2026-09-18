@@ -123,6 +123,7 @@ export {
 export {
   SolixDevice,
   discoverSolixDevices,
+  solarbankSceneReadings,
   type SolixDeviceReader,
   type SolixDeviceRecord,
   type SolixIdentity,
