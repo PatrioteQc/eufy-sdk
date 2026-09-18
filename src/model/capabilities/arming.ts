@@ -185,21 +185,11 @@ function armingModeOf(v: boolean | number | string): ArmingMode | undefined {
  * just attribution (e.g. "who armed the system" in event history), not a value the device checks
  * against anything.
  *
- * `"auto"` — the session picks the seal, which is the transport's decision and not this module's to
- * pin. Without it the envelope is level-2 ONLY, and a station that never negotiates a level-2 key
- * cannot be sent this frame at all: the send waits out its whole level-2 grace twice and then throws
- * `StationKeyUnavailableError`, which reaches a caller as a hang rather than a refusal. Every device
- * carrying `arming` is its own station or a HomeBase, and an own-session camera is exactly the case
- * that may hold no key — a T8410's session is level-1 (the same fact `access.ts` records for camera
- * power 1035, verified live on that model). A keyed session still seals this level-2, byte-identical
- * to the T8030 capture the frame was reversed from; only the keyless one changes, from unsendable to
- * sent.
- *
- * The two seals carry the SAME JSON here, which is what makes the downgrade a seal change rather than a
- * guessed frame: the level-1 form of the 1350 envelope writes `mValue3:0` itself, and this command asks
- * for 0 explicitly, so the object the station parses is the captured one either way. A `set-payload`
- * that omitted `mValue3` would not have that property — the level-2 form defaults it to the sub-command
- * — so this is a decision per command, not one to generalise across the envelope.
+ * `"auto"` on both counts `setPayload` names: `mValue3` is passed 0 explicitly, so both seals carry the
+ * byte-identical JSON the T8030 capture recorded; and every device carrying `arming` is its own station
+ * or a HomeBase, the former being exactly the case that may hold no key. A T8410's session is level-1 —
+ * the same fact `access.ts` records beside camera power 1035, verified live on that model — so pinned
+ * level-2 made the one control a standalone camera most needs the one it could not be sent.
  */
 function armingCommand(mode: ArmingMode, ctx: CommandContext): Command {
   if (!ctx.accountName) {

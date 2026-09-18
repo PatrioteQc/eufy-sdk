@@ -286,7 +286,8 @@ export const DOORBELL_MEMBERS = {
       "Doorbell chime volume, 0-100 (1717 APP_CMD_BAT_DOORBELL_SET_DINGDONG_VOLUME; SET_PAYLOAD " +
       "envelope, distinct from the direct-binary ringtoneVolume/1708 — see DOORBELL_CMD.DINGDONG_VOLUME). " +
       "Write wire-confirmed live on T8214, observed values 3 and 25.",
-    write: (v, ctx) => setPayload(DOORBELL_CMD.DINGDONG_VOLUME, { dingdong_volume: Number(v) }, ctx, 0),
+    write: (v, ctx) =>
+      setPayload(DOORBELL_CMD.DINGDONG_VOLUME, { dingdong_volume: Number(v) }, ctx, 0, undefined, "auto"),
   },
   /**
    * The same `1350` SET_PAYLOAD shape and capture session as {@link DOORBELL_MEMBERS.dingdongVolume},
@@ -311,7 +312,7 @@ export const DOORBELL_MEMBERS = {
       const tone = coerceEnumValue(DoorbellRingtone, v);
       return tone === undefined
         ? undefined
-        : setPayload(DOORBELL_CMD.DINGDONG_RINGTONE, { dingdong_ringtone: tone }, ctx, 0);
+        : setPayload(DOORBELL_CMD.DINGDONG_RINGTONE, { dingdong_ringtone: tone }, ctx, 0, undefined, "auto");
     },
   },
   /**
