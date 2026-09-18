@@ -81,6 +81,10 @@ export const ARMING_CMD = {
    * first, then `schedule` 2, `custom2` 4, `custom3` 5, `off` 6 and `geo` 47 — each sent as this exact
    * frame and each observed to bring MODE_SWITCH back, so all nine are settable. `ARMING_MODE_WIRE` has
    * the per-value evidence and the dates.
+   *
+   * The ENCRYPTION LEVEL is the session's to pick (`"auto"`), not this command's: the T8030 the envelope
+   * was captured on holds a level-2 key and seals it level-2, while an own-session camera that never
+   * negotiates one carries the same envelope level-1. See `armingCommand`.
    */
   SET_ARMING: 1224,
   /**
@@ -180,12 +184,35 @@ function armingModeOf(v: boolean | number | string): ArmingMode | undefined {
  * sending our real (unmasked) identity is the more correct choice regardless — it's almost certainly
  * just attribution (e.g. "who armed the system" in event history), not a value the device checks
  * against anything.
+ *
+ * `"auto"` — the session picks the seal, which is the transport's decision and not this module's to
+ * pin. Without it the envelope is level-2 ONLY, and a station that never negotiates a level-2 key
+ * cannot be sent this frame at all: the send waits out its whole level-2 grace twice and then throws
+ * `StationKeyUnavailableError`, which reaches a caller as a hang rather than a refusal. Every device
+ * carrying `arming` is its own station or a HomeBase, and an own-session camera is exactly the case
+ * that may hold no key — a T8410's session is level-1 (the same fact `access.ts` records for camera
+ * power 1035, verified live on that model). A keyed session still seals this level-2, byte-identical
+ * to the T8030 capture the frame was reversed from; only the keyless one changes, from unsendable to
+ * sent.
+ *
+ * The two seals carry the SAME JSON here, which is what makes the downgrade a seal change rather than a
+ * guessed frame: the level-1 form of the 1350 envelope writes `mValue3:0` itself, and this command asks
+ * for 0 explicitly, so the object the station parses is the captured one either way. A `set-payload`
+ * that omitted `mValue3` would not have that property — the level-2 form defaults it to the sub-command
+ * — so this is a decision per command, not one to generalise across the envelope.
  */
 function armingCommand(mode: ArmingMode, ctx: CommandContext): Command {
   if (!ctx.accountName) {
     throw new Error(`arming: missing account identity (user_name) [${describeDevice(ctx)}]`);
   }
-  return setPayload(ARMING_CMD.SET_ARMING, { mode_type: ARMING_MODE_WIRE[mode], user_name: ctx.accountName }, ctx, 0);
+  return setPayload(
+    ARMING_CMD.SET_ARMING,
+    { mode_type: ARMING_MODE_WIRE[mode], user_name: ctx.accountName },
+    ctx,
+    0,
+    undefined,
+    "auto",
+  );
 }
 
 /**
