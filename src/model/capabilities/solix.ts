@@ -26,26 +26,27 @@ export type SolixCapability =
   | "cooler";
 
 /**
- * The `energyMeter` surface, declared once. Only the ONE confirmed tag→name binding is a member:
- * `meterVoltageL1` (ff09 tag `0xAC`), confirmed against a live single-phase frame. The evidence gate
- * (`bindMembers`) installs its getter only once a frame carrying tag `0xAC` has landed and answers
- * `undefined` before.
+ * The `energyMeter` surface — the electrical readings the vendor app names, as typed members. Each is
+ * read-only and evidence-gated: `bindMembers` installs a getter only once a frame that REPORTS that tag
+ * has landed, and answers `undefined` (not a fabricated `0`) before any has. The gate is "reported", not
+ * "non-zero": a single-phase / single-CT meter still reports its L2/L3 slots as `0.0`, so those members
+ * install and read `0` rather than staying absent — a caller sees `0` for an idle phase, not `undefined`.
  *
- * The meter reports many more quantities (per-line power/current/voltage, totals, import/export energy),
- * but their tag→name bindings are a structural inference not yet pinned to a known-load capture. Rather
- * than assert a name that could mislabel a live float, those stay reachable raw as `channel_<hex>` from
- * the device's telemetry (a static members table cannot enumerate dynamic hex tags); each is promoted to
- * a member here, one line, as a capture confirms its binding.
+ * Provenance splits by what the evidence actually pins. The app's field VOCABULARY (these twelve names)
+ * is authoritative. For the tag→field binding, a live single-phase frame confirmed the L1 and total
+ * magnitudes (a nominal mains voltage, an equal line/total power pair, the line current), so those four
+ * positions are `verified`. The L2/L3 tags are never non-zero on a single-CT install and the app itself
+ * receives the meter as named JSON — there is no tag→phase decoder in the app binary — so their phase
+ * assignment is inferred from the block ordering and is marked `guessed`, not `apk`. The energy counters (`meterImportEnergy`/`meterExportEnergy`) are named
+ * on the wire but are NOT members here: their tag→name is confirmed, but their unit SCALE is not (a live
+ * reading is consistent with either Wh or kWh), so they stay raw named values via
+ * {@link SOLIX_METER_FIELD_NAMES} until a capture pins the scale, rather than ship a member with a guessed unit.
  *
  * @internal — the declaration `SolixEnergyMeterReads` derives from; exported (like the eufy `*_MEMBERS`
  * tables) so it is a known symbol, but excluded from the rendered API reference.
  */
 export const SOLIX_ENERGY_METER_MEMBERS = {
-  /**
-   * Line-1 voltage (V), ff09 tag `0xAC` — the ONE confirmed meter binding, matched against a live
-   * single-phase frame (a nominal mains voltage). Read-only; the evidence gate installs its getter only
-   * once a frame carrying `0xAC` has landed, so it is absent (not a fabricated `0`) until then.
-   */
+  /** Line-1 voltage (V), ff09 tag `0xAC` — confirmed live (a nominal mains voltage). */
   meterVoltageL1: {
     param: 0xac,
     type: "number",
@@ -53,6 +54,93 @@ export const SOLIX_ENERGY_METER_MEMBERS = {
     unit: "V",
     provenance: "verified",
     description: "Meter line-1 voltage (V) — ff09 tag 0xAC, confirmed against a live single-phase frame.",
+  },
+  /** Line-2 voltage (V), ff09 tag `0xAD` — the app's field; reads 0 until a multi-phase frame carries it. */
+  meterVoltageL2: {
+    param: 0xad,
+    type: "number",
+    kind: "scalar",
+    unit: "V",
+    provenance: "guessed",
+    description:
+      "Meter line-2 voltage (V) — ff09 tag 0xAD; phase assignment inferred from block ordering (never observed non-zero), 0 on a single-phase install.",
+  },
+  /** Line-3 voltage (V), ff09 tag `0xAE` — the app's field; reads 0 until a multi-phase frame carries it. */
+  meterVoltageL3: {
+    param: 0xae,
+    type: "number",
+    kind: "scalar",
+    unit: "V",
+    provenance: "guessed",
+    description:
+      "Meter line-3 voltage (V) — ff09 tag 0xAE; phase assignment inferred from block ordering (never observed non-zero), 0 on a single-phase install.",
+  },
+  /** Line-1 current (A), ff09 tag `0xAF` — confirmed live (the line's CT current). */
+  meterCurrentL1: {
+    param: 0xaf,
+    type: "number",
+    kind: "scalar",
+    unit: "A",
+    provenance: "verified",
+    description: "Meter line-1 current (A) — ff09 tag 0xAF, confirmed against a live single-phase frame.",
+  },
+  /** Line-2 current (A), ff09 tag `0xB0` — the app's field; reads 0 until a multi-phase frame carries it. */
+  meterCurrentL2: {
+    param: 0xb0,
+    type: "number",
+    kind: "scalar",
+    unit: "A",
+    provenance: "guessed",
+    description:
+      "Meter line-2 current (A) — ff09 tag 0xB0; phase assignment inferred from block ordering (never observed non-zero), 0 on a single-phase install.",
+  },
+  /** Line-3 current (A), ff09 tag `0xB1` — the app's field; reads 0 until a multi-phase frame carries it. */
+  meterCurrentL3: {
+    param: 0xb1,
+    type: "number",
+    kind: "scalar",
+    unit: "A",
+    provenance: "guessed",
+    description:
+      "Meter line-3 current (A) — ff09 tag 0xB1; phase assignment inferred from block ordering (never observed non-zero), 0 on a single-phase install.",
+  },
+  /** Line-1 active power (W), ff09 tag `0xA8` — confirmed live; negative on export. */
+  meterPowerL1: {
+    param: 0xa8,
+    type: "number",
+    kind: "scalar",
+    unit: "W",
+    provenance: "verified",
+    description: "Meter line-1 active power (W) — ff09 tag 0xA8, confirmed live; negative on export.",
+  },
+  /** Line-2 active power (W), ff09 tag `0xA9` — the app's field; reads 0 until a multi-phase frame carries it. */
+  meterPowerL2: {
+    param: 0xa9,
+    type: "number",
+    kind: "scalar",
+    unit: "W",
+    provenance: "guessed",
+    description:
+      "Meter line-2 active power (W) — ff09 tag 0xA9; phase assignment inferred from block ordering (never observed non-zero), 0 on a single-phase install.",
+  },
+  /** Line-3 active power (W), ff09 tag `0xAA` — the app's field; reads 0 until a multi-phase frame carries it. */
+  meterPowerL3: {
+    param: 0xaa,
+    type: "number",
+    kind: "scalar",
+    unit: "W",
+    provenance: "guessed",
+    description:
+      "Meter line-3 active power (W) — ff09 tag 0xAA; phase assignment inferred from block ordering (never observed non-zero), 0 on a single-phase install.",
+  },
+  /** Aggregate active power (W), ff09 tag `0xAB` — confirmed live; equals line-1 on a single phase. */
+  meterPowerTotal: {
+    param: 0xab,
+    type: "number",
+    kind: "scalar",
+    unit: "W",
+    provenance: "verified",
+    description: "Meter total active power (W) — ff09 tag 0xAB, confirmed live; equals L1 on one phase.",
   },
 } as const satisfies Members;
 
@@ -75,7 +163,12 @@ export const CATEGORY_CAPABILITIES: Readonly<Record<string, readonly SolixCapabi
   Accessory: [],
 };
 
-/** Product-code prefixes known to be grid/energy meters (detects `energyMeter` regardless of category). */
+/**
+ * Product-code prefixes known to be grid/energy meters (detects `energyMeter` regardless of category).
+ * Keep in lockstep with `SOLIX_METER_PRODUCT_PREFIXES` in `transport/mqtt/solix-mqtt.ts` (the same meter
+ * prefixes, transport-side, that gate the tag→name table): a prefix added here but not there grants
+ * `energyMeter` to a device whose frames the decoder then refuses to name. Add a meter prefix to both.
+ */
 export const SOLIX_METER_MODELS: readonly string[] = ["AE1X0"];
 
 /**

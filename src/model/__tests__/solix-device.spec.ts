@@ -67,6 +67,19 @@ describe("SolixDevice", () => {
     expect(d.telemetry().channel_a8).toBe(0);
   });
 
+  it("evidence-gates a promoted field (meterCurrentL1 on 0xAF) and keeps reserved 0xB2 raw-only", () => {
+    const d = new SolixDevice(METER, { catalog: CATALOG });
+    expect("meterCurrentL1" in d.energyMeter()!).toBe(false); // no frame yet
+    d.applyReading({
+      deviceSn: METER.device_sn,
+      values: { meterCurrentL1: 1.79, channel_af: 1.79, channel_b2: 0.007 },
+    });
+    expect(d.energyMeter()!.meterCurrentL1).toBeCloseTo(1.79, 2);
+    // 0xB2 names no field: readable raw via telemetry(), never a member or a "meterCurrentTotal".
+    expect(d.telemetry().channel_b2).toBeCloseTo(0.007, 3);
+    expect("meterCurrentTotal" in d.energyMeter()!).toBe(false);
+  });
+
   it("a meter handle reflects later readings live (the getter reads state, not a snapshot)", () => {
     const d = new SolixDevice(METER, { catalog: CATALOG });
     d.applyReading({ deviceSn: METER.device_sn, values: { meterVoltageL1: 236.8, channel_ac: 236.8 } });
