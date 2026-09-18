@@ -164,6 +164,16 @@ export const AiDetectType = {
 } as const;
 
 /**
+ * Evidence a device is in the population that issues the AI-detection ids at all: it is a camera.
+ *
+ * 3101-3110 are drawn from the doorbell, indoor and HB3-paired vocabularies, every one of them a
+ * camera family. A standalone motion sensor binds this capability — it IS motion detection by device
+ * type — but announces itself under {@link CusPushEvent.MOTION_SENSOR_PIR}, and reports no AI
+ * classification of any kind.
+ */
+const CAMERA_AI_CLAIM: EventClaim = { codecs: ["camera"] };
+
+/**
  * Evidence a device classifies vehicles: it reports the AI-detection-type bitmask that HAS a vehicle
  * bit ({@link AiDetectType} bit2, decoded live and confirmed against the app).
  *
@@ -174,7 +184,7 @@ export const AiDetectType = {
  * of that bitmask already answers to. A camera that starts reporting the parameter starts announcing
  * the event with it.
  */
-const VEHICLE_CLAIM: EventClaim = { reads: ["aiDetectType"] };
+const VEHICLE_CLAIM: EventClaim = { ...CAMERA_AI_CLAIM, reads: ["aiDetectType"] };
 
 /**
  * Evidence a device classifies dogs: it hangs off a station.
@@ -185,7 +195,7 @@ const VEHICLE_CLAIM: EventClaim = { reads: ["aiDetectType"] };
  * on an attached camera whose station generation is not established, which is the direction that
  * cannot lose a real detection.
  */
-const DOG_CLAIM: EventClaim = { homeBaseAttached: true };
+const DOG_CLAIM: EventClaim = { ...CAMERA_AI_CLAIM, homeBaseAttached: true };
 
 /** Bound motion controls — the object returned by `dev.motion()`. */
 export type MotionActions = Surface<typeof MOTION_MEMBERS> & {
@@ -763,9 +773,9 @@ export const MOTION: CapabilityModule = {
   events: [
     { source: "push", match: DoorbellPushEvent.MOTION_DETECTION, emit: "motion" },
     { source: "push", match: CusPushEvent.MOTION_SENSOR_PIR, emit: "motion" },
-    { source: "push", match: IndoorPushEvent.CRYING_DETECTION, emit: "cryingDetected" },
-    { source: "push", match: IndoorPushEvent.SOUND_DETECTION, emit: "soundDetected" },
-    { source: "push", match: IndoorPushEvent.PET_DETECTION, emit: "petDetection" },
+    { source: "push", match: IndoorPushEvent.CRYING_DETECTION, emit: "cryingDetected", claim: CAMERA_AI_CLAIM },
+    { source: "push", match: IndoorPushEvent.SOUND_DETECTION, emit: "soundDetected", claim: CAMERA_AI_CLAIM },
+    { source: "push", match: IndoorPushEvent.PET_DETECTION, emit: "petDetection", claim: CAMERA_AI_CLAIM },
     { source: "push", match: DoorbellPushEvent.VEHICLE_DETECTION, emit: "vehicleDetected", claim: VEHICLE_CLAIM },
     { source: "push", match: HB3PairedDevicePushEvent.DOG_DETECTION, emit: "dogDetected", claim: DOG_CLAIM },
     {

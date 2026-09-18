@@ -354,6 +354,15 @@ describe("describeCapabilities — events claimed on evidence", () => {
       expect(events).toEqual(expect.arrayContaining(["motion", "petDetection", "soundDetected", "cryingDetected"]));
     }
   });
+
+  /**
+   * A standalone motion sensor binds this capability — it IS motion detection by device type — and
+   * reports no AI classification at all. Its own motion id is not claimed, so it keeps that.
+   */
+  it("claims no AI classification for a device outside the camera families", () => {
+    const sensor = motionEvents([PIR], { codec: "sensor", homeBaseAttached: true });
+    expect(sensor).toEqual(["motion"]);
+  });
 });
 
 /** A command never leaves the manifest path — describing a device is a read of its shape. */

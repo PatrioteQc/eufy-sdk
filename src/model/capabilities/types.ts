@@ -168,6 +168,12 @@ export interface EventMapping {
  */
 export interface EventClaim {
   /**
+   * The codecs whose devices issue the id. For an id drawn from a vocabulary one device family owns:
+   * the AI-detection ids belong to the camera families, and a standalone sensor announces its own
+   * motion under a different id entirely.
+   */
+  codecs?: readonly Codec[];
+  /**
    * Member names whose INSTALLED getter is the evidence — the device reported the parameter behind
    * the classification, which is the same bar every typed read is held to.
    */
