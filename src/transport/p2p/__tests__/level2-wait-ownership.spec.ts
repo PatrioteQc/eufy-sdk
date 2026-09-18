@@ -132,10 +132,10 @@ describe("resolving a session defers the level-2 wait to the session", () => {
  * The `1350` SET_PAYLOAD envelope on a station that will never hold a level-2 key.
  *
  * Pinned to level 2 this frame is not slow on such a station, it is UNSENDABLE — and it does not say so:
- * the required-key path spends the full grace, re-prompts, spends it again, and only then refuses, so
- * every caller with a shorter bound reports a timeout instead. That is what reached a Homey user as a
- * guard-mode write that "times out" on a T8410. `"auto"` is what the capability layer passes to leave
- * the seal to the session; these pin what that then does on each kind of station.
+ * the required-key path spends the full grace, re-prompts, spends it again, and only then refuses, so a
+ * caller bounding the call more tightly than that reports a timeout and never learns the frame went
+ * nowhere. A T8410 is such a station. `"auto"` is what the capability layer passes to leave the seal to
+ * the session; these pin what that then does on each kind of station.
  */
 describe("a set-payload whose seal is the session's", () => {
   /** How many times a fire-and-forget control is repeated on this router (`DIRECT_CMD_SENDS`). */
