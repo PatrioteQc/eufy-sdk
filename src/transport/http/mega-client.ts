@@ -63,6 +63,14 @@ export interface MegaClientConfig {
    * an explicit value pins a fixed one. Not the account identity — that's `phoneModel`.
    */
   mediaUserAgent?: string;
+  /**
+   * Acting name written into the commands that carry an actor field — guard mode and HomeBase alarm
+   * output (`user_name`), a lock's acting username. Trimmed, and blank counts as unset: the default
+   * is the login email's local-part (the whole string when it has no `@`). Attribution only — the
+   * device stores it for its own activity record, and no captured frame shows it being validated
+   * against the account.
+   */
+  accountName?: string;
   /** Persist + reuse the session (token + session key) across runs. Default: in-memory. */
   store?: SessionStore;
   /** Diagnostics sink. Omit for silence; pass a `Logger` (or `new ConsoleLogger()`) to see logs. */
@@ -407,12 +415,19 @@ export class MegaHttpClient {
   }
 
   /**
-   * The logged-in account's display name — the login email's local-part (e.g. `someone+tag` for
-   * `someone+tag@example.com`). This is the string the app writes into the ff09 command's acting
-   * "username" field (verified against a captured T8531 unlock frame). Falls back to the whole email
-   * if it has no `@`.
+   * The name commands attribute themselves to — {@link MegaClientConfig.accountName} when the config
+   * pins one (trimmed; blank counts as unset), otherwise the logged-in account's display name, which
+   * is the login email's local-part (e.g. `someone+tag` for `someone+tag@example.com`) and falls back
+   * to the whole email if it has no `@`.
+   *
+   * The local-part is the string the app writes into the ff09 command's acting "username" field
+   * (verified against a captured T8531 unlock frame), so it is the faithful default. An override is a
+   * different LABEL for the same account, not a different identity: the session authenticates on the
+   * token and the device record's member ids, neither of which this touches.
    */
   get accountName(): string {
+    const pinned = this.cfg.accountName?.trim();
+    if (pinned) return pinned;
     const email = this.cfg.email ?? "";
     const at = email.indexOf("@");
     return at > 0 ? email.slice(0, at) : email;
