@@ -241,11 +241,23 @@ const CONTENDED_SESSION_HINT =
  * The subject-less wordings are anchored to a token or a session: a bare `does not exist` also occurs in the
  * serialised detail of rejections that have nothing to do with the credential, and clearing a healthy session
  * on one of those costs a re-2FA.
+ *
+ * Two properties of the match keep those anchors on their own subject, and
+ * `"token = …, gtoken not equal userid error"` — a HEADER fault on a token that is fine, which no re-login can
+ * repair — needs both:
+ *  - a wildcard cannot cross a comma, so it stays inside the clause its anchor sits in and cannot borrow a
+ *    word from the next one;
+ *  - `token` matches as a whole word, so `gtoken` — a different header with a different meaning — is not read
+ *    as the credential.
+ *
+ * Both are bounds on the match rather than edits to the message: the echoed credential still carries the
+ * anchor for wordings that state their reason beside it (`"token = … expired"`), so removing the echo before
+ * matching would lose a real expiry and leave a dead session uncleared.
  */
 function tokenRejected(code: number | undefined, msg: string | undefined): boolean {
   return (
     code === EufyCloudErrorCode.SESSION_KICKED ||
-    /user_id is empty|invalid.*token|token.*(expired|error|not exist)|kicked|(?:token|session).*does not exist|unauthor/i.test(
+    /user_id is empty|invalid[^,]*\btoken\b|\btoken\b[^,]*(expired|error|not exist)|kicked|(?:\btoken\b|\bsession\b)[^,]*does not exist|unauthor/i.test(
       msg ?? "",
     )
   );
@@ -285,7 +297,14 @@ export class MegaHttpClient {
   private sessionKey?: SessionEntry;
   /** Per-host ECDH session keys for non-mega gateways (e.g. eufylife) keyed by host. */
   private readonly sessionKeys = new Map<string, SessionEntry>();
-  private auth_?: { userId: string; authToken: string; geoKey?: string };
+  /**
+   * The held credential. `userId` is the login reply's `ap_cloud_user_id` where it has one — the Anker
+   * Passport cloud's id — while `accountUserId` is the eufy account's own `user_id`.
+   *
+   * The `gtoken` header is hashed from `accountUserId`: that is the id the gateway recomputes the header
+   * from, rejecting a disagreement with `"gtoken not equal userid error"`.
+   */
+  private auth_?: { userId: string; authToken: string; geoKey?: string; accountUserId?: string };
   /** captcha_id of an in-flight challenge, held between login() and solveCaptcha(). */
   private pendingCaptchaId?: string;
   /** True while a 2FA code is outstanding: `auth_` holds only the limited pre-verify token, so the
@@ -360,7 +379,12 @@ export class MegaHttpClient {
     const saved = this.store.load();
     if (!isSessionValid(saved) || !saved) return undefined;
     this.region = saved.region;
-    this.auth_ = { userId: saved.userId, authToken: saved.authToken, geoKey: saved.geoKey };
+    this.auth_ = {
+      userId: saved.userId,
+      accountUserId: saved.accountUserId,
+      authToken: saved.authToken,
+      geoKey: saved.geoKey,
+    };
     this.tokenExpiresAt = saved.tokenExpiresAt;
     this.sessionKey = {
       keyIdent: saved.keyIdent,
@@ -428,7 +452,17 @@ export class MegaHttpClient {
   }
 
   /**
-   * The account-credential headers every authed call carries — `x-auth-token` + `gtoken` (`md5(userId)`).
+   * The id `gtoken` is hashed from — the account's own `user_id`, which is what the gateway recomputes the
+   * header from. One place so the two header paths cannot drift on which of the session's ids that is.
+   *
+   * Call only where `auth_` is already established; every header path guards it.
+   */
+  private gtokenUserId(): string {
+    return this.auth_!.accountUserId ?? this.auth_!.userId;
+  }
+
+  /**
+   * The account-credential headers every authed call carries — `x-auth-token` + `gtoken`.
    * One place so the signed path, the key-exchange and the bearer path can't drift on what "authed" means.
    */
   private authTokenHeaders(): Record<string, string> {
@@ -436,7 +470,7 @@ export class MegaHttpClient {
     return {
       "x-auth-token": this.auth_.authToken,
       authorization: this.auth_.authToken,
-      gtoken: gtoken(this.auth_.userId),
+      gtoken: gtoken(this.gtokenUserId()),
     };
   }
 
@@ -822,7 +856,7 @@ export class MegaHttpClient {
     try {
       return await downloadMediaResource(url, {
         "x-auth-token": this.auth_.authToken,
-        gtoken: gtoken(this.auth_.userId),
+        gtoken: gtoken(this.gtokenUserId()),
         "app-name": "eufy_mega",
         "model-type": "PHONE",
         "user-agent": this.mediaUserAgent,
@@ -1168,10 +1202,12 @@ export class MegaHttpClient {
     {
       const cap = Object.keys(res).filter((k) => /captcha|answer|picture|image|fa_/i.test(k));
       this.logger.debug("[mega] login resp keys:", Object.keys(res).join(","));
+      this.logger.debug("[mega] ids agree:", res.ap_cloud_user_id === res.user_id);
       if (cap.length)
         this.logger.debug("[mega] captcha/fa:", JSON.stringify(Object.fromEntries(cap.map((k) => [k, res[k]]))));
     }
     const userId = (res.ap_cloud_user_id ?? res.user_id ?? res.userId) as string | undefined;
+    const accountUserId = (res.user_id ?? res.userId) as string | undefined;
     const authToken = (res.auth_token ?? res.token) as string | undefined;
     if (!userId || !authToken) throw new Error(`login returned no session: ${JSON.stringify(res).slice(0, 200)}`);
 
@@ -1182,7 +1218,7 @@ export class MegaHttpClient {
       // Keep the limited token: sendVerifyCode() AND the follow-up verify-login must both be authed
       // with it (captured: attempts 4 & 5 carry this token), so the gateway links the code to this
       // pending 2FA session.
-      this.auth_ = { userId, authToken, geoKey: res.geo_key as string | undefined };
+      this.auth_ = { userId, accountUserId, authToken, geoKey: res.geo_key as string | undefined };
       // Captcha (if any) is satisfied once we reach the 2FA step — drop its id so a later retry
       // doesn't resubmit an already-consumed challenge. Mark 2FA outstanding (see login()).
       this.pendingCaptchaId = undefined;
@@ -1193,7 +1229,7 @@ export class MegaHttpClient {
 
     this.pendingCaptchaId = undefined;
     this.pending2fa = false;
-    this.auth_ = { userId, authToken, geoKey: res.geo_key as string | undefined };
+    this.auth_ = { userId, accountUserId, authToken, geoKey: res.geo_key as string | undefined };
     this.tokenExpiresAt = Number(res.token_expires_at ?? 0) || 0;
     // Re-exchange WITH the auth token so the gateway binds the key-ident to the user.
     this.sessionKey = undefined;
@@ -1207,6 +1243,7 @@ export class MegaHttpClient {
     if (!this.auth_ || !this.sessionKey) return;
     this.store.save({
       userId: this.auth_.userId,
+      accountUserId: this.auth_.accountUserId ?? this.auth_.userId,
       authToken: this.auth_.authToken,
       geoKey: this.auth_.geoKey,
       region: this.region,

@@ -275,6 +275,11 @@ export class SolixClient {
    * Turn a decrypted `/passport/login` payload into an `ok`/`2fa` result, establishing the session on
    * `ok`. The passport marks a pending 2FA with a non-empty `fa_info.info`, and empties it once the code
    * has been satisfied.
+   *
+   * `gtoken` is hashed from `ap_cloud_user_id` where the reply carries one, `user_id` otherwise. Whether
+   * this gateway recomputes the header from `user_id` specifically — as the mega gateway does, rejecting a
+   * disagreement with `"gtoken not equal userid error"` — is unverified here: no Solix response has been
+   * observed refusing the header, which is consistent with the two ids agreeing on the accounts seen.
    */
   private classifyLogin(data: Record<string, unknown>, isVerify: boolean): SolixLoginResult {
     const userId = (data.ap_cloud_user_id ?? data.user_id) as string | undefined;
