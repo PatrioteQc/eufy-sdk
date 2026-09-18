@@ -31,6 +31,7 @@ import {
   type SessionStore,
   type SolixDeviceRecord,
   type SolixProductCategory,
+  type SolixSiteRecord,
 } from "../../core/index.js";
 import type { SecureMqttCredentials } from "../mqtt/secure-mqtt.js";
 
@@ -363,10 +364,18 @@ export class SolixClient {
     return (Array.isArray(data) ? data : (data?.data ?? [])) as SolixDeviceRecord[];
   }
 
-  /** The account's sites (systems); devices are typically grouped under a site. */
-  async getSites(): Promise<unknown[]> {
+  /**
+   * The account's sites (systems); devices are grouped under a site. Each record carries its
+   * `site_device_list` (the member devices), which {@link discoverSolixSites} resolves into a
+   * capability-driven `SolixSite`. Asserted to {@link SolixSiteRecord} at this trust boundary — and
+   * `site_id` (the one field the model layer keys a `SolixSite` on) is validated here, so a record the
+   * cloud returns without a usable id is dropped rather than surfacing a `SolixSite` with `id ===
+   * undefined`; every other field is optional and read defensively.
+   */
+  async getSites(): Promise<SolixSiteRecord[]> {
     const data = await this.authed<{ site_list?: unknown[] }>("POST", SOLIX_ENDPOINTS.getSiteList, {});
-    return data?.site_list ?? [];
+    const list = (data?.site_list ?? []) as SolixSiteRecord[];
+    return list.filter((s) => typeof s?.site_id === "string" && s.site_id.length > 0);
   }
 
   /** Per-user AWS-IoT MQTT credentials (cert/key/endpoint/thing) for the real-time device plane. */

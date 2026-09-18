@@ -19,6 +19,7 @@ import {
   type SolixEnergyMeterReads,
 } from "./capabilities/solix.js";
 import { buildModelIndex } from "./solix-catalog.js";
+import { solixProductFamily, type SolixProductFamily } from "./solix-family.js";
 import type { SolixDeviceRecord, SolixProductCategory } from "../core/solix-types.js";
 
 /**
@@ -34,6 +35,11 @@ export interface SolixIdentity {
   name: string;
   /** Anker catalog category (e.g. "Accessory", "Portable Power Station"), if resolvable. */
   category?: string;
+  /**
+   * Normalized product family — the "what kind of thing is this" answer (power station, Solarbank,
+   * smart meter, …), decorrelated from the marketing `category` string. See {@link SolixDevice.family}.
+   */
+  family: SolixProductFamily;
 }
 export interface SolixConnectivity {
   online: boolean;
@@ -80,8 +86,18 @@ export class SolixDevice {
       productCode: record.product_code,
       name: label?.name ?? record.alias_name ?? record.device_name ?? record.product_code,
       category: label?.category,
+      family: solixProductFamily({ product_code: record.product_code, category: label?.category }),
     };
     this.caps = detectSolixCapabilities(record, this.identity_.category);
+  }
+
+  /**
+   * The device's {@link SolixProductFamily} — the classification a caller branches on to SORT devices
+   * (a site's power stations vs its meters), the Solix analogue of eufy's `isHomeBase()`. Distinct from
+   * {@link has}, which answers what the device can DO; family answers what KIND of device it is.
+   */
+  get family(): SolixProductFamily {
+    return this.identity_.family;
   }
 
   /** All capabilities this device carries. */
@@ -176,6 +192,19 @@ export interface SolixDeviceReader {
 }
 
 /**
+ * Resolve the product catalog for a discovery: a caller-supplied `opts.catalog` short-circuits the wire
+ * read, and a failed `getProductCatalog()` degrades to no categories (names/families just go unresolved,
+ * never a thrown discovery). Shared by {@link discoverSolixDevices} and `discoverSolixSites` so that
+ * "a failed catalog is non-fatal" decision lives in exactly one place.
+ */
+export function resolveSolixCatalog(
+  client: SolixDeviceReader,
+  opts: { catalog?: SolixProductCategory[] },
+): Promise<SolixProductCategory[]> {
+  return opts.catalog ? Promise.resolve(opts.catalog) : client.getProductCatalog().catch(() => []);
+}
+
+/**
  * Discover an account's Solix devices as capability-driven {@link SolixDevice} objects — the wire+model
  * composition (a transport read + the product catalog) that used to be `SolixClient.discoverDevices()`.
  * It lives in the model layer because it builds `SolixDevice`; the wire client (now `transport/http`)
@@ -186,9 +215,6 @@ export async function discoverSolixDevices(
   client: SolixDeviceReader,
   opts: { catalog?: SolixProductCategory[] } = {},
 ): Promise<SolixDevice[]> {
-  const [records, catalog] = await Promise.all([
-    client.getDevices(),
-    opts.catalog ? Promise.resolve(opts.catalog) : client.getProductCatalog().catch(() => [] as SolixProductCategory[]),
-  ]);
+  const [records, catalog] = await Promise.all([client.getDevices(), resolveSolixCatalog(client, opts)]);
   return records.map((r) => new SolixDevice(r, { catalog }));
 }
