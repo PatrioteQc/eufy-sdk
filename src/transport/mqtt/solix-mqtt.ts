@@ -154,10 +154,41 @@ export const SOLIX_SOLARBANK_FIELD_NAMES: Readonly<Record<number, string>> = {
  * stays raw `state_<hex>` until confirmed the same way.
  */
 export const SOLIX_STATE_FIELD_NAMES: Readonly<Record<number, string>> = {
-  0xa9: "mode", // current operating (EMS) mode (1 custom, 2 self-consumption, 4 rapid charge, 7 smart, 8 dynamic tariff)
+  0xa9: "mode", // current operating (EMS) mode — decode the value with SOLIX_EMS_MODES
   0xaa: "maxLoad", // configured max home load (W) — matches get_site_device_param max_load
   // NOTE `0xab` is grid-in/out-related power but its exact meaning is not yet pinned, so it stays raw
   // `state_ab` (a diagnostic a consumer can watch) rather than being asserted under a guessed name.
+};
+
+/**
+ * The Solarbank's operating (EMS) mode value → a stable name, for labelling the `mode` field
+ * ({@link SOLIX_STATE_FIELD_NAMES} `0xa9`). Value → English label:
+ * - `0` selfConsumption — "Self-Consumption Mode"
+ * - `1` timeOfUse — "Time Of Use Mode"
+ * - `3` thirdPartyControl — "Third-Party Controlled"
+ * - `4` custom — "Custom Mode"
+ * - `5` socketOverlay — "Socket Overlay Mode"
+ * - `6` smart — "Smart Mode"
+ * - `7` dynamicTariff — "Dynamic Tariff Mode"
+ *
+ * These are Anker's OWN enumeration, taken from the vendor's official Modbus integration for the
+ * Solarbank 4 E5000 Pro (register `operating_mode`, gated by the `0x8006` capability mask). Value `2`
+ * is unassigned there, so there are seven modes across values `{0,1,3,4,5,6,7}`, not eight.
+ *
+ * EVIDENCE NOTE: the enumeration is authoritative for Anker's newer Modbus-TCP hardware rev; this SDK
+ * decodes the OLDER cloud/MQTT `AE103` over ff09, and its `0xa9` was not independently confirmed to use
+ * these same numbers (an earlier reverse-engineered read suggested a different set). Adopting Anker's
+ * official numbering here on that basis; a live "set each mode in the app, read `0xa9`" capture should
+ * confirm it, and if a value disagrees this map is the one place to correct.
+ */
+export const SOLIX_EMS_MODES: Readonly<Record<number, string>> = {
+  0: "selfConsumption", // Self-Consumption Mode (Anker: self_consumption, 0x8006 BIT0)
+  1: "timeOfUse", // Time Of Use Mode (Anker: tou_mode, BIT1)
+  3: "thirdPartyControl", // Third-Party Controlled (Anker: third_party_control, BIT5)
+  4: "custom", // Custom Mode (Anker: custom_mode, BIT2)
+  5: "socketOverlay", // Socket Overlay Mode (Anker: socket_overlay_mode, BIT4)
+  6: "smart", // Smart Mode (Anker: smart_mode, BIT3)
+  7: "dynamicTariff", // Dynamic Tariff Mode (Anker: dynamic_pricing, BIT6)
 };
 
 /**
