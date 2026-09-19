@@ -37,6 +37,24 @@ describe("lock capability module", () => {
     expect(LOCK.properties.map((p) => p.name)).toEqual(["locked", "battery", "rssi"]);
   });
 
+  it("reads `locked` from the stable state param 6000 (4=locked, 3=unlocked)", () => {
+    const locked = LOCK.properties.find((p) => p.name === "locked");
+    expect(locked?.paramType).toBe(6000);
+    const decode = locked?.decode; // the member's ingest-time `coerce`, projected onto the schema
+    expect(decode).toBeDefined();
+    expect(decode!("4")).toBe(true); // locked
+    expect(decode!("3")).toBe(false); // unlocked
+    expect(decode!(4)).toBe(true); // numeric wire value too
+    // A code that is neither reads as not-locked rather than a phantom "locked".
+    expect(decode!("0")).toBe(false);
+  });
+
+  it("reads `battery` from param 1101, or the modern lock's 6001 alias", () => {
+    const battery = LOCK.properties.find((p) => p.name === "battery");
+    expect(battery?.paramType).toBe(1101);
+    expect(battery?.readAliases?.map((a) => a.paramType)).toEqual([6001]);
+  });
+
   it("lock/unlock on a P2P lock dispatch a transport-neutral ff09-actuate intent (no wire bytes, no routing key)", async () => {
     // The model layer never builds the ff09 frame itself (that's the transport routers' job, per the
     // capability↔transport decorrelation invariant) — it only supplies identity, no transport, no

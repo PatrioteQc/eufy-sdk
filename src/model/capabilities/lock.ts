@@ -1,7 +1,8 @@
 import { asBool } from "../../core/util.js";
+import { LockPushEvent } from "../push-events.js";
 import { describeDevice } from "./access.js";
 import { method, propertiesOf, provided, type Members, type Surface } from "./members.js";
-import type { AvailabilityContext, CapabilityModule, CommandContext } from "./types.js";
+import type { AvailabilityContext, CapabilityModule, CommandContext, InboundSignal } from "./types.js";
 import type { Command, CommandSink, AutoLockSnapshot } from "../../core/contracts.js";
 
 /**
@@ -106,33 +107,36 @@ const overP2p = (ctx: AvailabilityContext): boolean => ctx.hasP2p === true;
  */
 export const LOCK_MEMBERS = {
   /**
-   * The lock's own state, and the weakest thing in this table: 1200 is a `guessed` placeholder because
-   * the lock announces (un)locking as a pushed event rather than holding a param, so the evidence gate
-   * will normally leave this getter uninstalled and `lockState` is the real read. `writtenElsewhere`
-   * points at the `lock`/`unlock` methods — a single `write` cannot express two verbs that carry no
-   * value.
+   * The lock's own state, from param 6000: `4` = locked, `3` = unlocked (verified live on a T85L0 C33).
+   * `coerce` narrows the code to the boolean at ingest, so the stored `locked` a caller reads and a poll
+   * broadcasts is already the deadbolt state, not the raw code. Evidence-gated like every getter — a lock
+   * that reports no 6000 (an older family that only pushes transitions) leaves this uninstalled, and the
+   * `lockState` event carrying `locked` is the read there. `writtenElsewhere` points at the `lock`/`unlock`
+   * methods — a single `write` cannot express two verbs that carry no value.
    */
   locked: {
-    param: 1200,
+    param: 6000,
     type: "bool",
     kind: "boolean",
-    provenance: "guessed",
+    provenance: "verified",
     writtenElsewhere: true,
-    description:
-      "Lock state, true=locked. UNVERIFIED: no stable state param to key off; placeholder id pending verification.",
+    coerce: (v) => Number(v) === 4,
+    description: "Lock state, true=locked. Read from param 6000 (4=locked, 3=unlocked), verified live on a T85L0.",
   },
   /**
-   * Cell charge as a percentage, on the same param 1101 every battery device reports. Named `battery`
-   * within this capability rather than deferring to the `battery` capability: a lock resolves as a lock,
-   * so the accessor is `dev.lock().battery`.
+   * Cell charge as a percentage. Param 1101 is the fleet-wide battery id; a lock reporting on the
+   * modern 6001 instead (verified live on a T85L0 C33) is read through the alias, so `dev.lock().battery`
+   * resolves on both. Named `battery` within this capability rather than deferring to the `battery`
+   * capability: a lock resolves as a lock, so the accessor is `dev.lock().battery`.
    */
   battery: {
     param: 1101,
+    readAliases: [{ paramType: 6001 }],
     type: "number",
     unit: "%",
     kind: "percent",
     provenance: "verified",
-    description: "Lock battery level 0-100 (verified: param 1101).",
+    description: "Lock battery level 0-100 (param 1101, or 6001 on a modern lock — verified live on a T85L0).",
   },
   /**
    * Link quality in dBm as the lock measures it, on the shared param 1141. Both actuation methods here
@@ -330,17 +334,32 @@ function settingToggleCommand(settingId: number, enabled: boolean | number | str
 }
 
 /**
- * `lock` — smart lock. `locked` is the reported lock state, but there's no stable state param to
- * key off (only pushed via a CommandType-style event), so the param id here is a placeholder.
+ * The `locked` boolean a `lockState` push carries, derived from which `LockPushEvent` fired: the seven
+ * `*_LOCK` actions (262..268) → `true`, the six `*_UNLOCK` actions (257..261 + 269) → `false`. The rest
+ * of the 257..771 range — alarms, low-power, offline/online, OTA/status — is not a lock transition and
+ * contributes no `locked` field, so a consumer reads state only from an event that actually carries one.
+ */
+function decodeLockTransition(signal: InboundSignal): Record<string, unknown> {
+  if (signal.source !== "push" || signal.eventType === undefined) return {};
+  const e = signal.eventType;
+  if (e >= LockPushEvent.MANUAL_LOCK && e <= LockPushEvent.TEMPORARY_PW_LOCK) return { locked: true };
+  const unlocked =
+    (e >= LockPushEvent.MANUAL_UNLOCK && e <= LockPushEvent.APP_UNLOCK) || e === LockPushEvent.TEMPORARY_PW_UNLOCK;
+  return unlocked ? { locked: false } : {};
+}
+
+/**
+ * `lock` — smart lock. `locked` reads from the stable state param 6000; an older lock that reports no
+ * 6000 leaves that getter uninstalled and its state arrives on the `lockState` event instead.
  */
 export const LOCK: CapabilityModule = {
   capability: "lock",
   description: "Smart-lock locked/unlocked state and battery.",
   members: LOCK_MEMBERS,
   properties: propertiesOf(LOCK_MEMBERS),
-  // Lock state is reported via CommandType (no stable param); the model name (lock/safe) is a
-  // signal, and every lock-codec device has the lock capability as its baseline.
+  // The model name (lock/safe) is a signal, and every lock-codec device has the lock capability as its baseline.
   detection: { modelHints: [/lock/i, /safe/i], codecs: ["lock"] },
-  // Inbound FCM lock events (LockPushEvent 257..771: (un)lock actions + alarms) → one "lockState".
-  events: [{ source: "push", match: [257, 771], emit: "lockState" }],
+  // Inbound FCM lock events (LockPushEvent 257..771: (un)lock actions + alarms) → one "lockState", whose
+  // payload carries a decoded `locked` boolean for the (un)lock actions (see decodeLockTransition).
+  events: [{ source: "push", match: [257, 771], emit: "lockState", derive: decodeLockTransition }],
 };

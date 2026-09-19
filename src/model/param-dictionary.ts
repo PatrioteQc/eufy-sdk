@@ -995,6 +995,16 @@ export const SECURITY_PARAMS: Record<number, ParamDef> = {
     type: "string",
     provenance: "guessed",
   },
+  6000: {
+    name: "locked",
+    type: "bool",
+    provenance: "verified",
+  },
+  6001: {
+    name: "lockBattery",
+    type: "number",
+    provenance: "verified",
+  },
   6010: {
     name: "pwList",
     type: "bool",

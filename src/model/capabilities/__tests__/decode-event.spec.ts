@@ -29,6 +29,23 @@ describe("decodeEvent — unified inbound dispatch", () => {
       expect(push(772)).toEqual([]); // just above
     });
 
+    it("lockState carries a decoded `locked` boolean for the (un)lock actions", () => {
+      // *_LOCK actions 262..268 → locked:true; *_UNLOCK actions 257..261 + 269 → locked:false.
+      expect(push(262)[0].payload).toMatchObject({ locked: true }); // MANUAL_LOCK
+      expect(push(268)[0].payload).toMatchObject({ locked: true }); // TEMPORARY_PW_LOCK
+      expect(push(257)[0].payload).toMatchObject({ locked: false }); // MANUAL_UNLOCK
+      expect(push(269)[0].payload).toMatchObject({ locked: false }); // TEMPORARY_PW_UNLOCK
+    });
+
+    it("a non-transition lock event (alarm/status) still emits lockState but carries NO `locked`", () => {
+      // 513 = LOW_POWER, 771 = LOCK_ONLINE — inside the range, but not a lock/unlock, so no state claim.
+      for (const et of [513, 769, 771]) {
+        const p = push(et)[0];
+        expect(p).toMatchObject({ event: "lockState" });
+        expect(p.payload).not.toHaveProperty("locked");
+      }
+    });
+
     it("carries the thumbnail through", () => {
       expect(push(3101, { thumbnailUrl: "http://x/y.jpg" })[0].payload).toMatchObject({
         thumbnailUrl: "http://x/y.jpg",
