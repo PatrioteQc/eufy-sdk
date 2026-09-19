@@ -53,10 +53,13 @@ export interface SolixParamFrame {
  *   slots read 0 on a single-CT install.
  *
  * The frame carries sixteen float slots (`0xa8`..`0xb7`). The four that name no field — `0xb2`, `0xb5`,
- * `0xb6`, `0xb7` — stay raw `channel_<hex tag>` (see {@link solixReadings}). `0xb2` in particular is NOT
- * a current total: under a 1.371 A line current it reads 0.009, three orders of magnitude off. Both
- * `0xb2` and `0xb7` read zero at idle and non-zero under load, so they carry *something* load-related;
- * what, is not established — `reactive_power` and `power_factor` (below) are the leading candidates.
+ * `0xb6`, `0xb7` — stay raw `channel_<hex tag>` (see {@link solixReadings}). Both `0xb2` and `0xb7` read
+ * zero at idle and non-zero under load, so they carry *something* load-related; what, is not established.
+ * `0xb2` is dimensionally consistent with **power factor** and rules **reactive power** out: on the same
+ * frame the line reads ~240 V at 1.371 A (apparent power S = V·I ≈ 328 VA), so a reactive-power slot would
+ * read in the hundreds of VAR, not `0xb2`'s 0.009 — whereas a power factor P/S is a sub-unity ratio of the
+ * right magnitude (~0.008). It is left raw regardless, since a single frame doesn't pin it. `0xb7` (~0.1
+ * under load) has no such magnitude tell and stays fully open.
  *
  * Each name is annotated with the equivalent register from Anker's OWN vendor integration for the
  * newer Modbus-TCP meter generation (Smart Meter Gen 2), which independently corroborates the meaning
@@ -154,15 +157,16 @@ export const SOLIX_SOLARBANK_FIELD_NAMES: Readonly<Record<number, string>> = {
  * stays raw `state_<hex>` until confirmed the same way.
  */
 export const SOLIX_STATE_FIELD_NAMES: Readonly<Record<number, string>> = {
-  0xa9: "mode", // current operating (EMS) mode — decode the value with SOLIX_EMS_MODES
+  0xa9: "mode", // current operating (EMS) mode, AE103 numbering: 1 custom, 2 self-consumption, 4 rapid charge, 7 smart, 8 dynamic tariff (NOT the Modbus SOLIX_MODBUS_EMS_MODES numbering)
   0xaa: "maxLoad", // configured max home load (W) — matches get_site_device_param max_load
   // NOTE `0xab` is grid-in/out-related power but its exact meaning is not yet pinned, so it stays raw
   // `state_ab` (a diagnostic a consumer can watch) rather than being asserted under a guessed name.
 };
 
 /**
- * The Solarbank's operating (EMS) mode value → a stable name, for labelling the `mode` field
- * ({@link SOLIX_STATE_FIELD_NAMES} `0xa9`). Value → English label:
+ * The Solarbank EMS `operating_mode` enumeration from Anker's OWN vendor integration for the newer
+ * **Modbus-TCP** hardware rev (Solarbank 4 E5000 Pro, register `operating_mode` gated by the `0x8006`
+ * capability mask). Value → English label:
  * - `0` selfConsumption — "Self-Consumption Mode"
  * - `1` timeOfUse — "Time Of Use Mode"
  * - `3` thirdPartyControl — "Third-Party Controlled"
@@ -171,17 +175,16 @@ export const SOLIX_STATE_FIELD_NAMES: Readonly<Record<number, string>> = {
  * - `6` smart — "Smart Mode"
  * - `7` dynamicTariff — "Dynamic Tariff Mode"
  *
- * These are Anker's OWN enumeration, taken from the vendor's official Modbus integration for the
- * Solarbank 4 E5000 Pro (register `operating_mode`, gated by the `0x8006` capability mask). Value `2`
- * is unassigned there, so there are seven modes across values `{0,1,3,4,5,6,7}`, not eight.
+ * Value `2` is unassigned there — seven modes across `{0,1,3,4,5,6,7}`, not eight.
  *
- * EVIDENCE NOTE: the enumeration is authoritative for Anker's newer Modbus-TCP hardware rev; this SDK
- * decodes the OLDER cloud/MQTT `AE103` over ff09, and its `0xa9` was not independently confirmed to use
- * these same numbers (an earlier reverse-engineered read suggested a different set). Adopting Anker's
- * official numbering here on that basis; a live "set each mode in the app, read `0xa9`" capture should
- * confirm it, and if a value disagrees this map is the one place to correct.
+ * NOT a decoder for this SDK's ff09 `mode` (`state_info` tag `0xa9`): that OLDER cloud/MQTT `AE103`
+ * numbering is DIFFERENT on every value — `1`=custom, `2`=self-consumption, `4`=rapid charge, `7`=smart,
+ * `8`=dynamic tariff (recorded on the `0xa9` field above, correlated against the app). Labelling an ff09
+ * `mode` value with this Modbus map would be confidently wrong. It is exported as the vendor's own
+ * reference enumeration and the thing an AE103 `0xa9` correlation capture would be checked against —
+ * fold the two only if such a capture proves the numbers match.
  */
-export const SOLIX_EMS_MODES: Readonly<Record<number, string>> = {
+export const SOLIX_MODBUS_EMS_MODES: Readonly<Record<number, string>> = {
   0: "selfConsumption", // Self-Consumption Mode (Anker: self_consumption, 0x8006 BIT0)
   1: "timeOfUse", // Time Of Use Mode (Anker: tou_mode, BIT1)
   3: "thirdPartyControl", // Third-Party Controlled (Anker: third_party_control, BIT5)
