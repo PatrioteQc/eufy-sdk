@@ -129,9 +129,6 @@ export const SOLIX_SOLARBANK_FIELD_NAMES: Readonly<Record<number, string>> = {
   0xc7: "pv2Power",
   0xc8: "pv3Power",
   0xc9: "pv4Power",
-  // CANDIDATE (not yet live-correlated): 0xb1 reads 0 at idle and ~5.7 while the pack cycles
-  // (~5.7 A × ~50 V ≈ 280 W), which fits the app's `batteryCurrent` magnitude. Named tentatively.
-  0xb1: "batteryCurrent",
 };
 
 /**
@@ -145,9 +142,6 @@ export const SOLIX_SOLARBANK_FIELD_NAMES: Readonly<Record<number, string>> = {
 export const SOLIX_STATE_FIELD_NAMES: Readonly<Record<number, string>> = {
   0xa9: "mode", // current operating (EMS) mode (1 custom, 2 self-consumption, 4 rapid charge, 7 smart, 8 dynamic tariff)
   0xaa: "maxLoad", // configured max home load (W) — matches get_site_device_param max_load
-  // CANDIDATE (not yet live-correlated): 0xbf is an error/fault bitfield — the app's own debug line
-  // `updateDeviceStateInfo----faultStatus` names it. Emitted raw as a number for a consumer to watch.
-  0xbf: "faultStatus",
   // NOTE `0xab` is grid-in/out-related power but its exact meaning is not yet pinned, so it stays raw
   // `state_ab` (a diagnostic a consumer can watch) rather than being asserted under a guessed name.
 };
@@ -280,7 +274,7 @@ function addSolarbankScalars(frame: SolixParamFrame, out: Record<string, number>
     const body = frame.fields.get(0xa4)?.subarray(1);
     if (body && body.length >= 8 && body[body.length - 6] === soc) {
       out.batteryTemperature = body[body.length - 8]!;
-      out.batteryHealth = body[body.length - 5]!; // SOH % — candidate; byte after the validated SOC
+      out.batteryHealth = body[body.length - 5]!;
     }
   }
   const b5 = frame.fields.get(0xb5);
