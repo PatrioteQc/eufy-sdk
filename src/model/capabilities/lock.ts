@@ -1,7 +1,8 @@
 import { asBool } from "../../core/util.js";
+import { LockPushEvent } from "../push-events.js";
 import { describeDevice } from "./access.js";
 import { method, propertiesOf, provided, type Members, type Surface } from "./members.js";
-import type { AvailabilityContext, CapabilityModule, CommandContext } from "./types.js";
+import type { AvailabilityContext, CapabilityModule, CommandContext, InboundSignal } from "./types.js";
 import type { Command, CommandSink, AutoLockSnapshot } from "../../core/contracts.js";
 
 /**
@@ -330,17 +331,32 @@ function settingToggleCommand(settingId: number, enabled: boolean | number | str
 }
 
 /**
- * `lock` — smart lock. `locked` is the reported lock state, but there's no stable state param to
- * key off (only pushed via a CommandType-style event), so the param id here is a placeholder.
+ * The `locked` boolean a `lockState` push carries, derived from which `LockPushEvent` fired: the seven
+ * `*_LOCK` actions (262..268) → `true`, the six `*_UNLOCK` actions (257..261 + 269) → `false`. The rest
+ * of the 257..771 range — alarms, low-power, offline/online, OTA/status — is not a lock transition and
+ * contributes no `locked` field, so a consumer reads state only from an event that actually carries one.
+ */
+function decodeLockTransition(signal: InboundSignal): Record<string, unknown> {
+  if (signal.source !== "push" || signal.eventType === undefined) return {};
+  const e = signal.eventType;
+  if (e >= LockPushEvent.MANUAL_LOCK && e <= LockPushEvent.TEMPORARY_PW_LOCK) return { locked: true };
+  const unlocked =
+    (e >= LockPushEvent.MANUAL_UNLOCK && e <= LockPushEvent.APP_UNLOCK) || e === LockPushEvent.TEMPORARY_PW_UNLOCK;
+  return unlocked ? { locked: false } : {};
+}
+
+/**
+ * `lock` — smart lock. `locked` is the reported lock state; a device that reports no stable state param
+ * carries its transitions on the `lockState` event instead, whose payload names the decoded `locked`.
  */
 export const LOCK: CapabilityModule = {
   capability: "lock",
   description: "Smart-lock locked/unlocked state and battery.",
   members: LOCK_MEMBERS,
   properties: propertiesOf(LOCK_MEMBERS),
-  // Lock state is reported via CommandType (no stable param); the model name (lock/safe) is a
-  // signal, and every lock-codec device has the lock capability as its baseline.
+  // The model name (lock/safe) is a signal, and every lock-codec device has the lock capability as its baseline.
   detection: { modelHints: [/lock/i, /safe/i], codecs: ["lock"] },
-  // Inbound FCM lock events (LockPushEvent 257..771: (un)lock actions + alarms) → one "lockState".
-  events: [{ source: "push", match: [257, 771], emit: "lockState" }],
+  // Inbound FCM lock events (LockPushEvent 257..771: (un)lock actions + alarms) → one "lockState", whose
+  // payload carries a decoded `locked` boolean for the (un)lock actions (see decodeLockTransition).
+  events: [{ source: "push", match: [257, 771], emit: "lockState", derive: decodeLockTransition }],
 };
