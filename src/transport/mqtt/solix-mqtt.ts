@@ -56,7 +56,14 @@ export interface SolixParamFrame {
  * `0xb6`, `0xb7` — stay raw `channel_<hex tag>` (see {@link solixReadings}). `0xb2` in particular is NOT
  * a current total: under a 1.371 A line current it reads 0.009, three orders of magnitude off. Both
  * `0xb2` and `0xb7` read zero at idle and non-zero under load, so they carry *something* load-related;
- * what, is not established.
+ * what, is not established — `reactive_power` and `power_factor` (below) are the leading candidates.
+ *
+ * Each name is annotated with the equivalent register from Anker's OWN vendor integration for the
+ * newer Modbus-TCP meter generation (Smart Meter Gen 2), which independently corroborates the meaning
+ * of each tag: our `meterPowerL1` is their `primary_phase_1_active_power`, and so on. Same physical
+ * quantities, different hardware/transport (their meter reports two CT channels — `primary` and
+ * `secondary` — and also exposes `reactive_power`, `power_factor` and per-phase energy, none of which
+ * this single-channel ff09 frame carries).
  *
  * This table is **meter-family-specific**: the same tag carries a different quantity on another Solix
  * device (a Solarbank's `0xac` reads a power value, not a voltage), so {@link solixReadings} applies
@@ -65,18 +72,18 @@ export interface SolixParamFrame {
  * lost; the model layer names non-meter tags per capability.
  */
 export const SOLIX_METER_FIELD_NAMES: Readonly<Record<number, string>> = {
-  0xa8: "meterPowerL1",
-  0xa9: "meterPowerL2",
-  0xaa: "meterPowerL3",
-  0xab: "meterPowerTotal",
-  0xac: "meterVoltageL1",
-  0xad: "meterVoltageL2",
-  0xae: "meterVoltageL3",
-  0xaf: "meterCurrentL1",
-  0xb0: "meterCurrentL2",
-  0xb1: "meterCurrentL3",
-  0xb3: "meterImportEnergy",
-  0xb4: "meterExportEnergy",
+  0xa8: "meterPowerL1", // Anker Modbus: primary_phase_1_active_power
+  0xa9: "meterPowerL2", // Anker Modbus: primary_phase_2_active_power
+  0xaa: "meterPowerL3", // Anker Modbus: primary_phase_3_active_power
+  0xab: "meterPowerTotal", // Anker Modbus: primary_total_active_power
+  0xac: "meterVoltageL1", // Anker Modbus: primary_phase_1_voltage
+  0xad: "meterVoltageL2", // Anker Modbus: primary_phase_2_voltage
+  0xae: "meterVoltageL3", // Anker Modbus: primary_phase_3_voltage
+  0xaf: "meterCurrentL1", // Anker Modbus: primary_phase_1_current
+  0xb0: "meterCurrentL2", // Anker Modbus: primary_phase_2_current
+  0xb1: "meterCurrentL3", // Anker Modbus: primary_phase_3_current
+  0xb3: "meterImportEnergy", // Anker Modbus: primary_total_forward_active_energy
+  0xb4: "meterExportEnergy", // Anker Modbus: primary_total_reverse_active_energy
 };
 
 /**
@@ -115,17 +122,24 @@ export const SOLIX_SOLARBANK_PRODUCT_PREFIX = "AE10";
  * (a uint8) and temperature from the `0xa4` BMS status blob. The 4 PV-string channels (`0xc6`–`0xc9`),
  * the AC currents (`0xb2`/`0xb3`) and export energy (`0xb4`) are not yet confirmed, so they stay raw
  * `channel_<hex>` until a capture pins them.
+ *
+ * Names are annotated with the equivalent register from Anker's OWN vendor integration for the newer
+ * Modbus-TCP Solarbank generation (which includes a "Solarbank 4 E5000 Pro" config — the same product as
+ * `AE103`, a newer hardware rev), cross-checking each meaning. Their integration splits our signed
+ * `batteryPower` into `battery_charging_power` / `battery_discharging_power` off one register, and exposes
+ * a single `pv_power` total rather than our four per-string channels; `socketPower` (the on-board AC
+ * outlet) has no register there. Same quantities, different transport.
  */
 export const SOLIX_SOLARBANK_FIELD_NAMES: Readonly<Record<number, string>> = {
-  0xab: "photovoltaicPower", // total PV input across the strings
-  0xac: "batteryPower",
-  0xbc: "chargePower",
-  0xad: "dischargePower",
-  0xae: "acPlugPower",
-  0xaf: "socketPower", // the unit's own on-board AC socket (an appliance plugged into the Solarbank)
-  0xc4: "gridInputPower",
-  0xc5: "homeLoadPower",
-  0xc6: "pv1Power", // the four PV-string inputs (0 when a string is unused / dark)
+  0xab: "photovoltaicPower", // total PV input across the strings — Anker Modbus: pv_power
+  0xac: "batteryPower", // signed net pack power — Anker Modbus: battery_charging_power − battery_discharging_power
+  0xbc: "chargePower", // Anker Modbus: battery_charging_power
+  0xad: "dischargePower", // Anker Modbus: battery_discharging_power
+  0xae: "acPlugPower", // AC plug, signed — Anker Modbus: ac_grid_output_power
+  0xaf: "socketPower", // the unit's own on-board AC socket (an appliance plugged into the Solarbank) — no Anker register
+  0xc4: "gridInputPower", // Anker Modbus: grid_import_power
+  0xc5: "homeLoadPower", // Anker Modbus: load_power
+  0xc6: "pv1Power", // the four PV-string inputs (0 when a string is unused / dark); Anker exposes only a pv_power total
   0xc7: "pv2Power",
   0xc8: "pv3Power",
   0xc9: "pv4Power",
