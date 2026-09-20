@@ -156,6 +156,9 @@ describe("Solix Solarbank (AE103 / ats_ax170) decoding", () => {
     [0xc4, f32(0)], // grid input
     [0xc5, f32(360)], // home load
     [0xc6, f32(120)], // PV string 1
+    // 0xdf grid-limits blob: type 0x04, u16 LE import=2500 @3 ([196,9]), export=750 @5 ([238,2]) — the
+    // real layout, both values echoed later in the blob.
+    [0xdf, Buffer.from([0x04, 1, 0, 196, 9, 238, 2, 1, 0, 238, 2, 0, 0, 196, 9, 0, 0, 0, 0, 0, 0])],
     [0xba, Buffer.from([0x03, 0x70, 0x08, 0x08, 0x01])], // ba FLAGS 0x70: bit 0x20 SET ⇒ ambient light OFF
   ]);
 
@@ -164,6 +167,8 @@ describe("Solix Solarbank (AE103 / ats_ax170) decoding", () => {
     expect(v.batterySoc).toBe(12); // from the a3 uint8, not a float channel
     expect(v.batteryTemperature).toBe(24); // from the a4 BMS blob, self-validated against a3 SOC
     expect(v.batteryHealth).toBe(100); // SOH % — the byte after SOC in the a4 BMS blob
+    expect(v.gridImportLimit).toBe(2500); // 0xdf u16@3 — max power FROM grid (write-readback confirmed)
+    expect(v.gridExportLimit).toBe(750); // 0xdf u16@5 — max power TO grid (write-readback confirmed)
     expect(v.batteryPower).toBeCloseTo(510, 0);
     expect(v.chargePower).toBeCloseTo(510, 0);
     expect(v.dischargePower).toBe(0);

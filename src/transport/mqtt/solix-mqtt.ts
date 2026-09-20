@@ -309,6 +309,12 @@ export function solixReadings(frame: SolixParamFrame, productCode: string): Reco
  *   moving discharge 10%→5% moved `b5[1]` 0x0a→0x05 while charge held at `b5[3]`=0x64. The FAST telemetry
  *   frame (msgtype 0x05, ~7 s) also carries a `0xb5` type-`0x04` blob, but a 25-byte one whose bytes are
  *   not the limits — hence the exact length gate.
+ * - **Grid power limits** (`gridImportLimit`/`gridExportLimit`, W) come from tag `0xdf`'s type-`0x04`
+ *   blob: a `uint16` LE at offset 3 = the max power drawn FROM the grid, at offset 5 = the max power fed
+ *   TO the grid (each is also echoed later in the blob). Both CONFIRMED live by write-readback in both
+ *   directions: setting the app's grid-import limit 2500→1650→2500 W moved `df@3` to match each time, and
+ *   setting the grid-export limit 800→750 W moved `df@5` to 750. The length gate (≥7) keeps a short/empty
+ *   variant from reading past its end.
  * - **Ambient light** is NOT emitted here. Tag `0xba` bit `0x20` tracks only this SDK's own
  *   `set_device_attrs` write; an app-side toggle goes via an `…/req` cmd-17 `a4` and leaves `ba`
  *   unchanged, so on every ~7 s frame `ba` would clobber the correct value read from the command
@@ -329,6 +335,11 @@ function addSolarbankScalars(frame: SolixParamFrame, out: Record<string, number>
   if (b5 && b5[0] === 0x04 && b5.length === 4) {
     out.dischargeLimit = b5[1]!;
     out.chargeLimit = b5[3]!;
+  }
+  const df = frame.fields.get(0xdf);
+  if (df && df[0] === 0x04 && df.length >= 7) {
+    out.gridImportLimit = df.readUInt16LE(3); // max power drawn FROM the grid (W)
+    out.gridExportLimit = df.readUInt16LE(5); // max power fed TO the grid (W)
   }
 }
 
