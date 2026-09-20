@@ -96,7 +96,9 @@ export const WALL_LIGHT_TYPES: ReadonlySet<number> = new Set<number>([
  * they own the hub-audio surface (alarm / voice-prompt volume). A deliberate SUBSET of the `station`
  * codec that EXCLUDES the NVRs (S4 Max, PoE NVR): those resolve to `station` for arming/storage but
  * have no speaker, so they must NOT expose the hub-audio controls (they'd fire at nothing). The
- * alarm/prompt wire is verified on HomeBase 3 (HB3); the other hubs share the hub hardware.
+ * alarm/prompt wire is verified on HomeBase 3 (HB3); the other hubs share the hub hardware. The
+ * T9000 station (`STATION_9000`) is excluded for the same reason as the NVRs until a capture shows
+ * it reporting the hub-audio params — its speaker is assumed by its retail form, not evidenced.
  */
 export const HOMEBASE_TYPES: ReadonlySet<number> = new Set<number>([
   DeviceType.STATION,
