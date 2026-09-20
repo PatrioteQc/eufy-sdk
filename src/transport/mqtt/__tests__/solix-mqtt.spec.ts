@@ -163,6 +163,7 @@ describe("Solix Solarbank (AE103 / ats_ax170) decoding", () => {
     const v = solixReadings(decodeSolixParamFrame(FRAME)!, "AE103");
     expect(v.batterySoc).toBe(12); // from the a3 uint8, not a float channel
     expect(v.batteryTemperature).toBe(24); // from the a4 BMS blob, self-validated against a3 SOC
+    expect(v.batteryHealth).toBe(100); // SOH % — the byte after SOC in the a4 BMS blob
     expect(v.batteryPower).toBeCloseTo(510, 0);
     expect(v.chargePower).toBeCloseTo(510, 0);
     expect(v.dischargePower).toBe(0);
