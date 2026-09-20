@@ -249,6 +249,12 @@ export function solarbankSceneReadings(scene: SolixSiteScene): { deviceSn: strin
     if (temp !== undefined) values.batteryTemperature = temp;
     const soc = sceneNum(sb.bat_soc);
     if (soc !== undefined) values.batterySoc = soc;
+    // Attached expansion-pack count (+ the stack ceiling). 0 on a standalone main unit; both are stable
+    // config, but riding the scene poll means they appear the moment a pack is added.
+    const packs = sceneNum(sb.sub_package_num);
+    if (packs !== undefined) values.expansionPacks = packs;
+    const maxPacks = sceneNum(sb.max_battery_pack_num);
+    if (maxPacks !== undefined) values.maxExpansionPacks = maxPacks;
     if (Object.keys(values).length > 0) out.push({ deviceSn, values });
   }
   return out;
