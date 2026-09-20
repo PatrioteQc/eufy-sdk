@@ -304,11 +304,14 @@ export function solixReadings(frame: SolixParamFrame, productCode: string): Reco
  *   both are withheld rather than read from the wrong offset. `batteryHealth` is a CANDIDATE: its offset
  *   in the BMS blob is confirmed and its value (100 on a captured pack) fits a state-of-health percentage
  *   and the app's own `bmsHealth` field, but that it is SOH specifically is not yet hardware-correlated.
- * - **SOC limits** (`dischargeLimit`/`chargeLimit`, %) come from tag `0xb5`'s SETTINGS-blob variant —
- *   type `0x04` with exactly 3 payload bytes, `[discharge, output cutoff, charge]`. Confirmed live:
- *   moving discharge 10%→5% moved `b5[1]` 0x0a→0x05 while charge held at `b5[3]`=0x64. The FAST telemetry
- *   frame (msgtype 0x05, ~7 s) also carries a `0xb5` type-`0x04` blob, but a 25-byte one whose bytes are
- *   not the limits — hence the exact length gate.
+ * - **SOC limits** (`dischargeLimit`/`chargeLimit`, %) come from tag `0xb5`'s 4-byte SETTINGS-blob
+ *   variant — type `0x04`, payload `[discharge, output cutoff, charge]`. Confirmed live: moving discharge
+ *   10%→5% moved `b5[1]` 0x0a→0x05 while charge held at `b5[3]`=0x64.
+ * - **Backup reserve** (`backupReserve`, %) comes from tag `0xb5`'s longer FAST-frame variant (the 25-byte
+ *   type-`0x04` blob on the ~7 s telemetry frame), which leads with `[backupReserve, discharge, charge, …]`.
+ *   CONFIRMED live by write-readback: setting the app's backup reserve 0→5→15 % moved `b5[1]` 0x00→0x05→0x0f
+ *   each time, while `b5[2]` (min-SOC) held at 5 — so it is a distinct field, not the discharge floor. Only
+ *   `b5[1]` is asserted from this variant; the exact-length-4 gate keeps the SETTINGS-blob path unchanged.
  * - **Grid power limits** (`gridImportLimit`/`gridExportLimit`, W) come from tag `0xdf`'s type-`0x04`
  *   blob: a `uint16` LE at offset 3 = the max power drawn FROM the grid, at offset 5 = the max power fed
  *   TO the grid (each is also echoed later in the blob). Both CONFIRMED live by write-readback in both
@@ -335,6 +338,8 @@ function addSolarbankScalars(frame: SolixParamFrame, out: Record<string, number>
   if (b5 && b5[0] === 0x04 && b5.length === 4) {
     out.dischargeLimit = b5[1]!;
     out.chargeLimit = b5[3]!;
+  } else if (b5 && b5[0] === 0x04 && b5.length >= 11) {
+    out.backupReserve = b5[1]!; // % — the FAST-frame b5 leads with the backup reserve
   }
   const df = frame.fields.get(0xdf);
   if (df && df[0] === 0x04 && df.length >= 7) {

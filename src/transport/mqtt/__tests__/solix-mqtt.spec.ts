@@ -184,6 +184,19 @@ describe("Solix Solarbank (AE103 / ats_ax170) decoding", () => {
     expect(v["channel_ac"]).toBeCloseTo(510, 0);
   });
 
+  it("reads backupReserve from the 25-byte FAST-frame b5 variant (leads with the reserve %)", () => {
+    // Real fast-frame layout: type 0x04, [backupReserve=15, discharge=5, charge=100, …].
+    const frame = buildFrame([
+      [0xa1, Buffer.from([0x34])],
+      [0xa3, Buffer.from([0x01, 54])],
+      [0xb5, Buffer.from([0x04, 15, 5, 100, 0, 0, 0, 0, 0, 0, 26, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])],
+    ]);
+    const v = solixReadings(decodeSolixParamFrame(frame)!, "AE103");
+    expect(v.backupReserve).toBe(15); // b5[1] — confirmed 0→5→15 tracking the app setting
+    // the 4-byte-only SETTINGS fields are NOT asserted from this variant (different offsets)
+    expect("dischargeLimit" in v).toBe(false);
+  });
+
   it("does NOT apply the Solarbank table to a meter frame (tag meanings differ per family)", () => {
     const meter = solixReadings(decodeSolixParamFrame(FRAME)!, "AE1X0");
     expect(meter.batteryPower).toBeUndefined();
