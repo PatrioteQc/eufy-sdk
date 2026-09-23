@@ -27,6 +27,19 @@ import { parseSecureTopic, subscribeTopics } from "./topics.js";
 const SUBACK_FAILURE = 0x80;
 
 /**
+ * Whether a connect failed because the broker REFUSED the client — a CONNACK return code the client
+ * cannot retry its way out of, as `mqtt.js` words it (`Connection refused: not authorized`). A socket
+ * that dies without an answer is not this: it is the same request, unanswered, and retrying it is the
+ * only way to learn which of the two happened.
+ *
+ * A refusal that arrives as a dropped connection instead of a CONNACK reads here as the transport
+ * failure it is indistinguishable from.
+ */
+export function isNotAuthorized(err: unknown): boolean {
+  return err instanceof Error && /connection refused/i.test(err.message) && /not authori[sz]ed/i.test(err.message);
+}
+
+/**
  * Per-user mTLS credentials as returned by get_user_mqtt_info.
  *
  * Broker credentials as the cloud returns them — internal transport detail.
@@ -146,6 +159,7 @@ export class SecureMqtt extends EventEmitter implements RealtimeTransport {
         }
         this.emit("connect");
       });
+      client.on("connect", () => this.logger.info(`[smqtt] connected (${c.app_name ?? "default"})`));
       client.on("reconnect", () => this.logger.warn("[smqtt] reconnecting"));
       client.on("close", () => this.emit("disconnect", "close"));
       client.on("error", (err) => {
@@ -179,7 +193,7 @@ export class SecureMqtt extends EventEmitter implements RealtimeTransport {
    * four topics for `eufy_life`).
    *
    * The grants are INSPECTED, not assumed: AWS IoT answers a policy-denied filter with a
-   * `SUBACK_FAILURE` (`0x80`) grant rather than failing the SUBSCRIBE, so subscribing with a credential
+   * SUBACK_FAILURE (`0x80`) grant rather than failing the SUBSCRIBE, so subscribing with a credential
    * whose scope doesn't cover the topic looks identical to success and then delivers nothing. A denied
    * topic is reported via `error` naming the credential scope; only an all-denied device throws, so a
    * line that grants its state channel but refuses (say) the OTA leg still works.
@@ -187,9 +201,8 @@ export class SecureMqtt extends EventEmitter implements RealtimeTransport {
   async subscribeDevice(device: EufyDevice): Promise<void> {
     if (!this.client) throw new Error("SecureMqtt not connected");
     const topics = [...subscribeTopics(device)];
-    const grants = await this.client.subscribeAsync(topics, { qos: 1 });
+    const { denied } = this.partitionGrants(await this.client.subscribeAsync(topics, { qos: 1 }));
     const scope = this.o.credentials.app_name ?? "default";
-    const denied = grants.filter((g) => g.qos === SUBACK_FAILURE).map((g) => g.topic);
     if (denied.length === topics.length) {
       throw new Error(
         `subscribe ${device.sn}: every topic denied on credential scope "${scope}" — ` +
@@ -199,6 +212,32 @@ export class SecureMqtt extends EventEmitter implements RealtimeTransport {
     for (const topic of denied) {
       this.emit("error", new Error(`subscribe ${device.sn}: "${topic}" denied on credential scope "${scope}"`));
     }
+  }
+
+  /**
+   * Subscribe to explicit topic filters, returning the topics that were granted. A scope-denied filter
+   * comes back with SUBACK_FAILURE rather than an error (AWS IoT quirk), so it is dropped from the result
+   * instead of throwing — callers that need every leg check the returned list. Used by lines whose topic
+   * vocabulary isn't the eufy `subscribeTopics` shape (e.g. Anker Solix `dt/{app}/{pn}/{sn}`).
+   */
+  async subscribe(topics: string[]): Promise<string[]> {
+    if (!this.client) throw new Error("SecureMqtt not connected");
+    return this.partitionGrants(await this.client.subscribeAsync(topics, { qos: 1 })).granted;
+  }
+
+  /**
+   * Split SUBACK grants into granted vs scope-denied topics. AWS IoT marks a policy-denied filter with a
+   * SUBACK_FAILURE (`0x80`) grant rather than failing the SUBSCRIBE, so the two subscribe paths share
+   * this split and layer their own policy (drop vs report) on top.
+   */
+  private partitionGrants(grants: ReadonlyArray<{ topic: string; qos: number }>): {
+    granted: string[];
+    denied: string[];
+  } {
+    const granted: string[] = [];
+    const denied: string[] = [];
+    for (const g of grants) (g.qos === SUBACK_FAILURE ? denied : granted).push(g.topic);
+    return { granted, denied };
   }
 
   /**

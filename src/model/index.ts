@@ -119,3 +119,32 @@ export {
   NotificationStyle,
   detectionName,
 } from "./push-events.js";
+// Anker Solix device model: the capability-driven SolixDevice + the product catalog it resolves names from.
+export {
+  SolixDevice,
+  discoverSolixDevices,
+  solarbankSceneReadings,
+  type SolixDeviceReader,
+  type SolixDeviceRecord,
+  type SolixIdentity,
+  type SolixConnectivity,
+  type SolixEnergyMeter,
+  type SolixDeviceOptions,
+} from "./solix-device.js";
+// Solix capability ids + the one confirmed members table the meter surface derives from.
+export { SOLIX_ENERGY_METER_MEMBERS, type SolixCapability, type SolixEnergyMeterReads } from "./capabilities/solix.js";
+export { buildModelIndex, type SolixProduct, type SolixProductCategory } from "./solix-catalog.js";
+// Solix product-family classification (the "what kind of device is this" question — the Solix analogue
+// of eufy's isHomeBase), and the site aggregate that groups a system's member devices ("My Home").
+export {
+  solixProductFamily,
+  isSolixPowerStation,
+  isSolixSolarbank,
+  isSolixSmartMeter,
+  type SolixProductFamily,
+  type SolixFamilyInput,
+} from "./solix-family.js";
+export { SolixSite, discoverSolixSites, type SolixSiteReader, type SolixSiteOptions } from "./solix-site.js";
+// `SolixSiteRecord` / `SolixSiteDeviceEntry` are core-owned (see `core/index.ts` `export *
+// ./solix-types`), so they reach `src/index.ts` through the core barrel — not re-exported here (a
+// core type should leave through one layer barrel, matching how `SolixDeviceRecord` is handled).

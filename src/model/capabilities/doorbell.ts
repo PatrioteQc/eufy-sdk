@@ -20,8 +20,9 @@ export const DOORBELL_CMD = {
    */
   QUICK_RESPONSE: 1706,
   /**
-   * Mechanical (wired) chime enable/disable — whether the doorbell drives an existing wired chime box
-   * (as opposed to / in addition to the wireless indoor chime, param 1702 `chimeSwitch` above). Same
+   * Mechanical (wired) chime enable/disable — whether the doorbell drives an existing wired chime box,
+   * the app's "existing doorbell chime" (as opposed to / in addition to the HomeBase acting as the chime,
+   * param 1702 `chimeSwitch` above; toggling each switch alone wrote one parameter and named the pair). Same
    * 136-byte direct-binary shape as `QUICK_RESPONSE`/camera on-off: `[u32 channel][u32 value][account_id
    * ASCII, zero-padded to 128 bytes]`, outer P2P cmd = 1703 itself, signCode 8, on the device's own
    * channel. Reversed from a live capture (outer-cmd 1703, signCode 8, captured on the doorbell's
@@ -30,6 +31,19 @@ export const DOORBELL_CMD = {
    * App `APP_CMD_BAT_DOORBELL_MECHANICAL_CHIME_SWITCH`.
    */
   MECHANICAL_CHIME_SWITCH: 1703,
+  /**
+   * Whether the HOMEBASE acts as the doorbell's chime — the app's "HomeBase as chime" switch, as opposed
+   * to the wired chime box {@link DOORBELL_CMD.MECHANICAL_CHIME_SWITCH} drives. The app constant reads
+   * `CHIME_SWITCH`, which is why this was long described as a separate plug-in chime; toggling that one
+   * switch alone on a T8210 behind a HomeBase wrote 1702 and nothing else, and the account has no
+   * plug-in chime at all. Same 136-byte direct-binary shape as
+   * that sibling: `[u32 channel][u32 value][account_id ASCII, zero-padded to 128 bytes]`, outer P2P cmd
+   * 1702 itself, signCode 8, on the device's own channel. Reversed from a live capture (outer-cmd 1702,
+   * signCode 8, on the doorbell's `device_channel` — 2 for that unit, NOT a wire constant, always use
+   * `ctx.channel`): turning OFF sent `value=0`, turning ON sent `value=1` — a plain boolean.
+   * App `APP_CMD_BAT_DOORBELL_CHIME_SWITCH`.
+   */
+  CHIME_SWITCH: 1702,
   /**
    * Wide Dynamic Range (WDR) image switch — a video/image tone-mapping setting that widens the
    * exposure range in high-contrast scenes (bright sky behind a visitor, etc). SAME 136-byte
@@ -196,13 +210,10 @@ export function parseQuickResponses(
 /**
  * Every `doorbell` feature, declared once.
  *
- * Three of the seven reads are read-ONLY here even though the device accepts a write, because the write
+ * Two of the seven reads are read-ONLY here even though the device accepts a write, because the write
  * does not belong to this capability or is not confirmed:
  *  - `ringtoneVolume` (1708) — the WRITE lives on `audio`, which owns every volume wire. 1708 leaks
  *    onto non-doorbell cameras, so `audio` gates its setter on the doorbell capability instead.
- *  - `chimeSwitch` (1702) — READ confirmed on a T8214, the WRITE wire never captured. Its 1703/1704
- *    siblings share the param range but that is NOT evidence of a shared frame, and a wrong guess on a
- *    fire-and-forget P2P write looks exactly like success.
  *  - `notificationMode` (1710) — a config JSON the device reports whole; no write is captured.
  *
  * Exported but NOT published: each entry states its wire id and the evidence it was confirmed on,
@@ -211,21 +222,20 @@ export function parseQuickResponses(
  */
 export const DOORBELL_MEMBERS = {
   /**
-   * The WIRELESS indoor chime — the separate plug-in unit, not the wired chime box
-   * `mechanicalChimeSwitch` drives. `unverified: true` with no `write` at all: the read is confirmed but
-   * the write frame has never been captured, so the setter is absent from the surface (a compile-time
-   * signal) and the intent path throws rather than reporting the doorbell as lacking the feature.
-   * Sharing the 1702-1719 range with its captured siblings is not evidence of a shared frame shape.
+   * The HOMEBASE as the doorbell's chime — the hub plays the ring, not the wired chime box
+   * `mechanicalChimeSwitch` drives. `provenance` is "verified" on our own decrypt of the app's frame,
+   * not merely the param id observed live: direct-binary `[ch][value][acct]`, 1=on/0=off, the same shape
+   * as its 1703 sibling — captured, not inferred from the shared param range.
    */
   chimeSwitch: {
-    param: 1702,
+    param: DOORBELL_CMD.CHIME_SWITCH,
     type: "bool",
     kind: "boolean",
-    provenance: "mega",
-    unverified: true,
+    provenance: "verified",
     description:
-      "Wireless indoor chime enabled (1702 CMD_BAT_DOORBELL_CHIME_SWITCH; READ confirmed on T8214 — the " +
-      "WRITE wire is unconfirmed, so no setter is offered rather than guessing it).",
+      "The HomeBase plays the doorbell's chime (1702; the app's \"HomeBase as chime\" switch — write " +
+      "wire-confirmed live on T8210).",
+    write: (v, ctx) => setScalar(DOORBELL_CMD.CHIME_SWITCH, asBool(v) ? 1 : 0, ctx, "direct-binary"),
   },
   /**
    * `provenance` is "verified" not "mega": the actual write wire is confirmed (
@@ -237,7 +247,9 @@ export const DOORBELL_MEMBERS = {
     type: "bool",
     kind: "boolean",
     provenance: "verified",
-    description: "Mechanical chime enabled (1703; confirmed on T8214).",
+    description:
+      'The existing wired chime box rings (1703; the app\'s "existing doorbell chime" switch — ' +
+      "confirmed on T8214, and that pairing confirmed by toggling it alone on a T8210).",
     write: (v, ctx) => setScalar(DOORBELL_CMD.MECHANICAL_CHIME_SWITCH, asBool(v) ? 1 : 0, ctx, "direct-binary"),
   },
   /** Same reasoning and the same capture session as {@link DOORBELL_MEMBERS.mechanicalChimeSwitch}. */
@@ -286,7 +298,8 @@ export const DOORBELL_MEMBERS = {
       "Doorbell chime volume, 0-100 (1717 APP_CMD_BAT_DOORBELL_SET_DINGDONG_VOLUME; SET_PAYLOAD " +
       "envelope, distinct from the direct-binary ringtoneVolume/1708 — see DOORBELL_CMD.DINGDONG_VOLUME). " +
       "Write wire-confirmed live on T8214, observed values 3 and 25.",
-    write: (v, ctx) => setPayload(DOORBELL_CMD.DINGDONG_VOLUME, { dingdong_volume: Number(v) }, ctx, 0),
+    write: (v, ctx) =>
+      setPayload(DOORBELL_CMD.DINGDONG_VOLUME, { dingdong_volume: Number(v) }, ctx, 0, undefined, "auto"),
   },
   /**
    * The same `1350` SET_PAYLOAD shape and capture session as {@link DOORBELL_MEMBERS.dingdongVolume},
@@ -311,7 +324,7 @@ export const DOORBELL_MEMBERS = {
       const tone = coerceEnumValue(DoorbellRingtone, v);
       return tone === undefined
         ? undefined
-        : setPayload(DOORBELL_CMD.DINGDONG_RINGTONE, { dingdong_ringtone: tone }, ctx, 0);
+        : setPayload(DOORBELL_CMD.DINGDONG_RINGTONE, { dingdong_ringtone: tone }, ctx, 0, undefined, "auto");
     },
   },
   /**
@@ -474,10 +487,16 @@ export const DOORBELL: CapabilityModule = {
   properties: propertiesOf(DOORBELL_MEMBERS),
   /** Doorbells self-report no single unambiguous param; the model name is the reliable signal. */
   detection: { modelHints: [/doorbell/i] },
-  /** Inbound FCM doorbell events (`DoorbellPushEvent`): ring press, pet, package delivered/taken. */
+  /**
+   * Inbound FCM doorbell events (`DoorbellPushEvent`): ring press and the package trio.
+   *
+   * Pet (3106) is NOT here. The id is declared identically in the doorbell, indoor and HB3-paired
+   * vocabularies, so it belongs to the camera-wide `motion` module that every camera binds; claiming
+   * it here as well would make it a contested id that a doorbell — which has both capabilities —
+   * matches twice, emitting one push as two events.
+   */
   events: [
     { source: "push", match: DoorbellPushEvent.PRESS_DOORBELL, emit: "doorbellPress" },
-    { source: "push", match: DoorbellPushEvent.PET_DETECTION, emit: "petDetection" },
     { source: "push", match: DoorbellPushEvent.PACKAGE_DELIVERED, emit: "packageDelivered" },
     { source: "push", match: DoorbellPushEvent.PACKAGE_TAKEN, emit: "packageTaken" },
     { source: "push", match: DoorbellPushEvent.PACKAGE_STRANDED, emit: "packageStranded" },

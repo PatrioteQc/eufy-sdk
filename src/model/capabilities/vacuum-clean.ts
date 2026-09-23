@@ -264,35 +264,26 @@ export const ModeCtrlMethod = {
 } as const;
 
 /**
- * The methods that carry a `Param` oneof — room, zone, goto, schedule, cruise and scene cleans.
- *
- * Deliberately absent from {@link ModeCtrlMethod}. Each needs an argument the caller has to supply and
- * this SDK cannot yet answer: a room or zone id comes from map data, which is not decodable here, and a
- * coordinate is signed centimetres in a frame no capture has pinned. Listing their numbers beside the
- * parameterless ones would invite a caller to send one with an empty payload, which is a valid frame
- * meaning something nobody intended.
- */
-
-/**
- * Encode a `ModeCtrlRequest` protobuf (DP 152) as a DP value: `varint(bodyLen) ++ {method:1, seq:2}`.
- *
- * Built on {@link RawDpWriter} rather than hand-rolled bytes. The frame is unchanged and the existing
- * byte-level test is what proves it — that test was written against a live T2351 capture, so it holds
- * the writer to the wire rather than to this function's own idea of the wire.
- *
- * Method 0 (START_AUTO_CLEAN) is omitted rather than written as an explicit zero, per the proto3
- * default-field rule and confirmed on that same capture. The writer deliberately does not apply that
- * rule itself: whether an explicit zero and an absent field mean the same thing is the
- * message's business, not the encoder's.
- * @internal
- */
-/**
  * The area-selecting `ModeCtrlRequest` methods, and the `Param` field each one's payload rides in.
  *
  * Kept apart from {@link ModeCtrlMethod} because these are a different kind of thing: a parameterless
  * verb is complete on its own, whereas each of these is meaningless without an argument the caller has
  * to supply. Sending one with an empty payload is a well-formed frame that means something nobody
- * intended, which is exactly why the numbers do not sit beside the others.
+ * intended, which is exactly why the numbers do not sit beside the others. Each verb built on one takes
+ * its argument in the signature: {@link VACUUM_CLEAN_MEMBERS.startScene},
+ * {@link VACUUM_CLEAN_MEMBERS.cleanRooms} and {@link VACUUM_CLEAN_MEMBERS.cleanZones}.
+ *
+ * The outer frame these ride in is byte-verified on a live T2351, and `SCENE`, `SELECT_ROOMS` and
+ * `SELECT_ZONES` have each since been RUN on a T2351 and did what they name — so their numbers rest on
+ * observed behaviour rather than on the vendor's definition alone.
+ *
+ * That distinction is the whole point of checking, and this is the one place it is argued: an AIoT
+ * data-point write is fire-and-forget, so a wrong number would be a different command arriving and
+ * looking exactly like success, which no frame check could catch. Watching the number is the only thing
+ * that rules it out.
+ *
+ * `GOTO` carries no encoder because a goto point is a coordinate no read on this SDK supplies, where a
+ * scene id and a map id both arrive on DP 180.
  */
 export const ModeCtrlParamMethod = {
   /** `START_SELECT_ROOMS_CLEAN` — clean the named rooms of a named map. */
@@ -381,7 +372,7 @@ function encodeModeCtrlParam(method: number, paramField: number, build: (w: RawD
  * `mapId` is required and has no default, deliberately. The obvious shortcut is to assume the map a
  * single-floor home would have; on a two-floor home that silently sends the robot's ids against the
  * wrong floor's map. A caller that cannot name the map cannot safely make this call, and saying so is
- * better than picking for them.
+ * better than picking for them. {@link VACUUM_CLEAN_MEMBERS.cleanRooms} dispatches this.
  * @internal
  */
 export function encodeSelectRoomsClean(mapId: number, rooms: readonly VacuumRoomTarget[], cleanTimes = 1): string {
@@ -423,7 +414,11 @@ export function encodeSelectZonesClean(mapId: number, zones: readonly VacuumZone
   });
 }
 
-/** Build a scene clean, which needs only the scene's own id. @internal */
+/**
+ * Build a scene clean, which needs only the scene's own id — `VacuumScene.id`, as DP 180 reports it.
+ * {@link VACUUM_CLEAN_MEMBERS.startScene} dispatches this.
+ * @internal
+ */
 export function encodeSceneClean(sceneId: number): string {
   const { method, param } = ModeCtrlParamMethod.SCENE;
   return encodeModeCtrlParam(method, param, (p) => p.int(SCENE_CLEAN_ID, sceneId));
@@ -442,6 +437,19 @@ function nextModeCtrlSeq(): number {
   return ++modeCtrlSeq;
 }
 
+/**
+ * Encode a `ModeCtrlRequest` protobuf (DP 152) as a DP value: `varint(bodyLen) ++ {method:1, seq:2}`.
+ *
+ * Built on {@link RawDpWriter} rather than hand-rolled bytes. The frame is unchanged and the existing
+ * byte-level test is what proves it — that test was written against a live T2351 capture, so it holds
+ * the writer to the wire rather than to this function's own idea of the wire.
+ *
+ * Method 0 (START_AUTO_CLEAN) is omitted rather than written as an explicit zero, per the proto3
+ * default-field rule and confirmed on that same capture. The writer deliberately does not apply that
+ * rule itself: whether an explicit zero and an absent field mean the same thing is the
+ * message's business, not the encoder's.
+ * @internal
+ */
 export function encodeModeCtrl(method: number, seq: number): string {
   return rawDp((w) => {
     if (method !== 0) w.int(MODE_CTRL_FIELD.METHOD, method);
@@ -762,6 +770,76 @@ const CARPET_STRATEGY: Record<number, CarpetStrategy> = { 0: "autoRaise", 1: "av
 export const CLEAN_EXTENTS = ["normal", "narrow", "quick"] as const;
 export type CleanExtent = (typeof CLEAN_EXTENTS)[number];
 const CLEAN_EXTENT: Record<number, CleanExtent> = { 0: "normal", 1: "narrow", 2: "quick" };
+
+/**
+ * The wire integer a decoded name stands for, by inverting the table the read decodes through.
+ *
+ * One table per setting serves both directions, so a write and the read that observes it cannot come
+ * to disagree about which integer a name means. Throws for a name the table does not hold: the
+ * argument is typed, so reaching that is a caller crossing the type boundary, and sending the robot a
+ * settings frame with a silently dropped field would be worse than saying so.
+ * @internal
+ */
+function cleanParamWireValue<T extends string>(names: Record<number, T>, name: T): number {
+  const found = Object.entries(names).find(([, candidate]) => candidate === name);
+  if (found === undefined) throw new Error(`clean param: ${name} is not a value this setting takes`);
+  return Number(found[0]);
+}
+
+/**
+ * Write one single-field setting wrapper into a `CleanParam`.
+ *
+ * The wrapper is always emitted; the inner varint only when it is non-zero. proto3 omits a zero, so an
+ * empty wrapper IS the enum's zero member — the same bytes the vendor's own encoder produces, and the
+ * same bytes {@link decodeCleanParamValue} reads back as `0`.
+ * @internal
+ */
+function writeCleanSetting(p: RawDpWriter, wrapper: number, inner: number, value: number): void {
+  p.sub(wrapper, (w) => {
+    if (value !== 0) w.int(inner, value);
+  });
+}
+
+/**
+ * Build a `CleanParamRequest` (DP 154) stating the three cleaning settings a run uses.
+ *
+ * The message is `{ clean_param: CleanParam }` — field 1 of the request, carrying the same `CleanParam`
+ * this module decodes out of field 1 of the reports it receives, so the shape a write sends is the
+ * shape a read has already been proven against on live hardware.
+ *
+ * All three settings are stated together because one message carries all three: a write naming fewer
+ * would be a `CleanParam` with the rest silent, and what a robot does with a half-stated one is not
+ * something this SDK has observed. `clean_times`(7) is never written — the vendor's own field comment
+ * makes zero mean "not stated", so omitting it leaves the robot's configured pass count alone — and
+ * neither is `fan`(6), which belongs to the suction capability's own data point.
+ *
+ * {@link VACUUM_CLEAN_MEMBERS.setCleanParam} dispatches this.
+ * @internal
+ */
+export function encodeCleanParam(cleanType: VacuumCleanType, cleanExtent: CleanExtent, mopLevel: MopLevel): string {
+  return rawDp((w) =>
+    w.sub(CLEAN_PARAM_FIELD.CONFIGURED, (p) => {
+      writeCleanSetting(
+        p,
+        CLEAN_PARAM_FIELD.CLEAN_TYPE,
+        CLEAN_PARAM_FIELD.VALUE,
+        cleanParamWireValue(CLEAN_TYPE, cleanType),
+      );
+      writeCleanSetting(
+        p,
+        CLEAN_PARAM_FIELD.CLEAN_EXTENT,
+        CLEAN_PARAM_FIELD.VALUE,
+        cleanParamWireValue(CLEAN_EXTENT, cleanExtent),
+      );
+      writeCleanSetting(
+        p,
+        CLEAN_PARAM_FIELD.MOP_MODE,
+        CLEAN_PARAM_FIELD.MOP_LEVEL,
+        cleanParamWireValue(MOP_LEVEL, mopLevel),
+      );
+    }),
+  );
+}
 
 /**
  * Read one setting out of the CONFIGURED `CleanParam` (DP 154), by its field number.
@@ -2904,6 +2982,111 @@ export const VACUUM_CLEAN_MEMBERS = {
       (): Promise<void> =>
         sink.dispatch(aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.PAUSE_TASK, nextModeCtrlSeq()))),
     "Pause the current cleaning task (ModeCtrlRequest method 13 over DP 152).",
+    isAiotVacuum,
+  ),
+
+  /**
+   * Run a saved cleaning scene by its id (ModeCtrlRequest method 24 over DP 152).
+   *
+   * The id is the device's own, as {@link VACUUM_CLEAN_MEMBERS.scenes} reports it — `VacuumScene.id`
+   * off the `SceneResponse` on DP 180. A scene the device reports invalid stays reportable and running
+   * it is still a well-formed request; `VacuumScene.invalidReason` says why the device will refuse.
+   *
+   * Frame shape is byte-proven against the shared outer `ModeCtrlRequest`, and method 24 has been
+   * WATCHED: run on a T2351, it started the named scene.
+   */
+  startScene: method(
+    ({ sink }) =>
+      (sceneId: number): Promise<void> =>
+        sink.dispatch(aiotDp(VACUUM_DP.MODE_CTRL, encodeSceneClean(sceneId))),
+    "Run a saved cleaning scene by its id (ModeCtrlRequest method 24 over DP 152).",
+    isAiotVacuum,
+  ),
+
+  /**
+   * State the cleaning settings a run uses — `CleanParamRequest.clean_param` over DP 154.
+   *
+   * The write counterpart of {@link VACUUM_CLEAN_MEMBERS.cleanType},
+   * {@link VACUUM_CLEAN_MEMBERS.cleanExtent} and {@link VACUUM_CLEAN_MEMBERS.mopLevel}: one message
+   * carries all three, so they are set together rather than through three setters that would each send
+   * the same message with the other two silent.
+   *
+   * **The evidence, and its limit.** The frame is field 1 of `CleanParamRequest`, which carries the
+   * very `CleanParam` this module decodes out of field 1 of the reports a live T2351 sends — the
+   * field numbers, the single-field wrappers and the `mop_mode.level` scale are all read off that
+   * capture, and `encodeCleanParam` writes what `decodeCleanParamValue` reads. What is NOT captured is
+   * the write direction itself. It ships as a method rather than an unverified write because the
+   * hazard that rule answers does not arise here: DP 154 is the robot's own settings report, so a frame
+   * it does not accept leaves those three reads unchanged, where a wrong fire-and-forget command would
+   * look exactly like success.
+   *
+   * Suction is not here. It has its own data point and its own capability — a `fan` field exists in
+   * this message and is deliberately not written, for the same reason it is not read.
+   */
+  setCleanParam: {
+    ...method(
+      ({ sink }) =>
+        (cleanType: VacuumCleanType, cleanExtent: CleanExtent, mopLevel: MopLevel): Promise<void> =>
+          sink.dispatch(aiotDp(VACUUM_DP.CLEAN_PARAM, encodeCleanParam(cleanType, cleanExtent, mopLevel))),
+      "Set the cleaning type, extent and mop water level together (CleanParamRequest.clean_param over DP 154).",
+      isAiotVacuum,
+    ),
+    args: [
+      {
+        name: "cleanType",
+        kind: "enum",
+        values: VACUUM_CLEAN_TYPES,
+        description: "What the robot does with a surface.",
+      },
+      {
+        name: "cleanExtent",
+        kind: "enum",
+        values: CLEAN_EXTENTS,
+        description: "How far past the mapped edge a job reaches. Wire order, not app order.",
+      },
+      {
+        name: "mopLevel",
+        kind: "enum",
+        values: MOP_LEVELS,
+        description: "How much water the mop lays down. Only meaningful for a clean type that mops.",
+      },
+    ],
+  },
+
+  /**
+   * Clean the named rooms of a named map (ModeCtrlRequest method 1 over DP 152).
+   *
+   * `mapId` has no default and that is deliberate: room ids are per map, so assuming the map a
+   * single-floor home would have sends a two-floor home's ids against the wrong floor. `SceneInfo.mapid`
+   * on DP 180 and a scheduled rooms-clean's `map_id` are the two real map ids the device reports.
+   *
+   * `cleanTimes` is how many passes to make over the set; rooms with no `order` are visited in the
+   * order given.
+   *
+   * Frame shape is byte-proven against the shared outer `ModeCtrlRequest`, and method 1 has been
+   * WATCHED: run on a T2351, it cleaned the rooms named.
+   */
+  cleanRooms: method(
+    ({ sink }) =>
+      (mapId: number, rooms: readonly VacuumRoomTarget[], cleanTimes = 1): Promise<void> =>
+        sink.dispatch(aiotDp(VACUUM_DP.MODE_CTRL, encodeSelectRoomsClean(mapId, rooms, cleanTimes))),
+    "Clean the named rooms of a named map (ModeCtrlRequest method 1 over DP 152).",
+    isAiotVacuum,
+  ),
+
+  /**
+   * Clean the given rectangles of a named map (ModeCtrlRequest method 2 over DP 152).
+   *
+   * Corners are SIGNED centimetres in the map's own frame, whose origin sits wherever the robot first
+   * mapped from — negative coordinates are ordinary and are ZigZag-encoded, not written as plain
+   * varints. Same `mapId` reasoning as {@link VACUUM_CLEAN_MEMBERS.cleanRooms}, and the same evidence:
+   * method 2 was run on a T2351 and cleaned the rectangles given.
+   */
+  cleanZones: method(
+    ({ sink }) =>
+      (mapId: number, zones: readonly VacuumZoneTarget[]): Promise<void> =>
+        sink.dispatch(aiotDp(VACUUM_DP.MODE_CTRL, encodeSelectZonesClean(mapId, zones))),
+    "Clean the given rectangles of a named map (ModeCtrlRequest method 2 over DP 152).",
     isAiotVacuum,
   ),
 } as const satisfies Members;

@@ -30,6 +30,7 @@ import {
   encodeSelectRoomsClean,
   encodeSelectZonesClean,
   encodeSceneClean,
+  encodeCleanParam,
   ModeCtrlParamMethod,
   VACUUM_DP_MESSAGE,
   ModeCtrlMethod,
@@ -670,6 +671,51 @@ describe("decodeCleanParamValue (CleanParam settings beside clean_type)", () => 
   });
 });
 
+/**
+ * `encodeCleanParam` — the write side of DP 154, stated against the same byte fixtures the reads use.
+ *
+ * Expectations are BUILT from those helpers rather than hand-rolled buffers, which is what makes them
+ * an independent statement of the wire: `int` omits a zero and `sub` always emits, and those are the
+ * two proto3 rules the encoder is written to.
+ */
+describe("encodeCleanParam (CleanParamRequest.clean_param, DP 154)", () => {
+  const CONFIGURED = 1;
+  const TYPE = 1;
+  const EXTENT = 3;
+  const MOP = 4;
+  const VALUE = 1;
+
+  it("states all three settings inside one clean_param", () => {
+    expect(encodeCleanParam("mop", "narrow", "high")).toBe(
+      frame(sub(CONFIGURED, [...sub(TYPE, int(VALUE, 1)), ...sub(EXTENT, int(VALUE, 1)), ...sub(MOP, int(VALUE, 2))])),
+    );
+  });
+
+  it("writes a zero member as a present-but-empty wrapper, per proto3", () => {
+    expect(encodeCleanParam("sweep", "normal", "low")).toBe(
+      frame(sub(CONFIGURED, [...sub(TYPE, []), ...sub(EXTENT, []), ...sub(MOP, [])])),
+    );
+  });
+
+  it("states every setting on every write — a CleanParam carries all three", () => {
+    const sent = encodeCleanParam("sweepThenMop", "normal", "high");
+    expect(decodeCleanParamValue(sent, byteCodec, TYPE)).toBe(3);
+    expect(decodeCleanParamValue(sent, byteCodec, EXTENT)).toBe(0);
+    expect(decodeCleanParamValue(sent, byteCodec, MOP)).toBe(2);
+  });
+
+  it("never writes clean_times, so the robot keeps its configured pass count", () => {
+    const CLEAN_TIMES = 7;
+    expect(decodeCleanParamValue(encodeCleanParam("mop", "quick", "high"), byteCodec, CLEAN_TIMES)).toBeUndefined();
+  });
+
+  it("round-trips through the reads that observe it", () => {
+    const sent = encodeCleanParam("sweepAndMop", "quick", "middle");
+    expect(decodeCleanType(sent, byteCodec)).toBe("sweepAndMop");
+    expect(decodeCleanParamValue(sent, byteCodec, EXTENT)).toBe(2);
+  });
+});
+
 describe("CleanParam settings on the bound surface", () => {
   const dps = new Set([VACUUM_DP.CLEAN_PARAM]);
   const payload = frame(
@@ -950,6 +996,18 @@ describe("vacuum_clean — DP-based action routing", () => {
     await acts.returnToDock!();
     await acts.pauseCleaning!();
     expect(sent.every((c) => (c as { dp: number }).dp === VACUUM_DP.MODE_CTRL)).toBe(true);
+  });
+
+  it("setCleanParam dispatches DP 154 — the settings report's own data point, not a mode command", async () => {
+    const { acts, sent } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx("T2351", undefined, aiotDps));
+    await acts.setCleanParam!("mop", "normal", "middle");
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({ kind: "aiot-dp", dp: VACUUM_DP.CLEAN_PARAM });
+  });
+
+  it("setCleanParam is absent on the Tuya clean line — DP 154 is an AIoT message", () => {
+    const { acts } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx("T2266", "eufy_home_tuya", tuyaDps));
+    expect(acts.setCleanParam).toBeUndefined();
   });
 
   it("setPower is absent on the Tuya clean line — no confirmed power DP there", () => {
@@ -1403,7 +1461,7 @@ describe("ModeCtrl verbs — vocabulary declared, wire still unconfirmed", () =>
   });
 });
 
-describe("area-selecting ModeCtrl frames (Tier B — encoders only)", () => {
+describe("area-selecting ModeCtrl frames", () => {
   /** Walk into the Param sub-message of a built frame. */
   const paramOf = (value: string, field: number): readonly RawDpField[] => {
     const p = byteCodec.decode(value)?.find((f) => f.field === field);
@@ -1487,12 +1545,32 @@ describe("area-selecting ModeCtrl frames (Tier B — encoders only)", () => {
     expect(paramOf(encodeSelectRoomsClean(...rooms), 4).find((f) => f.field === 3)).toMatchObject({ value: 3n });
   });
 
-  it("installs no setter for any of them — these are encoders, not controls", () => {
-    const { acts } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, "eufy_home", new Set([151])));
-    const a = acts as Record<string, unknown>;
-    for (const name of ["cleanRooms", "cleanZones", "startScene", "setCleanRooms"]) {
-      expect(a[name]).toBeUndefined();
+  it("installs a verb for each on an AIoT robot, and none on a Tuya one", () => {
+    const aiot = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, "eufy_home", new Set([151])));
+    const a = aiot.acts as Record<string, unknown>;
+    for (const name of ["startScene", "cleanRooms", "cleanZones"]) {
+      expect(typeof a[name]).toBe("function");
     }
+    // Never a bare property setter: the value each takes is not a stored property, so `setCleanRooms`
+    // would be a second spelling of the verb resolving through the flat schema, which has no such name.
+    expect(a["setCleanRooms"]).toBeUndefined();
+
+    // Same gate as every other mode-control verb — DP 152 belongs to the AIoT schema alone.
+    const tuya = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, "eufy_home_tuya", new Set([151])));
+    for (const name of ["startScene", "cleanRooms", "cleanZones"]) {
+      expect((tuya.acts as Record<string, unknown>)[name]).toBeUndefined();
+    }
+  });
+
+  it("sends a scene by the id its own read reports", () => {
+    // `scenes()` decodes SceneResponse off DP 180 and `VacuumScene.id` is what this verb takes, so a
+    // caller never has to invent one. The two halves meeting is the whole point of the pairing.
+    const { acts, sent } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, "eufy_home", new Set([151])));
+    void (acts as { startScene: (id: number) => Promise<void> }).startScene(7);
+    const fields = byteCodec.decode(String((sent[0] as { value?: unknown }).value));
+    expect(fields?.find((f) => f.field === 1)).toMatchObject({ value: BigInt(ModeCtrlParamMethod.SCENE.method) });
+    const param = fields?.find((f) => f.field === ModeCtrlParamMethod.SCENE.param) as { value: Buffer };
+    expect(byteCodec.nested(param.value)).toEqual([{ field: 1, kind: "int", value: 7n }]);
   });
 });
 

@@ -1,10 +1,14 @@
 import { EventEmitter } from "node:events";
 import { vi } from "vitest";
+import { noopLogger, type Logger } from "../../../core/logger.js";
 import { P2PCommandRouter, type P2PRouterDeps } from "../command-router.js";
+import { LIVE_TRACE_MESSAGE, type LiveTrace } from "../live-trace.js";
 
 /** Synthetic ids shared by the command-router specs — never a real device. */
 export const DEVICE_SN = "T8114P0000000000";
 export const STATION_SN = "T8010P0000000000";
+/** The model the fixture's parent station reports, which a resolve states apart from the device on it. */
+export const STATION_MODEL = "T8010";
 export const ACCOUNT_ID = "0000000000000000000000000000000000000000";
 
 /**
@@ -20,6 +24,8 @@ export const ACCOUNT_ID = "0000000000000000000000000000000000000000";
  */
 export interface FakeP2PSession extends EventEmitter {
   isConnected: boolean;
+  /** The handle every trace about this session is emitted under, real sessions included. */
+  traceId: string;
   hasLevel2Key: boolean;
   awaitLevel2Key: ReturnType<typeof vi.fn>;
   repromptLevel2Key: ReturnType<typeof vi.fn>;
@@ -37,6 +43,7 @@ export interface FakeP2PSession extends EventEmitter {
 export function connectedSession(hasLevel2Key = true): FakeP2PSession {
   const session = new EventEmitter() as FakeP2PSession;
   session.isConnected = true;
+  session.traceId = "station-fake";
   session.hasLevel2Key = hasLevel2Key;
   session.keyArrivesOnReprompt = false;
   session.awaitLevel2Key = vi.fn(async () => session.hasLevel2Key);
@@ -46,6 +53,37 @@ export function connectedSession(hasLevel2Key = true): FakeP2PSession {
     return true;
   });
   return session;
+}
+
+/**
+ * A session that has not connected, and does not while a spec waits on it.
+ *
+ * Every call on a station holds for this before anything is sent, so it is the state that separates a station
+ * that could not be reached from one that answered and refused.
+ */
+export function disconnectedSession(): FakeP2PSession {
+  const session = connectedSession(false);
+  session.isConnected = false;
+  return session;
+}
+
+/**
+ * A logger that keeps every live trace passed through it, in order.
+ *
+ * Traces reach a host as one debug message with a payload, so collecting them here is the same view a host
+ * has — including the `source` handle that groups an attempt, which asserting on an emitter would not see.
+ */
+export function traceCollector(): { logger: Logger; traces: (LiveTrace & { source?: string })[] } {
+  const traces: (LiveTrace & { source?: string })[] = [];
+  return {
+    logger: {
+      ...noopLogger,
+      debug: (message: string, ...args: unknown[]) => {
+        if (message === LIVE_TRACE_MESSAGE) traces.push(args[0] as LiveTrace & { source?: string });
+      },
+    },
+    traces,
+  };
 }
 
 /**
@@ -65,11 +103,18 @@ export function routerWithSession(
       {
         sn: DEVICE_SN,
         stationSn: STATION_SN,
+        model: "T8114",
         raw: { parent_sn: STATION_SN, device_channel: 1, member: { admin_user_id: accountId } },
       } as never,
       // The parent station, listed but endpoint-less: with nothing registered, a cold open fails at
       // session resolution rather than hanging — which is what `register: false` exercises.
-      { sn: STATION_SN, stationSn: STATION_SN, p2pDid: "", raw: { member: { admin_user_id: accountId } } } as never,
+      {
+        sn: STATION_SN,
+        stationSn: STATION_SN,
+        p2pDid: "",
+        model: STATION_MODEL,
+        raw: { member: { admin_user_id: accountId } },
+      } as never,
     ],
     ensureDevices: async () => {},
     onConnect: () => {},

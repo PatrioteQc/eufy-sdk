@@ -107,35 +107,85 @@ export class CameraDisabledError extends Error {
 }
 
 /**
- * A live stream was refused: the station is already serving another of its cameras to a viewer.
+ * Work on a station was refused: the station did not provide the session key that work requires.
  *
- * A station fans several cameras out over one session and serves ONE of them at a time. Accepting a second
- * live pull does not make it serve two: measured on a base carrying three attached cameras, each opened
- * stream took the station from the others in turn and all three received their media in bursts. So a second
- * viewer is refused rather than admitted and degraded, which is the difference between a caller being told
- * the constraint and a caller watching every picture stutter.
+ * A station reached over its HomeBase encrypts what it is sent under a key negotiated once per connection, and
+ * a media start for an attached camera has no unencrypted form at all — so without that key there is nothing
+ * to send, however reachable the station is. Naming this apart from a source that failed is what separates an
+ * account whose cipher material could not be resolved from a camera that is off, a station that is busy, or a
+ * stream that produced nothing: they share no next step.
  *
- * Which camera deserves the station is the caller's decision, not the SDK's, so nothing is queued or
- * pre-empted here.
+ * The `level2-unavailable` trace states WHY the key is not coming. This states only that it is not, because
+ * that is what the refusal itself knows.
  *
- * A still is not refused: it yields the station instead, and answers with the retained image where one is
- * held. Only pulls that deliver continuous media contend for a viewer's place.
+ * `stationSn` is the station that owed the key, which is the parent for an attached camera and therefore not
+ * the serial the refused call was made about: several cameras refused at once are one station's outcome, and
+ * nothing else in the refusal says so.
  */
-export class StationBusyError extends Error {
-  /** Always true: the station is busy now, and stops being busy when the other stream is released. */
+export class StationKeyUnavailableError extends Error {
+  /** Always true: the negotiation is per connection, so a later one may still produce a key. */
   readonly retryable = true;
 
   constructor(
-    /** The channel the station is already serving. */
-    readonly servingChannel: number,
+    /** The station whose session key did not arrive. */
+    readonly stationSn: string,
+    options?: { cause?: unknown },
+  ) {
+    super(`station ${stationSn} did not provide its session key, so nothing that requires one could be sent`, options);
+    this.name = "StationKeyUnavailableError";
+  }
+}
+
+/**
+ * Work on a station was refused: its session did not connect within the wait it was given.
+ *
+ * A station is reached over its own session, and nothing addressed to it — a media start, a property read, a
+ * still — can be attempted before that session is up. Naming this apart from every other failure is what tells
+ * a station that could not be reached at all from one that answered and then refused, or one that served media
+ * a caller could not use: those call for opposite next steps, and a caller cannot infer which it had from a
+ * message.
+ *
+ * `waitedMs` is how long was actually waited, which a caller compares against its own deadline to know whether
+ * this SDK concluded or its own bound expired first. `stationSn` is the station that could not be reached —
+ * the parent for an attached camera, so it is not derivable from the serial the call was made about.
+ */
+export class StationUnreachableError extends Error {
+  /** Always true: a station unreachable now may answer on a later attempt. */
+  readonly retryable = true;
+
+  constructor(
+    /** The station whose session did not connect. */
+    readonly stationSn: string,
+    /** How long the session was waited on before this was raised. */
+    readonly waitedMs: number,
     options?: { cause?: unknown },
   ) {
     super(
-      `the station is already serving channel ${servingChannel} to a viewer, and serves one camera at a ` +
-        `time — stop that stream before opening another`,
+      `station ${stationSn}'s P2P session did not connect within ${waitedMs}ms, so nothing could be sent to it`,
       options,
     );
-    this.name = "StationBusyError";
+    this.name = "StationUnreachableError";
+  }
+}
+
+/**
+ * Work on a device was refused: its channel within its station cannot be established from the device records.
+ *
+ * A device attached to a HomeBase is addressed by a channel within that station: a media start and every
+ * per-channel command name it. When its record states no channel, or another device attached to the same station
+ * states the same one, any channel chosen would address whichever device actually holds it (streaming another
+ * camera's video under this serial), so nothing is sent. The `station-channel-unresolved` trace says which.
+ */
+export class DeviceChannelUnresolvedError extends Error {
+  constructor(
+    /** The device that could not be addressed. */
+    readonly sn: string,
+    /** The station it is attached to. */
+    readonly stationSn: string,
+    options?: { cause?: unknown },
+  ) {
+    super(`${sn} has no usable channel on station ${stationSn}, so nothing was sent to it`, options);
+    this.name = "DeviceChannelUnresolvedError";
   }
 }
 
@@ -738,8 +788,9 @@ export interface MediaProvider {
     /**
      * Present and `true` only when these bytes are the RETAINED still rather than a fresh capture.
      *
-     * A live still is refused while a sibling camera on the same station is being watched, because a
-     * station serves one camera at a time and the live view is the picture someone is looking at. Answering
+     * A live still is refused while a sibling camera on the same station is being watched, because one
+     * session serves one camera at a time, a still does not open a connection of its own, and the live view
+     * is the picture someone is looking at. Answering
      * the retained still there answers the call instead of failing it, and this says the bytes are not
      * current. Absent means freshly captured.
      */
@@ -748,18 +799,18 @@ export interface MediaProvider {
   /**
    * Open a managed live stream.
    *
-   * Several cameras behind one station may stream at the same time only where the station serves them at
-   * the same time. Where it serves one camera at a time, a second viewer is refused with
-   * {@link StationBusyError} rather than admitted and degraded: accepting it does not make the station
-   * serve two, it makes both stutter. Which camera deserves the station is the caller's decision, so
-   * nothing is queued or pre-empted. Each handle receives only the frames the station tagged for ITS
-   * camera.
+   * Several cameras behind one station stream at the same time, each over its own connection to it. One
+   * connection serves one camera — a station answers the most recent start on a session, so two cameras
+   * sharing one take it from each other in turn — so a camera asked for while its station is already
+   * serving another gets a connection of its own. Measured on a base carrying two attached cameras, one
+   * at 3840x2160: both held full frame rate at once. Each handle receives only the frames the station
+   * tagged for ITS camera.
    *
    * @example
    * ```ts
-   * const stream = await cam.live();
-   * stream.on("video", (frame) => write(frame.data)); // Annex-B
-   * stream.stop(); // detach this consumer
+   * const stream = await cam.live?.();
+   * stream?.on("video", (frame) => sink.write(frame.data)); // Annex-B
+   * stream?.stop(); // detach this consumer
    * ```
    */
   live(opts?: SharedSourceHints & AbortableCall & Record<string, unknown>): Promise<LiveStreamConsumer>;

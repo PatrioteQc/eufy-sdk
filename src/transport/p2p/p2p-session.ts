@@ -69,7 +69,15 @@ const HEARTBEAT_MS = 5_000;
  */
 const PATH_SILENCE_MS = HEARTBEAT_MS * 3;
 const LOOKUP_RETRY_MS = 1_000;
-const CONNECT_TIMEOUT_MS = 15_000;
+/**
+ * How long a station is given to answer a lookup before the connection gives up on it and closes.
+ *
+ * The whole deadline for reaching a station: the lookups are re-sent every second until one is answered, and
+ * a connection that reaches this closes itself, so nothing addressed to that station can succeed afterwards.
+ * Published because it bounds every wait on a session connecting — a second number for the same deadline
+ * elsewhere would outlive the connection it waits on and charge the difference to every failure.
+ */
+export const CONNECT_TIMEOUT_MS = 15_000;
 /**
  * The channel a command addresses the station itself on, rather than one of its cameras, and the value a
  * session's channel-taking methods resolve an omitted channel to.
@@ -473,16 +481,26 @@ export class P2PSession extends EventEmitter {
    * cameras from that second group streamed normally at level-1 — including one of the same firmware as an
    * own-session camera that delivered no video at all for a reason of its own. An expired grace therefore
    * separates nothing on this path, and a start failure on such a session is not evidence about it.
+   *
+   * Every `false` answer carries a `level2-unavailable` trace naming its reason, wherever the wait ended: a
+   * `terminal` outcome is the one already stated where the negotiation concluded, since that is where the
+   * cipher and the cause are known, and re-stating it here would double every settled negotiation.
    */
   async awaitLevel2Key(graceMs: number, graceFrom: "call" | "session" = "call"): Promise<boolean> {
-    if (this.closed) return false;
+    if (this.closed) {
+      this.trace({ phase: "level2-unavailable", reason: "session-closed" });
+      return false;
+    }
     if (this.level2Key) return true;
-    if (!this.level2Pending) return false;
+    if (!this.level2Pending) {
+      this.trace({ phase: "level2-unavailable", reason: "not-negotiating" });
+      return false;
+    }
     const since = graceFrom === "call" ? Date.now() : (this.connectedAtMs ?? Date.now());
     const remaining = graceMs - (Date.now() - since);
     if (remaining <= 0) {
       this.logger.debug(`[p2p] ${this.cfg.stationSn} no level-2 key and its ${graceMs}ms grace has elapsed`);
-      this.trace({ phase: "level2-absent", waitedMs: graceMs });
+      this.trace({ phase: "level2-unavailable", reason: "grace-elapsed", waitedMs: graceMs });
       return false;
     }
     this.logger.debug(`[p2p] ${this.cfg.stationSn} waiting up to ${remaining}ms for the level-2 key`);
@@ -506,10 +524,12 @@ export class P2PSession extends EventEmitter {
     });
     if (outcome === "timeout") {
       this.logger.debug(`[p2p] ${this.cfg.stationSn} level-2 key did not arrive within its grace`);
+      this.trace({ phase: "level2-unavailable", reason: "grace-elapsed", waitedMs: remaining });
     } else if (outcome === "terminal") {
       this.logger.debug(`[p2p] ${this.cfg.stationSn} level-2 negotiation concluded without a key`);
     } else if (outcome === "closed") {
       this.logger.debug(`[p2p] ${this.cfg.stationSn} session closed before the level-2 key arrived`);
+      this.trace({ phase: "level2-unavailable", reason: "session-closed" });
     }
     return outcome === "key";
   }
@@ -560,17 +580,20 @@ export class P2PSession extends EventEmitter {
     this.level2Negotiating = true;
     const generation = this.connectionGeneration;
     const cipherId = gatewayInfoCipherId(gwPayload);
+    this.trace({ phase: "level2-negotiating", cipherId });
     void (async () => {
       try {
         const eccPrivHex = await this.cfg.resolveCipherKey?.(cipherId);
         if (this.closed || generation !== this.connectionGeneration) return;
         if (!eccPrivHex) {
           this.logger.debug(`[p2p] ${this.cfg.stationSn} no ECC key for cipher_id ${cipherId}`);
+          this.trace({ phase: "level2-unavailable", reason: "no-cipher-key", cipherId });
           this.settleLevel2();
           return;
         }
         const key = deriveLevel2KeyFromGatewayInfo(gwPayload, eccPrivHex);
         if (!key) {
+          this.trace({ phase: "level2-unavailable", reason: "derivation-failed", cipherId });
           this.settleLevel2();
           this.emit("error", new Error(`level-2 key derivation failed (cipher_id ${cipherId})`));
           return;
@@ -581,6 +604,7 @@ export class P2PSession extends EventEmitter {
         this.emit("level2Ready", { cipherId });
       } catch (e) {
         if (this.closed || generation !== this.connectionGeneration) return;
+        this.trace({ phase: "level2-unavailable", reason: "derivation-failed", cipherId });
         this.settleLevel2();
         this.emit("error", e instanceof Error ? e : new Error(String(e)));
       }
@@ -663,6 +687,11 @@ export class P2PSession extends EventEmitter {
       if (host && !this.closed) this.selfAddress = { host, port: boundPort };
     });
 
+    this.trace({
+      phase: "lookup-channels",
+      local: !this.cfg.noBroadcast || this.cfg.localAddress !== undefined,
+      cloud: this.cfg.dskKey !== undefined && (this.cfg.cloudAddresses?.length ?? 0) > 0,
+    });
     this.sendLookups();
     this.lookupTimer = setInterval(() => this.sendLookups(), LOOKUP_RETRY_MS);
     this.connectTimer = setTimeout(() => {
@@ -759,10 +788,6 @@ export class P2PSession extends EventEmitter {
       for (const addr of this.cfg.cloudAddresses) this.send(addr, type, payload);
       this.logger.debug(
         `[p2p] ${this.cfg.stationSn} sendLookups: cloud -> ${this.cfg.cloudAddresses.map((a) => `${a.host}:${a.port}`).join(", ")} self=${this.selfAddress?.host}:${this.selfAddress?.port}`,
-      );
-    } else {
-      this.logger.debug(
-        `[p2p] ${this.cfg.stationSn} sendLookups: NO cloud lookup sent (dskKey=${!!this.cfg.dskKey} cloudAddresses=${this.cfg.cloudAddresses?.length ?? 0})`,
       );
     }
   }

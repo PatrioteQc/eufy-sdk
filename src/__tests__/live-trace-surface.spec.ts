@@ -38,12 +38,21 @@ describe("live-trace vocabulary at the package entry point", () => {
       "video-decode-empty": true,
       "datagram-gap": true,
       "sequence-restart": true,
+      "lookup-channels": true,
+      "session-connect-wait": true,
+      "session-connected": true,
+      "session-unreachable": true,
       "level2-wait": true,
       "level2-ready": true,
-      "level2-absent": true,
+      "level2-unavailable": true,
+      "level2-negotiating": true,
+      "station-resolved": true,
+      "station-channel-unresolved": true,
+      "cipher-fallback": true,
       warming: true,
       "media-command-unsent": true,
       "path-stale": true,
+      "channel-silent": true,
     } satisfies Record<LiveTrace["phase"], true>;
     expect(Object.keys(handled)).toContain("sequence-restart");
   });

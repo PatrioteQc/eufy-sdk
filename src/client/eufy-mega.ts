@@ -4,19 +4,20 @@
  * Cloud APIs:  the eufy v6 cloud (+ legacy, planned)
  * Realtime:    secure MQTT (appliances)  +  P2P (cameras/HomeBases)
  *
- *   const eufy = new EufyMega({ email, password, region: "eu" });
+ *   const eufy = new EufyMega({ email, password, region: "eu-pr" });
  *   await eufy.login(); // → LoginResult; on success the SDK auto-starts realtime (push/MQTT/wired P2P)
  *   eufy.on("motion", (e) => console.log(e.deviceSn)); // typed semantic events — flowing already
  *   const dev = await eufy.getDevice((await eufy.getDevices())[0].sn);
- *   await dev.camera()?.snapshotStored();
+ *   await dev.camera?.()?.snapshotStored?.();
  *
  * Connectivity is SDK-managed: the host calls no `connect*`. P2P to a battery camera is opened only
  * when a command/stream/doorbell-ring needs it and closed when idle, so the camera can sleep.
  */
 import { EventEmitter } from "node:events";
 import { MegaHttpClient, LoginStatus, SessionExpiredError, type LoginResult } from "../transport/http/mega-client.js";
-import { SecureMqtt, type SecureMqttCredentials } from "../transport/mqtt/secure-mqtt.js";
+import { SecureMqtt, isNotAuthorized, type SecureMqttCredentials } from "../transport/mqtt/secure-mqtt.js";
 import { mqttAppName, mqttScopeFor, type MqttScope } from "../transport/mqtt/topics.js";
+import { buildAppShapedClientId, mqttUuidFrom } from "../transport/mqtt/app-client-id.js";
 import { parseStateInfoSignal } from "../transport/mqtt/availability.js";
 import { parseDpMessage, parseAiotDpReport } from "../transport/mqtt/dp-codec.js";
 import { parseBizMapFrame } from "../transport/mqtt/biz-stream.js";
@@ -909,8 +910,8 @@ export class EufyMega extends EventEmitter {
    * @example
    * ```ts
    * const res = await eufy.login();
-   * if (res.status === "captcha") await eufy.solveCaptcha(await ask(res.image));
-   * else if (res.status === "2fa") await eufy.submitVerifyCode(await ask());
+   * if (res.status === "captcha") await eufy.solveCaptcha(await promptUser(res.image));
+   * else if (res.status === "2fa") await eufy.submitVerifyCode(await promptUser());
    * ```
    */
   async login(opts: { messageType?: number } = {}): Promise<LoginResult> {
@@ -1060,9 +1061,9 @@ export class EufyMega extends EventEmitter {
   /**
    * Combine explicit P2P media with the optional passive push-thumbnail provider.
    *
-   * The retained still also becomes the answer for a live still that could not be captured. A station
-   * serves one camera at a time and a live view outranks a tile, so a still asked for while a sibling is
-   * being watched is refused at the transport. Answering the retained bytes answers the read rather than
+   * The retained still also becomes the answer for a live still that could not be captured. One session
+   * serves one camera at a time and a live view outranks a tile — a still does not open a connection of its
+   * own — so a still asked for while a sibling is being watched is refused at the transport. Answering the retained bytes answers the read rather than
    * failing it, marked {@link MediaProvider.snapshotLive} `retained` so the caller knows they are not
    * current. With nothing retained the refusal stands.
    */
@@ -1231,7 +1232,7 @@ export class EufyMega extends EventEmitter {
    * @example
    * ```ts
    * const dev = await eufy.getDevice(sn);
-   * if (dev.has("camera")) await dev.camera()?.snapshotStored();
+   * if (dev.has("camera")) await dev.camera?.()?.snapshotStored?.();
    * console.log(dev.getProperty("battery"));
    * ```
    */
@@ -1707,9 +1708,21 @@ export class EufyMega extends EventEmitter {
    * {@link ensureMqttStarted} owns installing it, subscribing devices, and the epoch check, so that
    * lifecycle lives in exactly one place. Only ever called through {@link ensureMqttStarted}.
    *
-   * The inbound decode is gated by the reporting device's own capabilities, so one line's decoder never
-   * runs against another's traffic, and the DP frame is unwrapped here — the layer that may import the
-   * transport — so a capability reads tags without owning any framing.
+   * Identified by a client id built from this client's `openudid`, not by the certificate's name:
+   * that name is `{user_id}-{app_name}`, which every client on the account shares per line, and a
+   * duplicate client id is a takeover the broker resolves by evicting the incumbent. The id shape is
+   * the app's own (`android-{app_name}-{uid}-{uuid}-{ts}`, see {@link buildAppShapedClientId}), which
+   * the broker grants on the `eufy_security` credential.
+   *
+   * It separates two clients exactly as far as their `openudid` does: a caller that supplies none
+   * gets the value derived from the account, which every such client shares — the same condition
+   * under which their logins already displace each other (`MegaClientConfig.openudid`).
+   *
+   * A client id the broker REFUSES falls back to the certificate's name, since a shared channel beats
+   * none, and that transport then keeps that name until {@link disconnect}. Only a refusal: a connect
+   * that fails for any other reason rejects the bring-up, which clears its memo in
+   * {@link ensureMqttStarted} so the next one asks under this client's own id again — a dropped
+   * socket must not be what moves a process onto the shared name for good.
    */
   private async startMqtt(scope: MqttScope): Promise<SecureMqtt> {
     const auth = this.mega.auth;
@@ -1717,7 +1730,46 @@ export class EufyMega extends EventEmitter {
     if (!this.registry.list().length) await this.getDevices();
 
     const creds = await this.getUserMqttInfo(mqttAppName(scope));
-    const transport = new SecureMqtt({ credentials: creds, logger: this.opts.logger });
+    const ownClientId = buildAppShapedClientId({
+      appName: creds.app_name ?? mqttAppName(scope) ?? "eufy_mega",
+      uid: creds.user_id ?? auth.userId,
+      mqttUuid: mqttUuidFrom(this.mega.openudid),
+    });
+    try {
+      return await this.connectMqtt(creds, ownClientId);
+    } catch (e) {
+      if (!isNotAuthorized(e)) throw e;
+      this.opts.logger?.warn(
+        "[smqtt] the broker refused this client's own id; connecting under the certificate's name, which " +
+          "another client signed in to this account takes over",
+        e,
+      );
+      return await this.connectMqtt(creds);
+    }
+  }
+
+  /**
+   * Connect one secure-MQTT transport under `clientId`, or under the certificate's own name when it is
+   * omitted, and wire its decode and fan-out. See {@link startMqtt} for which id is used and why.
+   *
+   * The fan-out is wired once the connection stands, so an attempt that is discarded — a client id the
+   * broker refuses, a socket that dies mid-handshake — never reports a connection a consumer never had;
+   * the connect it just completed is announced here instead. Errors raised while connecting are held
+   * only to keep an emitter without an `error` listener from throwing, and are reported once the
+   * transport is one a consumer owns.
+   *
+   * The inbound decode is gated by the reporting device's own capabilities, so one line's decoder never
+   * runs against another's traffic, and the DP frame is unwrapped here — the layer that may import the
+   * transport — so a capability reads tags without owning any framing.
+   */
+  private async connectMqtt(creds: SecureMqttCredentials, clientId?: string): Promise<SecureMqtt> {
+    const transport = new SecureMqtt({ credentials: creds, clientId, logger: this.opts.logger });
+
+    const whileConnecting: unknown[] = [];
+    const hold = (e: unknown): void => void whileConnecting.push(e);
+    transport.on("error", hold);
+    await transport.connect();
+    transport.off("error", hold);
 
     transport.on("connect", () => this.emit("connect"));
     transport.on("disconnect", (r) => this.emit("disconnect", r));
@@ -1759,7 +1811,8 @@ export class EufyMega extends EventEmitter {
     });
     transport.on("error", (e) => this.reportError(e));
 
-    await transport.connect();
+    this.emit("connect");
+    for (const e of whileConnecting) this.reportError(e);
     return transport;
   }
 
@@ -1804,10 +1857,15 @@ export class EufyMega extends EventEmitter {
   }
 
   /**
-   * Stations with a live P2P session. P2P is auto-managed: wired stations are warmed at login, battery
+   * The open P2P sessions, by key. P2P is auto-managed: wired stations are warmed at login, battery
    * stations open on demand (command / stream, or an opted-in event pre-warm) and idle-detach — so this
-   * map grows and shrinks over time. `p2pConnect(stationSn)` / `p2pClose(stationSn)` events track the
-   * changes.
+   * map grows and shrinks over time.
+   *
+   * A station's own session is keyed by its serial, and `p2pConnect(stationSn)` / `p2pClose(stationSn)`
+   * track those. A station serving more than one camera at once also holds a session per extra camera,
+   * keyed `<stationSn>#live:<channel>` — these carry media alone and raise no connection events, because
+   * a station announces its state to every client that connects and reporting each copy would double
+   * every event the station's own session already delivers.
    */
   getP2pSessions(): Map<string, P2PSession> {
     return this.p2p.getSessions();

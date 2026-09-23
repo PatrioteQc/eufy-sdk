@@ -133,3 +133,55 @@ export function parseSecureTopic(topic: string): ParsedTopic | undefined {
   if (!category || !model || !sn) return undefined;
   return { root, category, model, sn, tail: parts.slice(4).join("/") };
 }
+
+// ── Anker Solix (anker_power) topics ────────────────────────────────────────────────────────────────
+//
+// Solix rides the same AWS-IoT broker as the eufy secure-MQTT plane, but its topic space is keyed by
+// the raw device record (`{product_code, device_sn}`) + the account `user_id`, not an `EufyDevice`. The
+// builders live here so all wire-topic vocabulary stays on the transport side of the boundary and no
+// caller hard-codes a topic string.
+
+/** The per-device Solix topics for `{appName, productCode, deviceSn}`. */
+export interface SolixDeviceTopics {
+  /** Telemetry the device pushes (SUBSCRIBE) — ff09 `param_info` frames (live measurements). */
+  paramInfo: string;
+  /**
+   * Settings/state the device pushes (SUBSCRIBE) — ff09 `state_info` frames. Same ff09 framing as
+   * `param_info` but the TAGS carry SETTINGS/targets (mode export limit, SOC limits, max_load, toggles),
+   * NOT live measurements — so it needs its own tag→name table, not the param_info one.
+   */
+  stateInfo: string;
+  /** This device's command replies (SUBSCRIBE). */
+  cmdRes: string;
+  /**
+   * The device's requestDeviceInfo channel (cmd 17). PUBLISH to arm reporting; also SUBSCRIBE — the
+   * broker copies the APP's publishes here to any co-subscriber, which is the only way to observe a
+   * control the app changed that `param_info` does not reflect (ambient light, display timeout).
+   */
+  req: string;
+}
+
+/** Build the per-device Solix topics. `param_info` is the telemetry we decode; `req` is arm + read-back. */
+export function solixDeviceTopics(appName: string, productCode: string, deviceSn: string): SolixDeviceTopics {
+  const dt = `dt/${appName}/${productCode}/${deviceSn}`;
+  const cmd = `cmd/${appName}/${productCode}/${deviceSn}`;
+  return {
+    paramInfo: `${dt}/param_info`,
+    stateInfo: `${dt}/state_info`,
+    cmdRes: `${cmd}/app/res`,
+    req: `${cmd}/req`,
+  };
+}
+
+/** The per-account Solix topics keyed by `user_id`. */
+export interface SolixUserTopics {
+  /** Account-level command replies (SUBSCRIBE). */
+  cmdRes: string;
+  /** The `power_site` heartbeat channel (PUBLISH only). */
+  powerSite: string;
+}
+
+/** Build the per-account Solix topics. Note: the account `…/req` channel is publish-side and NOT subscribed. */
+export function solixUserTopics(appName: string, userId: string): SolixUserTopics {
+  return { cmdRes: `cmd/${appName}/${userId}/res`, powerSite: `dt/${appName}/${userId}/power_site` };
+}

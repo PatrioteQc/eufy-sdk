@@ -9,17 +9,51 @@ import type { Command } from "../../core/contracts.js";
 const STATION_CHANNEL = 255;
 
 /**
- * The guard modes {@link ArmingActions} can SET — the three whose write was captured byte-exact against a
- * real station. `ArmingMode` is both the const value-object (`ArmingMode.home`) and the union type of its
+ * The guard modes `setMode` can SET — every mode a station reports, all nine confirmed against real
+ * hardware. `ArmingMode` is both the const value-object (`ArmingMode.home`) and the union type of its
  * values, so callers pass the named constant: `setMode(ArmingMode.home)`.
  *
- * Deliberately NARROWER than the set a device may report. The other six modes are ones the app itself
- * defines and the `mode` read still names them, but no capture shows one being SENT — and
- * on a fire-and-forget wire a wrong one looks exactly like success. Leaving them out of this union is the
- * compile-time half of the refusal; `mode`'s published argument and the generated rejection are the
- * runtime half.
+ * The domain of `setMode` (cmd 1224) alone. The alarm-delay write (cmd 1255) carries its own mode integer
+ * on a separate wire and takes {@link AlarmDelayMode}, which stays NARROWER — evidence for one command is
+ * not evidence for the other, and 1255 still has no capture beyond its byte-captured three.
+ *
+ * A mode belongs here only once its write is confirmed against real hardware, because a fire-and-forget
+ * wire makes a wrong mode look exactly like success; `ARMING_MODE_WIRE` carries the per-value evidence.
+ * The union is also what `ARMING_MODE_WIRE` is keyed by, so the table cannot name a mode this does not.
  */
 export const ArmingMode = {
+  /** Armed — full protection, nobody home (wire value 0). */
+  away: "away",
+  /** Armed for occupancy — reduced/perimeter protection while home (wire value 1). */
+  home: "home",
+  /** Scheduled — the station follows the timetable configured in the app (wire value 2). */
+  schedule: "schedule",
+  /** Custom 1 — a user-defined posture configured in the app (wire value 3). */
+  custom1: "custom1",
+  /** Custom 2 — a user-defined posture configured in the app (wire value 4). */
+  custom2: "custom2",
+  /** Custom 3 — a user-defined posture configured in the app (wire value 5). */
+  custom3: "custom3",
+  /** Off — the station's alarm system is switched off entirely (wire value 6). */
+  off: "off",
+  /** Geofenced — the station follows the app's location-based rules (wire value 47). */
+  geo: "geo",
+  /** Disarmed — no alarms; sensors still report state (wire value 63). */
+  disarmed: "disarmed",
+} as const;
+export type ArmingMode = (typeof ArmingMode)[keyof typeof ArmingMode];
+
+/**
+ * The modes the alarm-delay write (cmd 1255) accepts a `mode_id` for — the three guard modes whose wire
+ * integer is byte-captured.
+ *
+ * A domain of its own, because the two mode integers ride different commands: `setMode` writes `mode_type`
+ * on cmd 1224, and cmd 1255 carries `mode_id`. Neither wire validates the integer, so each union IS its
+ * command's gate, and evidence for one is not evidence for the other. `custom1` is confirmed on 1224 only;
+ * 1255 has no capture carrying mode 3, and no known GET to read one back — the app's own replies
+ * `{count:0,data:null}` — so it is absent here. Narrower than {@link ArmingMode} by exactly that value.
+ */
+export const AlarmDelayMode = {
   /** Armed — full protection, nobody home (wire value 0). */
   away: "away",
   /** Armed for occupancy — reduced/perimeter protection while home (wire value 1). */
@@ -27,7 +61,7 @@ export const ArmingMode = {
   /** Disarmed — no alarms; sensors still report state (wire value 63). */
   disarmed: "disarmed",
 } as const;
-export type ArmingMode = (typeof ArmingMode)[keyof typeof ArmingMode];
+export type AlarmDelayMode = (typeof AlarmDelayMode)[keyof typeof AlarmDelayMode];
 
 /**
  * The P2P **feature-command ids** this arming capability drives. Capability-owned wire vocabulary
@@ -42,10 +76,15 @@ export const ARMING_CMD = {
    * mValue3:0, `payload:{mode_type:<int>, user_name:<string>}`.
    *
    * ⚠️ Only 3 of the 9 modes were exercised in that capture — `mode_type` 0 (away), 63 (disarmed), 1
-   * (home), all confirmed byte-exact, and those three are the whole of {@link ArmingMode}. Re-confirmed
-   * live 2026-08-05: each reported its own MODE_SWITCH push within ~5s of the write. The remaining six are
-   * named by the app but never observed leaving it, so this capability reads them and refuses to send
-   * them. See `ARMING_MODE_WIRE` for the per-value breakdown.
+   * (home), all confirmed byte-exact. Re-confirmed live 2026-08-05: each reported its own MODE_SWITCH push
+   * within ~5s of the write. The remaining six are live confirmations rather than captures — `custom1` 3
+   * first, then `schedule` 2, `custom2` 4, `custom3` 5, `off` 6 and `geo` 47 — each sent as this exact
+   * frame and each observed to bring MODE_SWITCH back, so all nine are settable. `ARMING_MODE_WIRE` has
+   * the per-value evidence and the dates.
+   *
+   * The ENCRYPTION LEVEL is the session's to pick (`"auto"`), not this command's: the T8030 the envelope
+   * was captured on holds a level-2 key and seals it level-2, while an own-session camera that never
+   * negotiates one carries the same envelope level-1. See `armingCommand`.
    */
   SET_ARMING: 1224,
   /**
@@ -81,31 +120,37 @@ export const ARMING_CMD = {
  * model-dependent) — the single source of truth {@link ARMING_MODE_LABELS} (the `armingMode`
  * PropertySpec's `enumValues`) derives from.
  *
- * The READ side is why all nine are here: a station set to a schedule reports 2, and a getter answering a
- * number nothing can name is worse than one naming a mode we cannot set. The WRITE side takes only the
- * three of {@link ArmingMode} — {@link SETTABLE_MODES} is that subset, derived from this table rather than
- * listed again.
+ * Read and write are the same nine as of the confirmations below, so this table is the whole domain in
+ * both directions — {@link SETTABLE_MODES} and {@link ARMING_MODE_LABELS} are both derived from it rather
+ * than listed again. {@link AlarmDelayMode}, the domain cmd 1255 takes, is a SEPARATE decision on a
+ * separate wire and stays at its byte-captured three: never widen it because `setMode` gained a mode.
  *
  * **The names and integers are the V6 app's own** (`SecurityGuardConstants`, mirrored by `GuardConstant`),
- * so the read mapping is APK ground truth for the whole set rather than a borrowed label. Provenance for a
- * NAME is not authority for a WRITE, which is the split that matters here:
+ * so the mapping is APK ground truth rather than a borrowed label. Provenance for a NAME was never
+ * authority for a WRITE, which is why the write side was confirmed value by value:
  *
- * ✅ WRITE WIRE-CAPTURED (byte-exact, a T8030 2026-07-23; all three re-confirmed live 2026-08-05, each
- * reporting its own MODE_SWITCH push within ~5s): `away` 0, `home` 1, `disarmed` 63.
- * ⚠️ WRITE NEVER CAPTURED: `schedule` 2, `custom1` 3, `custom2` 4, `custom3` 5, `off` 6, `geo` 47. The app
- * defines each, but no capture shows one leaving the app, so sending one would be a fire-and-forget write
- * that looks like success whatever the device does with it. Add the mode to {@link ArmingMode} (and flip
- * this note plus {@link ARMING_CMD.SET_ARMING}) as each is captured.
+ * ✅ WIRE-CAPTURED (byte-exact, a T8030 2026-07-23; all three re-confirmed live 2026-08-05, each reporting
+ * its own MODE_SWITCH push within ~5s): `away` 0, `home` 1, `disarmed` 63.
+ * ✅ CONFIRMED LIVE, not byte-captured (a T8030 2026-09-12): `custom1` 3 — accepted and reporting its own
+ * MODE_SWITCH push within the convergence window on each of two writes, cycling custom1→home→custom1.
+ * ✅ CONFIRMED LIVE, not byte-captured (2026-09-13): `schedule` 2, `custom2` 4, `custom3` 5, `off` 6,
+ * `geo` 47 — the five that had no capture behind them, each sent as exactly this frame and each observed
+ * to bring MODE_SWITCH back. That observation is the evidence rather than an inference from it: the client
+ * emits `armingModeChanged` only once its own bounded readback has CONVERGED on the mode asked for, so a
+ * station that ignored the write would have produced silence instead.
+ *
+ * A live confirmation is the same frame `setMode` builds, differing only in `mode_type` — so what it
+ * establishes is that this command carries that integer, not that some other command exists.
  */
-const ARMING_MODE_WIRE: Record<ArmingMode, number> & Record<string, number> = {
+const ARMING_MODE_WIRE: Record<ArmingMode, number> = {
   away: 0,
   home: 1,
-  schedule: 2, // ⚠️ reportable, NOT settable — see the doc comment above
-  custom1: 3, // ⚠️ reportable, NOT settable — see the doc comment above
-  custom2: 4, // ⚠️ reportable, NOT settable — see the doc comment above
-  custom3: 5, // ⚠️ reportable, NOT settable — see the doc comment above
-  off: 6, // ⚠️ reportable, NOT settable — see the doc comment above
-  geo: 47, // ⚠️ reportable, NOT settable — see the doc comment above
+  schedule: 2,
+  custom1: 3,
+  custom2: 4,
+  custom3: 5,
+  off: 6,
+  geo: 47,
   disarmed: 63,
 };
 
@@ -114,16 +159,6 @@ const ARMING_MODE_WIRE: Record<ArmingMode, number> & Record<string, number> = {
  * `ARMING_MODE_WIRE` instead of hand-listed a second time, so the two can't drift out of sync.
  */
 const ARMING_MODE_LABELS: Record<number, string> = enumLabels(ARMING_MODE_WIRE);
-
-/**
- * The wire integers `setMode` offers and accepts — {@link ArmingMode} resolved through the same table the
- * labels come from, so the offered set cannot name a mode the write would build differently.
- *
- * Published as the `mode` member's argument `values`, which is what makes it the domain the check and the
- * generated refusal both use: a caller is offered three and held to three, while the read still reports
- * all nine.
- */
-const SETTABLE_MODES: readonly number[] = Object.values(ArmingMode).map((m) => ARMING_MODE_WIRE[m]);
 
 /**
  * The SETTABLE mode a caller named, from EITHER vocabulary: the name (`"away"`) or the wire integer the
@@ -144,18 +179,30 @@ function armingModeOf(v: boolean | number | string): ArmingMode | undefined {
 /**
  * Build the {@link ARMING_CMD.SET_ARMING} write intent, or throw if the context has no account
  * identity. `user_name` — the real app's own capture showed a MASKED value (`"max***"`, presumably
- * the app's own privacy-display truncation of the account's email local-part), not the raw
- * local-part `ctx.accountName` holds. Untested whether the device validates this field strictly;
- * sending our real (unmasked) identity is the more correct choice regardless — it's almost certainly
+ * the app's own privacy-display truncation of the account's email local-part), not the unmasked
+ * acting name `ctx.accountName` carries. Untested whether the device validates this field strictly;
+ * sending the acting name as it stands is the more correct choice regardless — it's almost certainly
  * just attribution (e.g. "who armed the system" in event history), not a value the device checks
  * against anything.
+ *
+ * `"auto"` on both counts `setPayload` names: `mValue3` is passed 0 explicitly, so both seals carry the
+ * byte-identical JSON the T8030 capture recorded; and every device carrying `arming` is its own station
+ * or a HomeBase, the former being exactly the case that may hold no key. A T8410's session is level-1 —
+ * the same fact `access.ts` records beside camera power 1035, verified live on that model — so pinned
+ * level-2 made the one control a standalone camera most needs the one it could not be sent.
  */
 function armingCommand(mode: ArmingMode, ctx: CommandContext): Command {
-  const modeType = ARMING_MODE_WIRE[mode];
   if (!ctx.accountName) {
     throw new Error(`arming: missing account identity (user_name) [${describeDevice(ctx)}]`);
   }
-  return setPayload(ARMING_CMD.SET_ARMING, { mode_type: modeType, user_name: ctx.accountName }, ctx, 0);
+  return setPayload(
+    ARMING_CMD.SET_ARMING,
+    { mode_type: ARMING_MODE_WIRE[mode], user_name: ctx.accountName },
+    ctx,
+    0,
+    undefined,
+    "auto",
+  );
 }
 
 /**
@@ -222,7 +269,7 @@ export type AlarmDelayConfig = {
  * `ctx.channel` (which resolves to 0 for a station context) — the capture put this frame on channel
  * 255 explicitly, same as every other station-scoped bare/scalar write in the router.
  */
-function alarmDelayCommand(mode: ArmingMode, config: AlarmDelayConfig, ctx: CommandContext): Command {
+function alarmDelayCommand(mode: AlarmDelayMode, config: AlarmDelayConfig, ctx: CommandContext): Command {
   const data = {
     mode_id: ARMING_MODE_WIRE[mode],
     count_down_alarm: {
@@ -254,11 +301,10 @@ export type ArmingActions = Surface<typeof ARMING_MEMBERS>;
  */
 export const ARMING_MEMBERS = {
   /**
-   * The one member whose write domain is NARROWER than its read: `enumValues` names all nine modes a
-   * station can report, and the argument's `values` publishes only the three whose wire was captured. That
-   * argument IS the domain the derived setter enforces and the refusal names, so an uncaptured mode is
-   * refused by naming the three that work — nine labels for the read and three for the write, off one
-   * declaration.
+   * Read and write are the same nine modes, so `enumValues` is the whole domain: `writeDomain` falls back
+   * to it, and the derived setter, the refusal message and the offered argument all read from that one
+   * declaration. A member states an `args` entry only where the two sides DIFFER. See
+   * {@link ARMING_MODE_WIRE} for the per-value evidence.
    *
    * `armingCommand` may also throw synchronously (missing account identity) and `bindMembers` turns that
    * into a rejection, so the builder stays plain.
@@ -277,12 +323,11 @@ export const ARMING_MEMBERS = {
     kind: "enum",
     enumValues: ARMING_MODE_LABELS,
     provenance: "verified",
-    args: [{ name: "mode", kind: "enum", values: SETTABLE_MODES }],
     description:
-      "Guard mode (verified: param 1224 = GUARD_MODE, read/write mechanism confirmed). Reads all 9 modes " +
-      "the app defines; SETS only the 3 whose write is wire-captured (away/home/disarmed) — " +
-      "schedule/custom1/custom2/custom3/off/geo are named by the app but no capture shows one being sent, " +
-      "so they are refused rather than guessed; see ARMING_MODE_WIRE in arming.ts for the breakdown.",
+      "Guard mode (verified: param 1224 = GUARD_MODE, read/write mechanism confirmed). Reads and SETS all " +
+      "9 modes the app defines — away/home/schedule/custom1/custom2/custom3/off/geo/disarmed. Three are " +
+      "byte-captured writes and six are live-confirmed (each sent and observed to report its own " +
+      "MODE_SWITCH); see ARMING_MODE_WIRE in arming.ts for the per-value evidence.",
     observation: {
       event: "armingModeChanged",
       reflects: (value) => ({ param: ARMING_CMD.SET_ARMING, expected: ARMING_MODE_WIRE[armingModeOf(value)!] }),
@@ -304,13 +349,14 @@ export const ARMING_MEMBERS = {
    * this mode — there is no known GET to fetch it automatically, and a wrong guess here can silently
    * misconfigure which sensors arm/trigger for real.
    *
-   * Takes {@link ArmingMode}, so a delay can only be configured for a mode whose `mode_id` integer is
-   * captured. The frame carries that same integer, so a schedule/custom mode would be the identical guess
-   * `setMode` refuses.
+   * Takes {@link AlarmDelayMode}, not {@link ArmingMode}: a delay is configurable only for a mode whose
+   * integer is captured on THIS command, and `custom1` is confirmed on cmd 1224 only. The frame carries
+   * that integer in `mode_id` with no runtime validation and no readback, so a mode outside this union
+   * would be the same unverified guess `setMode` refuses.
    */
   setAlarmDelayConfig: method(
     ({ ctx, sink }) =>
-      (mode: ArmingMode, config: AlarmDelayConfig): Promise<void> => {
+      (mode: AlarmDelayMode, config: AlarmDelayConfig): Promise<void> => {
         try {
           return sink.dispatch(alarmDelayCommand(mode, config, ctx));
         } catch (e) {
@@ -322,9 +368,10 @@ export const ARMING_MEMBERS = {
 } as const satisfies Members;
 
 /**
- * `arming` — guard/arming mode. `armingMode` (see {@link ARMING_CMD.SET_ARMING}) has a verified
- * read/write MECHANISM, but only 3 of its 8 {@link ArmingMode} values (away/home/disarmed) are
- * wire-captured — see `ARMING_MODE_WIRE` for which 5 are still unverified third-party integers.
+ * `arming` — guard/arming mode. `armingMode` (see {@link ARMING_CMD.SET_ARMING}) has a verified read/write
+ * MECHANISM, and all 9 modes it reports are now confirmed as writes — the {@link ArmingMode} union is the
+ * whole set. See `ARMING_MODE_WIRE` for which three are byte-captured and which six are live-confirmed.
+ * The alarm-delay write (cmd 1255) is unaffected and keeps its narrower {@link AlarmDelayMode}.
  */
 export const ARMING: CapabilityModule = {
   capability: "arming",

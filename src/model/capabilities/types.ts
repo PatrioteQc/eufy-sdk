@@ -48,12 +48,19 @@ export interface DetectionSpec {
  *
  * eufy ships several ecosystems that share a cloud account and nothing else: `security` (cameras,
  * stations, locks, sensors — P2P plus the security-scoped broker), `life` (the T8L0x smart-lighting
- * line — its own credential and its own DP wire), and `clean` (robot vacuums — Tuya data points).
+ * line — its own credential and its own DP wire), `clean` (robot vacuums — Tuya data points) and
+ * `display` (the T87Ax Smart Display — secure MQTT, never P2P, its own 8001-8006 param space).
  * They overlap in retail vocabulary but share no wire, no param space and no semantics.
+ *
+ * `display` is a line of its own for the second of those reasons rather than the first: without it,
+ * every security capability detected by a NAME regex is attachable to a Smart Display — measured at six,
+ * on a device that can answer for none of them because it speaks no P2P at all. A line holding one
+ * capability still buys that, which is why the count is not the measure of whether a line is worth
+ * declaring.
  *
  * `any` is for the handful of capabilities that are genuinely line-independent (device identity).
  */
-export type ProductLine = "security" | "life" | "clean" | "print" | "any";
+export type ProductLine = "security" | "life" | "clean" | "print" | "display" | "any";
 
 /**
  * A structural subset of a P2P frame. Deliberately NOT `import`ed from `p2p/*` — keeping it
@@ -137,6 +144,46 @@ export interface EventMapping {
    * capture. Return `{}` when this signal doesn't carry the field, so nothing is invented.
    */
   derive?(signal: InboundSignal): Record<string, unknown>;
+  /**
+   * Evidence that this device deals in the classification the id names, for an id whose presence in
+   * the wire vocabulary does not prove it.
+   *
+   * The AI-detection ids are shared verbatim across the camera families, so the id space says what an
+   * integer MEANS and never which units classify that way. A claim is how a mapping states the
+   * evidence that separates them, and it narrows the DESCRIPTION only: {@link EventMapping} stays in
+   * the dispatch index unclaimed, so a device that sends the push still gets the event. Under-reporting
+   * what a device is expected to emit is recoverable; dropping an event it did emit is not.
+   *
+   * Every field must hold — the AND to {@link DetectionSpec}'s OR, because a claim rules a family OUT
+   * rather than finding one more reason to say yes. A fact the context does not carry rules nothing
+   * out: only evidence that positively contradicts the claim withdraws the event.
+   */
+  claim?: EventClaim;
+}
+
+/**
+ * Evidence separating the families that share one inbound id.
+ *
+ * Both fields are optional and independent; an empty claim asserts nothing and is the same as none.
+ */
+export interface EventClaim {
+  /**
+   * The codecs whose devices issue the id. For an id drawn from a vocabulary one device family owns:
+   * the AI-detection ids belong to the camera families, and a standalone sensor announces its own
+   * motion under a different id entirely.
+   */
+  codecs?: readonly Codec[];
+  /**
+   * Member names whose INSTALLED getter is the evidence — the device reported the parameter behind
+   * the classification, which is the same bar every typed read is held to.
+   */
+  reads?: readonly string[];
+  /**
+   * The topology the id belongs to: `true` for an id only a station's attached device sends, `false`
+   * for one only a standalone unit sends. Compared against {@link AvailabilityContext.homeBaseAttached},
+   * and ignored where that is absent.
+   */
+  homeBaseAttached?: boolean;
 }
 
 /**
@@ -173,8 +220,13 @@ export interface DecodedState {
  * the manifest path and the command path.
  */
 export interface AvailabilityContext {
-  /** Resolved codec/family. */
-  codec: Codec;
+  /**
+   * Resolved codec/family. Absent for a device outside the eufy device model entirely — the codecs are
+   * the eufy transport families, so an ecosystem with its own backend has no truthful value here and
+   * says so by omission rather than borrowing another family's. Every gate that reads it compares
+   * against a specific codec, so an absent one matches none.
+   */
+  codec?: Codec;
   /** eufy DeviceType, when known. */
   deviceType?: number;
   /** Model / T-code, when known. */
@@ -196,6 +248,15 @@ export interface AvailabilityContext {
    * `undefined` as an empty set — `ctx.paramIds?.has(dp) ?? false`.
    */
   paramIds?: ReadonlySet<number>;
+  /**
+   * Whether the device hangs off a HomeBase (a `parent_sn` other than its own) rather than standing
+   * alone. A DEVICE fact, not a transport one — the same class of routing evidence as {@link hasP2p} —
+   * which is why it sits here rather than on {@link CommandContext}: it is as true of a described
+   * device as of a commanded one. The `rtsp` capability gates on it because a station serves an
+   * attached camera's stream itself and ignores that camera's authentication setting, so the write
+   * cannot do what its name promises there.
+   */
+  homeBaseAttached?: boolean;
 }
 
 export interface CommandContext extends AvailabilityContext {
@@ -247,7 +308,11 @@ export interface CommandContext extends AvailabilityContext {
   adminUserId?: string;
   /** The acting member's short id (`member.short_user_id`, hex, e.g. `"0003"`) — the lock cmd `A5` field. */
   shortUserId?: string;
-  /** The logged-in account's display name (email local-part) — the lock cmd acting-username `A4` field. */
+  /**
+   * The acting name a command attributes itself to — the lock cmd acting-username `A4` field, and the
+   * `user_name` of the guard-mode and HomeBase-alarm writes. The logged-in account's display name
+   * (email local-part) unless the client pins a different label for it.
+   */
   accountName?: string;
   /**
    * Whether the device has a usable P2P endpoint (a non-empty `p2p_did`). A HomeBase-attached lock
@@ -255,13 +320,6 @@ export interface CommandContext extends AvailabilityContext {
    * capability uses this to route lock/unlock to P2P vs. reject with a clear MQTT-not-wired error.
    */
   hasP2p?: boolean;
-  /**
-   * Whether the device hangs off a HomeBase (a `parent_sn` other than its own) rather than standing
-   * alone. A DEVICE fact, not a transport one — the same class of routing evidence as {@link hasP2p}.
-   * The `rtsp` capability gates on it because a station serves an attached camera's stream itself and
-   * ignores that camera's authentication setting, so the write cannot do what its name promises there.
-   */
-  homeBaseAttached?: boolean;
   /**
    * Parsed `get_product_data_point` catalog for this device's SKU — present for vacuum/mower devices,
    * absent for all other codecs. Capabilities use it for per-model feature-availability and value-range
