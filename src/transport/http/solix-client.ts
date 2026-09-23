@@ -597,10 +597,9 @@ export class SolixClient {
    * Read the Solarbank's battery SOC-limit settings (`param_type "27"`) — a plain authenticated read.
    * Returns `undefined` when the site carries no SOC block (e.g. non-Solarbank hardware). The realtime
    * `dischargeLowerLimit` also arrives on the MQTT `b5` telemetry blob; this is the authoritative,
-   * app-synced source for `chargeUpperLimit`, and the CONFIGURED source for `backupReserve` (+ its enable
-   * switch). The realtime `b5` frame also carries a `backupReserve`, but that is the effective value and
-   * may differ from this one while the switch is off. Verified live against a known AE103 setting
-   * (discharge 20 / charge 80).
+   * app-synced source for `chargeUpperLimit`. `backupReserve` (with its enable switch) also has a second
+   * source under the same name, the realtime MQTT `b5` frame; whether the two agree while the switch is
+   * OFF is not yet verified. Verified live against a known AE103 setting (discharge 20 / charge 80).
    */
   async getSafetySocParams(siteId: string): Promise<SolixSocParams | undefined> {
     const p = await this.getSiteDeviceParam(siteId, SolixClient.SOC_PARAM_TYPE);

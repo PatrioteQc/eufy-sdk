@@ -311,9 +311,9 @@ export function solixReadings(frame: SolixParamFrame, productCode: string): Reco
  *   `0x04`), which leads with `[backupReserve, discharge, charge, …]`. Confirmed by write-readback (it
  *   tracked the app setting 0→5→15 while the min-SOC held), so it is a distinct field from the discharge
  *   floor. The gate is exact-length-25: the 4-byte SETTINGS blob shares these offsets and is read above,
- *   so other `b5` layouts must not fall through here. This is the realtime/effective value; the CONFIGURED
- *   reserve (and its enable switch) is `getSafetySocParams().backupReserve` — whether the two agree while
- *   the backup-reserve switch is OFF is not yet captured.
+ *   so other `b5` layouts must not fall through here. `getSafetySocParams().backupReserve` (HTTP, paired
+ *   with its enable switch) carries the same name from a second source; whether the two agree while that
+ *   switch is OFF is not yet verified.
  * - **Grid power limits** (`gridImportLimit`/`gridExportLimit`, W) come from tag `0xdf`'s type-`0x04`
  *   blob: a `uint16` LE at offset 3 = the max power drawn FROM the grid, at offset 5 = the max power fed
  *   TO the grid. Both confirmed by write-readback in both directions. The length gate (≥7) keeps a
