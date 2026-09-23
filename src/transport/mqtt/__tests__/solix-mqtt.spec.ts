@@ -197,6 +197,20 @@ describe("Solix Solarbank (AE103 / ats_ax170) decoding", () => {
     expect("dischargeLimit" in v).toBe(false);
   });
 
+  it("does NOT read backupReserve from a type-0x04 b5 that is neither 4 nor 25 bytes", () => {
+    // The gate is exact-length: only the 4-byte SETTINGS blob and the 25-byte FAST-frame variant are
+    // known. Another type-0x04 b5 layout shares the leading bytes but a different meaning, so a 12-byte
+    // one must NOT be read as a backup reserve (nor as the SOC limits).
+    const frame = buildFrame([
+      [0xa1, Buffer.from([0x34])],
+      [0xa3, Buffer.from([0x01, 54])],
+      [0xb5, Buffer.from([0x04, 15, 5, 100, 0, 0, 0, 0, 0, 0, 0, 0])],
+    ]);
+    const v = solixReadings(decodeSolixParamFrame(frame)!, "AE103");
+    expect("backupReserve" in v).toBe(false);
+    expect("dischargeLimit" in v).toBe(false);
+  });
+
   it("does NOT apply the Solarbank table to a meter frame (tag meanings differ per family)", () => {
     const meter = solixReadings(decodeSolixParamFrame(FRAME)!, "AE1X0");
     expect(meter.batteryPower).toBeUndefined();
