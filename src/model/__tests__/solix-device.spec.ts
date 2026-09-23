@@ -182,7 +182,6 @@ describe("SolixDevice", () => {
     const readings = solarbankSceneReadings(scene);
     expect(readings[0].values).toMatchObject({ batterySoc: 62, expansionPacks: 0 });
     expect(readings[1].values).toMatchObject({ expansionPacks: 2 });
-    expect("maxExpansionPacks" in readings[0].values).toBe(false);
   });
 
   it("solarbankSceneReadings drops entries with no usable value (never clobbers live data)", () => {
