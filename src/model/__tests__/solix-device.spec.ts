@@ -169,18 +169,20 @@ describe("SolixDevice", () => {
     expect(dev.telemetry().batteryTemperature).toBe(31);
   });
 
-  it("solarbankSceneReadings emits the expansion-pack count + ceiling (0 on a standalone main unit)", () => {
+  it("solarbankSceneReadings emits the attached expansion-pack count (0 on a standalone main unit)", () => {
     const scene = {
       solarbank_info: {
         solarbank_list: [
-          { device_sn: "AE103EXAMPLE00001", bat_soc: "62", sub_package_num: 0, max_battery_pack_num: 5 },
-          { device_sn: "AE103EXAMPLE00002", bat_soc: "80", sub_package_num: "2", max_battery_pack_num: "5" },
+          { device_sn: "AE103EXAMPLE00001", bat_soc: "62", sub_package_num: 0 },
+          // string-on-the-wire is coerced by sceneNum, like every other scene field
+          { device_sn: "AE103EXAMPLE00002", bat_soc: "80", sub_package_num: "2" },
         ],
       },
     };
     const readings = solarbankSceneReadings(scene);
-    expect(readings[0].values).toMatchObject({ batterySoc: 62, expansionPacks: 0, maxExpansionPacks: 5 });
-    expect(readings[1].values).toMatchObject({ expansionPacks: 2, maxExpansionPacks: 5 });
+    expect(readings[0].values).toMatchObject({ batterySoc: 62, expansionPacks: 0 });
+    expect(readings[1].values).toMatchObject({ expansionPacks: 2 });
+    expect("maxExpansionPacks" in readings[0].values).toBe(false);
   });
 
   it("solarbankSceneReadings drops entries with no usable value (never clobbers live data)", () => {

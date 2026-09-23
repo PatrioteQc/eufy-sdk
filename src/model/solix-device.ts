@@ -231,9 +231,11 @@ function sceneNum(v: unknown): number | undefined {
 
 /**
  * Reduce a site "scene" snapshot to per-device telemetry readings — the BACKSTOP counterpart to the
- * realtime `ff09` decode. It emits only the fields the scene reliably carries that the fast MQTT frame
- * does NOT: `batteryTemperature` (the realtime frame's BMS blob is empty, so `solixReadings` withholds
- * it) and `batterySoc` (a cross-check/seed for the `0xa3` SOC). Each reading is shaped exactly like a
+ * realtime `ff09` decode. It emits the fields the scene reliably carries that the fast MQTT frame does
+ * NOT: `batteryTemperature` (the realtime frame's BMS blob is empty, so `solixReadings` withholds it),
+ * `batterySoc` (a cross-check/seed for the `0xa3` SOC), and `expansionPacks` — the count of ATTACHED
+ * add-on battery packs (0 on a standalone main unit). The pack count is stable config, but riding the
+ * scene poll means it appears the moment a pack is added. Each reading is shaped exactly like a
  * `SolixMqtt` `reading` event — `{ deviceSn, values }` — so a caller can feed it straight into
  * {@link SolixDevice.applyReading} and broadcast it on the same path as a live frame. Entries with no
  * usable value are dropped, so a poll during a gap emits nothing rather than clobbering live values.
@@ -249,12 +251,8 @@ export function solarbankSceneReadings(scene: SolixSiteScene): { deviceSn: strin
     if (temp !== undefined) values.batteryTemperature = temp;
     const soc = sceneNum(sb.bat_soc);
     if (soc !== undefined) values.batterySoc = soc;
-    // Attached expansion-pack count (+ the stack ceiling). 0 on a standalone main unit; both are stable
-    // config, but riding the scene poll means they appear the moment a pack is added.
     const packs = sceneNum(sb.sub_package_num);
     if (packs !== undefined) values.expansionPacks = packs;
-    const maxPacks = sceneNum(sb.max_battery_pack_num);
-    if (maxPacks !== undefined) values.maxExpansionPacks = maxPacks;
     if (Object.keys(values).length > 0) out.push({ deviceSn, values });
   }
   return out;

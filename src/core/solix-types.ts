@@ -107,13 +107,11 @@ export interface SolixSceneSolarbank {
   /** State of charge, % (string on the wire). Cross-checks the `ff09` `0xa3` SOC. */
   bat_soc?: string | number;
   /**
-   * Number of ATTACHED expansion battery packs (0 on a standalone main unit — the built-in battery is
-   * the host, not a pack). Rises as add-on packs are stacked; each attached pack then also reports its
-   * own per-pack BMS detail under `bms_list`, which stays null while this is 0.
+   * Number of ATTACHED expansion battery packs — the built-in battery is the host, not a pack. Read as
+   * `expansionPacks`. Observed live as `0` on a standalone AE103 main unit; a populated value (and the
+   * matching per-pack `bms_list` detail) has not yet been captured with a pack attached.
    */
   sub_package_num?: string | number;
-  /** Maximum expansion packs this main unit supports (the stack ceiling). */
-  max_battery_pack_num?: string | number;
   [k: string]: unknown;
 }
 
