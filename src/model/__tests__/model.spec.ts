@@ -17,6 +17,9 @@ import {
 } from "../index.js";
 import type { CloudRecord } from "../index.js";
 import { DeviceType } from "../device-types.js";
+// `isHomeBase` and its DeviceType set stay internal to device-family.ts, so a spec reaches it by direct
+// path — the same way VACUUM_DP is imported below.
+import { isHomeBase } from "../device-family.js";
 // VACUUM_DP is the capability's own wire vocabulary (internal — not on the barrel), so a spec imports
 // it by direct path, the same way the P2P command specs import `CAMERA_CMD`.
 import { VACUUM_DP } from "../capabilities/vacuum-clean.js";
@@ -28,6 +31,18 @@ describe("classify (device_type → codec)", () => {
     expect(codecForType(10)).toBe("sensor"); // motion sensor
     expect(codecForType(11)).toBe("keypad");
     expect(codecForType(9)).toBe("camera"); // CAMERA2 → residual camera bucket
+    expect(codecForType(27)).toBe("station"); // STATION_9000 (T9000)
+  });
+
+  /**
+   * The T9000 station's model code sits outside the T8 band, so only its own rule can catch it. The hub
+   * set is the narrower one — a station missing from it loses `reboot()` and the hub audio/siren surface
+   * to the NVR exclusion, so the two sets are asserted together.
+   */
+  it("classifies the T9000 station from its model code, and counts it a HomeBase", () => {
+    expect(classify({ model: "T9000" })).toBe("station");
+    expect(classify({ model: "T9000P0000000000" })).toBe("station");
+    expect(isHomeBase({ deviceType: DeviceType.STATION_9000 })).toBe(true);
   });
 
   it("falls back to model code, then defaults to camera", () => {
