@@ -96,6 +96,13 @@ export interface SecureMqttOptions {
 export class SecureMqtt extends EventEmitter implements RealtimeTransport {
   readonly kind = "smqtt" as const;
   private client?: MqttClient;
+  /**
+   * The in-flight or established connect. A client ID is exclusive at the broker, so a second mqtt.js
+   * client under the same ID evicts the first, which reconnects and evicts it back, forever; `connect()`
+   * therefore hands a later caller this same attempt instead of opening a rival. Cleared when the
+   * attempt fails and on `disconnect()`, so a caller can still retry or deliberately reconnect.
+   */
+  private connecting?: Promise<void>;
   private readonly o: SecureMqttOptions;
   private readonly logger: Logger;
 
@@ -113,7 +120,20 @@ export class SecureMqtt extends EventEmitter implements RealtimeTransport {
    * Open the broker connection, resolving once it is established. Pinned to a broker instance's IP, or
    * to the plain hostname; only the former needs its own TLS shape, see `./bare-ip-tls.ts`.
    */
+  /**
+   * Connect, or join the connection already opening or open on this instance (see `connecting`). A
+   * dropped connection is re-established by mqtt.js itself (`reconnectPeriod`), so it needs no call here.
+   */
   async connect(): Promise<void> {
+    this.connecting ??= this.open().catch((error: unknown) => {
+      this.connecting = undefined;
+      throw error;
+    });
+    return await this.connecting;
+  }
+
+  /** Open one mqtt.js client and resolve on its first `connect`. Only `connect()` calls this. */
+  private async open(): Promise<void> {
     // The engine, not at import: see ./engine.ts. This method already returned a promise, so awaiting
     // a module load in front of a TLS connect changes nothing a caller can observe.
     const mqtt = await loadMqtt();
@@ -257,6 +277,7 @@ export class SecureMqtt extends EventEmitter implements RealtimeTransport {
   }
 
   async disconnect(): Promise<void> {
+    this.connecting = undefined;
     await this.client?.endAsync(true);
     this.client = undefined;
   }
