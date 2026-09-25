@@ -78,6 +78,11 @@ export const MODEL_REGISTRY: Readonly<Record<string, RegistryEntry>> = {
   T8400: { codec: "camera", caps: ["arming"], name: "Indoor Cam" },
   T8410: { codec: "camera", caps: ["arming"], name: "Indoor Cam Pan & Tilt" },
   T8442: { codec: "camera", caps: ["arming"], name: "Indoor/Outdoor Cam 1080p" },
+  // Hardwired wall-light camera (issue #191; the app's `wallLight` family). Name-only on purpose: its
+  // RGB lighting rides the app's CMD_WALL_LIGHT_* commands, which no capability drives yet, so neither
+  // `light` (the P2P spotlight wire) nor `smart_light` (the eufy_life T8L0x MQTT DP wire) is claimed.
+  // Mains power is asserted by MAINS_CAMERA_MODELS in capabilities/battery.ts, not here.
+  T84A1: { codec: "camera", name: "Wall Light Cam S100" },
 
   // Sensors — the concrete sensor kind is curated (DeviceType 2 alone is ambiguous).
   T8900: { codec: "sensor", caps: ["contact"], name: "Entry Sensor" },
