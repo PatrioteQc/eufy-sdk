@@ -264,14 +264,37 @@ export type AlarmDelayConfig = {
 };
 
 /**
- * Build the alarm-delay `cmd 1255` write intent. Bare JSON, no envelope (`setJsonRaw`) — see
- * the full config. Pinned to the station broadcast channel (255), NOT
- * `ctx.channel` (which resolves to 0 for a station context) — the capture put this frame on channel
- * 255 explicitly, same as every other station-scoped bare/scalar write in the router.
+ * The alarm-delay mode a caller named, or `undefined` for anything outside {@link AlarmDelayMode}.
+ *
+ * The union is the only thing narrowing this argument, and a type does not survive a boundary that erases
+ * it (plain JavaScript, a JSON-RPC bridge, an `as never`). Resolving through `ARMING_MODE_WIRE` alone would
+ * let `"custom1"` land on 3, a mode cmd 1255 has no capture for, and ship any other string as a missing
+ * `mode_id`. The check is against this command's own set, not the wire table, for exactly that reason.
+ */
+function alarmDelayModeOf(v: unknown): AlarmDelayMode | undefined {
+  return (Object.values(AlarmDelayMode) as unknown[]).includes(v) ? (v as AlarmDelayMode) : undefined;
+}
+
+/**
+ * Build the alarm-delay `cmd 1255` write intent, or throw if `mode` is not an {@link AlarmDelayMode}.
+ * Bare JSON, no envelope (`setJsonRaw`) — see the full config. Pinned to the station broadcast channel
+ * (255), NOT `ctx.channel` (which resolves to 0 for a station context) — the capture put this frame on
+ * channel 255 explicitly, same as every other station-scoped bare/scalar write in the router.
+ *
+ * The refusal is worded like the one a value member generates, naming the set the mode had to come from.
+ * It throws before any frame exists, so nothing reaches the sink: this wire has no readback, and a wrong
+ * `mode_id` sent here would look exactly like success.
  */
 function alarmDelayCommand(mode: AlarmDelayMode, config: AlarmDelayConfig, ctx: CommandContext): Command {
+  const resolved = alarmDelayModeOf(mode);
+  if (resolved === undefined) {
+    throw new Error(
+      `setAlarmDelayConfig: ${JSON.stringify(mode)} is not a valid value ` +
+        `(must be one of ${Object.values(AlarmDelayMode).join("/")})`,
+    );
+  }
   const data = {
-    mode_id: ARMING_MODE_WIRE[mode],
+    mode_id: ARMING_MODE_WIRE[resolved],
     count_down_alarm: {
       channel_list: config.countDownAlarm.channelList,
       delay_time: config.countDownAlarm.delaySeconds,
@@ -351,8 +374,12 @@ export const ARMING_MEMBERS = {
    *
    * Takes {@link AlarmDelayMode}, not {@link ArmingMode}: a delay is configurable only for a mode whose
    * integer is captured on THIS command, and `custom1` is confirmed on cmd 1224 only. The frame carries
-   * that integer in `mode_id` with no runtime validation and no readback, so a mode outside this union
-   * would be the same unverified guess `setMode` refuses.
+   * that integer in `mode_id` with no readback, so a mode outside this union would be the same unverified
+   * guess `setMode` refuses, and `alarmDelayCommand` refuses it at runtime too, for a caller whose types
+   * were erased on the way in.
+   *
+   * The arguments stay unstated: the config is an object no published value kind describes, and a fully
+   * stated list would offer this expert write as a plain control.
    */
   setAlarmDelayConfig: method(
     ({ ctx, sink }) =>
