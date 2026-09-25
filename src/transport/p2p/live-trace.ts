@@ -37,6 +37,16 @@ export type LiveTrace =
   /** A data channel's numbering restarted mid-connection, so sequencing resynchronized onto it. */
   | { phase: "sequence-restart"; dataType: number }
   /**
+   * Which lookup channels a connection can ask for the station on, before it asks.
+   *
+   * A station is found by a local lookup, by a cloud lookup, or by both, and each needs something the other
+   * does not: the local one needs the station on this link, the cloud one needs both a key for the station and
+   * an address to ask. A connect that had one channel failed for that channel's reason alone, and a connect
+   * that had neither could not have succeeded — outcomes a station that is switched off is otherwise
+   * indistinguishable from, because nothing else in a failed connect states what was even attempted.
+   */
+  | { phase: "lookup-channels"; local: boolean; cloud: boolean }
+  /**
    * Work on a station is holding for its session to connect, with the milliseconds it will wait.
    *
    * The earliest phase there is: nothing else on a station can be attempted until its session is up, and a
@@ -101,18 +111,28 @@ export type LiveTrace =
   /**
    * A station was resolved for a call, stating what the caller's device is on it and whose station it is.
    *
-   * Emitted before anything is sent, so it is the only account of the intended topology on a call that fails
-   * during resolution: an attached camera's media start has no unencrypted form, so whether a device was taken
-   * as attached decides what its failure means. `stationAdmin` states whether the signed-in account is the
-   * station's administrator, which is what a key the account cannot resolve turns on; `unstated` is a device
-   * record that names no administrator, which is not the same as naming another.
+   * Emitted before the session is waited on, so a station that is never reached still has this record: an
+   * attached camera's media start has no unencrypted form, so whether a device was taken as attached decides
+   * what its failure means. `stationAdmin` states whether the signed-in account is the station's
+   * administrator, which is what a key the account cannot resolve turns on; `unstated` is a device record
+   * that names no administrator, which is not the same as naming another. `stationModel` is the model of the
+   * station the call resolved — the base's for an attached camera, the device's own where it is its own
+   * station — absent where that record states none; without it a base this SDK reaches differently is
+   * indistinguishable from one that is switched off.
    */
   | {
       phase: "station-resolved";
       topology: "attached" | "own";
       channel: number;
       stationAdmin: "self" | "other" | "unstated";
+      stationModel?: string;
     }
+  /**
+   * The call's device has no usable channel on the station it resolved: its record states none (`missing`), or
+   * another device attached to the same station states the same one (`shared`). The call is refused with
+   * `DeviceChannelUnresolvedError` and nothing is sent.
+   */
+  | { phase: "station-channel-unresolved"; issue: "missing" | "shared" }
   /** A shared source began warming, with the interval it re-issues on and the deadline it fails at. */
   | { phase: "warming"; retryMs: number; deadlineMs: number }
   /**

@@ -14,11 +14,13 @@ your own account.
   OpenSSL 3.5.1 that 24.5.0 bundles to decode E2E camera video. See `.nvmrc`.
 - **Runtime dependencies — three:** `mqtt`, `protobufjs`, and `jpeg-js` (a pure-JS,
   zero-transitive-dependency, BSD-3-Clause baseline JPEG codec — required to reconstruct v2 push
-  thumbnails, which must be decoded and re-encoded; there is no Node built-in JPEG codec). Everything
-  else is Node built-ins (`fetch`, `node:crypto`, `BigInt`). `jpeg-js` is synchronous: reconstructing a
-  v2 thumbnail performs repeated candidate decodes and blocks the Node.js event loop until that image
-  finishes. The synthetic 176×144 and 264×200 fixtures each took about one second on one Node 24 test
-  host; timing varies by image and hardware.
+  thumbnails; there is no Node built-in JPEG codec). Everything else is Node built-ins (`fetch`,
+  `node:crypto`, `BigInt`). `jpeg-js` is synchronous, so a v2 reconstruction blocks the Node.js event
+  loop while it runs — but it now decodes exactly ONE frame and re-encodes nothing: the frame geometry
+  is read out of the thumbnail's entropy-coded scan, and the picture handed back is the camera's own
+  scan under a rebuilt header. The synthetic 176×144 and 264×200 fixtures each take about 6 ms and
+  about 0.4 MB of resident memory on one Node 24 test host (down from ~180 ms and ~45 MB when the
+  search decoded candidate frames); timing varies by image and hardware.
 - **`ffmpeg` — optional.** Needed only for the convenience decode/mux sinks: JPEG
   `snapshotLive()` and the one-shot `record(seconds)` buffer. The core paths — `live()`, `openReadable()`, `recordFragments()`
   (CMAF fMP4), and the passive stored `snapshotStored()` — need no ffmpeg. Resolved on `PATH` by
@@ -93,8 +95,11 @@ Notes:
 - **Contention is bounded, not silent.** A token replaced once is ordinary; a second replacement soon
   after is treated as contention, so the client waits (a minute, doubling, capped at half an hour)
   instead of trading logins — repeated logins are what makes an account start demanding captchas. The
-  rejection you get then names the likely cause. A replacement that keeps working for ten minutes clears
-  the wait.
+  rejection you get then names the likely cause and **carries the wait**: `SessionExpiredError.retryAfterMs`
+  is how long to hold off before calling `login()` yourself, and `contended` says the session is being
+  displaced rather than expiring. Honour it — a host that re-logs in every few seconds spends the same
+  login war from outside the client, and your logins count against the same wait. A replacement that keeps
+  working for ten minutes clears it.
 - **Device identity:** `phoneModel` defaults to a **realistic random model**, seeded by `openudid` so it
   stays stable across runs (many installs no longer all report one identical model), and is persisted
   with the session. `openudid` itself defaults to a per-account value — give each client on the same

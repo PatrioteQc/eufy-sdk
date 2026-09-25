@@ -22,11 +22,15 @@ import type {
   AbortableCall,
   TalkbackHandle,
 } from "../../core/contracts.js";
-import { StationKeyUnavailableError, StationUnreachableError } from "../../core/contracts.js";
+import {
+  DeviceChannelUnresolvedError,
+  StationKeyUnavailableError,
+  StationUnreachableError,
+} from "../../core/contracts.js";
 import { noopLogger, type Logger } from "../../core/logger.js";
 import { assertNever } from "../../core/util.js";
 import { setTimeout as sleep } from "node:timers/promises";
-import { P2PSession, type P2PFrame } from "./p2p-session.js";
+import { CONNECT_TIMEOUT_MS, P2PSession, type P2PFrame } from "./p2p-session.js";
 import { buildDirectBinaryBody } from "./write-commands.js";
 import { CommandType } from "./commands.js";
 import {
@@ -59,6 +63,7 @@ import { openReadableFromConsumer } from "./readable-egress.js";
 import { Talkback } from "./talkback.js";
 import { FragmentRecording } from "./fragment-recording.js";
 import { traceLiveStart, type LiveTrace } from "./live-trace.js";
+import { stationChannels, stationOf } from "./station-channels.js";
 
 /**
  * How many times each idempotent "direct" control command (camera on/off 1035, spotlight
@@ -68,9 +73,6 @@ import { traceLiveStart, type LiveTrace } from "./live-trace.js";
  * sends are harmless). Bump if drops are seen on marginal links.
  */
 const DIRECT_CMD_SENDS = 5;
-
-/** How long a freshly resolved session is given to reach a connected state. */
-const CONNECT_WAIT_MS = 20_000;
 
 /**
  * Settle `work` as it settles, or reject the moment `signal` aborts, whichever comes first.
@@ -117,10 +119,12 @@ const LEVEL2_SETTLE_MS = 8_000;
  * when these change.
  *
  * `connect` applies to every call on a station, because nothing can be addressed to one before its session is
- * up. `level2Grace` applies twice where the key is required: the negotiation is re-prompted once.
+ * up, and it is the session's own connect deadline: a session that reaches it closes itself, so waiting past it
+ * waits on a connection that can no longer answer. `level2Grace` applies twice where the key is required: the
+ * negotiation is re-prompted once.
  */
 export const P2P_STATION_WAITS = {
-  connect: CONNECT_WAIT_MS,
+  connect: CONNECT_TIMEOUT_MS,
   level2Grace: LEVEL2_GRACE_MS,
   level2Settle: LEVEL2_SETTLE_MS,
 } as const;
@@ -351,12 +355,6 @@ export class P2PCommandRouter {
     return this.deps.listDevices().find((d) => d.sn === sn);
   }
 
-  /** The parent-station key a device's session lives under (its HomeBase, or itself if standalone). */
-  private stationKeyFor(dev: EufyDevice): string {
-    const raw = (dev.raw ?? {}) as Record<string, any>;
-    return raw.parent_sn && raw.parent_sn !== dev.sn ? (raw.parent_sn as string) : (dev.stationSn ?? dev.sn);
-  }
-
   /**
    * The parent-station serial a device serial's session lives under — the single source of truth for
    * session keying, used by the facade (e.g. to pre-warm the right station for an event). Returns the
@@ -364,14 +362,14 @@ export class P2PCommandRouter {
    */
   stationKeyOf(sn: string): string {
     const dev = this.recordFor(sn);
-    return dev ? this.stationKeyFor(dev) : sn;
+    return dev ? stationOf(dev) : sn;
   }
 
   /** Reset only a standalone device's session; an attached device must not close its shared HomeBase. */
   async resetStandaloneSession(sn: string): Promise<void> {
     const device = this.recordFor(sn);
     if (!device) return;
-    const station = this.stationKeyFor(device);
+    const station = stationOf(device);
     if (station === sn) await this.manager.resetWhenUnused(station);
   }
 
@@ -587,7 +585,7 @@ export class P2PCommandRouter {
     if (!this.deps.listDevices().length) await this.deps.ensureDevices();
     const dev = this.recordFor(sn);
     if (!dev) throw new Error(`device ${sn} not found`);
-    await this.openSession(this.stationKeyFor(dev), this.stationKeyFor(dev));
+    await this.openSession(stationOf(dev), stationOf(dev));
     return dev;
   }
 
@@ -1439,8 +1437,8 @@ export class P2PCommandRouter {
   ): Promise<ResolvedSession> {
     const dev = await this.deviceFor(sn);
     const raw = (dev.raw ?? {}) as Record<string, any>;
-    const homeBaseAttached = !!raw.parent_sn && raw.parent_sn !== sn;
-    const parentSn = homeBaseAttached ? (raw.parent_sn as string) : (dev.stationSn ?? sn);
+    const parentSn = stationOf(dev);
+    const homeBaseAttached = parentSn !== sn;
     const session =
       this.manager.get(parentSn) ??
       this.manager.get(sn) ??
@@ -1456,16 +1454,35 @@ export class P2PCommandRouter {
         .catch((error) => this.reportError(error instanceof Error ? error : new Error(String(error))));
       return await this.resolveSession(sn, opts, true);
     }
+    const address = stationChannels(this.deps.listDevices()).get(sn)!;
+    if (!("channel" in address)) {
+      this.traceOnStation(session, { phase: "station-channel-unresolved", issue: address.issue });
+      throw new DeviceChannelUnresolvedError(sn, parentSn);
+    }
     this.manager.bumpCommand(parentSn, parentSn);
-    const channel = typeof raw.device_channel === "number" ? (raw.device_channel as number) : 0;
+    const { channel } = address;
     const stationAdminId = (raw.member as any)?.admin_user_id;
+    const stationModel = this.recordFor(parentSn)?.model;
     const accountId = (stationAdminId as string) ?? this.deps.mega.auth?.userId ?? "";
+
+    this.traceOnStation(session, {
+      phase: "station-resolved",
+      topology: homeBaseAttached ? "attached" : "own",
+      channel,
+      stationAdmin:
+        typeof stationAdminId !== "string"
+          ? "unstated"
+          : stationAdminId === this.deps.mega.auth?.userId
+            ? "self"
+            : "other",
+      ...(stationModel ? { stationModel } : {}),
+    });
 
     const t0 = Date.now();
     let waitedMs = 0;
     if (!session.isConnected) {
-      this.traceOnStation(session, { phase: "session-connect-wait", waitMs: CONNECT_WAIT_MS });
-      while (!session.isConnected && Date.now() - t0 < CONNECT_WAIT_MS) {
+      this.traceOnStation(session, { phase: "session-connect-wait", waitMs: P2P_STATION_WAITS.connect });
+      while (!session.isConnected && Date.now() - t0 < P2P_STATION_WAITS.connect) {
         opts.signal?.throwIfAborted();
         await sleep(200);
       }
@@ -1477,17 +1494,6 @@ export class P2PCommandRouter {
     }
     opts.signal?.throwIfAborted();
     if (!session.isConnected) throw new StationUnreachableError(parentSn, waitedMs);
-    this.traceOnStation(session, {
-      phase: "station-resolved",
-      topology: homeBaseAttached ? "attached" : "own",
-      channel,
-      stationAdmin:
-        typeof stationAdminId !== "string"
-          ? "unstated"
-          : stationAdminId === this.deps.mega.auth?.userId
-            ? "self"
-            : "other",
-    });
     if (opts.waitLevel2) {
       if (opts.waitLevel2 === "settle") {
         await abortable(session.awaitLevel2Key(LEVEL2_SETTLE_MS, "session"), opts.signal);
@@ -1598,6 +1604,13 @@ export class P2PCommandRouter {
    * standalone camera never negotiates a level-2 key, so pinning this to level 2 makes the envelope
    * unreachable on exactly the devices that serve their own RTSP stream. Verified live: a standalone
    * camera accepts the level-1 form. With no `form` (default) it stays level-2 only.
+   *
+   * Both seals REPLAY the frame {@link DIRECT_CMD_SENDS}× at 200ms, as every other fire-and-forget
+   * control on this router does: these are unacknowledged datagrams, and a level-1 device is the one
+   * least able to afford a single dropped one — it has no reply, no readback here, and nothing that
+   * would tell a caller the write was lost rather than refused. The level-1 form reports delivery by
+   * throwing (`sendSetPayload` throws when the session has no address) rather than by returning a
+   * boolean, so the first pass carries the failure and the rest are repeats.
    */
   private async sendSetPayloadEnvelope(
     sn: string,
@@ -1610,9 +1623,11 @@ export class P2PCommandRouter {
   ): Promise<void> {
     if (form === "auto") {
       await this.sendBySessionLevel(sn, {
-        l1: ({ session, accountId }) => {
-          session.sendSetPayload(cmd, payload, { accountId, channel });
-          return Promise.resolve();
+        l1: async ({ session, accountId }) => {
+          for (let i = 0; i < DIRECT_CMD_SENDS; i++) {
+            session.sendSetPayload(cmd, payload, { accountId, channel });
+            await sleep(200);
+          }
         },
         // NB: do NOT forward sendBySessionLevel's resolved session here — it was resolved with
         // waitLevel2:false (enough to read topology), so on a HomeBase-attached device the level-2

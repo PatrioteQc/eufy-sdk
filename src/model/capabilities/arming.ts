@@ -81,6 +81,10 @@ export const ARMING_CMD = {
    * first, then `schedule` 2, `custom2` 4, `custom3` 5, `off` 6 and `geo` 47 — each sent as this exact
    * frame and each observed to bring MODE_SWITCH back, so all nine are settable. `ARMING_MODE_WIRE` has
    * the per-value evidence and the dates.
+   *
+   * The ENCRYPTION LEVEL is the session's to pick (`"auto"`), not this command's: the T8030 the envelope
+   * was captured on holds a level-2 key and seals it level-2, while an own-session camera that never
+   * negotiates one carries the same envelope level-1. See `armingCommand`.
    */
   SET_ARMING: 1224,
   /**
@@ -175,17 +179,30 @@ function armingModeOf(v: boolean | number | string): ArmingMode | undefined {
 /**
  * Build the {@link ARMING_CMD.SET_ARMING} write intent, or throw if the context has no account
  * identity. `user_name` — the real app's own capture showed a MASKED value (`"max***"`, presumably
- * the app's own privacy-display truncation of the account's email local-part), not the raw
- * local-part `ctx.accountName` holds. Untested whether the device validates this field strictly;
- * sending our real (unmasked) identity is the more correct choice regardless — it's almost certainly
+ * the app's own privacy-display truncation of the account's email local-part), not the unmasked
+ * acting name `ctx.accountName` carries. Untested whether the device validates this field strictly;
+ * sending the acting name as it stands is the more correct choice regardless — it's almost certainly
  * just attribution (e.g. "who armed the system" in event history), not a value the device checks
  * against anything.
+ *
+ * `"auto"` on both counts `setPayload` names: `mValue3` is passed 0 explicitly, so both seals carry the
+ * byte-identical JSON the T8030 capture recorded; and every device carrying `arming` is its own station
+ * or a HomeBase, the former being exactly the case that may hold no key. A T8410's session is level-1 —
+ * the same fact `access.ts` records beside camera power 1035, verified live on that model — so pinned
+ * level-2 made the one control a standalone camera most needs the one it could not be sent.
  */
 function armingCommand(mode: ArmingMode, ctx: CommandContext): Command {
   if (!ctx.accountName) {
     throw new Error(`arming: missing account identity (user_name) [${describeDevice(ctx)}]`);
   }
-  return setPayload(ARMING_CMD.SET_ARMING, { mode_type: ARMING_MODE_WIRE[mode], user_name: ctx.accountName }, ctx, 0);
+  return setPayload(
+    ARMING_CMD.SET_ARMING,
+    { mode_type: ARMING_MODE_WIRE[mode], user_name: ctx.accountName },
+    ctx,
+    0,
+    undefined,
+    "auto",
+  );
 }
 
 /**

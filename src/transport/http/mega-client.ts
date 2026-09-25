@@ -28,7 +28,7 @@ import {
 import { MemorySessionStore, isSessionValid, type SessionStore } from "../../core/store.js";
 import { noopLogger, type Logger } from "../../core/logger.js";
 import type { SecureMqttCredentials } from "../mqtt/secure-mqtt.js";
-import { downloadMediaResource, MediaDownloadAuthenticationError } from "./media-download.js";
+import { downloadMediaResource, mediaFailureError, MediaDownloadAuthenticationError } from "./media-download.js";
 import { randomPhoneModel, randomUserAgent } from "./phone-model.js";
 import { normalizePushImage } from "./decodeImageV1.js";
 
@@ -63,6 +63,14 @@ export interface MegaClientConfig {
    * an explicit value pins a fixed one. Not the account identity — that's `phoneModel`.
    */
   mediaUserAgent?: string;
+  /**
+   * Acting name written into the commands that carry an actor field — guard mode and HomeBase alarm
+   * output (`user_name`), a lock's acting username. Trimmed, and blank counts as unset: the default
+   * is the login email's local-part (the whole string when it has no `@`). Attribution only — the
+   * device stores it for its own activity record, and no captured frame shows it being validated
+   * against the account.
+   */
+  accountName?: string;
   /** Persist + reuse the session (token + session key) across runs. Default: in-memory. */
   store?: SessionStore;
   /** Diagnostics sink. Omit for silence; pass a `Logger` (or `new ConsoleLogger()`) to see logs. */
@@ -114,11 +122,36 @@ export class MegaApiError extends Error {
  */
 export const OWNER_ONLY_CODE = 20004;
 
-/** Thrown when a persisted/expired session is rejected (401). Re-login to recover. */
+/**
+ * Thrown when a persisted/expired session is rejected (401). Re-login to recover.
+ *
+ * It carries the rate the client has already worked out for replacing a rejected token, because the
+ * rejection is where that rate stops being the client's alone: a login driven from here spends the same
+ * session the client's own recovery would have, and repeated logins are what makes an account start
+ * demanding captchas. {@link retryAfterMs} is how long the next replacement is barred for, and
+ * {@link contended} whether this rejection landed inside that bar — the shape repeated displacement has.
+ */
 export class SessionExpiredError extends Error {
-  constructor(message: string) {
+  /**
+   * How long the next session replacement is barred for, in milliseconds; `0` when nothing bars one now.
+   *
+   * The remainder of the client's own hold-off, which doubles per consecutive replacement and is capped —
+   * and which every replacement extends, whether the client spent it or a login made on this error did.
+   */
+  readonly retryAfterMs: number;
+  /**
+   * Whether this rejection landed inside that bar — a token replaced recently and rejected again since.
+   *
+   * It says the session is being DISPLACED rather than expiring: something else is signing in on this
+   * account, and replacing the token again only trades one login for another.
+   */
+  readonly contended: boolean;
+
+  constructor(message: string, opts: { retryAfterMs?: number; contended?: boolean } = {}) {
     super(message);
     this.name = "SessionExpiredError";
+    this.retryAfterMs = opts.retryAfterMs ?? 0;
+    this.contended = opts.contended ?? false;
   }
 }
 
@@ -219,13 +252,18 @@ const REAUTH_HOLD_OFF_CAP_MS = 30 * 60_000;
 const REAUTH_STABLE_MS = 10 * 60_000;
 
 /**
- * What a token being displaced repeatedly almost always means, and the one thing that fixes it. Carried on the
- * surfaced error because the alternative — a client silently trading logins with another — is worse than a
- * caller being told.
+ * What a token being displaced repeatedly means, and what can be done about it. Carried on the surfaced
+ * error because the alternative — a client silently trading logins with another — is worse than a caller
+ * being told.
+ *
+ * The mechanism comes first and the `openudid` remedy second: the remedy applies only where the other
+ * client is another SDK install, and a caller that already sets its own device id is left with the
+ * mechanism alone. {@link SessionExpiredError.contended} is that same fact without the prose.
  */
 const CONTENDED_SESSION_HINT =
-  "another client may be signed in with the same account and device identity, and each login displaces the " +
-  "other's session; give each client its own openudid";
+  "another client signed in on this account keeps displacing this session — the cloud holds about one " +
+  "session per account and device identity, so each login ends the other's; where the other client is " +
+  "another SDK install, give each its own openudid";
 
 /**
  * Whether a rejection's CODE or WORDING says the token is finished, rather than that this request was refused
@@ -241,11 +279,23 @@ const CONTENDED_SESSION_HINT =
  * The subject-less wordings are anchored to a token or a session: a bare `does not exist` also occurs in the
  * serialised detail of rejections that have nothing to do with the credential, and clearing a healthy session
  * on one of those costs a re-2FA.
+ *
+ * Two properties of the match keep those anchors on their own subject, and
+ * `"token = …, gtoken not equal userid error"` — a HEADER fault on a token that is fine, which no re-login can
+ * repair — needs both:
+ *  - a wildcard cannot cross a comma, so it stays inside the clause its anchor sits in and cannot borrow a
+ *    word from the next one;
+ *  - `token` matches as a whole word, so `gtoken` — a different header with a different meaning — is not read
+ *    as the credential.
+ *
+ * Both are bounds on the match rather than edits to the message: the echoed credential still carries the
+ * anchor for wordings that state their reason beside it (`"token = … expired"`), so removing the echo before
+ * matching would lose a real expiry and leave a dead session uncleared.
  */
 function tokenRejected(code: number | undefined, msg: string | undefined): boolean {
   return (
     code === EufyCloudErrorCode.SESSION_KICKED ||
-    /user_id is empty|invalid.*token|token.*(expired|error|not exist)|kicked|(?:token|session).*does not exist|unauthor/i.test(
+    /user_id is empty|invalid[^,]*\btoken\b|\btoken\b[^,]*(expired|error|not exist)|kicked|(?:\btoken\b|\bsession\b)[^,]*does not exist|unauthor/i.test(
       msg ?? "",
     )
   );
@@ -285,7 +335,14 @@ export class MegaHttpClient {
   private sessionKey?: SessionEntry;
   /** Per-host ECDH session keys for non-mega gateways (e.g. eufylife) keyed by host. */
   private readonly sessionKeys = new Map<string, SessionEntry>();
-  private auth_?: { userId: string; authToken: string; geoKey?: string };
+  /**
+   * The held credential. `userId` is the login reply's `ap_cloud_user_id` where it has one — the Anker
+   * Passport cloud's id — while `accountUserId` is the eufy account's own `user_id`.
+   *
+   * The `gtoken` header is hashed from `accountUserId`: that is the id the gateway recomputes the header
+   * from, rejecting a disagreement with `"gtoken not equal userid error"`.
+   */
+  private auth_?: { userId: string; authToken: string; geoKey?: string; accountUserId?: string };
   /** captcha_id of an in-flight challenge, held between login() and solveCaptcha(). */
   private pendingCaptchaId?: string;
   /** True while a 2FA code is outstanding: `auth_` holds only the limited pre-verify token, so the
@@ -314,9 +371,11 @@ export class MegaHttpClient {
   private loggingIn = false;
   /** The one in-flight re-login every call rejected on the same dead token waits on. */
   private reauthAttempt?: Promise<boolean>;
-  /** Replacements since the held session last proved stable, and when the last one ran — see {@link recoveryDue}. */
+  /** Replacements since the held session last proved stable, and when the last one ran — see {@link holdOffRemainingMs}. */
   private recoveries = 0;
   private lastRecoveryAt = 0;
+  /** A token of ours has been rejected and not yet replaced — see {@link noteTokenReplacement}. */
+  private rejectedTokenPending = false;
 
   constructor(cfg: MegaClientConfig) {
     this.cfg = {
@@ -360,7 +419,12 @@ export class MegaHttpClient {
     const saved = this.store.load();
     if (!isSessionValid(saved) || !saved) return undefined;
     this.region = saved.region;
-    this.auth_ = { userId: saved.userId, authToken: saved.authToken, geoKey: saved.geoKey };
+    this.auth_ = {
+      userId: saved.userId,
+      accountUserId: saved.accountUserId,
+      authToken: saved.authToken,
+      geoKey: saved.geoKey,
+    };
     this.tokenExpiresAt = saved.tokenExpiresAt;
     this.sessionKey = {
       keyIdent: saved.keyIdent,
@@ -383,12 +447,19 @@ export class MegaHttpClient {
   }
 
   /**
-   * The logged-in account's display name — the login email's local-part (e.g. `someone+tag` for
-   * `someone+tag@example.com`). This is the string the app writes into the ff09 command's acting
-   * "username" field (verified against a captured T8531 unlock frame). Falls back to the whole email
-   * if it has no `@`.
+   * The name commands attribute themselves to — {@link MegaClientConfig.accountName} when the config
+   * pins one (trimmed; blank counts as unset), otherwise the logged-in account's display name, which
+   * is the login email's local-part (e.g. `someone+tag` for `someone+tag@example.com`) and falls back
+   * to the whole email if it has no `@`.
+   *
+   * The local-part is the string the app writes into the ff09 command's acting "username" field
+   * (verified against a captured T8531 unlock frame), so it is the faithful default. An override is a
+   * different LABEL for the same account, not a different identity: the session authenticates on the
+   * token and the device record's member ids, neither of which this touches.
    */
   get accountName(): string {
+    const pinned = this.cfg.accountName?.trim();
+    if (pinned) return pinned;
     const email = this.cfg.email ?? "";
     const at = email.indexOf("@");
     return at > 0 ? email.slice(0, at) : email;
@@ -428,7 +499,17 @@ export class MegaHttpClient {
   }
 
   /**
-   * The account-credential headers every authed call carries — `x-auth-token` + `gtoken` (`md5(userId)`).
+   * The id `gtoken` is hashed from — the account's own `user_id`, which is what the gateway recomputes the
+   * header from. One place so the two header paths cannot drift on which of the session's ids that is.
+   *
+   * Call only where `auth_` is already established; every header path guards it.
+   */
+  private gtokenUserId(): string {
+    return this.auth_!.accountUserId ?? this.auth_!.userId;
+  }
+
+  /**
+   * The account-credential headers every authed call carries — `x-auth-token` + `gtoken`.
    * One place so the signed path, the key-exchange and the bearer path can't drift on what "authed" means.
    */
   private authTokenHeaders(): Record<string, string> {
@@ -436,7 +517,7 @@ export class MegaHttpClient {
     return {
       "x-auth-token": this.auth_.authToken,
       authorization: this.auth_.authToken,
-      gtoken: gtoken(this.auth_.userId),
+      gtoken: gtoken(this.gtokenUserId()),
     };
   }
 
@@ -640,11 +721,16 @@ export class MegaHttpClient {
       (identityError && retry.identity) || (authed && last?.status === 401 && tokenRejected(last.code, last.msg));
     if (tokenFinished) {
       const reason = `${path} failed (${last?.status}/${last?.code}): ${last?.msg}`;
+      this.rejectedTokenPending = true;
       const recovery = retry.reauth ? "unrecoverable" : await this.recoverRejectedSession(sentToken);
       if (recovery === "retry")
         return this.postSigned<T>(host, path, body, authed, { ...retry, reauth: true }, headerOverrides);
       if (!this.sessionReplacedSince(sentToken)) this.clearSession();
-      throw new SessionExpiredError(recovery === "held-off" ? `${reason} — ${CONTENDED_SESSION_HINT}` : reason);
+      const contended = recovery === "held-off";
+      throw new SessionExpiredError(contended ? `${reason} — ${CONTENDED_SESSION_HINT}` : reason, {
+        retryAfterMs: this.holdOffRemainingMs(),
+        contended,
+      });
     }
     throw new MegaApiError(`${path} failed (${last?.status}/${last?.code}): ${last?.msg}`, last?.code, last?.status);
   }
@@ -822,7 +908,7 @@ export class MegaHttpClient {
     try {
       return await downloadMediaResource(url, {
         "x-auth-token": this.auth_.authToken,
-        gtoken: gtoken(this.auth_.userId),
+        gtoken: gtoken(this.gtokenUserId()),
         "app-name": "eufy_mega",
         "model-type": "PHONE",
         "user-agent": this.mediaUserAgent,
@@ -835,9 +921,20 @@ export class MegaHttpClient {
     }
   }
 
-  /** Download push image bytes and decrypt a recognized v1 wrapper when its device key input is available. */
+  /**
+   * Download push image bytes and decrypt a recognized v1 wrapper when its device key input is available.
+   *
+   * A decoder throw is tagged `decode-failed`: to anything downstream, the difference between "the
+   * bytes never arrived" and "the bytes arrived and the wrapper would not decrypt" is the difference
+   * between a network problem and a key problem, and one of them is this SDK's to fix.
+   */
   async downloadImage(url: string, p2pDid?: string): Promise<Buffer> {
-    return normalizePushImage(await this.downloadMedia(url), p2pDid);
+    const data = await this.downloadMedia(url);
+    try {
+      return normalizePushImage(data, p2pDid);
+    } catch (error) {
+      throw mediaFailureError("Push image could not be decoded", "decode-failed", error);
+    }
   }
 
   /** The security-app data host for this region (face recognition, media, etc.). */
@@ -1024,8 +1121,7 @@ export class MegaHttpClient {
     if (this.hydrateFromStore() && this.sessionReplacedSince(sentToken)) return "retry";
     if (!this.canReauthenticate()) return "unrecoverable";
     if (!this.recoveryDue()) return "held-off";
-    this.recoveries++;
-    this.lastRecoveryAt = Date.now();
+    this.noteTokenReplacement();
     this.clearSession();
     return (await this.reauthenticate()) ? "retry" : "unrecoverable";
   }
@@ -1041,15 +1137,43 @@ export class MegaHttpClient {
    * and a caller is told the honest reason instead of being served a fight.
    */
   private recoveryDue(): boolean {
-    if (this.recoveries === 0) return true;
-    const wait = Math.min(REAUTH_HOLD_OFF_MS * 2 ** (this.recoveries - 1), REAUTH_HOLD_OFF_CAP_MS);
-    const waited = Date.now() - this.lastRecoveryAt;
-    if (waited >= wait) return true;
+    const remaining = this.holdOffRemainingMs();
+    if (remaining === 0) return true;
     this.logger.warn(
-      `[mega] token rejected ${Math.round(waited / 1000)}s after the last replacement — holding off ` +
-        `${Math.round(wait / 1000)}s. ${CONTENDED_SESSION_HINT}`,
+      `[mega] token rejected ${Math.round((Date.now() - this.lastRecoveryAt) / 1000)}s after the last ` +
+        `replacement — holding off ${Math.round(remaining / 1000)}s more. ${CONTENDED_SESSION_HINT}`,
     );
     return false;
+  }
+
+  /**
+   * How much longer a token replacement must wait, in milliseconds; `0` when one may run now.
+   *
+   * The wait doubles per consecutive replacement and is capped, and it is what {@link recoveryDue} gates
+   * this client's own recovery on — and what {@link SessionExpiredError.retryAfterMs} hands a host that
+   * drives its own. One function so the two cannot disagree about the rate, which they would have to for
+   * a host to be told it may retry while this client is still holding off.
+   */
+  private holdOffRemainingMs(): number {
+    if (this.recoveries === 0) return 0;
+    const wait = Math.min(REAUTH_HOLD_OFF_MS * 2 ** (this.recoveries - 1), REAUTH_HOLD_OFF_CAP_MS);
+    return Math.max(0, wait - (Date.now() - this.lastRecoveryAt));
+  }
+
+  /**
+   * Count one token replacement against the hold-off, and clear the rejection it answered.
+   *
+   * Every replacement passes through here, wherever it was spent from: {@link recoverRejectedSession}, and
+   * a {@link login} that follows a rejection this client surfaced. A hold-off that counted only its own
+   * would be no bound at all — the wait would sit at its first value however many sessions had been spent,
+   * and {@link SessionExpiredError.retryAfterMs} would report a minute while logins ran every few seconds.
+   * Which of the two counted a given replacement is the flag: the recovery path clears it before logging
+   * in, so the login cannot count the same one again.
+   */
+  private noteTokenReplacement(): void {
+    this.recoveries++;
+    this.lastRecoveryAt = Date.now();
+    this.rejectedTokenPending = false;
   }
 
   /**
@@ -1057,6 +1181,7 @@ export class MegaHttpClient {
    * contention, so the hold-off is forgotten and the next genuine expiry recovers immediately.
    */
   private noteSessionWorking(): void {
+    this.rejectedTokenPending = false;
     if (this.recoveries > 0 && Date.now() - this.lastRecoveryAt > REAUTH_STABLE_MS) this.recoveries = 0;
   }
 
@@ -1157,10 +1282,12 @@ export class MegaHttpClient {
     {
       const cap = Object.keys(res).filter((k) => /captcha|answer|picture|image|fa_/i.test(k));
       this.logger.debug("[mega] login resp keys:", Object.keys(res).join(","));
+      this.logger.debug("[mega] ids agree:", res.ap_cloud_user_id === res.user_id);
       if (cap.length)
         this.logger.debug("[mega] captcha/fa:", JSON.stringify(Object.fromEntries(cap.map((k) => [k, res[k]]))));
     }
     const userId = (res.ap_cloud_user_id ?? res.user_id ?? res.userId) as string | undefined;
+    const accountUserId = (res.user_id ?? res.userId) as string | undefined;
     const authToken = (res.auth_token ?? res.token) as string | undefined;
     if (!userId || !authToken) throw new Error(`login returned no session: ${JSON.stringify(res).slice(0, 200)}`);
 
@@ -1171,7 +1298,7 @@ export class MegaHttpClient {
       // Keep the limited token: sendVerifyCode() AND the follow-up verify-login must both be authed
       // with it (captured: attempts 4 & 5 carry this token), so the gateway links the code to this
       // pending 2FA session.
-      this.auth_ = { userId, authToken, geoKey: res.geo_key as string | undefined };
+      this.auth_ = { userId, accountUserId, authToken, geoKey: res.geo_key as string | undefined };
       // Captcha (if any) is satisfied once we reach the 2FA step — drop its id so a later retry
       // doesn't resubmit an already-consumed challenge. Mark 2FA outstanding (see login()).
       this.pendingCaptchaId = undefined;
@@ -1182,12 +1309,13 @@ export class MegaHttpClient {
 
     this.pendingCaptchaId = undefined;
     this.pending2fa = false;
-    this.auth_ = { userId, authToken, geoKey: res.geo_key as string | undefined };
+    this.auth_ = { userId, accountUserId, authToken, geoKey: res.geo_key as string | undefined };
     this.tokenExpiresAt = Number(res.token_expires_at ?? 0) || 0;
     // Re-exchange WITH the auth token so the gateway binds the key-ident to the user.
     this.sessionKey = undefined;
     await this.ensureSessionKey();
     this.persist();
+    if (this.rejectedTokenPending) this.noteTokenReplacement();
     return { status: LoginStatus.Ok, session: { userId, authToken, geoKey: this.auth_.geoKey, raw: res } };
   }
 
@@ -1196,6 +1324,7 @@ export class MegaHttpClient {
     if (!this.auth_ || !this.sessionKey) return;
     this.store.save({
       userId: this.auth_.userId,
+      accountUserId: this.auth_.accountUserId ?? this.auth_.userId,
       authToken: this.auth_.authToken,
       geoKey: this.auth_.geoKey,
       region: this.region,
