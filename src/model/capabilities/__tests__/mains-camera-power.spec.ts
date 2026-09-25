@@ -56,6 +56,12 @@ describe("mains-only camera power tier (T84A1 Wall Light Cam S100)", () => {
     expect(dev.getProperty("battery")).toBeUndefined();
   });
 
+  it("keeps the light the wall-light family already had (the row adds no caps and removes none)", () => {
+    const record = { deviceType: 151, model: "T84A1", params: { 1400: "1", 1401: "50" } };
+    expect(resolveDevice(record).capabilities).toContain("light");
+    expect(resolveDevice(record).capabilities).not.toContain("smart_light");
+  });
+
   it("keeps a standalone T84A1's P2P session on the persistent wired tier", () => {
     const eufy = new EufyMega({ email: "synthetic@example.com", password: "synthetic", autoRealtime: false });
     const device = {
