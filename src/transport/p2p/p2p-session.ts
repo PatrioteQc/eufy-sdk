@@ -42,6 +42,7 @@ import {
   buildRawCommandPayload,
   buildStringCommandPayload,
   buildIntStringCommandPayload,
+  buildStringPairCommandPayload,
   buildVoidCommandPayload,
   decryptP2PData,
   encryptP2PData,
@@ -1160,6 +1161,17 @@ export class P2PSession extends EventEmitter {
     const data = Buffer.concat([
       buildCommandHeader(this.seqNumber, commandType),
       buildIntStringCommandPayload(value, valueSub, strValue, channel, this.level1Key, 1),
+    ]);
+    this.seqNumber = (this.seqNumber + 1) & 0xffff;
+    this.send(this.connectAddress, RequestMessageType.DATA, data);
+  }
+
+  /** Send a level-1 {@link buildStringPairCommandPayload} command on `channel`. */
+  sendStringPairCommand(commandType: number, strValue: string, strValueSub: string, channel: number): void {
+    if (!this.connectAddress) throw new Error(`P2P session ${this.cfg.stationSn} is not connected`);
+    const data = Buffer.concat([
+      buildCommandHeader(this.seqNumber, commandType),
+      buildStringPairCommandPayload(strValue, strValueSub, channel, this.level1Key, 1),
     ]);
     this.seqNumber = (this.seqNumber + 1) & 0xffff;
     this.send(this.connectAddress, RequestMessageType.DATA, data);
