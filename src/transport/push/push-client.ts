@@ -35,27 +35,49 @@ function nonemptyString(value: unknown): value is string {
 }
 
 /**
+ * The levels of a decoded push, outermost first: the envelope, then each nested `payload` in turn,
+ * JSON-parsed where it arrives as a string. The descent stops at the first level without an object
+ * `payload`, so it holds however deep the wire nests the detail. A `payload` that is present but not an
+ * object (unparseable text, a scalar) ends the walk with an empty detail level, as a malformed body
+ * yields no fields.
+ */
+function payloadLevels(env: Record<string, unknown>): Record<string, unknown>[] {
+  const levels = [env];
+  for (let level = env; "payload" in level && level.payload != null;) {
+    let next: unknown = level.payload;
+    if (typeof next === "string") {
+      try {
+        next = JSON.parse(next);
+      } catch {
+        next = undefined;
+      }
+    }
+    level = typeof next === "object" && next ? (next as Record<string, unknown>) : {};
+    levels.push(level);
+  }
+  return levels;
+}
+
+/**
  * Normalises a decoded eufy envelope without consulting device semantics; semantic event names remain unset.
+ *
+ * The detail (`event_type`, `pic_url`, `cipher`) is read from the deepest level of
+ * `payloadLevels`; identity (`device_sn`, `station_sn`) is gathered from every level, deepest
+ * first, so a serial is found whichever level the push carries it on.
  * @internal
  */
 export function normalizePushEvent(raw: RawPushMessage): PushEvent {
   const env = raw.payload ?? {};
-  let inner: unknown = env.payload ?? env;
-  if (typeof inner === "string") {
-    try {
-      inner = JSON.parse(inner);
-    } catch {
-      inner = undefined;
-    }
-  }
-  const p: PushPayload = typeof inner === "object" && inner ? (inner as PushPayload) : {};
+  const levels = payloadLevels(env);
+  const p = levels[levels.length - 1] as PushPayload;
+  const deepestFirst = [...levels].reverse();
+  const deviceClaims = deepestFirst.map((l) => l.device_sn).filter(nonemptyString);
+  const stationClaims = [...deepestFirst.map((l) => l.station_sn), p.s].filter(nonemptyString);
   const eventType = (p.event_type ?? p.a) as number | undefined;
   const url = nonemptyString(p.pic_url) ? p.pic_url : nonemptyString(p.thumbnail) ? p.thumbnail : undefined;
   let thumbnailCandidate: ThumbnailCandidate | undefined;
   if (url) {
-    const deviceClaims = [p.device_sn, env.device_sn].filter(nonemptyString);
     const deviceSn = deviceClaims[0];
-    const stationClaims = [p.station_sn, env.station_sn, p.s].filter(nonemptyString);
     const stationSn = stationClaims[0];
     thumbnailCandidate = {
       url,
@@ -71,8 +93,8 @@ export function normalizePushEvent(raw: RawPushMessage): PushEvent {
     };
   }
   return {
-    deviceSn: (p.device_sn ?? env.device_sn ?? p.s) as string | undefined,
-    stationSn: (p.station_sn ?? env.station_sn) as string | undefined,
+    deviceSn: deviceClaims[0] ?? (nonemptyString(p.s) ? p.s : undefined),
+    stationSn: deepestFirst.map((l) => l.station_sn).find(nonemptyString),
     eventType,
     thumbnailUrl: (p.pic_url ?? p.thumbnail) as string | undefined,
     thumbnailCandidate,
@@ -220,6 +242,14 @@ export class PushClient extends EventEmitter {
     this.socket?.destroy(); // → onClose → scheduleReconnect
   }
 
+  /**
+   * Decode one MCS `DataMessageStanza` into a {@link RawPushMessage} and the normalised event.
+   *
+   * `payload` carries the whole app_data envelope, with its `payload` entry (base64 of NUL-terminated
+   * JSON) parsed in place: the envelope's own keys, `device_sn` and `station_sn` among them, sit beside
+   * that entry, and {@link normalizePushEvent} reads identity from every level and detail from the
+   * deepest.
+   */
   private handleDataMessage(object: any): void {
     if (object?.persistentId) this.persistentIds.push(object.persistentId);
     const data: Record<string, any> = {};
@@ -243,11 +273,6 @@ export class PushClient extends EventEmitter {
       persistentId: object?.persistentId,
       ttl: object?.ttl,
       sent: object?.sent,
-      // Keep the WHOLE envelope, not just the decoded `payload` entry. The identity keys
-      // (`device_sn`, `station_sn`) are app_data siblings of `payload`, never inside it, so
-      // narrowing to `data.payload` here discarded them and every push arrived unattributed.
-      // `normalizePushEvent` already reads `env.payload ?? env` and falls back to `env.device_sn`,
-      // so it wants the envelope — that fallback was simply unreachable.
       payload: data,
     };
     this.emit("message", raw);
