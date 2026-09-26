@@ -367,7 +367,8 @@ export type EufyMegaEventMap = {
    *
    * The error carries the rate: `err.retryAfterMs` is how long the next session replacement is barred
    * for, and `err.contended` says the token was rejected again soon after being replaced, which is how
-   * displacement by another client looks and which a re-login does not answer. A login made before that wait elapses extends it.
+   * displacement by another client looks and which a re-login does not answer. A login made before that
+   * wait elapses extends it.
    */
   sessionExpired: [err: SessionExpiredError];
   // Any transport error.

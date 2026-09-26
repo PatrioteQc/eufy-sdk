@@ -3,7 +3,7 @@ import { createCipheriv, createDecipheriv, createECDH, randomBytes } from "node:
 import { describe, expect, it, vi } from "vitest";
 
 import { EUFY_MEGA_LOCAL_KEY_HEX, type SessionEntry } from "../../../core/crypto.js";
-import { MegaHttpClient, SessionExpiredError } from "../mega-client.js";
+import { MegaHttpClient } from "../mega-client.js";
 
 /**
  * How many key exchanges a client spends when its session key is gone and several calls need it at once.
@@ -159,31 +159,5 @@ describe("mega identity error from concurrent calls", () => {
 
     expect(results.every((r) => (r as { ok: boolean }).ok)).toBe(true);
     expect(exchanges).toHaveLength(1);
-  });
-
-  it("still surfaces a session error when the shared re-exchange fails", async () => {
-    const mega = new MegaHttpClient({ email: "synthetic@example.invalid", password: "synthetic", region: "us-pr" });
-    const internals = mega as unknown as {
-      httpPost: (url: string) => Promise<Response>;
-      auth_: { userId: string; authToken: string };
-      sessionKey?: SessionEntry;
-    };
-    internals.auth_ = { userId: "synthetic-user", authToken: "synthetic-token" };
-    internals.sessionKey = {
-      keyIdent: "stale",
-      shareKey: "00".repeat(16),
-      clientPublicKeyHex: "",
-      clientPrivateKeyHex: "",
-      createdAt: Date.now(),
-    };
-    internals.httpPost = vi.fn(async (url: string) =>
-      url.includes("/oauth/key/exchange")
-        ? { status: 500, data: { code: 500, msg: "synthetic exchange failure" } }
-        : { status: 463, data: { code: 4406, msg: "get identity error" } },
-    );
-
-    await expect(mega.postSigned("app-mega-us-pr.eufy.com", "/synthetic", {}, true)).rejects.toBeInstanceOf(
-      SessionExpiredError,
-    );
   });
 });

@@ -597,7 +597,7 @@ export class MegaHttpClient {
     return exchange;
   }
 
-  /** One key exchange against `host`, installed as that host's key. Called only through {@link ensureSessionKey}. */
+  /** One key exchange against `host`, installed as that host's key. */
   private async exchangeSessionKey(host: string, isEufylife: boolean): Promise<SessionEntry> {
     const kxPath = isEufylife ? "/v3/openapi/oauth/key/exchange" : "/openapi/oauth/key/exchange";
     const prep = prepareKeyExchange(isEufylife ? EUFYLIFE_LOCAL_KEY_HEX : undefined);
