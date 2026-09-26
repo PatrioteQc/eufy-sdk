@@ -116,14 +116,7 @@ export class SecureMqtt extends EventEmitter implements RealtimeTransport {
     return this.o.clientId ?? this.o.credentials.thing_name ?? "";
   }
 
-  /**
-   * Open the broker connection, resolving once it is established. Pinned to a broker instance's IP, or
-   * to the plain hostname; only the former needs its own TLS shape, see `./bare-ip-tls.ts`.
-   */
-  /**
-   * Connect, or join the connection already opening or open on this instance (see `connecting`). A
-   * dropped connection is re-established by mqtt.js itself (`reconnectPeriod`), so it needs no call here.
-   */
+  /** Connect, joining the attempt in `connecting` when one is already opening or open. */
   async connect(): Promise<void> {
     this.connecting ??= this.open().catch((error: unknown) => {
       this.connecting = undefined;
@@ -132,7 +125,10 @@ export class SecureMqtt extends EventEmitter implements RealtimeTransport {
     return await this.connecting;
   }
 
-  /** Open one mqtt.js client and resolve on its first `connect`. Only `connect()` calls this. */
+  /**
+   * Open the broker connection, resolving once it is established. Pinned to a broker instance's IP, or
+   * to the plain hostname; only the former needs its own TLS shape, see `./bare-ip-tls.ts`.
+   */
   private async open(): Promise<void> {
     // The engine, not at import: see ./engine.ts. This method already returned a promise, so awaiting
     // a module load in front of a TLS connect changes nothing a caller can observe.

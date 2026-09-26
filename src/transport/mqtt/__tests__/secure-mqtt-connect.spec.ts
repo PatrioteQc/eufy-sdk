@@ -92,11 +92,6 @@ describe("SecureMqtt.connect — reconnect lifecycle", () => {
     expect(opts.ca).toBe(CREDS.aws_root_ca1_pem);
   });
 
-  /**
-   * A client ID is exclusive at the broker: two mqtt.js clients under one ID evict each other forever. A
-   * caller that watches several devices calls `connect()` once per device, so every call after the first
-   * must join the same connection rather than open a rival.
-   */
   describe("one connection per instance", () => {
     it("joins an in-flight connect instead of opening a second client under the same id", async () => {
       const m = new SecureMqtt({ credentials: CREDS });
