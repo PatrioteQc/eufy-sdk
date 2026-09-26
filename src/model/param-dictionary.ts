@@ -608,7 +608,7 @@ export const SECURITY_PARAMS: Record<number, ParamDef> = {
     provenance: "apk",
   },
   // Cameras and a HomeBase 3 answer a bare number; a HomeBase S1 Pro (T9000) answers a JSON envelope
-  // (`{"ai_switch":1,"smart_detection":…,"devlist":[…]}`). JSON decoding keeps both shapes as they are.
+  // (`{"ai_switch":1,"smart_detection":…,"devlist":[…]}`).
   1299: {
     name: "hbAiDetectType",
     type: "string",

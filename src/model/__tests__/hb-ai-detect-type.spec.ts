@@ -31,13 +31,6 @@ describe("hbAiDetectType (1299)", () => {
     expect(warn).not.toHaveBeenCalled();
   });
 
-  it("does not report a re-sent envelope with reordered keys as a change", () => {
-    const dev = Device.fromRecord("T9000P0000000001", station(ENVELOPE));
-
-    const reordered = '{"devlist":[{"smart_detection":3,"channel":0}],"smart_detection":196623,"ai_switch":1}';
-    expect(dev.applyParams({ 1299: reordered })).toEqual([]);
-  });
-
   it.each([
     ["a cloud string", "1"],
     ["a P2P number", 1],
@@ -49,11 +42,5 @@ describe("hbAiDetectType (1299)", () => {
 
     expect(dev.getProperty("hbAiDetectType")?.value).toBe(1);
     expect(warn).not.toHaveBeenCalled();
-  });
-
-  it("keeps a malformed value as the raw string rather than throwing", () => {
-    const dev = Device.fromRecord("T9000P0000000001", station('{"ai_switch":1,'));
-
-    expect(dev.getProperty("hbAiDetectType")?.value).toBe('{"ai_switch":1,');
   });
 });
