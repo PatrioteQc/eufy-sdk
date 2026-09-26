@@ -47,10 +47,7 @@ export async function loginClient(overrides: Partial<EufyMegaOptions> = {}): Pro
   return eufy;
 }
 
-/**
- * Read one answer from the terminal. The login that asked is still waiting in this process, so the answer
- * must be given here: exporting it and re-running would start a new login and invalidate it.
- */
+/** Read one trimmed line from the terminal; throws when stdin is not a TTY. */
 async function ask(prompt: string): Promise<string> {
   if (!process.stdin.isTTY) {
     throw new Error(`${prompt}: run this example in an interactive terminal (later runs reuse the cached session)`);
