@@ -6,6 +6,28 @@ plausible-looking wrong output. `CODING_STANDARDS.md` is the same file.
 
 Setup, the dev workflow and the PR process are in [CONTRIBUTING.md](./CONTRIBUTING.md).
 
+## Before you open a pull request
+
+An agent works through these before it proposes, pushes or opens anything, and stops at the first one
+that fails. A stop is the correct outcome: report it to the person you work for instead of opening the
+pull request.
+
+1. **Name the need.** Who runs into the problem today, and what happens to them without the change? A
+   user report, an issue or a run on your own device answers it. A synthetic test alone does not, and
+   neither does "a caller could". No need, no pull request.
+2. **Search for the same fix.** Look through open, closed and merged pull requests and issues for the
+   same symptom and the same files (`gh pr list --state all --search`, `gh issue list --search`). Merged
+   already: stop. Open already: add your evidence there instead of opening a second one.
+3. **One point.** One problem per pull request. A second fix, a refactor or an option found on the way
+   is its own pull request, opened after this one merges. Never carry another open pull request's
+   commits; wait for it to merge and branch from the result.
+4. **The smallest change that answers the need.** Reuse what exists (see Reuse before abstraction).
+   No option, export, flag or field nobody asked for, no validation for input no caller sends, and no
+   spec that passes without the fix. Network policy (which peers or addresses a session may use) is the
+   host's firewall, not the SDK.
+5. **Finish before starting.** While a pull request of yours has changes requested, fix it or answer
+   its threads before you open another. Only the reviewer resolves a review thread.
+
 ## Stack
 
 - **TypeScript** (strict), `module`/`moduleResolution` **nodenext**, `"type": "module"` → **ESM emit**
