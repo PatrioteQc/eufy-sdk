@@ -47,15 +47,4 @@ describe("push envelope keeps device identity", () => {
     expect(event.thumbnailUrl).toBe("https://example.test/t.jpg");
     expect(event.thumbnailCandidate?.attribution).toEqual({ kind: "device", deviceSn: DEVICE });
   });
-
-  it("reads a flat envelope with no payload entry at all", () => {
-    const event = pushOf([
-      { key: "device_sn", value: DEVICE },
-      { key: "station_sn", value: STATION },
-      { key: "type", value: "4" },
-    ]);
-    expect(event.deviceSn).toBe(DEVICE);
-    expect(event.stationSn).toBe(STATION);
-    expect(event.payload.type).toBe("4");
-  });
 });

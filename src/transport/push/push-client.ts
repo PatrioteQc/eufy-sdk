@@ -43,7 +43,7 @@ function nonemptyString(value: unknown): value is string {
  */
 function payloadLevels(env: Record<string, unknown>): Record<string, unknown>[] {
   const levels = [env];
-  for (let level = env; "payload" in level && level.payload != null;) {
+  for (let level = env; level.payload != null;) {
     let next: unknown = level.payload;
     if (typeof next === "string") {
       try {
@@ -72,7 +72,8 @@ export function normalizePushEvent(raw: RawPushMessage): PushEvent {
   const p = levels[levels.length - 1] as PushPayload;
   const deepestFirst = [...levels].reverse();
   const deviceClaims = deepestFirst.map((l) => l.device_sn).filter(nonemptyString);
-  const stationClaims = [...deepestFirst.map((l) => l.station_sn), p.s].filter(nonemptyString);
+  const levelStations = deepestFirst.map((l) => l.station_sn).filter(nonemptyString);
+  const stationClaims = nonemptyString(p.s) ? [...levelStations, p.s] : levelStations;
   const eventType = (p.event_type ?? p.a) as number | undefined;
   const url = nonemptyString(p.pic_url) ? p.pic_url : nonemptyString(p.thumbnail) ? p.thumbnail : undefined;
   let thumbnailCandidate: ThumbnailCandidate | undefined;
@@ -94,7 +95,7 @@ export function normalizePushEvent(raw: RawPushMessage): PushEvent {
   }
   return {
     deviceSn: deviceClaims[0] ?? (nonemptyString(p.s) ? p.s : undefined),
-    stationSn: deepestFirst.map((l) => l.station_sn).find(nonemptyString),
+    stationSn: levelStations[0],
     eventType,
     thumbnailUrl: (p.pic_url ?? p.thumbnail) as string | undefined,
     thumbnailCandidate,
@@ -247,8 +248,7 @@ export class PushClient extends EventEmitter {
    *
    * `payload` carries the whole app_data envelope, with its `payload` entry (base64 of NUL-terminated
    * JSON) parsed in place: the envelope's own keys, `device_sn` and `station_sn` among them, sit beside
-   * that entry, and {@link normalizePushEvent} reads identity from every level and detail from the
-   * deepest.
+   * that entry.
    */
   private handleDataMessage(object: any): void {
     if (object?.persistentId) this.persistentIds.push(object.persistentId);
