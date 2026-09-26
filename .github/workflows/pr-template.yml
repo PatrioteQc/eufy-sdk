@@ -1,5 +1,6 @@
 # A pull request whose body skips the template is closed, with the list of what is missing and the way
-# back: go through "Before you open a pull request" in CODING_STANDARDS.md, fill the template, reopen.
+# back: go through "Before you open a pull request" in CODING_STANDARDS.md, fill the template, reopen
+# or open a new one.
 #
 # ── What is checked ─────────────────────────────────────────────────────────────────────────────
 # The sections "Who needs this", "What changed", "Why" and "Verified how" each hold text once the
@@ -7,17 +8,18 @@
 # ticked: the duplicate search, the one-point rule and `npm run verify`. That is the part of the
 # template a reviewer cannot recover from the diff.
 #
-# ── Who is exempt ───────────────────────────────────────────────────────────────────────────────
-# Dependabot, a `beta-X.Y.Z` branch opening its release pull request against main, and members and
-# collaborators of the repository. The check is for outside contributions.
+# ── Who is checked ──────────────────────────────────────────────────────────────────────────────
+# Pull requests from a fork only. Dependabot, the beta release branches and maintainers push to this
+# repository, and a fork cannot claim to be it, unlike a branch name or `author_association`, which
+# reports a private org member as a plain contributor.
 #
 # ── `pull_request_target`, and why it is safe here ──────────────────────────────────────────────
 # Commenting and closing need a writable token, which a fork's pull request only gets here. The job
 # checks out nothing and runs nothing from the branch; it reads the body from the event payload
 # through an environment variable, never interpolated into the script.
 #
-# It fires on `opened` and `reopened` only, so an author fixing the body and reopening is checked
-# again, and an edit on an already-answered pull request does not repeat the comment.
+# It fires on `opened` and `reopened` only, so a fixed body is checked again when the pull request is
+# reopened or opened anew, and an edit on an already-answered pull request does not repeat the comment.
 name: pull request template
 
 on:
@@ -31,10 +33,7 @@ permissions:
 jobs:
   template:
     runs-on: ubuntu-latest
-    if: >-
-      !startsWith(github.head_ref, 'dependabot/')
-      && !startsWith(github.head_ref, 'beta-')
-      && !contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association)
+    if: github.event.pull_request.head.repo.full_name != github.repository
     steps:
       - name: Check the body against the template
         id: check
@@ -82,8 +81,8 @@ jobs:
             echo "Before reopening, go through **Before you open a pull request** in"
             echo "[CODING_STANDARDS.md](https://github.com/$GITHUB_REPOSITORY/blob/HEAD/CODING_STANDARDS.md#before-you-open-a-pull-request)"
             echo "and stop at any check that fails."
-            echo "Then fill the body from the pull request template and reopen this pull request: it keeps its"
-            echo "commits and discussion, and this check runs again."
+            echo "Then fill the body from the pull request template and reopen this pull request, or open a new"
+            echo "one if GitHub does not offer to reopen it. Either way this check runs again."
           } > comment.md
           gh pr comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body-file comment.md
           gh pr close "$NUMBER" --repo "$GITHUB_REPOSITORY"
