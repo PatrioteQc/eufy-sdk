@@ -102,8 +102,7 @@ Adding a capability touches **only its own module file plus a couple of lines in
 `capabilities/index.ts`**. `device.ts` and the client facade **never name a capability** — the fluent
 `dev.camera()` accessors and the typed event map are derived from the barrel projections. Do not add a
 `switch` or `if` on a capability name outside its module, and do not call one capability's accessor from
-those layers. CI-enforced by `guard:capability-ownership`, which allowlists exactly one exception
-(`stationPower`, resolving a station's power tier for the P2P session lifecycle).
+those layers. CI-enforced by `guard:capability-ownership`.
 
 - **One feature, one entry.** A module declares ONE **`members` table** and everything is derived from
   it: the property schema, the evidence-gated getter, the setter beside it, the intent route, the
