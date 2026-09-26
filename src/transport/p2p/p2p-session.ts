@@ -200,7 +200,10 @@ const STALE_RETRANSMIT_DEPTH = 1024;
 
 /** Additional UDP source ports registered alongside the session's own during cloud lookup. */
 const PUNCH_PROBE_SOCKETS = 7;
-
+/** Chosen maximum wait for a missing datagram; 250 ms is not a measured device resend delay. */
+const REORDER_WAIT_MS = 250;
+/** Maximum later datagrams held behind a hole, bounding retained memory and the delay before resuming. */
+const REORDER_MAX_DATAGRAMS = 128;
 /**
  * Datagram gaps traced per live start. A lossy channel can drop hundreds of datagrams in one start, and the
  * first few establish the pattern; the rest would only flood a host's log, so the trace stops there while
@@ -371,9 +374,13 @@ export class P2PSession extends EventEmitter {
   private selfHost?: string;
   /** In-flight multi-datagram frame per data channel (see onData). */
   private readonly pendingByDataType = new Map<number, { header: P2PDataFrameHeader; buf: Buffer }>();
-  /** Last datagram sequence number seen per dataType — used to detect a lost/reordered datagram
-   * mid-frame and drop the (now unrecoverable) partial frame instead of splicing wrong bytes. */
+  /** Last delivered datagram sequence number per data type. */
   private readonly lastSeqByType = new Map<number, number>();
+  /** Held datagrams and their active gap timer, grouped by data type. */
+  private readonly reorderByType = new Map<
+    number,
+    { held: Map<number, Buffer>; timer?: ReturnType<typeof setTimeout> }
+  >();
   private tracedDatagramGaps = 0;
   private readonly level1Key: Buffer;
   /** Negotiated 32-byte level-2/gateway key (AES-256-GCM). Set via setLevel2Key once known. */
@@ -1711,8 +1718,7 @@ export class P2PSession extends EventEmitter {
    * Acknowledge and reassemble one DATA datagram, sequenced independently per data type.
    *
    * The device numbers each data type's datagrams in its own 16-bit space and repeats what it thinks was
-   * lost, so a datagram that does not advance the sequence — a duplicate, or one already superseded — is a
-   * retransmission of something already reassembled: it is acknowledged, then ignored. Distance is measured
+   * lost. A repeat of something already delivered is acknowledged, then ignored. Distance is measured
    * modulo the sequence space and read as backwards beyond {@link SEQUENCE_LOOKBACK}, which is what lets the
    * numbering wrap without the next datagram looking like a jump of nearly a full space.
    *
@@ -1722,9 +1728,13 @@ export class P2PSession extends EventEmitter {
    * numbering and the half-assembled frame goes — because ignoring it would freeze the mark, and every
    * datagram of the new numbering would then be read as behind it too, for as long as it took to climb back.
    *
-   * Only a forward gap means a datagram is genuinely missing. A logical frame's payload spans datagrams that
-   * carry no header of their own, so the bytes cannot be reassembled around the hole: whatever was pending
-   * for that data type is discarded, and the frame is rebuilt from the next header.
+   * A forward gap means a datagram has not arrived YET, which is not the same as lost. The device repeats
+   * unacknowledged datagrams, so successors are held for a bounded wait and delivered strictly in sequence
+   * if the missing one arrives. A logical frame's payload spans datagrams that carry no header of their
+   * own, so reassembling around a hole is impossible; waiting for it is what keeps the frame whole.
+   *
+   * Only once {@link REORDER_WAIT_MS} passes, or {@link REORDER_MAX_DATAGRAMS} pile up, is the datagram
+   * treated as lost: a pending frame is discarded and delivery resumes from the earliest held datagram.
    */
   private onData(msg: Buffer, addr: Address): void {
     const dataTypeBuffer = msg.subarray(4, 6);
@@ -1735,18 +1745,96 @@ export class P2PSession extends EventEmitter {
     const prevSeq = this.lastSeqByType.get(dataType);
     const advance = prevSeq === undefined ? 1 : (seqNo - prevSeq) & 0xffff;
     if (advance === 0) return;
-    const restarted = advance > SEQUENCE_LOOKBACK && 0x10000 - advance > STALE_RETRANSMIT_DEPTH;
-    if (advance > SEQUENCE_LOOKBACK && !restarted) return;
-    this.lastSeqByType.set(dataType, seqNo);
-    if ((advance > 1 || restarted) && this.pendingByDataType.has(dataType)) {
-      if (this.tracedDatagramGaps++ < MAX_TRACED_DATAGRAM_GAPS) {
-        this.trace({ phase: restarted ? "sequence-restart" : "datagram-gap", dataType });
-      }
+    if (advance > SEQUENCE_LOOKBACK) {
+      if (0x10000 - advance <= STALE_RETRANSMIT_DEPTH) return;
+      if (this.pendingByDataType.has(dataType) && this.tracedDatagramGaps++ < MAX_TRACED_DATAGRAM_GAPS)
+        this.trace({ phase: "sequence-restart", dataType });
+      this.clearReorderTimer(dataType);
+      this.reorderByType.delete(dataType);
       this.pendingByDataType.delete(dataType);
+      this.lastSeqByType.set(dataType, seqNo);
+      this.reassemble(dataType, msg.subarray(8));
+      return;
     }
+    if (advance === 1) {
+      this.lastSeqByType.set(dataType, seqNo);
+      this.reassemble(dataType, msg.subarray(8));
+      this.drainReorder(dataType);
+      return;
+    }
+    this.holdForRetransmit(dataType, seqNo, msg.subarray(8));
+  }
 
+  /** Hold a datagram that arrived past a hole, and arm the wait for the missing one to be repeated. */
+  private holdForRetransmit(dataType: number, seqNo: number, body: Buffer): void {
+    let reorder = this.reorderByType.get(dataType);
+    if (!reorder) {
+      reorder = { held: new Map<number, Buffer>() };
+      this.reorderByType.set(dataType, reorder);
+    }
+    if (!reorder.held.has(seqNo)) reorder.held.set(seqNo, body);
+    if (reorder.held.size > REORDER_MAX_DATAGRAMS) {
+      this.abandonHole(dataType);
+      return;
+    }
+    this.armReorderTimer(dataType);
+  }
+
+  /** Start a full wait for the current hole, leaving an existing wait undisturbed. */
+  private armReorderTimer(dataType: number): void {
+    const reorder = this.reorderByType.get(dataType);
+    if (!reorder?.held.size || reorder.timer) return;
+    const timer = setTimeout(() => {
+      reorder.timer = undefined;
+      this.abandonHole(dataType);
+    }, REORDER_WAIT_MS);
+    timer.unref?.();
+    reorder.timer = timer;
+  }
+
+  /** Deliver held datagrams that now follow directly on from the last one delivered. */
+  private drainReorder(dataType: number): void {
+    const reorder = this.reorderByType.get(dataType);
+    if (!reorder?.held.size) return;
+    this.clearReorderTimer(dataType);
+    for (;;) {
+      const next = (this.lastSeqByType.get(dataType)! + 1) & 0xffff;
+      const body = reorder.held.get(next);
+      if (body === undefined) break;
+      reorder.held.delete(next);
+      this.lastSeqByType.set(dataType, next);
+      this.reassemble(dataType, body);
+    }
+    if (reorder.held.size) this.armReorderTimer(dataType);
+    else this.reorderByType.delete(dataType);
+  }
+
+  /**
+   * The missing datagram was not repeated in time: report the gap, drop the frame it belonged to, and
+   * resume from the earliest datagram still held so the stream keeps moving.
+   */
+  private abandonHole(dataType: number): void {
+    const held = this.reorderByType.get(dataType)!.held;
+    if (this.pendingByDataType.has(dataType) && this.tracedDatagramGaps++ < MAX_TRACED_DATAGRAM_GAPS)
+      this.trace({ phase: "datagram-gap", dataType });
+    this.pendingByDataType.delete(dataType);
+    const last = this.lastSeqByType.get(dataType)!;
+    const earliest = [...held.keys()].sort((a, b) => ((a - last) & 0xffff) - ((b - last) & 0xffff))[0];
+    this.lastSeqByType.set(dataType, (earliest - 1) & 0xffff);
+    this.drainReorder(dataType);
+  }
+
+  private clearReorderTimer(dataType: number): void {
+    const reorder = this.reorderByType.get(dataType);
+    if (!reorder?.timer) return;
+    clearTimeout(reorder.timer);
+    reorder.timer = undefined;
+  }
+
+  /** Reassemble one in-sequence datagram body into logical frames. */
+  private reassemble(dataType: number, datagramBody: Buffer): void {
     const pending = this.pendingByDataType.get(dataType);
-    let body = pending ? Buffer.concat([pending.buf, msg.subarray(8)]) : msg.subarray(8);
+    let body = pending ? Buffer.concat([pending.buf, datagramBody]) : datagramBody;
     const carryHeader = pending?.header;
     this.pendingByDataType.delete(dataType);
 
@@ -1782,6 +1870,8 @@ export class P2PSession extends EventEmitter {
    * completed either.
    */
   private resetInboundSequencing(): void {
+    for (const dataType of this.reorderByType.keys()) this.clearReorderTimer(dataType);
+    this.reorderByType.clear();
     this.lastSeqByType.clear();
     this.pendingByDataType.clear();
     this.tracedDatagramGaps = 0;
