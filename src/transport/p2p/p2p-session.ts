@@ -197,6 +197,13 @@ const SEQUENCE_LOOKBACK = 0x8000;
  * so the depth is what caps that second cost, at a bounded run of datagrams instead of half the space.
  */
 const STALE_RETRANSMIT_DEPTH = 1024;
+
+/** Additional UDP source ports registered alongside the session's own during cloud lookup. */
+const PUNCH_PROBE_SOCKETS = 7;
+/** Chosen maximum wait for a missing datagram; 250 ms is not a measured device resend delay. */
+const REORDER_WAIT_MS = 250;
+/** Maximum later datagrams held behind a hole, bounding retained memory and the delay before resuming. */
+const REORDER_MAX_DATAGRAMS = 128;
 /**
  * Datagram gaps traced per live start. A lossy channel can drop hundreds of datagrams in one start, and the
  * first few establish the pattern; the rest would only flood a host's log, so the trace stops there while
@@ -359,13 +366,21 @@ export class P2PSession extends EventEmitter {
   private lookupTimer?: ReturnType<typeof setInterval>;
   private heartbeatTimer?: ReturnType<typeof setInterval>;
   private connectTimer?: ReturnType<typeof setTimeout>;
-  /** Our own bound host:port, self-reported inside LOOKUP_WITH_KEY requests (see sendLookups). */
-  private selfAddress?: Address;
+  /** Extra sockets registered alongside {@link socket} while connecting; see {@link PUNCH_PROBE_SOCKETS}. */
+  private probeSockets: dgram.Socket[] = [];
+  /** Cloud lookup inputs resolved once for a connection. */
+  private cloudLookup?: { key: string; addresses: Address[] };
+  /** Local outbound IPv4 reported inside LOOKUP_WITH_KEY requests. */
+  private selfHost?: string;
   /** In-flight multi-datagram frame per data channel (see onData). */
   private readonly pendingByDataType = new Map<number, { header: P2PDataFrameHeader; buf: Buffer }>();
-  /** Last datagram sequence number seen per dataType — used to detect a lost/reordered datagram
-   * mid-frame and drop the (now unrecoverable) partial frame instead of splicing wrong bytes. */
+  /** Last delivered datagram sequence number per data type. */
   private readonly lastSeqByType = new Map<number, number>();
+  /** Held datagrams and their active gap timer, grouped by data type. */
+  private readonly reorderByType = new Map<
+    number,
+    { held: Map<number, Buffer>; timer?: ReturnType<typeof setTimeout> }
+  >();
   private tracedDatagramGaps = 0;
   private readonly level1Key: Buffer;
   /** Negotiated 32-byte level-2/gateway key (AES-256-GCM). Set via setLevel2Key once known. */
@@ -659,7 +674,7 @@ export class P2PSession extends EventEmitter {
 
     const socket = dgram.createSocket("udp4");
     this.socket = socket;
-    socket.on("message", (msg, rinfo) => this.onMessage(msg, rinfo));
+    socket.on("message", (msg, rinfo) => this.onMessage(msg, rinfo, socket));
     socket.on("error", (e) => this.emit("error", e));
 
     await new Promise<void>((resolve) => {
@@ -673,24 +688,18 @@ export class P2PSession extends EventEmitter {
       });
     });
 
-    // Best-effort self-IP detection for the LOOKUP_WITH_KEY self-report, kicked off in the
-    // BACKGROUND — deliberately not awaited here. Awaiting it used to (a) let a hung/never-settling
-    // probe block connect() forever with no timeout protection (connectTimer was only armed after
-    // this point), and (b) open a window where a concurrent close() during the await left this
-    // resuming to call socket.address() on an already-closed socket (throws
-    // ERR_SOCKET_DGRAM_NOT_RUNNING). Firing it as a background promise that checks `this.closed`
-    // before touching state removes both: connect() proceeds synchronously from here exactly like it
-    // did before this field existed, and a slow/failed probe just means sendLookups() omits the
-    // LOOKUP_WITH_KEY variant (falls back to LOOKUP_WITH_KEY2) until it resolves, if ever.
-    const boundPort = socket.address().port;
     void P2PSession.detectLocalIp().then((host) => {
-      if (host && !this.closed) this.selfAddress = { host, port: boundPort };
+      if (host && !this.closed) this.selfHost = host;
     });
 
+    const { dskKey, cloudAddresses } = this.cfg;
+    this.cloudLookup = dskKey && cloudAddresses?.length ? { key: dskKey, addresses: cloudAddresses } : undefined;
+    if (this.cloudLookup) await this.startPunchProbes();
+    if (this.closed) return;
     this.trace({
       phase: "lookup-channels",
       local: !this.cfg.noBroadcast || this.cfg.localAddress !== undefined,
-      cloud: this.cfg.dskKey !== undefined && (this.cfg.cloudAddresses?.length ?? 0) > 0,
+      cloud: this.cloudLookup !== undefined,
     });
     this.sendLookups();
     this.lookupTimer = setInterval(() => this.sendLookups(), LOOKUP_RETRY_MS);
@@ -779,17 +788,23 @@ export class P2PSession extends EventEmitter {
     // background self-IP probe has resolved; every real capture of a relay-pool-only response (f182)
     // was ALSO reproducible via LOOKUP_WITH_KEY, so KEY2 (0xf16a) adds no observed candidate KEY
     // doesn't already surface — it's sent only as a same-tick fallback for the brief window before
-    // `selfAddress` is known (usually just the first tick or two after connect()).
-    if (this.cfg.dskKey && this.cfg.cloudAddresses?.length) {
-      const payload = this.selfAddress
-        ? buildLookupWithKeyPayload(this.cfg.p2pDid, this.selfAddress.host, this.selfAddress.port, this.cfg.dskKey)
-        : buildLookupWithKeyPayload2(this.cfg.p2pDid, this.cfg.dskKey);
-      const type = this.selfAddress ? RequestMessageType.LOOKUP_WITH_KEY : RequestMessageType.LOOKUP_WITH_KEY2;
-      for (const addr of this.cfg.cloudAddresses) this.send(addr, type, payload);
+    // `selfHost` is known (usually just the first tick or two after connect()).
+    const lookup = this.cloudLookup;
+    if (lookup) {
+      for (const socket of [this.socket, ...this.probeSockets]) this.sendCloudLookup(socket, lookup);
       this.logger.debug(
-        `[p2p] ${this.cfg.stationSn} sendLookups: cloud -> ${this.cfg.cloudAddresses.map((a) => `${a.host}:${a.port}`).join(", ")} self=${this.selfAddress?.host}:${this.selfAddress?.port}`,
+        `[p2p] ${this.cfg.stationSn} sendLookups: cloud -> ${lookup.addresses.map((a) => `${a.host}:${a.port}`).join(", ")} self=${this.selfHost ?? "unknown"}`,
       );
     }
+  }
+
+  /** Register a bound socket's own port with each configured cloud lookup address. */
+  private sendCloudLookup(socket: dgram.Socket, lookup: { key: string; addresses: Address[] }): void {
+    const payload = this.selfHost
+      ? buildLookupWithKeyPayload(this.cfg.p2pDid, this.selfHost, socket.address().port, lookup.key)
+      : buildLookupWithKeyPayload2(this.cfg.p2pDid, lookup.key);
+    const type = this.selfHost ? RequestMessageType.LOOKUP_WITH_KEY : RequestMessageType.LOOKUP_WITH_KEY2;
+    for (const addr of lookup.addresses) this.send(addr, type, payload, socket);
   }
 
   /**
@@ -803,7 +818,8 @@ export class P2PSession extends EventEmitter {
    * recur across later probes of it. Correlate an unmodelled type against a WORKING session before reading it
    * as a cause.
    */
-  private onMessage(msg: Buffer, rinfo: dgram.RemoteInfo): void {
+  private onMessage(msg: Buffer, rinfo: dgram.RemoteInfo, socket = this.socket): void {
+    if (!socket) return;
     if (!hasHeader(msg, ResponseMessageType.DATA)) {
       this.logger.debug(
         `[p2p] ${this.cfg.stationSn} <<< ${rinfo.address}:${rinfo.port} header=${msg.subarray(0, 2).toString("hex")} len=${msg.length}`,
@@ -812,21 +828,21 @@ export class P2PSession extends EventEmitter {
     if (hasHeader(msg, ResponseMessageType.LOCAL_LOOKUP_RESP)) {
       // LOCAL_LOOKUP_RESP shares 0xf141 with CAM_ID; treat a pre-connect response
       // from the lookup as "device here, hole-punch it".
-      if (!this.connected) this.beginCheckCam({ host: rinfo.address, port: rinfo.port });
+      if (!this.connected) this.beginCheckCam({ host: rinfo.address, port: rinfo.port }, socket);
     } else if (hasHeader(msg, ResponseMessageType.LOOKUP_ADDR) || hasHeader(msg, ResponseMessageType.LOOKUP_ADDR2)) {
       if (!this.connected) {
         const addr = parseLookupAddr(msg);
         this.logger.debug(`[p2p] ${this.cfg.stationSn} LOOKUP_ADDR -> ${addr.host}:${addr.port}`);
-        if (addr.host !== "0.0.0.0") this.beginCheckCam(addr);
+        if (addr.host !== "0.0.0.0") this.beginCheckCam(addr, socket);
       }
     } else if (hasHeader(msg, ResponseMessageType.CAM_ID) || hasHeader(msg, ResponseMessageType.TURN_SERVER_CAM_ID)) {
-      this.onConnected({ host: rinfo.address, port: rinfo.port });
+      this.onConnected({ host: rinfo.address, port: rinfo.port }, socket);
     } else if (hasHeader(msg, ResponseMessageType.PONG)) {
       this.lastPongData = msg.length > 4 ? msg.subarray(4) : undefined;
       this.lastPongAt = Date.now();
       this.pathStaleTraced = false;
     } else if (hasHeader(msg, ResponseMessageType.PING)) {
-      this.send({ host: rinfo.address, port: rinfo.port }, RequestMessageType.PONG); // echo
+      this.send({ host: rinfo.address, port: rinfo.port }, RequestMessageType.PONG, undefined, socket); // echo
     } else if (hasHeader(msg, ResponseMessageType.ACK)) {
       this.onAck(msg);
     } else if (hasHeader(msg, ResponseMessageType.DATA)) {
@@ -836,17 +852,69 @@ export class P2PSession extends EventEmitter {
     }
   }
 
-  private beginCheckCam(addr: Address): void {
+  private beginCheckCam(addr: Address, socket: dgram.Socket): void {
     this.logger.debug(`[p2p] ${this.cfg.stationSn} beginCheckCam -> ${addr.host}:${addr.port} (+/-3)`);
     const payload = buildCheckCamPayload(this.cfg.p2pDid);
     // Hole-punch the reported port and a small neighbourhood (NAT remapping).
-    this.send(addr, RequestMessageType.CHECK_CAM, payload);
+    this.send(addr, RequestMessageType.CHECK_CAM, payload, socket);
     for (let p = addr.port - 3; p <= addr.port + 3; p++)
-      if (p !== addr.port && p > 0) this.send({ host: addr.host, port: p }, RequestMessageType.CHECK_CAM, payload);
+      if (p !== addr.port && p > 0)
+        this.send({ host: addr.host, port: p }, RequestMessageType.CHECK_CAM, payload, socket);
   }
 
-  private onConnected(addr: Address): void {
+  /** Bind additional UDP source ports before the first cloud lookup. */
+  private async startPunchProbes(): Promise<void> {
+    await Promise.all(
+      Array.from({ length: PUNCH_PROBE_SOCKETS }, async () => {
+        const probe = dgram.createSocket("udp4");
+        probe.on("error", (error) => this.logger.warn("[p2p] lookup socket error", error.message));
+        probe.on("message", (msg, rinfo) => this.onMessage(msg, rinfo, probe));
+        this.probeSockets.push(probe);
+        await new Promise<void>((resolve) => {
+          let settled = false;
+          const finish = (bound: boolean) => {
+            if (settled) return;
+            settled = true;
+            probe.off("error", onError);
+            probe.off("close", onClose);
+            if (!bound) {
+              this.probeSockets = this.probeSockets.filter((socket) => socket !== probe);
+              try {
+                probe.close();
+              } catch {}
+            }
+            resolve();
+          };
+          const onError = () => finish(false);
+          const onClose = () => finish(false);
+          probe.once("error", onError);
+          probe.once("close", onClose);
+          probe.bind(() => finish(true));
+        });
+      }),
+    );
+  }
+
+  /** Close all lookup sockets except the one that completed the handshake. */
+  private stopPunchProbes(winner?: dgram.Socket): void {
+    for (const probe of this.probeSockets) {
+      if (probe === winner) continue;
+      probe.removeAllListeners("message");
+      probe.close();
+    }
+    this.probeSockets = [];
+  }
+
+  private onConnected(addr: Address, socket: dgram.Socket): void {
     if (this.connected) return;
+    this.stopPunchProbes(socket);
+    if (this.socket !== socket) {
+      this.socket?.removeAllListeners();
+      this.socket?.close();
+      socket.removeAllListeners("error");
+      socket.on("error", (error) => this.emit("error", error));
+      this.socket = socket;
+    }
     this.connected = true;
     this.connectedAtMs = Date.now();
     this.connecting = false;
@@ -1650,8 +1718,7 @@ export class P2PSession extends EventEmitter {
    * Acknowledge and reassemble one DATA datagram, sequenced independently per data type.
    *
    * The device numbers each data type's datagrams in its own 16-bit space and repeats what it thinks was
-   * lost, so a datagram that does not advance the sequence — a duplicate, or one already superseded — is a
-   * retransmission of something already reassembled: it is acknowledged, then ignored. Distance is measured
+   * lost. A repeat of something already delivered is acknowledged, then ignored. Distance is measured
    * modulo the sequence space and read as backwards beyond {@link SEQUENCE_LOOKBACK}, which is what lets the
    * numbering wrap without the next datagram looking like a jump of nearly a full space.
    *
@@ -1661,9 +1728,13 @@ export class P2PSession extends EventEmitter {
    * numbering and the half-assembled frame goes — because ignoring it would freeze the mark, and every
    * datagram of the new numbering would then be read as behind it too, for as long as it took to climb back.
    *
-   * Only a forward gap means a datagram is genuinely missing. A logical frame's payload spans datagrams that
-   * carry no header of their own, so the bytes cannot be reassembled around the hole: whatever was pending
-   * for that data type is discarded, and the frame is rebuilt from the next header.
+   * A forward gap means a datagram has not arrived YET, which is not the same as lost. The device repeats
+   * unacknowledged datagrams, so successors are held for a bounded wait and delivered strictly in sequence
+   * if the missing one arrives. A logical frame's payload spans datagrams that carry no header of their
+   * own, so reassembling around a hole is impossible; waiting for it is what keeps the frame whole.
+   *
+   * Only once {@link REORDER_WAIT_MS} passes, or {@link REORDER_MAX_DATAGRAMS} pile up, is the datagram
+   * treated as lost: a pending frame is discarded and delivery resumes from the earliest held datagram.
    */
   private onData(msg: Buffer, addr: Address): void {
     const dataTypeBuffer = msg.subarray(4, 6);
@@ -1674,18 +1745,96 @@ export class P2PSession extends EventEmitter {
     const prevSeq = this.lastSeqByType.get(dataType);
     const advance = prevSeq === undefined ? 1 : (seqNo - prevSeq) & 0xffff;
     if (advance === 0) return;
-    const restarted = advance > SEQUENCE_LOOKBACK && 0x10000 - advance > STALE_RETRANSMIT_DEPTH;
-    if (advance > SEQUENCE_LOOKBACK && !restarted) return;
-    this.lastSeqByType.set(dataType, seqNo);
-    if ((advance > 1 || restarted) && this.pendingByDataType.has(dataType)) {
-      if (this.tracedDatagramGaps++ < MAX_TRACED_DATAGRAM_GAPS) {
-        this.trace({ phase: restarted ? "sequence-restart" : "datagram-gap", dataType });
-      }
+    if (advance > SEQUENCE_LOOKBACK) {
+      if (0x10000 - advance <= STALE_RETRANSMIT_DEPTH) return;
+      if (this.pendingByDataType.has(dataType) && this.tracedDatagramGaps++ < MAX_TRACED_DATAGRAM_GAPS)
+        this.trace({ phase: "sequence-restart", dataType });
+      this.clearReorderTimer(dataType);
+      this.reorderByType.delete(dataType);
       this.pendingByDataType.delete(dataType);
+      this.lastSeqByType.set(dataType, seqNo);
+      this.reassemble(dataType, msg.subarray(8));
+      return;
     }
+    if (advance === 1) {
+      this.lastSeqByType.set(dataType, seqNo);
+      this.reassemble(dataType, msg.subarray(8));
+      this.drainReorder(dataType);
+      return;
+    }
+    this.holdForRetransmit(dataType, seqNo, msg.subarray(8));
+  }
 
+  /** Hold a datagram that arrived past a hole, and arm the wait for the missing one to be repeated. */
+  private holdForRetransmit(dataType: number, seqNo: number, body: Buffer): void {
+    let reorder = this.reorderByType.get(dataType);
+    if (!reorder) {
+      reorder = { held: new Map<number, Buffer>() };
+      this.reorderByType.set(dataType, reorder);
+    }
+    if (!reorder.held.has(seqNo)) reorder.held.set(seqNo, body);
+    if (reorder.held.size > REORDER_MAX_DATAGRAMS) {
+      this.abandonHole(dataType);
+      return;
+    }
+    this.armReorderTimer(dataType);
+  }
+
+  /** Start a full wait for the current hole, leaving an existing wait undisturbed. */
+  private armReorderTimer(dataType: number): void {
+    const reorder = this.reorderByType.get(dataType);
+    if (!reorder?.held.size || reorder.timer) return;
+    const timer = setTimeout(() => {
+      reorder.timer = undefined;
+      this.abandonHole(dataType);
+    }, REORDER_WAIT_MS);
+    timer.unref?.();
+    reorder.timer = timer;
+  }
+
+  /** Deliver held datagrams that now follow directly on from the last one delivered. */
+  private drainReorder(dataType: number): void {
+    const reorder = this.reorderByType.get(dataType);
+    if (!reorder?.held.size) return;
+    this.clearReorderTimer(dataType);
+    for (;;) {
+      const next = (this.lastSeqByType.get(dataType)! + 1) & 0xffff;
+      const body = reorder.held.get(next);
+      if (body === undefined) break;
+      reorder.held.delete(next);
+      this.lastSeqByType.set(dataType, next);
+      this.reassemble(dataType, body);
+    }
+    if (reorder.held.size) this.armReorderTimer(dataType);
+    else this.reorderByType.delete(dataType);
+  }
+
+  /**
+   * The missing datagram was not repeated in time: report the gap, drop the frame it belonged to, and
+   * resume from the earliest datagram still held so the stream keeps moving.
+   */
+  private abandonHole(dataType: number): void {
+    const held = this.reorderByType.get(dataType)!.held;
+    if (this.pendingByDataType.has(dataType) && this.tracedDatagramGaps++ < MAX_TRACED_DATAGRAM_GAPS)
+      this.trace({ phase: "datagram-gap", dataType });
+    this.pendingByDataType.delete(dataType);
+    const last = this.lastSeqByType.get(dataType)!;
+    const earliest = [...held.keys()].sort((a, b) => ((a - last) & 0xffff) - ((b - last) & 0xffff))[0];
+    this.lastSeqByType.set(dataType, (earliest - 1) & 0xffff);
+    this.drainReorder(dataType);
+  }
+
+  private clearReorderTimer(dataType: number): void {
+    const reorder = this.reorderByType.get(dataType);
+    if (!reorder?.timer) return;
+    clearTimeout(reorder.timer);
+    reorder.timer = undefined;
+  }
+
+  /** Reassemble one in-sequence datagram body into logical frames. */
+  private reassemble(dataType: number, datagramBody: Buffer): void {
     const pending = this.pendingByDataType.get(dataType);
-    let body = pending ? Buffer.concat([pending.buf, msg.subarray(8)]) : msg.subarray(8);
+    let body = pending ? Buffer.concat([pending.buf, datagramBody]) : datagramBody;
     const carryHeader = pending?.header;
     this.pendingByDataType.delete(dataType);
 
@@ -1721,6 +1870,8 @@ export class P2PSession extends EventEmitter {
    * completed either.
    */
   private resetInboundSequencing(): void {
+    for (const dataType of this.reorderByType.keys()) this.clearReorderTimer(dataType);
+    this.reorderByType.clear();
     this.lastSeqByType.clear();
     this.pendingByDataType.clear();
     this.tracedDatagramGaps = 0;
@@ -1848,10 +1999,10 @@ export class P2PSession extends EventEmitter {
     this.emit("data", frame);
   }
 
-  private send(addr: Address, type: Buffer, payload?: Buffer): void {
-    if (!this.socket) return;
+  private send(addr: Address, type: Buffer, payload?: Buffer, socket = this.socket): void {
+    if (!socket) return;
     const packet = frameMessage(type, payload);
-    this.socket.send(packet, addr.port, addr.host, (err) => {
+    socket.send(packet, addr.port, addr.host, (err) => {
       if (err) this.logger.warn(`[p2p] send err ${addr.host}:${addr.port}`, err.message);
     });
   }
@@ -1859,6 +2010,7 @@ export class P2PSession extends EventEmitter {
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
+    this.stopPunchProbes();
     this.connectionGeneration += 1;
     this.level2Key = undefined;
     this.level2Seq = 0;
